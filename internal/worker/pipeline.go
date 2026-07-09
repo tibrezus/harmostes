@@ -1,0 +1,235 @@
+package worker
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"time"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"github.com/tibrezus/harmostes/internal/dapr"
+	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
+)
+
+// Outcome of a pipeline run.
+type Outcome int
+
+const (
+	OutcomeGreen Outcome = iota // agent passed the gate; deploy ran
+	OutcomeSkipped              // prepare reported no change (deterministic skip)
+	OutcomeFailed               // a phase failed (prepare, agent gate, or deploy)
+)
+
+func (o Outcome) String() string {
+	return [...]string{"green", "skipped", "failed"}[o]
+}
+
+// Result is the pipeline outcome.
+type Result struct {
+	Outcome Outcome
+	Message string
+}
+
+// StatusPatcher reconciles the Workflow status. The mutate closure edits the
+// status in place; the implementation performs the actual status-subresource
+// patch (the worker never writes spec).
+type StatusPatcher interface {
+	PatchStatus(ctx context.Context, name string, mutate func(*v1alpha1.WorkflowStatus)) error
+}
+
+// Deps are the pipeline's collaborators (all injectable → testable).
+type Deps struct {
+	Plugins        PluginResolver
+	Tasks          TaskResolver
+	Dapr           dapr.Client
+	Status         StatusPatcher
+	Agent          AgentRunner
+	Log            func(format string, args ...any)
+	DaprStateStore string // default "statestore"
+	DaprPubSub     string // default "pubsub"
+}
+
+// Options for one run.
+type Options struct {
+	Workflow *v1alpha1.Workflow
+	Workdir  string   // pre-populated source working directory
+	Source   string   // resolved source (artifact path / ref / revision)
+	ExtraEnv []string // extra env for plugins (tokens, …)
+}
+
+// Run executes the full pipeline for one Workflow work item:
+//
+//	prepare(plugin) →[changed]→ agent(harmostes primitive + gate, feedback loop)
+//	                  → deploy(plugin), emitting Dapr events + reconciling status.
+//
+// prepare reporting changed=false short-circuits to a deterministic skip.
+func Run(ctx context.Context, deps Deps, opts Options) (Result, error) {
+	wf := opts.Workflow
+	name := wf.Name
+	logf := deps.log()
+	envFor := func(phase, specJSON string) PluginEnv {
+		return PluginEnv{
+			Workflow: name, Namespace: wf.Namespace, Phase: phase,
+			Spec: specJSON, Source: opts.Source, Workdir: opts.Workdir, State: name,
+		}
+	}
+
+	// ── 1. prepare (deterministic) ────────────────────────────────────────────
+	prepCmd, prepArgs, err := deps.Plugins.Resolve(ctx, wf.Spec.Prepare.Plugin, "prepare")
+	if err != nil {
+		return finishFailed(ctx, deps, name, "resolve prepare plugin: "+err.Error())
+	}
+	prepSpec, _ := json.Marshal(wf.Spec.Prepare)
+	prepRes, prepOut, prepErr := RunPlugin(ctx, prepCmd, prepArgs, envFor("prepare", string(prepSpec)), opts.ExtraEnv)
+	if prepErr != nil {
+		return finishFailed(ctx, deps, name, "prepare plugin failed: "+tailN(prepOut, 400))
+	}
+	publish(deps, wf, "onPrepare", prepRes)
+	if prepRes.Changed != nil && !*prepRes.Changed {
+		logf("prepare: no change — deterministic skip")
+		patchStatus(ctx, deps, name, func(s *v1alpha1.WorkflowStatus) {
+			s.GateStatus = "green"
+			s.Message = "no change (deterministic skip)"
+			s.LastRunAt = nowMeta()
+		})
+		return Result{Outcome: OutcomeSkipped, Message: "no change"}, nil
+	}
+	logf("prepare: artifact=%s changed=true", prepRes.Artifact)
+
+	// ── 2. agent (framework-native: the harmostes primitive + gate) ───────────
+	gateCmd, gateArgs, err := deps.Plugins.Resolve(ctx, wf.Spec.Agent.Gate.Plugin, "gate")
+	if err != nil {
+		return finishFailed(ctx, deps, name, "resolve gate plugin: "+err.Error())
+	}
+	gateSpec, _ := json.Marshal(wf.Spec.Agent.Gate)
+	gate := GatePlugin{Command: gateCmd, Args: gateArgs, Env: envFor("gate", string(gateSpec)), ExtraEnv: opts.ExtraEnv}
+
+	task, err := deps.Tasks.Get(ctx, wf.Spec.Agent.TaskTemplate)
+	if err != nil {
+		return finishFailed(ctx, deps, name, "resolve task template: "+err.Error())
+	}
+	maxFixes := wf.Spec.Agent.MaxFixes
+	if maxFixes == 0 {
+		maxFixes = 3
+	}
+
+	logf("agent: task=%q gate=%s maxFixes=%d", wf.Spec.Agent.TaskTemplate.Name, wf.Spec.Agent.Gate.Plugin.Name, maxFixes)
+	agentRes, err := deps.Agent.Run(ctx, task, gate, maxFixes, logBridge(logf))
+	if err != nil {
+		return finishFailed(ctx, deps, name, "agent run: "+err.Error())
+	}
+	if !agentRes.Green {
+		msg := fmt.Sprintf("gate failed after %d evaluation(s)", agentRes.Attempts)
+		publish(deps, wf, "onFailed", PluginResult{Status: "failed"})
+		patchStatus(ctx, deps, name, func(s *v1alpha1.WorkflowStatus) {
+			s.GateStatus = "failed"
+			s.Message = msg
+			s.LastRunAt = nowMeta()
+		})
+		return Result{Outcome: OutcomeFailed, Message: msg}, nil
+	}
+	logf("agent: gate GREEN after %d pass(es)", agentRes.Attempts)
+
+	// ── 3. deploy (deterministic) ─────────────────────────────────────────────
+	depCmd, depArgs, err := deps.Plugins.Resolve(ctx, wf.Spec.Deploy.Plugin, "deploy")
+	if err != nil {
+		return finishFailed(ctx, deps, name, "resolve deploy plugin: "+err.Error())
+	}
+	depSpec, _ := json.Marshal(wf.Spec.Deploy)
+	depRes, depOut, depErr := RunPlugin(ctx, depCmd, depArgs, envFor("deploy", string(depSpec)), opts.ExtraEnv)
+	if depErr != nil {
+		return finishFailed(ctx, deps, name, "deploy plugin failed: "+tailN(depOut, 400))
+	}
+	publish(deps, wf, "onResolved", depRes)
+
+	patchStatus(ctx, deps, name, func(s *v1alpha1.WorkflowStatus) {
+		s.GateStatus = "green"
+		s.Message = "deployed"
+		s.LastAgentCommit = commitFrom(depRes)
+		if opts.Source != "" {
+			s.LastProcessedRevision = opts.Source
+		}
+		s.LastRunAt = nowMeta()
+	})
+	logf("deploy: %s — pipeline complete", depRes.Artifact)
+	return Result{Outcome: OutcomeGreen, Message: "deployed"}, nil
+}
+
+// finishFailed records a failure on the status + returns a failed Result.
+func finishFailed(ctx context.Context, deps Deps, name, msg string) (Result, error) {
+	deps.log()("pipeline FAILED: %s", msg)
+	patchStatus(ctx, deps, name, func(s *v1alpha1.WorkflowStatus) {
+		s.GateStatus = "failed"
+		s.Message = tailN(msg, 400)
+		s.LastRunAt = nowMeta()
+	})
+	return Result{Outcome: OutcomeFailed, Message: msg}, nil
+}
+
+// publish emits a Dapr event for a phase boundary (best-effort).
+func publish(deps Deps, wf *v1alpha1.Workflow, field string, res PluginResult) {
+	if deps.Dapr == nil || wf.Spec.Events == nil {
+		return
+	}
+	var topic string
+	switch field {
+	case "onPrepare":
+		topic = wf.Spec.Events.OnPrepare
+	case "onResolved":
+		topic = wf.Spec.Events.OnResolved
+	case "onFailed":
+		topic = wf.Spec.Events.OnFailed
+	case "onDeployed":
+		topic = wf.Spec.Events.OnDeployed
+	}
+	if topic == "" {
+		return
+	}
+	payload := map[string]any{"workflow": wf.Name, "status": res.Status, "artifact": res.Artifact, "event": res.Event}
+	b, _ := json.Marshal(payload)
+	pubsub := deps.DaprPubSub
+	if pubsub == "" {
+		pubsub = "pubsub"
+	}
+	if err := deps.Dapr.Publish(context.Background(), pubsub, topic, string(b)); err != nil {
+		deps.log()("warn: publish %s/%s: %v", pubsub, topic, err)
+	}
+}
+
+func patchStatus(ctx context.Context, deps Deps, name string, mutate func(*v1alpha1.WorkflowStatus)) {
+	if deps.Status == nil {
+		return
+	}
+	if err := deps.Status.PatchStatus(ctx, name, mutate); err != nil {
+		deps.log()("warn: patch status: %v", err)
+	}
+}
+
+func (d Deps) log() func(format string, args ...any) {
+	if d.Log != nil {
+		return d.Log
+	}
+	return func(string, ...any) {}
+}
+
+func commitFrom(res PluginResult) string {
+	if res.Event != nil {
+		if c, ok := res.Event["commit"].(string); ok {
+			return c
+		}
+	}
+	return res.Artifact
+}
+
+func nowMeta() metav1.Time {
+	return metav1.NewTime(time.Now().UTC())
+}
+
+// tailN returns the last n bytes of s (for status messages / feedback).
+func tailN(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[len(s)-n:]
+}

@@ -1,0 +1,25 @@
+# harmostes framework chart — install once per cluster. Workflows are applied as
+# Workflow CRs (see examples/).
+namespace: harmostes
+
+image:
+  controller: ghcr.io/tibrezus/harmostes-controller:0.1.0
+  worker: ghcr.io/tibrezus/harmostes-worker:0.1.0
+  pullSecret: ghcr-pull   # set to "" to disable
+
+controller:
+  serviceAccount: harmostes-controller
+  pollInterval: 5m        # default run cadence for Workflows without a schedule
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits:   { cpu: 1, memory: 512Mi }
+
+dapr:
+  # Dapr is the deterministic event-system application layer. Reuse the cluster's
+  # Valkey with an isolated DB so harmostes never crosses llm-wiki (DB 0/1) or
+  # fork-maintenance (DB 2).
+  stateStore: statestore
+  pubSub: pubsub
+  valkeyHost: valkey.llm-wiki.svc.cluster.local:6379
+  valkeyDB: "3"
+  injectWorker: false   # flip to true once the namespace/SA is trusted by the Dapr sentry (mTLS)

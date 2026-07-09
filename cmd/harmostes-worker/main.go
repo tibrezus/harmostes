@@ -1,38 +1,164 @@
-// Command harmostes-worker is the generic worker for any Workflow phase. It
-// reads its assignment from the environment (the HARMOSTES_* contract — see
-// docs/plugin-interface.md), resolves the Workflow CR, and runs the phase:
+// Command harmostes-worker runs ONE Workflow's pipeline (prepare → agent → deploy)
+// as a Kubernetes Job. The monitor controller spawns it; it fetches its Workflow
+// CR by name, builds its collaborators from in-cluster clients + the Dapr
+// sidecar, runs worker.Run, and exits by outcome.
 //
-//   - prepare / deploy: invoke the phase's plugin (image or ConfigMap script)
-//     with the contract env, parse the JSON result, emit the next Dapr event.
-//   - agent: run the Go harmostes primitive (internal/agent) — pi --mode rpc,
-//     task → gate → feedback-as-warm-session-continuation.
+// Env:
 //
-// This file is the entrypoint + arg/env wiring. Phase execution + the Dapr
-// client land alongside it as the controller + worker are completed (see
-// ARCHITECTURE.md §Migration). For now it validates its contract and reports.
+//	HARMOSTES_WORKFLOW    the Workflow CR name (required)
+//	HARMOSTES_NAMESPACE   its namespace (required)
+//	HARMOSTES_WORKDIR     source working dir (default /workspace)
+//	HARMOSTES_SOURCE      resolved source ref/path (recorded in status)
+//	DAPR_HTTP_ENDPOINT    Dapr sidecar URL (default http://localhost:3500)
+//	plugins mounted under /plugins (ConfigMap form); built-ins in the image.
 package main
 
 import (
+	"context"
+	"flag"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/tibrezus/harmostes/internal/agent"
+	"github.com/tibrezus/harmostes/internal/dapr"
+	"github.com/tibrezus/harmostes/internal/k8s"
+	"github.com/tibrezus/harmostes/internal/worker"
+	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
 )
 
 func main() {
-	phase := os.Getenv("HARMOSTES_PHASE")
-	workflow := os.Getenv("HARMOSTES_WORKFLOW")
-	namespace := os.Getenv("HARMOSTES_NAMESPACE")
-	if phase == "" || workflow == "" {
-		fmt.Fprintln(os.Stderr, "ERROR: HARMOSTES_PHASE and HARMOSTES_WORKFLOW are required")
-		os.Exit(2)
-	}
+	workflow := envReq("HARMOSTES_WORKFLOW")
+	namespace := envReq("HARMOSTES_NAMESPACE")
+	workdir := envOr("HARMOSTES_WORKDIR", "/workspace")
+	source := os.Getenv("HARMOSTES_SOURCE")
+	_ = flag.CommandLine.Parse(os.Args[1:])
+
 	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
 	log.SetPrefix("[harmostes-worker] ")
-	log.Printf("phase=%s workflow=%s/%s — phase runtime not yet wired (framework skeleton)",
-		phase, namespace, workflow)
-	// TODO(worker): dispatch on phase:
-	//   prepare → worker.Prepare(ctx, wf)  (invoke plugin, emit work.needs-agent)
-	//   agent   → worker.Agent(ctx, wf)    (run internal/agent.Task, emit work.resolved|failed)
-	//   deploy  → worker.Deploy(ctx, wf)   (invoke plugin, emit work.deployed)
-	os.Exit(0)
+
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
+	cfg, err := ctrl.GetConfig()
+	if err != nil {
+		fatal("k8s config: %v", err)
+	}
+	cl, err := client.New(cfg, client.Options{Scheme: k8s.Scheme()})
+	if err != nil {
+		fatal("k8s client: %v", err)
+	}
+
+	var wf v1alpha1.Workflow
+	if err := cl.Get(ctx, client.ObjectKey{Namespace: namespace, Name: workflow}, &wf); err != nil {
+		fatal("get workflow %s/%s: %v", namespace, workflow, err)
+	}
+	logf("workflow %s/%s phase=run source=%q workdir=%s", namespace, workflow, source, workdir)
+
+	// Wait for the Dapr sidecar (best-effort): events + state are fabric, not a
+	// hard dependency, but racing ahead means the first publish misses a not-yet-
+	// ready daprd. Mirrors the proven llm-wiki / fork-maintenance pattern.
+	waitForDapr(os.Getenv("DAPR_HTTP_ENDPOINT"))
+
+	logfFn := func(format string, a ...any) { log.Printf(format, a...) }
+
+	deps := worker.Deps{
+		Plugins: worker.BuiltinResolver{
+			Builtins:      builtinPlugins(),
+			ConfigMapRoot: "/plugins",
+		},
+		Tasks:          k8s.ConfigMapTasks{Client: cl, Namespace: namespace},
+		Dapr:           dapr.New(os.Getenv("DAPR_HTTP_ENDPOINT")),
+		Status:         k8s.StatusPatcher{Client: cl, Namespace: namespace},
+		DaprStateStore: envOr("HARMOSTES_STATE_STORE", "statestore"),
+		DaprPubSub:     envOr("HARMOSTES_PUBSUB", "pubsub"),
+		Log:            logfFn,
+		Agent: worker.RPCAgentRunner{Opts: agent.RPCOptions{
+			Args:    worker.PiArgs(wf.Spec.Agent),
+			Workdir: workdir,
+			Env:     os.Environ(),
+			Log: func(ev agent.Event) {
+				logfFn("agent: %s %s", ev.Type, ev.ToolName)
+			},
+		}},
+	}
+
+	runCtx, runCancel := context.WithTimeout(ctx, runTimeout(&wf))
+	defer runCancel()
+	res, err := worker.Run(runCtx, deps, worker.Options{
+		Workflow: &wf, Workdir: workdir, Source: source, ExtraEnv: os.Environ(),
+	})
+	if err != nil {
+		fatal("pipeline error: %v", err)
+	}
+	switch res.Outcome {
+	case worker.OutcomeGreen, worker.OutcomeSkipped:
+		logf("complete: %s (%s)", res.Outcome, res.Message)
+		os.Exit(0)
+	default:
+		logf("complete: %s (%s)", res.Outcome, res.Message)
+		os.Exit(1)
+	}
+}
+
+func runTimeout(wf *v1alpha1.Workflow) time.Duration {
+	secs := wf.Spec.Agent.Timeout
+	if secs <= 0 {
+		secs = 1800
+	}
+	return time.Duration(secs) * time.Second
+}
+
+// builtinPlugins maps plugin names to executable paths shipped in the worker
+// image (under /usr/local/lib/harmostes/plugins/<name>). Populated as plugins
+// are ported (see plugins/README.md).
+func builtinPlugins() map[string]string {
+	return map[string]string{
+		"noop": "/usr/local/lib/harmostes/plugins/noop.sh",
+	}
+}
+
+func envReq(key string) string {
+	v := os.Getenv(key)
+	if v == "" {
+		fmt.Fprintf(os.Stderr, "ERROR: %s is required\n", key)
+		os.Exit(2)
+	}
+	return v
+}
+
+func envOr(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
+
+func logf(format string, a ...any) { log.Printf(format, a...) }
+func fatal(format string, a ...any) { log.Printf("ERROR: "+format, a...); os.Exit(2) }
+
+// waitForDapr polls the sidecar healthz up to ~15s; proceeds regardless (Dapr is
+// best-effort — the pipeline runs even without it, just without events/state).
+func waitForDapr(endpoint string) {
+	if endpoint == "" {
+		endpoint = "http://127.0.0.1:3500" // not localhost (Go IPv6 ::1 vs daprd 127.0.0.1)
+	}
+	for i := 0; i < 15; i++ {
+		resp, err := http.Get(endpoint + "/v1.0/healthz")
+		if err == nil {
+			resp.Body.Close()
+			if resp.StatusCode == 200 {
+				return
+			}
+		}
+		time.Sleep(time.Second)
+	}
+	log.Printf("warn: Dapr sidecar not ready at %s after 15s — proceeding without events/state", endpoint)
 }

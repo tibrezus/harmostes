@@ -1,0 +1,40 @@
+# One ServiceAccount + Role serve both the controller (watch Workflows, create
+# worker Jobs) and the worker Jobs it spawns (read ConfigMaps, patch Workflow
+# status). Namespaced to {{ .Values.namespace }}.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Values.controller.serviceAccount }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: harmostes
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: harmostes-controller
+  namespace: {{ .Values.namespace }}
+rules:
+  - apiGroups: ["harmostes.dev"]
+    resources: ["workflows", "workflows/status", "workflows/finalizers"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["configmaps", "events"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: harmostes-controller
+  namespace: {{ .Values.namespace }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.controller.serviceAccount }}
+    namespace: {{ .Values.namespace }}
+roleRef:
+  kind: Role
+  name: harmostes-controller
+  apiGroup: rbac.authorization.k8s.io

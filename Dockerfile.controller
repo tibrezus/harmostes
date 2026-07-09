@@ -1,0 +1,13 @@
+# harmostes-controller — the monitor controller (controller-runtime).
+# Distrolesss static: tiny, no shell, Go-only runtime.
+FROM golang:1.23-bookworm AS build
+WORKDIR /src
+ENV GOTOOLCHAIN=local
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /out/harmostes-controller ./cmd/harmostes-controller
+
+FROM gcr.io/distroless/static-debian12
+COPY --from=build /out/harmostes-controller /usr/local/bin/harmostes-controller
+ENTRYPOINT ["/usr/local/bin/harmostes-controller"]

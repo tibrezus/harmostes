@@ -1,0 +1,38 @@
+# Dapr components — the deterministic event-system application layer. State for
+# skip/dedup, pub/sub for choreography + observability. Reuse the cluster Valkey
+# with an isolated DB (default 3) so harmostes never crosses llm-wiki (0/1) or
+# fork-maintenance (2). Swap backends by changing these Component CRs only.
+apiVersion: dapr.io/v1alpha1
+kind: Component
+metadata:
+  name: {{ .Values.dapr.stateStore }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: harmostes
+spec:
+  type: state.redis
+  version: v1
+  metadata:
+    - name: redisHost
+      value: {{ .Values.dapr.valkeyHost }}
+    - name: redisDB
+      value: {{ quote .Values.dapr.valkeyDB }}
+---
+apiVersion: dapr.io/v1alpha1
+kind: Component
+metadata:
+  name: {{ .Values.dapr.pubSub }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: harmostes
+spec:
+  type: pubsub.redis
+  version: v1
+  metadata:
+    - name: redisHost
+      value: {{ .Values.dapr.valkeyHost }}
+    - name: redisDB
+      value: {{ quote .Values.dapr.valkeyDB }}
+    # Per-namespace consumer isolation
+    - name: consumerID
+      value: harmostes

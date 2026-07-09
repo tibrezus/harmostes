@@ -42,6 +42,10 @@ RUN npm install -g @earendil-works/pi-coding-agent
 COPY --from=build /out/harmostes-worker /usr/local/bin/harmostes-worker
 COPY --from=build /out/harmostes-agent  /usr/local/bin/harmostes-agent
 
+# Built-in plugins shipped in the image (ConfigMap plugins mount under /plugins)
+COPY plugins/noop/noop.sh /usr/local/lib/harmostes/plugins/noop.sh
+RUN chmod +x /usr/local/lib/harmostes/plugins/noop.sh
+
 # Where the plugin contract expects them to run + read/write
 WORKDIR /workspace
 

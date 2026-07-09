@@ -1,0 +1,21 @@
+apiVersion: v2
+name: harmostes
+description: >
+  A Kubernetes framework for LLM-driven automation: pipelines that are mostly
+  deterministic and validated by an LLM in a loop. Monitor a source → prepare
+  (deterministic plugin) → agent (harmostes primitive + gate, warm-session
+  feedback) → deploy (deterministic plugin) → state. Dapr is the event/state
+  fabric.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - llm
+  - automation
+  - agent
+  - kubernetes
+  - operator
+  - dapr
+home: https://github.com/tibrezus/harmostes
+sources:
+  - https://github.com/tibrezus/harmostes

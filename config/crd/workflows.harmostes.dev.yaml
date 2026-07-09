@@ -1,0 +1,168 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: workflows.harmostes.dev
+  annotations:
+    harmostes.dev/framework-version: v0.1
+spec:
+  group: harmostes.dev
+  names:
+    kind: Workflow
+    listKind: WorkflowList
+    singular: workflow
+    plural: workflows
+    shortNames: [hw]
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Source
+          type: string
+          jsonPath: .spec.source.kind
+        - name: Prepare
+          type: string
+          jsonPath: .spec.prepare.plugin.name
+        - name: Gate
+          type: string
+          jsonPath: .spec.agent.gate.plugin.name
+        - name: Deploy
+          type: string
+          jsonPath: .spec.deploy.plugin.name
+        - name: Last-revision
+          type: string
+          jsonPath: .status.lastProcessedRevision
+        - name: Gate
+          type: string
+          jsonPath: .status.gateStatus
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: [spec]
+          properties:
+            spec:
+              type: object
+              required: [source, prepare, agent, deploy]
+              properties:
+                source:
+                  type: object
+                  required: [kind]
+                  properties:
+                    kind: { type: string, enum: [git, schedule, event, webhook] }
+                    repo: { type: string }        # Flux GitRepository name, or direct URL
+                    branch: { type: string }
+                    revision: { type: string }    # pin (git)
+                    schedule: { type: string }    # cron (schedule)
+                    topic: { type: string }       # inbound event (event)
+                    # domain extras (free-form; passed to the prepare plugin via HARMOSTES_SPEC)
+                    language: { type: string }    # lc4: go/zig/…
+                    fork:                         # fork-maintenance: the fork to sync into
+                      type: object
+                      properties:
+                        url: { type: string }
+                        branch: { type: string }
+
+                prepare:
+                  type: object
+                  required: [plugin]
+                  properties:
+                    plugin:
+                      type: object
+                      required: [name]
+                      properties:
+                        name: { type: string }                 # rig-emit | raw-copy | cherry-pick-sync | <custom>
+                        image: { type: string }                # optional: plugin as its own image
+                        configMap: { type: string }            # optional: plugin script from a ConfigMap
+                        args: { type: array, items: { type: string } }
+                    output: { type: string }                   # artifact produced (path / branch / ref)
+                    detect: { type: string, enum: [changed, conflict, always] }
+
+                agent:
+                  type: object
+                  required: [model, taskTemplate, gate]
+                  properties:
+                    model: { type: string }                    # zai/glm-5.2
+                    skill: { type: string }                    # /skills/…/SKILL.md
+                    tools: { type: array, items: { type: string } }
+                    taskTemplate:                              # the interpretive task
+                      type: object
+                      properties:
+                        name: { type: string }                 # arch-sync-lc4 | resolve-conflict | …
+                        configMap: { type: string }            # task text lives in a ConfigMap
+                        key: { type: string }
+                    gate:
+                      type: object
+                      required: [plugin]
+                      properties:
+                        plugin:
+                          type: object
+                          required: [name]
+                          properties:
+                            name: { type: string }             # wiki-lint | fork-resolved | <custom>
+                            configMap: { type: string }
+                            args: { type: array, items: { type: string } }
+                    maxFixes: { type: integer, default: 3 }
+                    timeout: { type: integer, default: 1800 }
+
+                deploy:
+                  type: object
+                  required: [plugin]
+                  properties:
+                    plugin:
+                      type: object
+                      required: [name]
+                      properties:
+                        name: { type: string }                 # git-push | fork-replace-deploy | noop
+                        image: { type: string }
+                        configMap: { type: string }
+                        args: { type: array, items: { type: string } }
+
+                events:                                     # topic names on the Dapr pub/sub
+                  type: object
+                  properties:
+                    onPrepare: { type: string }
+                    onResolved: { type: string }
+                    onFailed: { type: string }
+                    onDeployed: { type: string }
+
+                cache:
+                  type: object
+                  properties:
+                    pvc: { type: string }
+                    git: { type: boolean }
+                    go: { type: boolean }
+                    npm: { type: boolean }
+
+                scaling:
+                  type: object
+                  properties:
+                    kind: { type: string, enum: [keda-scaledjob, cronjob] }
+                    schedule: { type: string }
+
+            status:
+              type: object
+              properties:
+                observedGeneration: { type: integer }
+                lastProcessedRevision: { type: string }
+                lastAgentCommit: { type: string }
+                gateStatus: { type: string, enum: [green, failed, unknown] }
+                lastRunAt: { type: string }
+                message: { type: string }
+                conditions:
+                  type: array
+                  x-kubernetes-list-type: map
+                  x-kubernetes-list-map-keys: [type]
+                  items:
+                    type: object
+                    properties:
+                      type: { type: string }
+                      status: { type: string, enum: [True, False, Unknown] }
+                      reason: { type: string }
+                      message: { type: string }
+                      lastTransitionTime: { type: string }

@@ -1,0 +1,78 @@
+# llm-wiki — architecture documentation (LC4) as a Harmostes Workflow.
+#
+# Today this is a WikiMap CR consumed by the bespoke llm-wiki controller
+# (reconcile.sh → agent-sync.sh → gate-lint.sh → git push). Under Harmostes it
+# is one Workflow CR; the bespoke scripts become plugins (rig-emit, wiki-lint,
+# git-push) and the bespoke loop becomes the framework.
+apiVersion: harmostes.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: platform-website
+  namespace: harmostes
+spec:
+  source:
+    kind: git
+    repo: platform-website          # Flux GitRepository, or direct URL
+    branch: master
+    language: go                    # lc4 needs a build-system language
+  prepare:
+    plugin:
+      name: rig-emit                # → emit-rig.py: source → raw/arch/.../rig.json
+      args: ["--language=go"]
+    output: raw/arch/platform-website/rig.json
+    detect: changed                 # proceed only if the RIG hash changed
+  agent:
+    model: zai/glm-5.2
+    skill: /skills/wiki/SKILL.md
+    tools: [read, bash, edit, grep]
+    taskTemplate:
+      name: arch-sync-lc4
+      configMap: harmostes-tasks
+      key: arch-sync-lc4.txt
+    gate:
+      plugin:
+        name: wiki-lint             # → gate-lint.sh: consistency + full ci-lint.sh
+    maxFixes: 3
+    timeout: 1800
+  deploy:
+    plugin:
+      name: git-push                # → rebase onto FETCH_HEAD + push HEAD:main
+      args:
+        - git@github.com:rezuscloud/llm-wiki.git
+        - main
+  events:
+    onPrepare: wiki.rig.generated
+    onResolved: wiki.docs.updated
+    onFailed: wiki.docs.failed
+  cache:
+    pvc: harmostes-cache
+    git: true
+    go: true
+    npm: true
+  scaling:
+    kind: keda-scaledjob
+    schedule: "*/30 * * * *"
+---
+# Generic-workflow variant (raw source material → wiki pages), e.g. a docs repo.
+apiVersion: harmostes.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: platform-website-generic
+  namespace: harmostes
+spec:
+  source: { kind: git, repo: platform-website, branch: master }
+  prepare:
+    plugin: { name: raw-copy }       # → rsync source into raw/<project>/
+    output: raw/platform-website
+    detect: changed
+  agent:
+    model: zai/glm-5.2
+    skill: /skills/wiki/SKILL.md
+    tools: [read, bash, edit, grep]
+    taskTemplate: { name: update-generic, configMap: harmostes-tasks, key: update-generic.txt }
+    gate: { plugin: { name: wiki-lint } }
+    maxFixes: 3
+  deploy:
+    plugin: { name: git-push, args: [git@github.com:rezuscloud/llm-wiki.git, main] }
+  events: { onResolved: wiki.docs.updated }
+  scaling: { kind: keda-scaledjob, schedule: "0 * * * *" }

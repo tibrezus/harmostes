@@ -1,0 +1,57 @@
+# fork-maintenance — upstream sync as a Harmostes Workflow.
+#
+# Today this is a fork YAML consumed by sync-fork.sh (CronJob) + an always-on
+# conflict-subscriber that spawns resolve-conflict.sh (→ harmostes → gate-
+# resolved → host_pr_merge + tag). Under Harmostes it is one Workflow CR; the
+# bespoke scripts become plugins (cherry-pick-sync, fork-resolved, fork-
+# replace-deploy) and the bespoke loop + per-platform subscriber become the
+# framework.
+apiVersion: harmostes.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: signoz
+  namespace: harmostes
+spec:
+  source:
+    kind: git
+    repo: signoz-upstream            # Flux GitRepository of the upstream
+    branch: main
+    fork:                            # the fork to keep in sync
+      url: git@github.com:rezuscloud/signoz.git
+      branch: rezus/main
+  prepare:
+    plugin:
+      name: cherry-pick-sync         # → sync-fork.sh: fresh upstream + replay customizations
+    output: rezus/sync-<date>        # the sync branch produced
+    detect: conflict                 # proceed to the agent ONLY when the cherry-pick conflicts
+  agent:
+    model: zai/glm-5.2
+    skill: /skills/fork-maintenance/SKILL.md
+    tools: [read, bash, edit, grep]
+    taskTemplate:
+      name: resolve-conflict
+      configMap: harmostes-tasks
+      key: resolve-conflict.txt      # drive cherry-pick to completion + push; uses wiki intent
+    gate:
+      plugin:
+        name: fork-resolved          # → gate-resolved.sh: markers + validate-fork.sh + signatures
+    maxFixes: 3
+    timeout: 1800
+  deploy:
+    plugin:
+      name: fork-replace-deploy      # → replace release branch (force) + tag v…-rezus.N
+  events:
+    onPrepare: fork.conflict.needs-resolution
+    onResolved: fork.sync.deployed
+    onFailed: fork.sync.failed
+  cache:
+    pvc: harmostes-cache
+    git: true
+  scaling:
+    kind: keda-scaledjob
+    schedule: "0 * * * *"
+---
+# A fast-path note: when prepare reports detect: conflict == false (the cherry-
+# pick was clean), the framework deploys directly with NO agent step. That is
+# the deterministic fast-path sync-fork.sh already implements today; Harmostes
+# makes it the framework's "agent skipped" branch.

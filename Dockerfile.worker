@@ -1,0 +1,51 @@
+# harmostes-worker — the generic worker image (Go runtime, no Python runtime).
+#
+# Multi-stage: build the Go worker binary, drop it into a base that carries pi
+# (Node) + git + the plugin runtime (sh). Plugins are bash/python SCRIPTS or
+# their own images; the framework runtime itself is Go only.
+#
+# The worker runs the prepare / agent / deploy phases for any Workflow CR:
+#   - prepare/deploy: invoke the phase's plugin (image or ConfigMap script) with
+#     the HARMOSTES_* contract (see docs/plugin-interface.md).
+#   - agent: run the Go harmostes primitive (internal/agent) — spawn pi --mode rpc,
+#     task → gate → feedback-as-warm-session-continuation.
+#
+# Build: make docker TAG=0.1.0   (or: docker build -t ... -f Dockerfile.worker .)
+
+# --- stage 1: build the Go worker binary ---
+FROM golang:1.23-bookworm AS build
+WORKDIR /src
+ENV GOTOOLCHAIN=local
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+# CGO disabled for a static binary that drops into a slim base.
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /out/harmostes-worker ./cmd/harmostes-worker \
+ && CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /out/harmostes-agent  ./cmd/harmostes-agent
+
+# --- stage 2: runtime (Node for pi + minimal system tools) ---
+FROM node:22-bookworm-slim
+# System tools a plugin is likely to need (git is universal; curl/jq/yq for
+# state access; ca-certs for HTTPS). The Debian base ships python3 — that is
+# intentional: PLUGINS may be python scripts (the contract permits scripts in any
+# language). The framework RUNTIME itself is Go-only (harmostes-worker / -agent);
+# no framework code runs under python. Plugins that need a heavier runtime ship as
+# their own image (spec.<phase>.plugin.image).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git ca-certificates curl jq yq bash openssh-client xz-utils \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# pi.dev harness (the only non-Go runtime — Node, the agent's tool host)
+RUN npm install -g @earendil-works/pi-coding-agent
+
+# The framework binaries
+COPY --from=build /out/harmostes-worker /usr/local/bin/harmostes-worker
+COPY --from=build /out/harmostes-agent  /usr/local/bin/harmostes-agent
+
+# Where the plugin contract expects them to run + read/write
+WORKDIR /workspace
+
+# harmostes-worker is the entrypoint; it reads its phase + Workflow from env
+# (HARMOSTES_WORKFLOW, HARMOSTES_NAMESPACE, HARMOSTES_PHASE, …) and the in-cluster
+# config (Dapr sidecar at localhost:3500).
+ENTRYPOINT ["/usr/local/bin/harmostes-worker"]

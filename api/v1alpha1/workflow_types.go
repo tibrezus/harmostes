@@ -1,0 +1,229 @@
+// Package v1alpha1 contains the Go types for the harmostes.dev Workflow CRD.
+//
+// These mirror config/crd/workflows.harmostes.dev.yaml. DeepCopyObject is
+// implemented via a JSON round-trip for now (correct for these plain public
+// structs at v1alpha1's low reconcile volume); swap for controller-generated
+// DeepCopy once controller-gen is wired into the build.
+package v1alpha1
+
+import (
+	"encoding/json"
+	"fmt"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+)
+
+const GroupName = "harmostes.dev"
+const Version = "v1alpha1"
+
+// SchemeGroupVersion is the group:version used to register these types.
+var SchemeGroupVersion = schema.GroupVersion{Group: GroupName, Version: Version}
+
+// SchemeBuilder registers the types with a runtime scheme.
+var SchemeBuilder = runtime.NewSchemeBuilder(addKnownTypes)
+var AddToScheme = SchemeBuilder.AddToScheme
+
+func Resource(resource string) schema.GroupResource {
+	return SchemeGroupVersion.WithResource(resource).GroupResource()
+}
+
+func addKnownTypes(scheme *runtime.Scheme) error {
+	scheme.AddKnownTypes(SchemeGroupVersion, &Workflow{}, &WorkflowList{})
+	metav1.AddToGroupVersion(scheme, SchemeGroupVersion)
+	return nil
+}
+
+// +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
+// +kubebuilder:resource:shortName=hw
+// +kubebuilder:printcolumn:name=Source,type=string,JSONPath=.spec.source.kind
+// +kubebuilder:printcolumn:name=Prepare,type=string,JSONPath=.spec.prepare.plugin.name
+// +kubebuilder:printcolumn:name=Gate,type=string,JSONPath=.spec.agent.gate.plugin.name
+// +kubebuilder:printcolumn:name=Deploy,type=string,JSONPath=.spec.deploy.plugin.name
+// +kubebuilder:printcolumn:name=Gate-status,type=string,JSONPath=.status.gateStatus
+// +kubebuilder:printcolumn:name=Age,type=date,JSONPath=.metadata.creationTimestamp
+
+// Workflow is a declarative LLM-automation pipeline: monitor a source → prepare
+// (deterministic) → agent (LLM + gate, warm-session feedback loop) → deploy
+// (deterministic) → state. See ARCHITECTURE.md.
+type Workflow struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	Spec   WorkflowSpec   `json:"spec,omitempty"`
+	Status WorkflowStatus `json:"status,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+
+// WorkflowList is a list of Workflows.
+type WorkflowList struct {
+	metav1.TypeMeta `json:",inline"`
+	metav1.ListMeta `json:"metadata,omitempty"`
+	Items           []Workflow `json:"items"`
+}
+
+// WorkflowSpec declares one harmostes pipeline.
+type WorkflowSpec struct {
+	Source   SourceSpec   `json:"source"`
+	Prepare  PrepareSpec  `json:"prepare"`
+	Agent    AgentSpec    `json:"agent"`
+	Deploy   DeploySpec   `json:"deploy"`
+	Events   *EventsSpec  `json:"events,omitempty"`
+	Cache    *CacheSpec   `json:"cache,omitempty"`
+	Scaling  *ScalingSpec `json:"scaling,omitempty"`
+	Disabled bool         `json:"disabled,omitempty"`
+}
+
+// SourceSpec is what the workflow monitors.
+type SourceSpec struct {
+	Kind     string         `json:"kind"`               // git | schedule | event | webhook
+	Repo     string         `json:"repo,omitempty"`     // Flux GitRepository name, or direct URL
+	Branch   string         `json:"branch,omitempty"`
+	Revision string         `json:"revision,omitempty"` // pin (git)
+	Schedule string         `json:"schedule,omitempty"` // cron (schedule)
+	Topic    string         `json:"topic,omitempty"`    // inbound event (event)
+	Fork     *ForkSource    `json:"fork,omitempty"`     // fork-maintenance: the fork to sync into
+	Extra    map[string]any `json:",inline,omitempty"`  // domain extras (language, …) → HARMOSTES_SPEC
+}
+
+// ForkSource identifies the fork a fork-maintenance workflow keeps in sync.
+type ForkSource struct {
+	URL    string `json:"url"`
+	Branch string `json:"branch"`
+}
+
+// PrepareSpec runs a deterministic plugin that produces an artifact.
+type PrepareSpec struct {
+	Plugin PluginRef `json:"plugin"`
+	Output string    `json:"output,omitempty"` // artifact path/branch/ref produced
+	Detect string    `json:"detect,omitempty"` // changed | conflict | always
+}
+
+// AgentSpec is the framework-native LLM step (NOT a plugin).
+type AgentSpec struct {
+	Model        string       `json:"model"`              // e.g. zai/glm-5.2
+	Skill        string       `json:"skill"`              // path to SKILL.md
+	Tools        []string     `json:"tools,omitempty"`    // tool allowlist
+	TaskTemplate TaskTemplate `json:"taskTemplate"`       // the interpretive task
+	Gate         GateRef      `json:"gate"`               // validation plugin
+	MaxFixes     int          `json:"maxFixes,omitempty"` // default 3
+	Timeout      int          `json:"timeout,omitempty"`  // seconds, default 1800
+}
+
+// TaskTemplate names the prompt text for the agent (lives in a ConfigMap).
+type TaskTemplate struct {
+	Name      string `json:"name"`
+	ConfigMap string `json:"configMap,omitempty"`
+	Key       string `json:"key,omitempty"`
+}
+
+// GateRef references the gate plugin (exit 0 = green; stderr = feedback).
+type GateRef struct {
+	Plugin PluginRef `json:"plugin"`
+}
+
+// DeploySpec runs a deterministic plugin that publishes a green result.
+type DeploySpec struct {
+	Plugin PluginRef `json:"plugin"`
+}
+
+// PluginRef names a plugin and how to resolve it (built-in | image | configMap).
+type PluginRef struct {
+	Name      string   `json:"name"`
+	Image     string   `json:"image,omitempty"`
+	ConfigMap string   `json:"configMap,omitempty"`
+	Args      []string `json:"args,omitempty"`
+}
+
+// EventsSpec names the Dapr pub/sub topics the framework publishes.
+type EventsSpec struct {
+	OnPrepare  string `json:"onPrepare,omitempty"`
+	OnResolved string `json:"onResolved,omitempty"`
+	OnFailed   string `json:"onFailed,omitempty"`
+	OnDeployed string `json:"onDeployed,omitempty"`
+}
+
+// CacheSpec declares which caches the worker should mount.
+type CacheSpec struct {
+	PVC string `json:"pvc,omitempty"`
+	Git bool   `json:"git,omitempty"`
+	Go  bool   `json:"go,omitempty"`
+	NPM bool   `json:"npm,omitempty"`
+}
+
+// ScalingSpec selects the trigger model.
+type ScalingSpec struct {
+	Kind     string `json:"kind,omitempty"` // keda-scaledjob | cronjob
+	Schedule string `json:"schedule,omitempty"`
+}
+
+// WorkflowStatus is reported by the controller.
+type WorkflowStatus struct {
+	ObservedGeneration     int64             `json:"observedGeneration,omitempty"`
+	LastProcessedRevision  string            `json:"lastProcessedRevision,omitempty"`
+	LastAgentCommit        string            `json:"lastAgentCommit,omitempty"`
+	GateStatus             string            `json:"gateStatus,omitempty"` // green | failed | unknown
+	LastRunAt              metav1.Time       `json:"lastRunAt,omitempty"`
+	Message                string            `json:"message,omitempty"`
+	Conditions             []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// ---------------------------------------------------------------------------
+// DeepCopyObject (JSON round-trip — correct for these plain public structs;
+// see package doc re: swapping for controller-generated DeepCopy later).
+// ---------------------------------------------------------------------------
+
+func (in *Workflow) DeepCopyInto(out *Workflow) { deepCopy(in, out) }
+func (in *Workflow) DeepCopy() *Workflow {
+	if in == nil {
+		return nil
+	}
+	out := new(Workflow)
+	deepCopy(in, out)
+	return out
+}
+func (in *Workflow) DeepCopyObject() runtime.Object {
+	if c := in.DeepCopy(); c != nil {
+		return c
+	}
+	return nil
+}
+
+func (in *WorkflowList) DeepCopyInto(out *WorkflowList) { deepCopy(in, out) }
+func (in *WorkflowList) DeepCopy() *WorkflowList {
+	if in == nil {
+		return nil
+	}
+	out := new(WorkflowList)
+	deepCopy(in, out)
+	return out
+}
+func (in *WorkflowList) DeepCopyObject() runtime.Object {
+	if c := in.DeepCopy(); c != nil {
+		return c
+	}
+	return nil
+}
+
+// deepCopy round-trips src through JSON into dst. dst must be the same type as src.
+func deepCopy(src, dst any) {
+	b, err := json.Marshal(src)
+	if err != nil {
+		panic(fmt.Sprintf("harmostes: DeepCopy marshal failed for %T: %v", src, err))
+	}
+	if err := json.Unmarshal(b, dst); err != nil {
+		// dst may be a partially-initialized zero value whose type differs only in
+		// wrapping (e.g. *T vs T); the package only ever calls deepCopy on matching
+		// types, so this should be unreachable.
+		panic(fmt.Sprintf("harmostes: DeepCopy unmarshal failed for %T: %v", dst, err))
+	}
+}
+
+// Compile-time assertions that the types implement runtime.Object.
+var (
+	_ runtime.Object = (*Workflow)(nil)
+	_ runtime.Object = (*WorkflowList)(nil)
+)

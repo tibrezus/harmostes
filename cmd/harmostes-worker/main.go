@@ -150,15 +150,15 @@ func waitForDapr(endpoint string) {
 	if endpoint == "" {
 		endpoint = "http://127.0.0.1:3500" // not localhost (Go IPv6 ::1 vs daprd 127.0.0.1)
 	}
-	for i := 0; i < 15; i++ {
+	for i := 0; i < 30; i++ {
 		resp, err := http.Get(endpoint + "/v1.0/healthz")
 		if err == nil {
 			resp.Body.Close()
-			if resp.StatusCode == 200 {
+			if resp.StatusCode < 300 { // 200 (ready) or 204 (some Dapr versions)
 				return
 			}
 		}
 		time.Sleep(time.Second)
 	}
-	log.Printf("warn: Dapr sidecar not ready at %s after 15s — proceeding without events/state", endpoint)
+	log.Printf("warn: Dapr sidecar not ready at %s after 30s — proceeding without events/state", endpoint)
 }

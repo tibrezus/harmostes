@@ -1,5 +1,18 @@
 #!/usr/bin/env python3
 """
+DEPRECATED — kept only until the llm-wiki + fork-maintenance pipelines port to the
+Go harmostes framework (internal/agent), at which point this file is deleted.
+
+The production primitive is now the Go port (github.com/tibrezus/harmostes,
+internal/agent) — tested to be behaviorally equivalent (task → gate → warm-session
+feedback). This Python file was an expedient first cut (pi is a Node tool with a
+Node/TypeScript SDK; Python was never the right language for a framework
+primitive). It remains in the runtime path of the LIVE llm-wiki controller
+(agent-sync.sh) and fork-maintenance resolver (resolve-conflict.sh) until those
+become harmostes Workflows.
+
+Original description follows:
+
 harmostes — shared pi.dev RPC orchestration for automated agent workflows.
 
 The core primitive, shared by llm-wiki and fork-maintenance:

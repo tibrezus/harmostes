@@ -144,6 +144,7 @@ func (r *WorkflowReconciler) createWorkerJob(ctx context.Context, wf *v1alpha1.W
 		daprAnnotations = map[string]string{
 			"dapr.io/enabled": "true",
 			"dapr.io/app-id":  "harmostes-worker-" + wf.Name,
+			"dapr.io/config": "harmostes-config",
 		}
 	}
 	job := &batchv1.Job{

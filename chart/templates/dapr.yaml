@@ -36,3 +36,24 @@ spec:
     # Per-namespace consumer isolation
     - name: consumerID
       value: harmostes
+---
+# Dapr Configuration referenced by worker pods via dapr.io/config. The sentry
+# rejects a daprd whose referenced config does not exist, so this MUST be present
+# before enabling sidecar injection. Mirrors llm-wiki-config.
+apiVersion: dapr.io/v1alpha1
+kind: Configuration
+metadata:
+  name: harmostes-config
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: harmostes
+spec:
+  features:
+    - name: proxy.grpc
+      enabled: true
+  metric:
+    enabled: true
+  metrics:
+    enabled: true
+  tracing:
+    samplingRate: "0"

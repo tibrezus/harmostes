@@ -151,6 +151,7 @@ spec:
                   properties:
                     kind: { type: string, enum: [keda-scaledjob, cronjob] }
                     schedule: { type: string }
+                disabled: { type: boolean }   # suspend scheduling (defined but not run)
 
             status:
               type: object

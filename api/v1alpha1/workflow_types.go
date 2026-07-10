@@ -67,14 +67,26 @@ type WorkflowList struct {
 
 // WorkflowSpec declares one harmostes pipeline.
 type WorkflowSpec struct {
-	Source   SourceSpec   `json:"source"`
-	Prepare  PrepareSpec  `json:"prepare"`
-	Agent    AgentSpec    `json:"agent"`
-	Deploy   DeploySpec   `json:"deploy"`
-	Events   *EventsSpec  `json:"events,omitempty"`
-	Cache    *CacheSpec   `json:"cache,omitempty"`
-	Scaling  *ScalingSpec `json:"scaling,omitempty"`
-	Disabled bool         `json:"disabled,omitempty"`
+	Source       SourceSpec       `json:"source"`
+	WorkspaceRepo *WorkspaceRepoSpec `json:"workspaceRepo,omitempty"` // the repo the pipeline operates on (prepare populates, agent edits, deploy pushes)
+	Prepare      PrepareSpec      `json:"prepare"`
+	Agent        AgentSpec        `json:"agent"`
+	Deploy       DeploySpec       `json:"deploy"`
+	Events       *EventsSpec      `json:"events,omitempty"`
+	Cache        *CacheSpec       `json:"cache,omitempty"`
+	Scaling      *ScalingSpec     `json:"scaling,omitempty"`
+	Disabled     bool             `json:"disabled,omitempty"`
+}
+
+// WorkspaceRepoSpec is the repo a pipeline operates on. The worker fetches it
+// into the workdir before running; prepare/agent/gate/deploy all work there; the
+// deploy plugin pushes it. For llm-wiki this is the wiki repo; for fork-
+// maintenance, the fork.
+type WorkspaceRepoSpec struct {
+	URL    string `json:"url"`              // git URL (may embed a token for HTTPS)
+	Branch string `json:"branch"`           // branch to fetch + (by default) push
+	Dir    string `json:"dir,omitempty"`    // checkout location under WORKDIR (default "repo")
+	Shadow string `json:"shadow,omitempty"` // if set, push to this branch instead (parallel/dry-run)
 }
 
 // SourceSpec is what the workflow monitors.
@@ -85,8 +97,8 @@ type SourceSpec struct {
 	Revision string         `json:"revision,omitempty"` // pin (git)
 	Schedule string         `json:"schedule,omitempty"` // cron (schedule)
 	Topic    string         `json:"topic,omitempty"`    // inbound event (event)
+	Language string         `json:"language,omitempty"` // lc4: go/zig/… (passed to prepare)
 	Fork     *ForkSource    `json:"fork,omitempty"`     // fork-maintenance: the fork to sync into
-	Extra    map[string]any `json:",inline,omitempty"`  // domain extras (language, …) → HARMOSTES_SPEC
 }
 
 // ForkSource identifies the fork a fork-maintenance workflow keeps in sync.

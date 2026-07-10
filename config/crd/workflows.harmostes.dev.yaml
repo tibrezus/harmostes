@@ -67,6 +67,13 @@ spec:
                       properties:
                         url: { type: string }
                         branch: { type: string }
+                workspaceRepo:                      # the repo the pipeline operates on (the wiki; the fork)
+                  type: object
+                  properties:
+                    url: { type: string }
+                    branch: { type: string }
+                    dir: { type: string }          # checkout location under WORKDIR (default "repo")
+                    shadow: { type: string }       # push here instead (parallel/dry-run)
 
                 prepare:
                   type: object

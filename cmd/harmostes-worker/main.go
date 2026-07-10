@@ -20,7 +20,10 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -61,6 +64,18 @@ func main() {
 		fatal("get workflow %s/%s: %v", namespace, workflow, err)
 	}
 	logf("workflow %s/%s phase=run source=%q workdir=%s", namespace, workflow, source, workdir)
+
+	// If the Workflow declares a workspace repo (the wiki / the fork), fetch it
+	// into the workdir + operate there. prepare populates it, the agent edits it,
+	// deploy pushes it.
+	if wr := wf.Spec.WorkspaceRepo; wr != nil && wr.URL != "" {
+		wdir, err := fetchWorkspaceRepo(ctx, wr, workdir)
+		if err != nil {
+			fatal("fetch workspace repo: %v", err)
+		}
+		workdir = wdir
+		logf("workspace repo fetched → %s", workdir)
+	}
 
 	// Wait for the Dapr sidecar (best-effort): events + state are fabric, not a
 	// hard dependency, but racing ahead means the first publish misses a not-yet-
@@ -121,7 +136,10 @@ func runTimeout(wf *v1alpha1.Workflow) time.Duration {
 // are ported (see plugins/README.md).
 func builtinPlugins() map[string]string {
 	return map[string]string{
-		"noop": "/usr/local/lib/harmostes/plugins/noop.sh",
+		"noop":      "/usr/local/lib/harmostes/plugins/noop.sh",
+		"rig-emit":  "/usr/local/lib/harmostes/plugins/rig-emit.sh",
+		"wiki-lint": "/usr/local/lib/harmostes/plugins/wiki-lint.sh",
+		"git-push":  "/usr/local/lib/harmostes/plugins/git-push.sh",
 	}
 }
 
@@ -143,6 +161,54 @@ func envOr(key, def string) string {
 
 func logf(format string, a ...any) { log.Printf(format, a...) }
 func fatal(format string, a ...any) { log.Printf("ERROR: "+format, a...); os.Exit(2) }
+
+// fetchWorkspaceRepo clones the workspace repo (shallow) into <base>/<dir> and
+// returns that path. The pipeline (prepare/agent/gate/deploy) operates there.
+func fetchWorkspaceRepo(ctx context.Context, wr *v1alpha1.WorkspaceRepoSpec, base string) (string, error) {
+	dir := wr.Dir
+	if dir == "" {
+		dir = "repo"
+	}
+	target := filepath.Join(base, dir)
+	if err := os.MkdirAll(base, 0o755); err != nil {
+		return "", err
+	}
+	_ = os.RemoveAll(target) // idempotent: remove a stale checkout
+	cloneURL := tokenizeGitURL(wr.URL, os.Getenv("HARMOSTES_GIT_TOKEN"))
+	cmd := exec.CommandContext(ctx, "git", "clone", "--depth", "100", cloneURL, target)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("git clone %s: %w (%s)", redact(wr.URL), err, string(out))
+	}
+	if wr.Branch != "" {
+		co := exec.CommandContext(ctx, "git", "-C", target, "checkout", wr.Branch)
+		if out, err := co.CombinedOutput(); err != nil {
+			return "", fmt.Errorf("git checkout %s: %w (%s)", wr.Branch, err, string(out))
+		}
+	}
+	return target, nil
+}
+
+// tokenizeGitURL embeds a token into an https git URL for auth. No-op for SSH or
+// already-authenticated URLs. The token comes from HARMOSTES_GIT_TOKEN (injected
+// from a secret by the controller), never from the CR spec.
+func tokenizeGitURL(url, token string) string {
+	if token == "" || !strings.HasPrefix(url, "https://") {
+		return url
+	}
+	return strings.Replace(url, "https://", "https://x-access-token:"+token+"@", 1)
+}
+
+// redact strips credentials from a URL for logging.
+func redact(url string) string {
+	if i := strings.Index(url, "://"); i >= 0 {
+		scheme := url[:i+3]
+		rest := url[i+3:]
+		if at := strings.Index(rest, "@"); at >= 0 {
+			return scheme + rest[at+1:]
+		}
+	}
+	return url
+}
 
 // waitForDapr polls the sidecar healthz up to ~15s; proceeds regardless (Dapr is
 // best-effort — the pipeline runs even without it, just without events/state).

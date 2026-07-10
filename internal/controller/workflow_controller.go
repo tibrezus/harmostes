@@ -175,6 +175,8 @@ func (r *WorkflowReconciler) createWorkerJob(ctx context.Context, wf *v1alpha1.W
 							{Name: "HARMOSTES_WORKDIR", Value: "/workspace"},
 							{Name: "HARMOSTES_SOURCE", Value: wf.Spec.Source.Revision},
 							{Name: "DAPR_HTTP_ENDPOINT", Value: "http://127.0.0.1:3500"},
+							{Name: "HARMOSTES_GIT_TOKEN", ValueFrom: secretRef("harmostes-github-token", "token")},
+							{Name: "ZAI_API_KEY", ValueFrom: secretRef("harmostes-zai-token", "key")},
 						},
 					}},
 				},
@@ -218,3 +220,11 @@ func setCondition(conds []metav1.Condition, c metav1.Condition) []metav1.Conditi
 }
 
 func pointerInt32(v int32) *int32 { return &v }
+
+// secretRef builds a SecretKeySelector env source (so worker Jobs inherit the git
+// + model tokens without those ever appearing in the CR spec).
+func secretRef(name, key string) *corev1.EnvVarSource {
+	return &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+		LocalObjectReference: corev1.LocalObjectReference{Name: name}, Key: key,
+	}}
+}

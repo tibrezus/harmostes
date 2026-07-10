@@ -34,8 +34,16 @@ type PluginEnv struct {
 	Phase     string // prepare | gate | deploy
 	Spec      string // JSON of this phase's config from the CR
 	Source    string // resolved source (artifact path / ref / revision)
-	Workdir   string // shared working directory
+	Workdir   string // shared working directory (the workspace repo, if any)
 	State     string // Dapr state key prefix for this workflow
+
+	// Source + workspace context (so a prepare plugin can clone inputs, a deploy
+	// plugin can push a shadow branch, etc.)
+	SourceURL      string
+	SourceBranch   string
+	SourceLanguage string
+	WorkspaceDir   string // the fetched workspace repo path (== Workdir when a workspaceRepo is set)
+	Shadow         string // push here instead of the branch (parallel/dry-run)
 }
 
 // EnvSlice renders PluginEnv as KEY=VALUE strings for exec.Cmd.Env.
@@ -48,6 +56,11 @@ func (e PluginEnv) EnvSlice(extra ...string) []string {
 		"HARMOSTES_SOURCE=" + e.Source,
 		"HARMOSTES_WORKDIR=" + e.Workdir,
 		"HARMOSTES_STATE=" + e.State,
+		"HARMOSTES_SOURCE_URL=" + e.SourceURL,
+		"HARMOSTES_SOURCE_BRANCH=" + e.SourceBranch,
+		"HARMOSTES_SOURCE_LANGUAGE=" + e.SourceLanguage,
+		"HARMOSTES_WORKSPACE_DIR=" + e.WorkspaceDir,
+		"HARMOSTES_SHADOW=" + e.Shadow,
 	}, extra...)
 }
 

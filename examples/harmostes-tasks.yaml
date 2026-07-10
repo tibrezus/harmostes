@@ -1,0 +1,47 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: harmostes-tasks
+  namespace: harmostes
+  labels:
+    app.kubernetes.io/name: harmostes
+data:
+  arch-sync.txt: |
+    You are working in a wiki repository (your current directory). It follows the
+    LLM Wiki schema — read AGENTS.md for the page format + the LC4 architecture
+    workflow, and the skill at /skills/wiki/SKILL.md (the 'arch-sync' command).
+
+    A deterministic prepare step has just refreshed one or more RIGs (Repository
+    Intelligence Graphs) under raw/arch/. Your task: keep the architecture
+    documentation current.
+
+    CRITICAL: actually READ each RIG with cat before deciding anything. Do not
+    assume content from prior runs.
+
+    For the project(s) under raw/arch/:
+      1. ls raw/arch/ — find the project directory(ies).
+      2. Read the RIG: cat raw/arch/<project>/rig.json. Count the components.
+      3. Read the current LikeC4 model if present: cat raw/arch/<project>/model.c4.
+      4. Compare RIG vs model. Identify ADDED / DEPRECATED / CHANGED components.
+         If the component counts differ, the model MUST be updated.
+      5. Update the LikeC4 model to reflect the RIG — every element traceable to a
+         real RIG node. Follow the RIG→C4 mapping (context/containers/components).
+         Write SYNTHESIZED descriptions from each component's name, source paths,
+         and dependency pattern (NOT verbatim RIG quotes); include the RIG comp-N
+         id as a comment; annotate evidence + test coverage.
+      6. likec4 format raw/arch/<project>/
+      7. likec4 gen mermaid -o /tmp/mermaid raw/arch/
+      8. Update the wiki page that embeds the architecture diagrams. CRITICAL: read
+         the existing page FIRST (cat wiki/entities/<project>.md). Preserve ALL
+         manually-written sections — only the '## Architecture (C4D2 — RIG +
+         LikeC4)' section + its Mermaid blocks change. Keep deployment notes,
+         config examples, manual insights.
+      9. Update index.md and append to log.md (operation 'arch-sync', with the
+         component count).
+     10. COMMIT: git add -A && git commit -m 'docs(arch-sync): <project>'
+         Do NOT push — a local validation gate runs next; the push happens only
+         once the gate is green. If the gate fails you'll be told the exact lint
+         errors in this session: fix them, commit again, the gate re-runs.
+
+    Do NOT write architecture from memory. Every component, dependency, and
+    boundary MUST come from the RIG. Do NOT skip steps.

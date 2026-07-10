@@ -69,9 +69,18 @@ func Run(ctx context.Context, deps Deps, opts Options) (Result, error) {
 	name := wf.Name
 	logf := deps.log()
 	envFor := func(phase, specJSON string) PluginEnv {
+		wr := wf.Spec.WorkspaceRepo
+		wsDir := opts.Workdir
+		shadow := ""
+		if wr != nil {
+			shadow = wr.Shadow
+		}
 		return PluginEnv{
 			Workflow: name, Namespace: wf.Namespace, Phase: phase,
 			Spec: specJSON, Source: opts.Source, Workdir: opts.Workdir, State: name,
+			SourceURL: wf.Spec.Source.Repo, SourceBranch: wf.Spec.Source.Branch,
+			SourceLanguage: wf.Spec.Source.Language,
+			WorkspaceDir: wsDir, Shadow: shadow,
 		}
 	}
 

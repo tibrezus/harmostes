@@ -38,13 +38,39 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # pi.dev harness (the only non-Go runtime — Node, the agent's tool host)
 RUN npm install -g @earendil-works/pi-coding-agent
 
+# Lint tools — the wiki-lint gate runs the wiki's full ci-lint.sh (markdownlint,
+# mdlint, remark, mermaid render via Chromium, likec4, health, RIG compliance).
+# Pre-installed so the gate's install_all_lint_tools is a no-op (fast).
+# apt FIRST: mermaid-cli's postinstall (puppeteer Chrome) needs unzip.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        unzip python3-pip libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libxkbcommon0 \
+        libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 \
+        libpango-1.0-0 libcairo2 libasound2 fonts-liberation \
+    && apt-get clean && rm -rf /var/lib/apt/lists/* \
+    && npm install -g markdownlint-cli2 @mermaid-js/mermaid-cli likec4 \
+    && npx -y puppeteer browsers install chrome \
+    && python3 -m pip install --no-cache-dir --break-system-packages pyyaml mdlint-obsidian
+
+# Go (for emit-rig's go-modules extractor) + Zig omitted (add per-project if needed)
+COPY --from=build /usr/local/go /usr/local/go
+ENV GOPATH=/go PATH=/usr/local/go/bin:/go/bin:${PATH}
+RUN mkdir -p /go
+
 # The framework binaries
 COPY --from=build /out/harmostes-worker /usr/local/bin/harmostes-worker
 COPY --from=build /out/harmostes-agent  /usr/local/bin/harmostes-agent
 
 # Built-in plugins shipped in the image (ConfigMap plugins mount under /plugins)
-COPY plugins/noop/noop.sh /usr/local/lib/harmostes/plugins/noop.sh
-RUN chmod +x /usr/local/lib/harmostes/plugins/noop.sh
+COPY plugins/noop/noop.sh      /usr/local/lib/harmostes/plugins/noop.sh
+COPY plugins/rig-emit/rig-emit.sh  /usr/local/lib/harmostes/plugins/rig-emit.sh
+COPY plugins/rig-emit/emit-rig.py  /usr/local/lib/harmostes/plugins/emit-rig.py
+COPY plugins/rig-emit/emit-rig.sh  /usr/local/lib/harmostes/plugins/emit-rig.sh
+COPY plugins/wiki-lint/wiki-lint.sh /usr/local/lib/harmostes/plugins/wiki-lint.sh
+COPY plugins/git-push/git-push.sh   /usr/local/lib/harmostes/plugins/git-push.sh
+RUN chmod +x /usr/local/lib/harmostes/plugins/*.sh
+
+# Skills the agent reads via --skill (vendored from the source modules)
+COPY skills/wiki/SKILL.md /skills/wiki/SKILL.md
 
 # Where the plugin contract expects them to run + read/write
 WORKDIR /workspace

@@ -1,0 +1,53 @@
+# The remaining llm-wiki WikiMaps, ported to harmostes Workflows (shadow branches
+# — parallel, the live wiki main untouched). platform-website is already LIVE on
+# main (cut over). Enable each here (disabled: false) to run a shadow
+# verification, then cutover like platform-website: delete the live
+# `wikimap <name>` + remove the `shadow` field so harmostes pushes main.
+#
+# rhesadox needs Zig in the worker image first (emit-zig) — leave disabled.
+apiVersion: harmostes.dev/v1alpha1
+kind: Workflow
+metadata: { name: rezuscloud, namespace: harmostes }
+spec:
+  source: { kind: git, repo: "https://github.com/rezuscloud/rezuscloud.git", branch: main, language: go }
+  workspaceRepo: { url: "https://github.com/rezuscloud/llm-wiki.git", branch: main, shadow: "harmostes/test-rezuscloud" }
+  prepare: { plugin: { name: rig-emit }, detect: changed }
+  agent: { model: zai/glm-5.2, skill: /skills/wiki/SKILL.md, tools: [read, bash, edit, grep], taskTemplate: { name: arch-sync, configMap: harmostes-tasks, key: arch-sync.txt }, gate: { plugin: { name: wiki-lint } }, maxFixes: 2, timeout: 1800 }
+  deploy: { plugin: { name: git-push } }
+  events: { onPrepare: harmostes.lc4.prepared, onResolved: harmostes.lc4.resolved }
+---
+apiVersion: harmostes.dev/v1alpha1
+kind: Workflow
+metadata: { name: forgejo, namespace: harmostes }
+spec:
+  source: { kind: git, repo: "https://codeberg.org/forgejo/forgejo", branch: forgejo, language: go }
+  workspaceRepo: { url: "https://github.com/rezuscloud/llm-wiki.git", branch: main, shadow: "harmostes/test-forgejo" }
+  prepare: { plugin: { name: rig-emit }, detect: changed }
+  agent: { model: zai/glm-5.2, skill: /skills/wiki/SKILL.md, tools: [read, bash, edit, grep], taskTemplate: { name: arch-sync, configMap: harmostes-tasks, key: arch-sync.txt }, gate: { plugin: { name: wiki-lint } }, maxFixes: 2, timeout: 2400 }
+  deploy: { plugin: { name: git-push } }
+  events: { onPrepare: harmostes.lc4.prepared, onResolved: harmostes.lc4.resolved }
+  disabled: true   # ~400 components — enable to verify, then cutover
+---
+apiVersion: harmostes.dev/v1alpha1
+kind: Workflow
+metadata: { name: signoz, namespace: harmostes }
+spec:
+  source: { kind: git, repo: "https://github.com/rezuscloud/signoz.git", branch: main, language: go }
+  workspaceRepo: { url: "https://github.com/rezuscloud/llm-wiki.git", branch: main, shadow: "harmostes/test-signoz" }
+  prepare: { plugin: { name: rig-emit }, detect: changed }
+  agent: { model: zai/glm-5.2, skill: /skills/wiki/SKILL.md, tools: [read, bash, edit, grep], taskTemplate: { name: arch-sync, configMap: harmostes-tasks, key: arch-sync.txt }, gate: { plugin: { name: wiki-lint } }, maxFixes: 2, timeout: 1800 }
+  deploy: { plugin: { name: git-push } }
+  events: { onPrepare: harmostes.lc4.prepared, onResolved: harmostes.lc4.resolved }
+  disabled: true   # enable to verify, then cutover
+---
+apiVersion: harmostes.dev/v1alpha1
+kind: Workflow
+metadata: { name: rhesadox, namespace: harmostes }
+spec:
+  source: { kind: git, repo: "https://git.rezus.cloud/tibrez/rhesadox.git", branch: main, language: zig }
+  workspaceRepo: { url: "https://github.com/rezuscloud/llm-wiki.git", branch: main, shadow: "harmostes/test-rhesadox" }
+  prepare: { plugin: { name: rig-emit }, detect: changed }
+  agent: { model: zai/glm-5.2, skill: /skills/wiki/SKILL.md, tools: [read, bash, edit, grep], taskTemplate: { name: arch-sync, configMap: harmostes-tasks, key: arch-sync.txt }, gate: { plugin: { name: wiki-lint } }, maxFixes: 2, timeout: 1800 }
+  deploy: { plugin: { name: git-push } }
+  events: { onPrepare: harmostes.lc4.prepared, onResolved: harmostes.lc4.resolved }
+  disabled: true   # needs Zig in the worker image (emit-zig) — add it, then enable

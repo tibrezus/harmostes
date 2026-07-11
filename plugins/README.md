@@ -38,3 +38,17 @@ my-plugin/
 The worker base image provides: git, the harmostes RPC primitive, Dapr
 sidecar client, the PVC cache mounts. Plugins only add their domain toolchain
 (Go, Zig, Chromium, language SDKs, …).
+
+## divergence-track — fork-divergence integrity (capture / reapply / verify)
+
+Deterministic fork-divergence tracking for fork-maintenance syncs. Catches a
+sync that drops an added fork feature (a helm chart, licensing code, a workflow)
+that the build gate cannot see. Three passes over the git *trees* (no LLM,
+immune to squash/merge-base drift):
+
+- `capture <wd> <upstream> <fork> <out.json> [additive-file] [deletions-file]`
+- `reapply <wd> <fork> <baseline.json>`  (self-heal dropped roots from the release)
+- `verify  <wd> <baseline.json>`         (gate: exit 0 green / 1 lost)
+
+Used today by the bespoke fork-maintenance pipeline (vendored into k8s-config);
+in the framework port it slots in as the `prepare` baseline + a `verify` gate.

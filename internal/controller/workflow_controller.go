@@ -176,6 +176,8 @@ func (r *WorkflowReconciler) createWorkerJob(ctx context.Context, wf *v1alpha1.W
 							{Name: "HARMOSTES_SOURCE", Value: wf.Spec.Source.Revision},
 							{Name: "DAPR_HTTP_ENDPOINT", Value: "http://127.0.0.1:3500"},
 							{Name: "HARMOSTES_GIT_TOKEN", ValueFrom: secretRef("harmostes-github-token", "token")},
+							{Name: "HARMOSTES_RZC_USERNAME", ValueFrom: secretRef("harmostes-rzc-token", "username")},
+							{Name: "HARMOSTES_RZC_PASSWORD", ValueFrom: secretRef("harmostes-rzc-token", "password")},
 							{Name: "ZAI_API_KEY", ValueFrom: secretRef("harmostes-zai-token", "key")},
 						},
 					}},

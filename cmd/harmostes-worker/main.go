@@ -116,9 +116,11 @@ func main() {
 	switch res.Outcome {
 	case worker.OutcomeGreen, worker.OutcomeSkipped:
 		logf("complete: %s (%s)", res.Outcome, res.Message)
+		shutdownDapr()
 		os.Exit(0)
 	default:
 		logf("complete: %s (%s)", res.Outcome, res.Message)
+		shutdownDapr()
 		os.Exit(1)
 	}
 }
@@ -160,7 +162,29 @@ func envOr(key, def string) string {
 }
 
 func logf(format string, a ...any) { log.Printf(format, a...) }
-func fatal(format string, a ...any) { log.Printf("ERROR: "+format, a...); os.Exit(2) }
+func fatal(format string, a ...any) {
+	log.Printf("ERROR: "+format, a...)
+	shutdownDapr()
+	os.Exit(2)
+}
+
+// shutdownDapr asks the Dapr sidecar to terminate so the pod reaches Completed
+// (otherwise daprd keeps the pod alive forever, stranding the Job as "Running").
+// Best-effort: a missing or not-yet-ready sidecar simply means no shutdown.
+func shutdownDapr() {
+	ep := os.Getenv("DAPR_HTTP_ENDPOINT")
+	if ep == "" {
+		ep = "http://127.0.0.1:3500"
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Post(ep+"/v1.0/shutdown", "application/json", nil)
+	if err != nil {
+		logf("dapr shutdown: %v (continuing)", err)
+		return
+	}
+	resp.Body.Close()
+	logf("dapr shutdown: sent (status %s)", resp.Status)
+}
 
 // fetchWorkspaceRepo clones the workspace repo (shallow) into <base>/<dir> and
 // returns that path. The pipeline (prepare/agent/gate/deploy) operates there.

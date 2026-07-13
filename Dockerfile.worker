@@ -51,10 +51,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && npx -y puppeteer browsers install chrome \
     && python3 -m pip install --no-cache-dir --break-system-packages pyyaml mdlint-obsidian
 
-# Go (for emit-rig's go-modules extractor) + Zig omitted (add per-project if needed)
+# Go (for emit-rig's go-modules extractor) + Zig (for emit-zig — parse-only).
 COPY --from=build /usr/local/go /usr/local/go
 ENV GOPATH=/go PATH=/usr/local/go/bin:/go/bin:${PATH}
 RUN mkdir -p /go
+
+# Zig — emit-zig.sh scans build.zig + .zig sources and runs `zig version` for
+# metadata, but never `zig build` (parse-only). Any stable version suffices.
+ARG ZIG_VERSION=0.14.0
+RUN curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-x86_64-${ZIG_VERSION}.tar.xz" \
+        -o /tmp/zig.tar.xz \
+    && tar -xf /tmp/zig.tar.xz -C /usr/local \
+    && ln -s "/usr/local/zig-linux-x86_64-${ZIG_VERSION}/zig" /usr/local/bin/zig \
+    && rm /tmp/zig.tar.xz \
+    && zig version
 
 # The framework binaries
 COPY --from=build /out/harmostes-worker /usr/local/bin/harmostes-worker

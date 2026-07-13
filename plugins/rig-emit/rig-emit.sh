@@ -18,9 +18,23 @@ PROJECT="${HARMOSTES_WORKFLOW:?HARMOSTES_WORKFLOW required}"
 WS_DIR="${HARMOSTES_WORKSPACE_DIR:-$HARMOSTES_WORKDIR}"
 EMITTER_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# Embed the git token into an https source URL for auth (no-op for SSH/public).
+# Embed the GitHub token into a github.com https URL for auth. The injected
+# token is a GitHub PAT (harmostes-github-token); injecting it into another host
+# (e.g. a public Forgejo mirror) yields a wrong-credential 401 — strictly worse
+# than anonymous. Non-GitHub https sources clone anonymously (or would need a
+# host-specific token, injected separately). No-op for SSH.
 if [ -n "${HARMOSTES_GIT_TOKEN:-}" ]; then
-  case "$SRC_URL" in https://*) SRC_URL="https://x-access-token:${HARMOSTES_GIT_TOKEN}@${SRC_URL#https://}";; esac
+  case "$SRC_URL" in
+    https://github.com/*) SRC_URL="https://x-access-token:${HARMOSTES_GIT_TOKEN}@${SRC_URL#https://}";;
+  esac
+fi
+
+# Forgejo (git.rezus.cloud) basic auth — separate credentials (username +
+# password) from harmostes-rzc-token. Private source mirrors use these.
+if [ -n "${HARMOSTES_RZC_USERNAME:-}" ] && [ -n "${HARMOSTES_RZC_PASSWORD:-}" ]; then
+  case "$SRC_URL" in
+    https://git.rezus.cloud/*) SRC_URL="https://${HARMOSTES_RZC_USERNAME}:${HARMOSTES_RZC_PASSWORD}@${SRC_URL#https://}";;
+  esac
 fi
 
 SRC_DIR="$(mktemp -d)/source"

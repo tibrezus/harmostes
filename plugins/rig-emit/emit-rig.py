@@ -183,6 +183,10 @@ def extract_zig() -> tuple[list[dict], list[dict], list[str], list[dict]]:
     entrypoints: list[str] = []
     name_to_id: dict[str, str] = {}
     var_to_name: dict[str, str] = {}
+    # Executable name → component id, kept SEPARATE from name_to_id so a module
+    # sharing an executable's name (e.g. addModule("rhesadox") alongside
+    # addExecutable(.{.name="rhesadox"})) cannot shadow it during edge resolution.
+    exe_id_by_name: dict[str, str] = {}
 
     # ── Phase 1: Build variable → source_file map ──
     # Track ALL createModule/addModule calls so we can resolve .root_module refs
@@ -222,6 +226,7 @@ def extract_zig() -> tuple[list[dict], list[dict], list[str], list[dict]]:
             continue
         cid = next_id()
         name_to_id[name] = cid
+        exe_id_by_name[name] = cid
         # Extract the struct body (up to the first });) to avoid
         # matching fields from the NEXT addExecutable/createModule call
         raw = build_zig[m.end():m.end() + 500]
@@ -322,7 +327,12 @@ def extract_zig() -> tuple[list[dict], list[dict], list[str], list[dict]]:
         mod_var = m.group(2)
         exe_name = var_to_name.get(exe_var)
         if exe_name:
-            cid = resolve_id(exe_name)
+            # Resolve to the EXECUTABLE component, never a same-named module.
+            # resolve_id() is module-first; using it here mapped exe_mod → the
+            # "rhesadox" module (comp-6) instead of the executable (comp-1),
+            # turning exe_mod.addImport("rhesadox", engine_mod) into a self-loop
+            # (comp-6→comp-6) that was dropped — losing the exe→lib edge.
+            cid = exe_id_by_name.get(exe_name) or name_to_id.get(exe_name)
             if cid:
                 mod_var_to_comp_id[mod_var] = cid
 
@@ -349,6 +359,35 @@ def extract_zig() -> tuple[list[dict], list[dict], list[str], list[dict]]:
                     if c["id"] == cid and pid not in c["depends_on_ids"]:
                         c["depends_on_ids"].append(pid)
                         break
+
+    # ── Phase 4b: Source-level module @import cross-check ──────────────────
+    # Zig source expresses inter-module deps as @import("module-name") — a BARE
+    # name, not a .zig path. build.zig addImport (Phase 4) is the authority but
+    # regex-fragile; scanning each component's source for @import("<module>")
+    # recovers edges the build regex missed (e.g. the name-collision self-loop
+    # above) and makes the dependency code-level/evidence-backed. This is the
+    # finer @import granularity: build-level linking (Phase 4) ∪ source-level
+    # module imports (here), reconciled onto the build-target component graph.
+    module_name_to_id: dict[str, str] = {
+        mk[len("__module__"):]: mv
+        for mk, mv in name_to_id.items() if mk.startswith("__module__")
+    }
+    if module_name_to_id:
+        for c in components:
+            if c.get("programming_language") != "zig":
+                continue
+            for sf in c.get("source_files", []):
+                try:
+                    txt = Path(sf).read_text(encoding="utf-8", errors="replace")
+                except Exception:
+                    continue
+                for im in re.finditer(r'@import\s*\(\s*"([^"]+)"\s*\)', txt):
+                    target = im.group(1)
+                    if target.endswith(".zig"):
+                        continue  # file import (intra-component closure)
+                    pid = module_name_to_id.get(target)
+                    if pid and pid != c["id"] and pid not in c["depends_on_ids"]:
+                        c["depends_on_ids"].append(pid)
 
     # ── Phase 5: External packages from build.zig.zon ──
     external_packages = []
@@ -946,20 +985,66 @@ def extract_zig_with_native() -> tuple[list[dict], list[dict], list[str], list[d
             "external_packages_ids": [], "depends_on_ids": [],
         })
 
-    # Link library components to CUDA/C deps
-    # Heuristic: all package_library components depend on c-kernels;
-    # package_library components that reference cuda_bridge depend on cuda-backend
-    for c in components:
-        if c["type"] == "package_library" and c["programming_language"] == "zig":
-            if c_id:
-                c["depends_on_ids"].append(c_id)
-            if cuda_id:
-                # Check if any source file references cuda
-                has_cuda = any(
-                    "cuda" in sf.lower() for sf in c.get("source_files", [])
-                )
-                if has_cuda:
-                    c["depends_on_ids"].append(cuda_id)
+    # ── Native edges: build.zig-driven, evidence-backed (replaces filename heuristic) ──
+    # build.zig is the authority for native linking. An edge consumer→native exists
+    # when the consumer (a) addObjectFile()s an object whose compilation step
+    # compiles a .c (→ c-kernels) or .cu (→ cuda-backend) source, or (b) linkSystem-
+    # Library()s a CUDA runtime lib (→ cuda-backend). The old heuristic linked every
+    # library to c-kernels and guessed cuda from a filename — it over-linked (a lib
+    # with "cuda" in a filename) and missed executables' real native links.
+    if (c_id or cuda_id) and Path("build.zig").exists():
+        bz = Path("build.zig").read_text(encoding="utf-8", errors="replace")
+        _line = lambda off: f"build.zig:{bz.count(chr(10), 0, off) + 1}"
+
+        # var → component id, type-discriminated so an executable + module sharing
+        # a name (rhesadox: exe "rhesadox" + module "rhesadox") resolve correctly.
+        mod_name_id = {c["name"]: c["id"] for c in components
+                       if c["type"] == "package_library" and c.get("programming_language") == "zig"}
+        exe_name_id = {c["name"]: c["id"] for c in components if c["type"] == "executable"}
+        var_to_comp: dict[str, str] = {}
+        for m in re.finditer(r'(?:const|var)\s+(\w+)\s*=\s*b\.addModule\s*\(\s*"([^"]+)"', bz):
+            if m.group(2) in mod_name_id:
+                var_to_comp[m.group(1)] = mod_name_id[m.group(2)]
+        for m in re.finditer(r'(?:const|var)\s+(\w+)\s*=\s*b\.addExecutable\s*\(\s*\.\{\s*\.name\s*=\s*"([^"]+)"', bz, re.DOTALL):
+            if m.group(2) in exe_name_id:
+                var_to_comp[m.group(1)] = exe_name_id[m.group(2)]
+
+        # step_var → native source files (.c/.cu) it compiles
+        step_srcs: dict[str, list[str]] = {}
+        for m in re.finditer(r'(?:const|var)\s+(\w+)\s*=\s*b\.addSystemCommand\s*\(\s*&?\.\{(.*?)\}\s*\)', bz, re.DOTALL):
+            for cm in re.finditer(r'"-c",\s*"([^"]+)"', m.group(2)):       # cc -c <file>
+                step_srcs.setdefault(m.group(1), []).append(cm.group(1))
+        for m in re.finditer(r'(\w+)\.addFileInput\s*\(\s*\.\{\s*\.cwd_relative\s*=\s*"([^"]+)"', bz):
+            step_srcs.setdefault(m.group(1), []).append(m.group(2))
+
+        # obj_var → step_var (const obj = step.addOutputFileArg(...))
+        obj_step: dict[str, str] = {}
+        for m in re.finditer(r'(?:const|var)\s+(\w+)\s*=\s*(\w+)\.addOutputFileArg\(', bz):
+            obj_step[m.group(1)] = m.group(2)
+
+        def _edge(cvar: str, nid: str, lines: list[str]) -> None:
+            cid = var_to_comp.get(cvar)
+            if not (cid and nid and nid != cid):
+                return
+            for c in components:
+                if c["id"] == cid:
+                    if nid not in c["depends_on_ids"]:
+                        c["depends_on_ids"].append(nid)
+                        c.setdefault("_native_link_evidence", []).append({"target": nid, "lines": lines})
+                    return
+
+        # (a) addObjectFile(obj) → obj→step→source(.c→c-kernels / .cu→cuda-backend)
+        for m in re.finditer(r'(\w+)(?:\.root_module)?\.addObjectFile\s*\(\s*(\w+)\s*\)', bz):
+            cvar, ovar, ln = m.group(1), m.group(2), _line(m.start())
+            for src in step_srcs.get(obj_step.get(ovar, ""), []):
+                nid = cuda_id if src.endswith(".cu") else c_id if src.endswith(".c") else None
+                if nid:
+                    _edge(cvar, nid, [ln])
+
+        # (b) linkSystemLibrary("cudart"/"cublas"/"cuda*") → cuda-backend
+        if cuda_id:
+            for m in re.finditer(r'(\w+)(?:\.root_module)?\.linkSystemLibrary\s*\(\s*"(cuda[^"]*)"', bz):
+                _edge(m.group(1), cuda_id, [_line(m.start())])
 
     return components, ext_pkgs, entrypoints, aggregators
 
@@ -1313,6 +1398,14 @@ def main():
                 "depends_on_ids": all_test_ids,
                 "evidence_ids": [zig_test_ev],
             })
+        # Convert native-link build.zig line evidence stashed by
+        # extract_zig_with_native (addObjectFile / linkSystemLibrary traces) into
+        # real evidence entries on the consumer component.
+        for c in components:
+            for ev in c.pop("_native_link_evidence", []):
+                eid = next_evidence_id()
+                evidence.append({"id": eid, "line": ev["lines"]})
+                c.setdefault("evidence_ids", []).append(eid)
 
     # Add Go aggregators (paper: meta-targets that orchestrate other targets)
     # Go doesn't have explicit aggregators, but `go build ./...` and `go test ./...`

@@ -79,8 +79,15 @@ COPY plugins/wiki-lint/wiki-lint.sh /usr/local/lib/harmostes/plugins/wiki-lint.s
 COPY plugins/git-push/git-push.sh   /usr/local/lib/harmostes/plugins/git-push.sh
 RUN chmod +x /usr/local/lib/harmostes/plugins/*.sh
 
-# Skills the agent reads via --skill (vendored from the source modules)
-COPY skills/wiki/SKILL.md /skills/wiki/SKILL.md
+# Git identity — the agent commits its own work; this ensures every commit (the
+# agent's AND the git-push plugin's) is authored by harmostes-bot.
+RUN git config --global user.name 'harmostes-bot' && \
+    git config --global user.email 'harmostes-bot@harmostes.dev' && \
+    git config --global --add safe.directory '*'
+
+# Skills — single source of truth: the tibrezus/agents repo (git submodule at
+# .agents). No standalone copies; the submodule IS the clone.
+COPY .agents/skills /skills
 
 # pi extensions (the litellm-provider registers the litellm/* model prefix from
 # LITELLM_URL + LITELLM_API_KEY env vars injected by the controller)

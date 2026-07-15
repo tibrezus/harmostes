@@ -32,7 +32,7 @@ type RPCOptions struct {
 	PiPath  string   // path to pi; "pi" if empty
 	Args    []string // extra args (--skill, --model, --tools, …)
 	Workdir string   // agent working directory (the repo under work)
-	Env     []string // environment (must include the model API key, e.g. ZAI_API_KEY)
+	Env     []string // environment (must include the model API key, e.g. LITELLM_API_KEY)
 	Log     Logger
 }
 

@@ -15,11 +15,11 @@ cd "$WS_DIR"
 git config --global --add safe.directory '*' 2>/dev/null || true
 BRANCH=$(git rev-parse --abbrev-ref HEAD)
 
-# 1. commit anything the agent left uncommitted (the agent usually commits first)
+# 1. commit anything the agent left uncommitted (the agent usually commits first;
+# both use the global 'harmostes-bot' identity set in the Dockerfile)
 git add -A
 if ! git diff --cached --quiet; then
-  git -c user.name='harmostes-bot' -c user.email='harmostes-bot@harmostes.dev' \
-    commit --no-edit -q -m "docs(harmostes): $HARMOSTES_WORKFLOW" 2>&1 | tail -1
+  git commit --no-edit -q -m "docs(harmostes): $HARMOSTES_WORKFLOW" 2>&1 | tail -1
 fi
 
 # 2. fetch the latest + count commits the local branch is ahead of origin

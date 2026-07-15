@@ -68,7 +68,7 @@ harmostes task \
 ```
 
 Exit `0` gate green · `1` failed after `--max-fixes` · `2` pi error. The agent's
-API key (`ZAI_API_KEY`) is passed through. It speaks pi's
+API key (`LITELLM_API_KEY`) is passed through. It speaks pi's
 [RPC JSONL protocol](https://pi.dev/docs/latest/rpc), reusing pi's own
 `--skill/--model/--tools` handling (provider auth, skill loading, **tool
 allowlist**). pi has **no per-tool approval and no sandbox** — the tool allowlist

@@ -21,6 +21,7 @@ build:
 
 ## test: run all unit tests.
 test:
+	git submodule update --init --recursive
 	$(GO) test ./...
 
 ## vet: go vet.
@@ -42,7 +43,10 @@ manifests:
 	controller-gen crd:crd:crdVersions=v1 paths="./api/..." output:crd:artifacts:config=config/crd
 
 ## docker: build the multi-arch worker base image (Go worker binary + pi + plugin runtime).
+##   Submodules (vendor/agents) must be initialised first — the Dockerfile COPYs
+##   skills from there (single source of truth: tibrezus/agents).
 docker:
+	git submodule update --init --recursive
 	docker build -t $(IMG_WORKER):$(TAG) -f Dockerfile.worker .
 
 docker-push: docker

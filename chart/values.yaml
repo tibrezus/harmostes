@@ -22,4 +22,4 @@ dapr:
   pubSub: pubsub
   valkeyHost: valkey.llm-wiki.svc.cluster.local:6379
   valkeyDB: "3"
-  injectWorker: false   # flip to true once the namespace/SA is trusted by the Dapr sentry (mTLS)
+  injectWorker: true    # Dapr sidecar injected into worker Jobs (events/state + clean shutdown)

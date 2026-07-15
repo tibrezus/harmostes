@@ -24,13 +24,13 @@ import (
 // WorkflowReconciler schedules worker Jobs for due Workflows.
 type WorkflowReconciler struct {
 	client.Client
-	Scheme               *runtime.Scheme
-	WorkerImage          string
-	WorkerImagePullSecs  string // imagePullSecret name (optional)
-	PollInterval         time.Duration
-	ServiceAccountName   string
-	JobNamespace         string // namespace to create worker Jobs in (default: the workflow's)
-	DaprEnabled          bool   // inject the Dapr sidecar into worker Jobs (best-effort events/state)
+	Scheme              *runtime.Scheme
+	WorkerImage         string
+	WorkerImagePullSecs string // imagePullSecret name (optional)
+	PollInterval        time.Duration
+	ServiceAccountName  string
+	JobNamespace        string // namespace to create worker Jobs in (default: the workflow's)
+	DaprEnabled         bool   // inject the Dapr sidecar into worker Jobs (best-effort events/state)
 }
 
 // labelsFor ties a worker Job to its Workflow.
@@ -144,7 +144,7 @@ func (r *WorkflowReconciler) createWorkerJob(ctx context.Context, wf *v1alpha1.W
 		daprAnnotations = map[string]string{
 			"dapr.io/enabled": "true",
 			"dapr.io/app-id":  "harmostes-worker-" + wf.Name,
-			"dapr.io/config": "harmostes-config",
+			"dapr.io/config":  "harmostes-config",
 		}
 	}
 	job := &batchv1.Job{
@@ -155,7 +155,7 @@ func (r *WorkflowReconciler) createWorkerJob(ctx context.Context, wf *v1alpha1.W
 			Annotations:  daprAnnotations,
 		},
 		Spec: batchv1.JobSpec{
-			BackoffLimit: pointerInt32(0),
+			BackoffLimit:            pointerInt32(0),
 			TTLSecondsAfterFinished: pointerInt32(3600),
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
@@ -178,7 +178,8 @@ func (r *WorkflowReconciler) createWorkerJob(ctx context.Context, wf *v1alpha1.W
 							{Name: "HARMOSTES_GIT_TOKEN", ValueFrom: secretRef("harmostes-github-token", "token")},
 							{Name: "HARMOSTES_RZC_USERNAME", ValueFrom: secretRef("harmostes-rzc-token", "username")},
 							{Name: "HARMOSTES_RZC_PASSWORD", ValueFrom: secretRef("harmostes-rzc-token", "password")},
-							{Name: "ZAI_API_KEY", ValueFrom: secretRef("harmostes-zai-token", "key")},
+							{Name: "LITELLM_URL", ValueFrom: secretRef("harmostes-litellm-token", "url")},
+							{Name: "LITELLM_API_KEY", ValueFrom: secretRef("harmostes-litellm-token", "key")},
 						},
 					}},
 				},

@@ -22,7 +22,7 @@ spec:
     output: raw/arch/platform-website/rig.json
     detect: changed                 # proceed only if the RIG hash changed
   agent:
-    model: zai/glm-5.2
+    model: litellm/zai/glm-4.7
     skill: /skills/wiki/SKILL.md
     tools: [read, bash, edit, grep]
     taskTemplate:
@@ -66,7 +66,7 @@ spec:
     output: raw/platform-website
     detect: changed
   agent:
-    model: zai/glm-5.2
+    model: litellm/zai/glm-4.7
     skill: /skills/wiki/SKILL.md
     tools: [read, bash, edit, grep]
     taskTemplate: { name: update-generic, configMap: harmostes-tasks, key: update-generic.txt }

@@ -3,7 +3,12 @@
 #
 # Clones the project source (HARMOSTES_SOURCE_URL/BRANCH), runs the universal
 # emit-rig.py to produce a RIG, places it into the workspace repo (the wiki) at
-# raw/arch/<project>/rig.json, and reports changed=true.
+# raw/arch/<project>/rig.json.
+#
+# DETERMINISTIC SKIP: the generated RIG is compared byte-for-byte with the
+# existing rig.json in the workspace repo. If identical, changed=false is
+# returned and the pipeline short-circuits BEFORE the agent runs — no LLM
+# tokens consumed. Only a genuinely different RIG triggers the agent.
 #
 # Mirrors what the llm-wiki controller's reconcile.sh does deterministically.
 # emit-rig.py + emit-rig.sh are vendored from the llm-wiki module
@@ -54,6 +59,19 @@ log "RIG: $COMPONENTS components"
 
 DEST_DIR="$WS_DIR/raw/arch/$PROJECT"
 mkdir -p "$DEST_DIR"
-cp "$RIG_FILE" "$DEST_DIR/rig.json"
+DEST_FILE="$DEST_DIR/rig.json"
 
+# ── Deterministic skip: compare the freshly generated RIG with the existing one.
+# If they are byte-identical the source code structure has not changed since the
+# last successful run, so there is nothing for the agent to do. This is the
+# critical guard against the token-consumption loop: without it the agent would
+# run on every poll cycle regardless of whether anything changed.
+if [ -f "$DEST_FILE" ] && diff -q "$RIG_FILE" "$DEST_FILE" >/dev/null 2>&1; then
+  log "RIG unchanged ($COMPONENTS components) — deterministic skip (no agent run)"
+  echo "{\"changed\":false,\"artifact\":\"raw/arch/$PROJECT/rig.json\",\"status\":\"ok\",\"event\":{\"components\":$COMPONENTS,\"reason\":\"rig-unchanged\"}}"
+  exit 0
+fi
+
+cp "$RIG_FILE" "$DEST_FILE"
+log "RIG changed — proceeding to agent"
 echo "{\"changed\":true,\"artifact\":\"raw/arch/$PROJECT/rig.json\",\"status\":\"ok\",\"event\":{\"components\":$COMPONENTS}}"

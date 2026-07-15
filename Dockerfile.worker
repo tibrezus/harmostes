@@ -82,6 +82,10 @@ RUN chmod +x /usr/local/lib/harmostes/plugins/*.sh
 # Skills the agent reads via --skill (vendored from the source modules)
 COPY skills/wiki/SKILL.md /skills/wiki/SKILL.md
 
+# pi extensions (the litellm-provider registers the litellm/* model prefix from
+# LITELLM_URL + LITELLM_API_KEY env vars injected by the controller)
+COPY extensions/litellm-provider /extensions/litellm-provider
+
 # Where the plugin contract expects them to run + read/write
 WORKDIR /workspace
 

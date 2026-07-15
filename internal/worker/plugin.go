@@ -15,8 +15,8 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/tibrezus/harmostes/internal/agent"
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
+	"github.com/tibrezus/harmostes/internal/agent"
 )
 
 // PluginResult is the JSON a plugin emits as the LAST line of stdout.
@@ -167,8 +167,11 @@ func (r RPCAgentRunner) Run(ctx context.Context, task string, gate agent.Gate, m
 }
 
 // PiArgs builds the pi --mode rpc extra args from a Workflow's agent spec.
+// The litellm-provider extension is always loaded so the litellm/* model prefix
+// resolves (the extension registers the provider at startup from LITELLM_URL +
+// LITELLM_API_KEY env vars injected by the controller).
 func PiArgs(a v1alpha1.AgentSpec) []string {
-	args := []string{"--skill", a.Skill, "--model", a.Model}
+	args := []string{"-e", "/extensions/litellm-provider", "--skill", a.Skill, "--model", a.Model}
 	if len(a.Tools) > 0 {
 		args = append(args, "--tools", strings.Join(a.Tools, ","))
 	}

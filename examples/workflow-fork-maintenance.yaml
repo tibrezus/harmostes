@@ -25,7 +25,7 @@ spec:
     output: rezus/sync-<date>        # the sync branch produced
     detect: conflict                 # proceed to the agent ONLY when the cherry-pick conflicts
   agent:
-    model: zai/glm-5.2
+    model: litellm/zai/glm-4.7
     skill: /skills/fork-maintenance/SKILL.md
     tools: [read, bash, edit, grep]
     taskTemplate:

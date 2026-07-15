@@ -100,7 +100,11 @@ func main() {
 			Workdir: workdir,
 			Env:     os.Environ(),
 			Log: func(ev agent.Event) {
-				logfFn("agent: %s %s", ev.Type, ev.ToolName)
+				detail := ev.Message
+				if detail == "" {
+					detail = ev.ToolName
+				}
+				logfFn("agent: %s %s", ev.Type, detail)
 			},
 		}},
 	}

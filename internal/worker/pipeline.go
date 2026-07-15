@@ -8,17 +8,17 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"github.com/tibrezus/harmostes/internal/dapr"
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
+	"github.com/tibrezus/harmostes/internal/dapr"
 )
 
 // Outcome of a pipeline run.
 type Outcome int
 
 const (
-	OutcomeGreen Outcome = iota // agent passed the gate; deploy ran
-	OutcomeSkipped              // prepare reported no change (deterministic skip)
-	OutcomeFailed               // a phase failed (prepare, agent gate, or deploy)
+	OutcomeGreen   Outcome = iota // agent passed the gate; deploy ran
+	OutcomeSkipped                // prepare reported no change (deterministic skip)
+	OutcomeFailed                 // a phase failed (prepare, agent gate, or deploy)
 )
 
 func (o Outcome) String() string {
@@ -80,7 +80,7 @@ func Run(ctx context.Context, deps Deps, opts Options) (Result, error) {
 			Spec: specJSON, Source: opts.Source, Workdir: opts.Workdir, State: name,
 			SourceURL: wf.Spec.Source.Repo, SourceBranch: wf.Spec.Source.Branch,
 			SourceLanguage: wf.Spec.Source.Language,
-			WorkspaceDir: wsDir, Shadow: shadow,
+			WorkspaceDir:   wsDir, Shadow: shadow,
 		}
 	}
 
@@ -104,6 +104,26 @@ func Run(ctx context.Context, deps Deps, opts Options) (Result, error) {
 		})
 		return Result{Outcome: OutcomeSkipped, Message: "no change"}, nil
 	}
+
+	// Hash-based deterministic skip: the prepare plugin includes a rig_hash in
+	// its event payload. If it matches the hash stored in the Workflow status
+	// from the last successful run, the source structure is unchanged — skip the
+	// agent entirely (no LLM tokens consumed). This is independent of which git
+	// branch was pushed to (shadow branches can lag behind 'main'), making it
+	// more reliable than a file-level diff in the plugin.
+	if rigHash, ok := prepRes.Event["rig_hash"].(string); ok && rigHash != "" {
+		if rigHash == wf.Status.LastRigHash {
+			logf("prepare: RIG hash unchanged (%s) — deterministic skip", rigHash[:12])
+			patchStatus(ctx, deps, name, func(s *v1alpha1.WorkflowStatus) {
+				s.GateStatus = "green"
+				s.Message = "no change (rig hash unchanged)"
+				s.LastRunAt = nowMeta()
+			})
+			return Result{Outcome: OutcomeSkipped, Message: "rig hash unchanged"}, nil
+		}
+		logf("prepare: RIG hash differs from last processed — agent will run")
+	}
+
 	logf("prepare: artifact=%s changed=true", prepRes.Artifact)
 
 	// ── 2. agent (framework-native: the harmostes primitive + gate) ───────────
@@ -163,6 +183,10 @@ func Run(ctx context.Context, deps Deps, opts Options) (Result, error) {
 		s.GateStatus = "green"
 		s.Message = "deployed"
 		s.LastAgentCommit = commitFrom(depRes)
+		// Persist the RIG hash so the next run can skip if the source is unchanged.
+		if rigHash, ok := prepRes.Event["rig_hash"].(string); ok {
+			s.LastRigHash = rigHash
+		}
 		if opts.Source != "" {
 			s.LastProcessedRevision = opts.Source
 		}

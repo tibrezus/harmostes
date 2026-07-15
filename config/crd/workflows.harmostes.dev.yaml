@@ -159,6 +159,7 @@ spec:
                 observedGeneration: { type: integer }
                 lastProcessedRevision: { type: string }
                 lastAgentCommit: { type: string }
+                lastRigHash: { type: string }
                 gateStatus: { type: string, enum: [green, failed, unknown] }
                 lastRunAt: { type: string }
                 message: { type: string }

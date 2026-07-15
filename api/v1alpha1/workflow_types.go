@@ -67,15 +67,15 @@ type WorkflowList struct {
 
 // WorkflowSpec declares one harmostes pipeline.
 type WorkflowSpec struct {
-	Source       SourceSpec       `json:"source"`
+	Source        SourceSpec         `json:"source"`
 	WorkspaceRepo *WorkspaceRepoSpec `json:"workspaceRepo,omitempty"` // the repo the pipeline operates on (prepare populates, agent edits, deploy pushes)
-	Prepare      PrepareSpec      `json:"prepare"`
-	Agent        AgentSpec        `json:"agent"`
-	Deploy       DeploySpec       `json:"deploy"`
-	Events       *EventsSpec      `json:"events,omitempty"`
-	Cache        *CacheSpec       `json:"cache,omitempty"`
-	Scaling      *ScalingSpec     `json:"scaling,omitempty"`
-	Disabled     bool             `json:"disabled,omitempty"`
+	Prepare       PrepareSpec        `json:"prepare"`
+	Agent         AgentSpec          `json:"agent"`
+	Deploy        DeploySpec         `json:"deploy"`
+	Events        *EventsSpec        `json:"events,omitempty"`
+	Cache         *CacheSpec         `json:"cache,omitempty"`
+	Scaling       *ScalingSpec       `json:"scaling,omitempty"`
+	Disabled      bool               `json:"disabled,omitempty"`
 }
 
 // WorkspaceRepoSpec is the repo a pipeline operates on. The worker fetches it
@@ -91,14 +91,14 @@ type WorkspaceRepoSpec struct {
 
 // SourceSpec is what the workflow monitors.
 type SourceSpec struct {
-	Kind     string         `json:"kind"`               // git | schedule | event | webhook
-	Repo     string         `json:"repo,omitempty"`     // Flux GitRepository name, or direct URL
-	Branch   string         `json:"branch,omitempty"`
-	Revision string         `json:"revision,omitempty"` // pin (git)
-	Schedule string         `json:"schedule,omitempty"` // cron (schedule)
-	Topic    string         `json:"topic,omitempty"`    // inbound event (event)
-	Language string         `json:"language,omitempty"` // lc4: go/zig/… (passed to prepare)
-	Fork     *ForkSource    `json:"fork,omitempty"`     // fork-maintenance: the fork to sync into
+	Kind     string      `json:"kind"`           // git | schedule | event | webhook
+	Repo     string      `json:"repo,omitempty"` // Flux GitRepository name, or direct URL
+	Branch   string      `json:"branch,omitempty"`
+	Revision string      `json:"revision,omitempty"` // pin (git)
+	Schedule string      `json:"schedule,omitempty"` // cron (schedule)
+	Topic    string      `json:"topic,omitempty"`    // inbound event (event)
+	Language string      `json:"language,omitempty"` // lc4: go/zig/… (passed to prepare)
+	Fork     *ForkSource `json:"fork,omitempty"`     // fork-maintenance: the fork to sync into
 }
 
 // ForkSource identifies the fork a fork-maintenance workflow keeps in sync.
@@ -174,13 +174,14 @@ type ScalingSpec struct {
 
 // WorkflowStatus is reported by the controller.
 type WorkflowStatus struct {
-	ObservedGeneration     int64             `json:"observedGeneration,omitempty"`
-	LastProcessedRevision  string            `json:"lastProcessedRevision,omitempty"`
-	LastAgentCommit        string            `json:"lastAgentCommit,omitempty"`
-	GateStatus             string            `json:"gateStatus,omitempty"` // green | failed | unknown
-	LastRunAt              metav1.Time       `json:"lastRunAt,omitempty"`
-	Message                string            `json:"message,omitempty"`
-	Conditions             []metav1.Condition `json:"conditions,omitempty"`
+	ObservedGeneration    int64              `json:"observedGeneration,omitempty"`
+	LastProcessedRevision string             `json:"lastProcessedRevision,omitempty"`
+	LastAgentCommit       string             `json:"lastAgentCommit,omitempty"`
+	LastRigHash           string             `json:"lastRigHash,omitempty"` // sha256 of the last processed RIG (deterministic skip)
+	GateStatus            string             `json:"gateStatus,omitempty"`  // green | failed | unknown
+	LastRunAt             metav1.Time        `json:"lastRunAt,omitempty"`
+	Message               string             `json:"message,omitempty"`
+	Conditions            []metav1.Condition `json:"conditions,omitempty"`
 }
 
 // ---------------------------------------------------------------------------

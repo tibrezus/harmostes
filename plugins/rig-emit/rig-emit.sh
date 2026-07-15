@@ -61,17 +61,11 @@ DEST_DIR="$WS_DIR/raw/arch/$PROJECT"
 mkdir -p "$DEST_DIR"
 DEST_FILE="$DEST_DIR/rig.json"
 
-# ── Deterministic skip: compare the freshly generated RIG with the existing one.
-# If they are byte-identical the source code structure has not changed since the
-# last successful run, so there is nothing for the agent to do. This is the
-# critical guard against the token-consumption loop: without it the agent would
-# run on every poll cycle regardless of whether anything changed.
-if [ -f "$DEST_FILE" ] && diff -q "$RIG_FILE" "$DEST_FILE" >/dev/null 2>&1; then
-  log "RIG unchanged ($COMPONENTS components) — deterministic skip (no agent run)"
-  echo "{\"changed\":false,\"artifact\":\"raw/arch/$PROJECT/rig.json\",\"status\":\"ok\",\"event\":{\"components\":$COMPONENTS,\"reason\":\"rig-unchanged\"}}"
-  exit 0
-fi
-
+# Compute the RIG hash for deterministic skip (stored in Workflow status by the
+# pipeline). This is more reliable than comparing with the workspace file because
+# deploys may push to shadow branches — the workspace repo on 'main' can lag.
+RIG_HASH=$(sha256sum "$RIG_FILE" | cut -d' ' -f1)
 cp "$RIG_FILE" "$DEST_FILE"
-log "RIG changed — proceeding to agent"
-echo "{\"changed\":true,\"artifact\":\"raw/arch/$PROJECT/rig.json\",\"status\":\"ok\",\"event\":{\"components\":$COMPONENTS}}"
+log "RIG hash=$RIG_HASH ($COMPONENTS components)"
+
+echo "{\"changed\":true,\"artifact\":\"raw/arch/$PROJECT/rig.json\",\"status\":\"ok\",\"event\":{\"components\":$COMPONENTS,\"rig_hash\":\"$RIG_HASH\"}}"

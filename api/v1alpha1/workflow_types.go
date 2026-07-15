@@ -109,20 +109,22 @@ type ForkSource struct {
 
 // PrepareSpec runs a deterministic plugin that produces an artifact.
 type PrepareSpec struct {
-	Plugin PluginRef `json:"plugin"`
-	Output string    `json:"output,omitempty"` // artifact path/branch/ref produced
-	Detect string    `json:"detect,omitempty"` // changed | conflict | always
+	Plugin PluginRef      `json:"plugin"`
+	Output string          `json:"output,omitempty"` // artifact path/branch/ref produced
+	Detect string          `json:"detect,omitempty"` // changed | conflict | always
+	Config map[string]any `json:"config,omitempty"` // free-form config passed to the plugin via HARMOSTES_SPEC
 }
 
 // AgentSpec is the framework-native LLM step (NOT a plugin).
 type AgentSpec struct {
-	Model        string       `json:"model"`              // e.g. zai/glm-5.2
+	Model        string       `json:"model"`              // e.g. litellm/zai/glm-4.7
 	Skill        string       `json:"skill"`              // path to SKILL.md
 	Tools        []string     `json:"tools,omitempty"`    // tool allowlist
 	TaskTemplate TaskTemplate `json:"taskTemplate"`       // the interpretive task
 	Gate         GateRef      `json:"gate"`               // validation plugin
 	MaxFixes     int          `json:"maxFixes,omitempty"` // default 3
 	Timeout      int          `json:"timeout,omitempty"`  // seconds, default 1800
+	Scope        string       `json:"scope,omitempty"`    // per-workflow scope directive appended to the task (default: wiki-specific scope)
 }
 
 // TaskTemplate names the prompt text for the agent (lives in a ConfigMap).

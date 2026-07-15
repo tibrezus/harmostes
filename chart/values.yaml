@@ -3,8 +3,8 @@
 namespace: harmostes
 
 image:
-  controller: ghcr.io/tibrezus/harmostes-controller:0.3.1
-  worker: ghcr.io/tibrezus/harmostes-worker:0.4.2
+  controller: ghcr.io/tibrezus/harmostes-controller:0.5.1
+  worker: ghcr.io/tibrezus/harmostes-worker:0.5.0
   pullSecret: ghcr-pull   # set to "" to disable
 
 controller:

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -178,4 +179,56 @@ type fakeAgentRunnerFunc func() (green bool, attempts int)
 func (f fakeAgentRunnerFunc) Run(_ context.Context, _ string, _ agent.Gate, _ int, _ agent.Logger) (agent.Result, error) {
 	g, a := f()
 	return agent.Result{Green: g, Attempts: a}, nil
+}
+
+// taskCapturingAgent captures the task text passed to the agent for assertions.
+type taskCapturingAgent struct {
+	gotTask string
+	green   bool
+}
+
+func (t *taskCapturingAgent) Run(_ context.Context, task string, _ agent.Gate, _ int, _ agent.Logger) (agent.Result, error) {
+	t.gotTask = task
+	return agent.Result{Green: t.green, Attempts: 1}, nil
+}
+
+func TestPipelineScopeDefault(t *testing.T) {
+	// When agent.scope is empty, the default wiki-specific scope is appended.
+	resolver := fakeResolver{paths: map[string]string{
+		"prepare": writeScript(t, `echo '{"changed":true,"artifact":"x"}'`),
+		"gate":    writeScript(t, `exit 0`),
+		"deploy":  writeScript(t, `echo '{"artifact":"d"}'`),
+	}}
+	agent := &taskCapturingAgent{green: true}
+	deps := Deps{Plugins: resolver, Tasks: fakeTasks{task: "base task"}, Agent: agent}
+	wf := newWorkflow()
+	wf.Name = "myproject"
+	_, _ = Run(context.Background(), deps, Options{Workflow: wf, Workdir: t.TempDir()})
+	if !strings.Contains(agent.gotTask, "SCOPE: this Workflow owns exactly ONE project: myproject") {
+		t.Fatalf("expected default wiki scope, got: %q", agent.gotTask)
+	}
+	if !strings.Contains(agent.gotTask, "raw/arch/myproject/") {
+		t.Fatalf("expected raw/arch path in default scope")
+	}
+}
+
+func TestPipelineScopeOverride(t *testing.T) {
+	// When agent.scope is set, it replaces the default wiki scope.
+	resolver := fakeResolver{paths: map[string]string{
+		"prepare": writeScript(t, `echo '{"changed":true,"artifact":"x"}'`),
+		"gate":    writeScript(t, `exit 0`),
+		"deploy":  writeScript(t, `echo '{"artifact":"d"}'`),
+	}}
+	agent := &taskCapturingAgent{green: true}
+	deps := Deps{Plugins: resolver, Tasks: fakeTasks{task: "base task"}, Agent: agent}
+	wf := newWorkflow()
+	wf.Name = "pr-review"
+	wf.Spec.Agent.Scope = "Review the PR described in /workspace/pr-context.json. Do NOT touch raw/arch/."
+	_, _ = Run(context.Background(), deps, Options{Workflow: wf, Workdir: t.TempDir()})
+	if !strings.Contains(agent.gotTask, "SCOPE: Review the PR described in /workspace/pr-context.json") {
+		t.Fatalf("expected custom scope, got: %q", agent.gotTask)
+	}
+	if strings.Contains(agent.gotTask, "raw/arch/pr-review/") {
+		t.Fatalf("default wiki scope must NOT appear when scope is overridden")
+	}
 }

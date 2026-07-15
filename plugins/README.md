@@ -13,6 +13,9 @@ See [`docs/plugin-interface.md`](../docs/plugin-interface.md) for the contract.
 | `fork-resolved` | gate | fork-maintenance | `gate-resolved.sh` (markers + `validate-fork.sh` + patch signatures) |
 | `git-push` | deploy | llm-wiki | rebase onto FETCH_HEAD + union-merge changelog + `git push HEAD:main` |
 | `fork-replace-deploy` | deploy | fork-maintenance | replace release branch (force) + tag `v…-rezus.N` |
+| `pr-fetch` | prepare | pr-review | poll GitHub for labeled PRs, checkout repo + wiki, write `pr-context.json` |
+| `review-validate` | gate | pr-review | deterministic: `review.json` is valid JSON, decision ∈ {APPROVE, REQUEST_CHANGES, COMMENT} |
+| `post-review` | deploy | pr-review | POST review to GitHub API, remove trigger label |
 
 ## Adding a plugin
 

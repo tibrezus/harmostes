@@ -138,13 +138,18 @@ func Run(ctx context.Context, deps Deps, opts Options) (Result, error) {
 	if err != nil {
 		return finishFailed(ctx, deps, name, "resolve task template: "+err.Error())
 	}
-	// Scope the agent to THIS workflow's project only. A harmostes namespace runs
-	// many Workflows (one per project); without this, a generic task like "sync the
-	// projects under raw/arch/" would have the agent touch every project.
-	task = task + "\n\nSCOPE: this Workflow owns exactly ONE project: " + name + ". Work ONLY on " +
-		"raw/arch/" + name + "/, its model.c4, and wiki/entities/" + name + ".md " +
-		"(plus index.md/log.md). Do NOT read or modify any other project under " +
-		"raw/arch/ — those are owned by other Workflows."
+	// Append the per-workflow scope directive. If the Workflow declares an
+	// explicit scope (e.g. a PR-review workflow), use it; otherwise fall back to
+	// the wiki-specific scope (every non-scoped workflow today is an llm-wiki
+	// arch-sync pipeline that owns exactly one project directory).
+	if wf.Spec.Agent.Scope != "" {
+		task = task + "\n\nSCOPE: " + wf.Spec.Agent.Scope
+	} else {
+		task = task + "\n\nSCOPE: this Workflow owns exactly ONE project: " + name + ". Work ONLY on " +
+			"raw/arch/" + name + "/, its model.c4, and wiki/entities/" + name + ".md " +
+			"(plus index.md/log.md). Do NOT read or modify any other project under " +
+			"raw/arch/ — those are owned by other Workflows."
+	}
 	maxFixes := wf.Spec.Agent.MaxFixes
 	if maxFixes == 0 {
 		maxFixes = 3

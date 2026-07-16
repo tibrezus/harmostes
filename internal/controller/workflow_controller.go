@@ -31,6 +31,8 @@ type WorkflowReconciler struct {
 	ServiceAccountName  string
 	JobNamespace        string // namespace to create worker Jobs in (default: the workflow's)
 	DaprEnabled         bool   // inject the Dapr sidecar into worker Jobs (best-effort events/state)
+	DaprdImage          string // rezuscloud/dapr fork sidecar image; empty = stock daprd (events/state only, no OTLP push)
+	OTLPInsecure        bool   // set OTEL_EXPORTER_OTLP_INSECURE on worker sidecars (fork's GetIsSecure() defaults to TLS)
 }
 
 // labelsFor ties a worker Job to its Workflow.
@@ -129,6 +131,28 @@ func (r *WorkflowReconciler) observeGeneration(ctx context.Context, wf *v1alpha1
 	return r.Status().Patch(ctx, wf, client.MergeFrom(base))
 }
 
+// buildDaprAnnotations returns the Dapr sidecar annotations for a worker Job.
+// Stock daprd (no DaprdImage) injects events/state only; the rezuscloud/dapr
+// fork (DaprdImage set) additionally pushes traces+metrics+logs via OTLP, so it
+// gets dapr.io/sidecar-image plus OTEL_EXPORTER_OTLP_INSECURE when OTLPInsecure.
+func (r *WorkflowReconciler) buildDaprAnnotations(wf *v1alpha1.Workflow) map[string]string {
+	if !r.DaprEnabled {
+		return map[string]string{}
+	}
+	a := map[string]string{
+		"dapr.io/enabled": "true",
+		"dapr.io/app-id":  "harmostes-worker-" + wf.Name,
+		"dapr.io/config":  "harmostes-config",
+	}
+	if r.DaprdImage != "" {
+		a["dapr.io/sidecar-image"] = r.DaprdImage
+		if r.OTLPInsecure {
+			a["dapr.io/env"] = "OTEL_EXPORTER_OTLP_INSECURE=true"
+		}
+	}
+	return a
+}
+
 // createWorkerJob builds + creates the worker Job for one pipeline run.
 func (r *WorkflowReconciler) createWorkerJob(ctx context.Context, wf *v1alpha1.Workflow) error {
 	ns := r.JobNamespace
@@ -139,14 +163,9 @@ func (r *WorkflowReconciler) createWorkerJob(ctx context.Context, wf *v1alpha1.W
 	// Dapr sidecar injection is best-effort (events/state). Requires the namespace
 	// + service account to be trusted by the Dapr sentry (mTLS); disabled until
 	// that trust is wired (the worker proceeds without events/state otherwise).
-	daprAnnotations := map[string]string{}
-	if r.DaprEnabled {
-		daprAnnotations = map[string]string{
-			"dapr.io/enabled": "true",
-			"dapr.io/app-id":  "harmostes-worker-" + wf.Name,
-			"dapr.io/config":  "harmostes-config",
-		}
-	}
+	// When DaprdImage is set, the rezuscloud/dapr fork is injected instead of
+	// stock daprd, pushing traces+metrics+logs via OTLP.
+	daprAnnotations := r.buildDaprAnnotations(wf)
 	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: fmt.Sprintf("harmostes-%s-", wf.Name),

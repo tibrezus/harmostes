@@ -51,9 +51,28 @@ spec:
   features:
     - name: proxy.grpc
       enabled: true
+    {{- if .Values.observability.enabled }}
+    # The fork daprd is v1.18+ but the Dapr control plane is v1.17.7; without
+    # HotReload disabled the sidecar floods the operator with missing-RPC retries.
+    - name: HotReload
+      enabled: false
+    {{- end }}
   metric:
     enabled: true
   metrics:
     enabled: true
+  {{- if .Values.observability.enabled }}
+  # rezuscloud/dapr fork: unified OTLP block pushes traces+metrics+logs (precedence
+  # 2). The Prometheus :9090 endpoint above still runs as a supplementary scrape.
+  observability:
+    otel:
+      endpointAddress: {{ .Values.observability.otlpEndpoint | quote }}
+      protocol: grpc
+      isSecure: {{ not .Values.observability.otlpInsecure }}
+      timeout: "30s"
+  tracing:
+    samplingRate: {{ .Values.observability.samplingRate | quote }}
+  {{- else }}
   tracing:
     samplingRate: "0"
+  {{- end }}

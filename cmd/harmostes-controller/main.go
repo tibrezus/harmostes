@@ -31,6 +31,8 @@ func main() {
 		serviceAccount       string
 		pollInterval         time.Duration
 		daprEnabled          bool
+		daprdImage           string
+		otlpInsecure         bool
 	)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "metrics server bind address")
 	flag.StringVar(&namespace, "namespace", envOr("HARMOSTES_NAMESPACE", "harmostes"), "namespace the controller watches + creates worker Jobs in")
@@ -39,6 +41,8 @@ func main() {
 	flag.StringVar(&serviceAccount, "service-account", "harmostes-controller", "service account for worker Jobs")
 	flag.DurationVar(&pollInterval, "poll-interval", envDurationOr("HARMOSTES_POLL_INTERVAL", 5*time.Minute), "default run cadence for Workflows without a schedule")
 	flag.BoolVar(&daprEnabled, "dapr-enabled", false, "inject the Dapr sidecar into worker Jobs (requires the namespace/SA trusted by the Dapr sentry)")
+	flag.StringVar(&daprdImage, "daprd-image", envOr("HARMOSTES_DAPRD_IMAGE", ""), "forked daprd sidecar image for worker Jobs (empty = stock daprd, no OTLP push)")
+	flag.BoolVar(&otlpInsecure, "otlp-insecure", false, "set OTEL_EXPORTER_OTLP_INSECURE on worker sidecars (plain gRPC for cluster-internal collectors)")
 	opts := zap.Options{Development: false}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -64,6 +68,8 @@ func main() {
 		PollInterval:        pollInterval,
 		JobNamespace:        namespace,
 		DaprEnabled:         daprEnabled,
+		DaprdImage:          daprdImage,
+		OTLPInsecure:        otlpInsecure,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog("controller setup", err)
 		os.Exit(1)

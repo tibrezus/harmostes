@@ -23,3 +23,15 @@ dapr:
   valkeyHost: valkey.llm-wiki.svc.cluster.local:6379
   valkeyDB: "3"
   injectWorker: true    # Dapr sidecar injected into worker Jobs (events/state + clean shutdown)
+
+# Observability via the rezuscloud/dapr fork: push traces+metrics+logs over OTLP
+# to SigNoz through a unified spec.observability.otel block, deployed per-pod via
+# dapr.io/sidecar-image. See llm-wiki: concepts/harmostes-observability.md and
+# guides/otlp-observability-deployment.md. Disable to fall back to stock daprd
+# (tracing off, Prometheus scrape only).
+observability:
+  enabled: true
+  daprdImage: ghcr.io/rezuscloud/daprd:otel-metrics-latest-amd64   # arm64 edge nodes: ...-arm64. Digest-pin (@sha256:) for IfNotPresent re-pull.
+  otlpEndpoint: signoz-otel-collector.signoz.svc.cluster.local:4317 # SigNoz OTLP collector (signoz namespace)
+  otlpInsecure: true   # GetIsSecure() defaults to TLS; cluster-internal collector uses plain gRPC
+  samplingRate: "0.5"  # Dapr tracing sample fraction (traces are rare; bump for debugging)

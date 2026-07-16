@@ -19,9 +19,9 @@ func TestParseEvent(t *testing.T) {
 		{`{"type":"agent_end"}`, true, Event{Type: "agent_end"}},
 		{`{"type":"tool_execution_start","toolName":"bash","args":{"command":"ls"}}`, true, Event{Type: "tool_execution_start", ToolName: "bash"}},
 		{`{"type":"response","success":false}`, true, Event{Type: "response"}},
-		{`   `, false, Event{}},             // blank
-		{`not json`, false, Event{}},        // unparseable
-		{`{"foo":"bar"}`, false, Event{}},   // no type
+		{`   `, false, Event{}},           // blank
+		{`not json`, false, Event{}},      // unparseable
+		{`{"foo":"bar"}`, false, Event{}}, // no type
 	}
 	for i, c := range cases {
 		ev, err := parseEvent([]byte(c.line))

@@ -24,11 +24,11 @@ func TestBuildResource(t *testing.T) {
 		got[string(kv.Key)] = kv.Value.AsString()
 	}
 	for k, want := range map[string]string{
-		"service.name":        "harmostes-worker",
-		"service.namespace":   "harmostes",
-		"service.version":     "0.7.1",
-		"k8s.pod.name":        "harmostes-x-abc",
-		"k8s.namespace.name":  "harmostes",
+		"service.name":       "harmostes-worker",
+		"service.namespace":  "harmostes",
+		"service.version":    "0.7.1",
+		"k8s.pod.name":       "harmostes-x-abc",
+		"k8s.namespace.name": "harmostes",
 	} {
 		if got[k] != want {
 			t.Errorf("resource %s = %q, want %q", k, got[k], want)

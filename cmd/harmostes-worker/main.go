@@ -30,12 +30,12 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
 	"github.com/tibrezus/harmostes/internal/agent"
 	"github.com/tibrezus/harmostes/internal/dapr"
 	"github.com/tibrezus/harmostes/internal/k8s"
 	"github.com/tibrezus/harmostes/internal/observability"
 	"github.com/tibrezus/harmostes/internal/worker"
-	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
 )
 
 // version is the worker image version (set via -ldflags at build time; "dev"
@@ -43,7 +43,7 @@ import (
 var version = "dev"
 
 var (
-	logger     *slog.Logger
+	logger      *slog.Logger
 	obsShutdown observability.ShutdownFunc
 )
 

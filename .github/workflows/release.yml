@@ -50,8 +50,11 @@ jobs:
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          # The ghcr packages are user-owned + unlinked to the repo, so the
+          # GITHUB_TOKEN can't push (403). Use the platform GitHub PAT
+          # (write:packages) sourced from BSM, mirrored into this Actions secret.
+          username: x-access-token
+          password: ${{ secrets.HARMOSTES_GITHUB_TOKEN }}
 
       # amd64-only: the worker Dockerfile hardcodes zig-linux-x86_64, and the
       # cluster's only arm64 node is a tainted control-plane (no workloads land
@@ -105,7 +108,7 @@ jobs:
           yq '.image' chart/values.yaml
 
       - name: Login to ghcr
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u ${{ github.actor }} --password-stdin
+        run: echo "${{ secrets.HARMOSTES_GITHUB_TOKEN }}" | helm registry login ghcr.io -u x-access-token --password-stdin
 
       - name: Package + push OCI chart
         env:

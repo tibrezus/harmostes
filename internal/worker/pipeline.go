@@ -90,6 +90,7 @@ func Run(ctx context.Context, deps Deps, opts Options) (res Result, err error) {
 			attribute.String("harmostes.source", opts.Source),
 			attribute.String("harmostes.workdir", opts.Workdir),
 		))
+	runCtx = observability.WithWorkflow(runCtx, name) // metric attribute for agent/plugin layers
 	defer func() {
 		root.SetAttributes(attribute.String("harmostes.outcome", res.Outcome.String()))
 		if err != nil {
@@ -122,7 +123,7 @@ func Run(ctx context.Context, deps Deps, opts Options) (res Result, err error) {
 		return failPhase(pctx, prepSpan, deps, name, "resolve prepare plugin: "+perr.Error(), perr)
 	}
 	prepSpec, _ := json.Marshal(wf.Spec.Prepare)
-	prepRes, prepOut, prepErr := RunPlugin(pctx, prepCmd, prepArgs, envFor("prepare", string(prepSpec)), opts.ExtraEnv)
+	prepRes, prepOut, prepErr := runPluginTraced(pctx, "prepare", wf.Spec.Prepare.Plugin.Name, prepCmd, prepArgs, envFor("prepare", string(prepSpec)), opts.ExtraEnv)
 	if prepErr != nil {
 		return failPhase(pctx, prepSpan, deps, name, "prepare plugin failed: "+tailN(prepOut, 400), prepErr)
 	}
@@ -173,7 +174,7 @@ func Run(ctx context.Context, deps Deps, opts Options) (res Result, err error) {
 		return failPhase(actx, agentSpan, deps, name, "resolve gate plugin: "+gerr.Error(), gerr)
 	}
 	gateSpec, _ := json.Marshal(wf.Spec.Agent.Gate)
-	gate := GatePlugin{Command: gateCmd, Args: gateArgs, Env: envFor("gate", string(gateSpec)), ExtraEnv: opts.ExtraEnv}
+	gate := GatePlugin{Name: wf.Spec.Agent.Gate.Plugin.Name, Command: gateCmd, Args: gateArgs, Env: envFor("gate", string(gateSpec)), ExtraEnv: opts.ExtraEnv}
 
 	task, terr := deps.Tasks.Get(actx, wf.Spec.Agent.TaskTemplate)
 	if terr != nil {
@@ -219,7 +220,7 @@ func Run(ctx context.Context, deps Deps, opts Options) (res Result, err error) {
 		return failPhase(dctx, deploySpan, deps, name, "resolve deploy plugin: "+derr.Error(), derr)
 	}
 	depSpec, _ := json.Marshal(wf.Spec.Deploy)
-	depRes, depOut, depErr := RunPlugin(dctx, depCmd, depArgs, envFor("deploy", string(depSpec)), opts.ExtraEnv)
+	depRes, depOut, depErr := runPluginTraced(dctx, "deploy", wf.Spec.Deploy.Plugin.Name, depCmd, depArgs, envFor("deploy", string(depSpec)), opts.ExtraEnv)
 	if depErr != nil {
 		return failPhase(dctx, deploySpan, deps, name, "deploy plugin failed: "+tailN(depOut, 400), depErr)
 	}

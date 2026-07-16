@@ -11,12 +11,18 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
 	"github.com/tibrezus/harmostes/internal/agent"
+	"github.com/tibrezus/harmostes/internal/observability"
 )
 
 // PluginResult is the JSON a plugin emits as the LAST line of stdout.
@@ -87,9 +93,17 @@ type GatePlugin struct {
 	Args     []string
 	Env      PluginEnv
 	ExtraEnv []string
+	Name     string // plugin name (for the plugin.gate.<name> span + metric)
 }
 
 func (g GatePlugin) Run(ctx context.Context) (bool, string, error) {
+	name := g.Name
+	if name == "" {
+		name = "gate"
+	}
+	_, span := observability.Tracer().Start(ctx, "plugin.gate."+name)
+	defer span.End()
+	start := time.Now()
 	cmd := exec.CommandContext(ctx, g.Command, g.Args...)
 	cmd.Dir = g.Env.Workdir
 	cmd.Env = g.Env.EnvSlice(g.ExtraEnv...)
@@ -97,6 +111,12 @@ func (g GatePlugin) Run(ctx context.Context) (bool, string, error) {
 	cmd.Stdout = &out
 	cmd.Stderr = &out
 	err := cmd.Run()
+	if err != nil {
+		// non-zero exit is a gate-not-green, not a system error — record the code,
+		// don't flag the span as an error (agent.Task's gate.evaluate holds that).
+		span.SetAttributes(attribute.Int("harmostes.plugin.exit_code", exitCodeFrom(err)))
+	}
+	recordPluginSeconds(ctx, observability.WorkflowFrom(ctx), "gate", name, time.Since(start))
 	return err == nil, strings.TrimSpace(out.String()), nil
 }
 
@@ -123,6 +143,50 @@ func (r BuiltinResolver) Resolve(_ context.Context, ref v1alpha1.PluginRef, _ st
 		return r.ConfigMapRoot + "/" + ref.ConfigMap + "/" + ref.Name + ".sh", ref.Args, nil
 	}
 	return "", nil, fmt.Errorf("plugin %q not found (no builtin, no configmap root)", ref.Name)
+}
+
+// runPluginTraced runs a deterministic plugin (prepare/deploy) under a
+// plugin.<phase>.<name> span (phase, name, exit_code, changed, artifact) and
+// records harmostes_plugin_seconds. phase+name come from the caller (the
+// pipeline knows them; RunPlugin itself is phase/name-agnostic).
+func runPluginTraced(ctx context.Context, phase, name, command string, args []string, env PluginEnv, extraEnv []string) (PluginResult, string, error) {
+	pctx, span := observability.Tracer().Start(ctx, "plugin."+phase+"."+name)
+	defer span.End()
+	start := time.Now()
+	res, out, err := RunPlugin(pctx, command, args, env, extraEnv)
+	span.SetAttributes(
+		attribute.String("harmostes.plugin.phase", phase),
+		attribute.String("harmostes.plugin.name", name),
+		attribute.String("harmostes.plugin.artifact", res.Artifact),
+	)
+	if res.Changed != nil {
+		span.SetAttributes(attribute.Bool("harmostes.plugin.changed", *res.Changed))
+	}
+	if err != nil {
+		span.SetAttributes(attribute.Int("harmostes.plugin.exit_code", exitCodeFrom(err)))
+	}
+	recordPluginSeconds(pctx, observability.WorkflowFrom(ctx), phase, name, time.Since(start))
+	return res, out, err
+}
+
+// exitCodeFrom extracts a subprocess exit code from an exec error, or -1 if the
+// error is not an ExitError (e.g. the command failed to start).
+func exitCodeFrom(err error) int {
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		return ee.ExitCode()
+	}
+	return -1
+}
+
+// recordPluginSeconds records harmostes_plugin_seconds{workflow,phase,plugin}.
+func recordPluginSeconds(ctx context.Context, workflow, phase, plugin string, d time.Duration) {
+	h, _ := observability.Meter().Float64Histogram("harmostes_plugin_seconds",
+		metric.WithDescription("Deterministic plugin (prepare/deploy/gate) wall-clock duration."))
+	h.Record(ctx, d.Seconds(), metric.WithAttributes(
+		attribute.String("workflow", workflow),
+		attribute.String("phase", phase),
+		attribute.String("plugin", plugin)))
 }
 
 // lastJSONLine parses the JSON object from the last non-blank line of output, or

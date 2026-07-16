@@ -10,6 +10,10 @@ import (
 	"os/exec"
 	"sync"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
+	"github.com/tibrezus/harmostes/internal/observability"
 	"github.com/tibrezus/harmostes/internal/pijsonl"
 )
 
@@ -103,15 +107,26 @@ func (r *RPC) Prompt(ctx context.Context, message, label string) (Event, int, er
 	if err := r.send(pijsonl.Prompt{Type: pijsonl.CmdPrompt, Message: message}); err != nil {
 		return Event{}, 0, err
 	}
+	tracer := observability.Tracer()
+	wf := observability.WorkflowFrom(ctx)
 	var tools int
 	var last Event
+	var toolSpan trace.Span // open tool span (pi runs tools sequentially per turn)
+	endTool := func() {
+		if toolSpan != nil {
+			toolSpan.End()
+			toolSpan = nil
+		}
+	}
 	for {
 		select {
 		case <-ctx.Done():
+			endTool()
 			return last, tools, ctx.Err()
 		case ev, ok := <-r.events:
 			if !ok {
 				// stream closed before agent_end
+				endTool()
 				return last, tools, nil
 			}
 			last = ev
@@ -119,7 +134,20 @@ func (r *RPC) Prompt(ctx context.Context, message, label string) (Event, int, er
 			switch ev.Type {
 			case pijsonl.EvToolStart:
 				tools++
+				endTool() // close any prior (defensive; tools are sequential)
+				_, toolSpan = tracer.Start(ctx, ev.ToolName)
+				toolSpan.SetAttributes(
+					attribute.String("harmostes.tool", ev.ToolName),
+					attribute.Int("harmostes.args_chars", argsChars(ev.Args)), // size only — never the body
+				)
+				recordToolCall(ctx, wf, ev.ToolName)
+			case pijsonl.EvToolEnd:
+				if toolSpan != nil && ev.Success != nil {
+					toolSpan.SetAttributes(attribute.Bool("harmostes.success", *ev.Success))
+				}
+				endTool()
 			case pijsonl.EvAgentEnd:
+				endTool()
 				return ev, tools, nil
 			}
 		}

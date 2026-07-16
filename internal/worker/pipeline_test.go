@@ -262,6 +262,12 @@ func TestPipelineEmitsSpansGreen(t *testing.T) {
 			t.Errorf("missing span %q (have %v)", want, names)
 		}
 	}
+	// Phase 3: the prepare + deploy plugins are spanned (name = the plugin's CR name).
+	for _, want := range []string{"plugin.prepare.prepare", "plugin.deploy.deploy"} {
+		if !names[want] {
+			t.Errorf("missing plugin span %q (have %v)", want, names)
+		}
+	}
 	if names["prepare.no_change"] || names["prepare.rig_hash_unchanged"] {
 		t.Errorf("green path must not emit deterministic-skip spans")
 	}

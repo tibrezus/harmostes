@@ -17,7 +17,12 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
+	"github.com/tibrezus/harmostes/internal/observability"
 	"github.com/tibrezus/harmostes/internal/pijsonl"
 )
 
@@ -54,6 +59,8 @@ type CmdGate struct {
 }
 
 func (g CmdGate) Run(ctx context.Context) (bool, string, error) {
+	_, span := observability.Tracer().Start(ctx, "gate.shell")
+	defer span.End()
 	cmd := exec.CommandContext(ctx, "sh", "-c", g.Command)
 	cmd.Dir = g.Dir
 	var out strings.Builder
@@ -88,18 +95,41 @@ func Task(ctx context.Context, sess PiSession, gate Gate, task string, maxFixes 
 	if maxFixes < 1 {
 		maxFixes = 1
 	}
+	tracer := observability.Tracer()
+	wf := observability.WorkflowFrom(ctx)
+
+	// promptTurn sends one prompt wrapped in a turn span (agent.task for turn 1,
+	// agent.feedback#N for feedback). The turn span is the parent of the tool
+	// spans emitted inside RPC.Prompt, so the trace reads turn → tools. The span
+	// records the message SIZE only — never the body (decision #4).
+	promptTurn := func(label, spanName, message string) error {
+		tctx, span := tracer.Start(ctx, spanName)
+		start := time.Now()
+		span.SetAttributes(
+			attribute.String("harmostes.turn", label),
+			attribute.Int("harmostes.message_chars", len(message)),
+		)
+		_, _, err := sess.Prompt(tctx, message, label)
+		span.End()
+		recordAgentSeconds(ctx, wf, time.Since(start))
+		recordTurn(ctx, wf)
+		return err
+	}
+
 	// turn 1 — the task itself
-	if _, _, err := sess.Prompt(ctx, task, "initial task"); err != nil {
+	if err := promptTurn("initial task", "agent.task", task); err != nil {
 		return Result{}, err
 	}
 	attempts := 0
 	for attempt := 1; attempt <= maxFixes; attempt++ {
 		attempts = attempt
-		green, out, err := gate.Run(ctx)
+		green, out, err := evalGate(ctx, tracer, gate, attempt)
 		if err != nil {
+			recordGateAttempts(ctx, wf, attempts)
 			return Result{Attempts: attempts}, err
 		}
 		if green {
+			recordGateAttempts(ctx, wf, attempts)
 			return Result{Green: true, Attempts: attempts}, nil
 		}
 		logf(log, Event{Type: "gate_failed", Message: fmt.Sprintf("pass %d/%d", attempt, maxFixes)})
@@ -107,17 +137,37 @@ func Task(ctx context.Context, sess PiSession, gate Gate, task string, maxFixes 
 			break
 		}
 		fb := buildFeedback(out, attempt)
-		if _, _, err := sess.Prompt(ctx, fb, fmt.Sprintf("feedback #%d", attempt)); err != nil {
+		if err := promptTurn(fmt.Sprintf("feedback #%d", attempt), fmt.Sprintf("agent.feedback#%d", attempt), fb); err != nil {
 			return Result{Attempts: attempts}, err
 		}
 	}
 	// final gate after the last fix
 	attempts++
-	green, _, err := gate.Run(ctx)
+	green, _, err := evalGate(ctx, tracer, gate, attempts)
 	if err != nil {
+		recordGateAttempts(ctx, wf, attempts)
 		return Result{Attempts: attempts}, err
 	}
+	recordGateAttempts(ctx, wf, attempts)
 	return Result{Green: green, Attempts: attempts}, nil
+}
+
+// evalGate runs the gate under a gate.evaluate span carrying attempt, green, and
+// the feedback SIZE (feedback_chars) — never the feedback body (decision #4).
+func evalGate(ctx context.Context, tracer trace.Tracer, gate Gate, attempt int) (green bool, out string, err error) {
+	gctx, span := tracer.Start(ctx, "gate.evaluate")
+	defer func() {
+		span.SetAttributes(
+			attribute.Int("harmostes.attempt", attempt),
+			attribute.Bool("harmostes.green", green),
+			attribute.Int("harmostes.feedback_chars", len(out)),
+		)
+		if err != nil {
+			span.RecordError(err)
+		}
+		span.End()
+	}()
+	return gate.Run(gctx)
 }
 
 // buildFeedback composes the message sent to the agent on a gate failure: the

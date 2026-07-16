@@ -136,6 +136,23 @@ func Tracer() trace.Tracer { return otel.Tracer("harmostes") }
 // Meter returns the harmostes meter from the global provider (no-op before Init).
 func Meter() metric.Meter { return otel.Meter("harmostes") }
 
+// workflowCtxKey carries the Workflow name so deeper layers (agent, plugins) can
+// stamp it onto metric attributes without it threading through every signature.
+type workflowCtxKey struct{}
+
+// WithWorkflow returns ctx carrying the workflow name (for metric attributes).
+func WithWorkflow(ctx context.Context, workflow string) context.Context {
+	return context.WithValue(ctx, workflowCtxKey{}, workflow)
+}
+
+// WorkflowFrom returns the workflow name carried in ctx ("" if none).
+func WorkflowFrom(ctx context.Context) string {
+	if v, ok := ctx.Value(workflowCtxKey{}).(string); ok {
+		return v
+	}
+	return ""
+}
+
 // ShutdownWithTimeout calls shutdown bounded by timeout so a hung exporter can't
 // stall process exit. Binaries call this from their finish()/at-exit path.
 func ShutdownWithTimeout(ctx context.Context, shutdown ShutdownFunc, timeout time.Duration) error {

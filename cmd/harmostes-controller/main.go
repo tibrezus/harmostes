@@ -29,15 +29,16 @@ var version = "dev"
 
 func main() {
 	var (
-		metricsAddr          string
-		namespace            string
-		workerImage          string
-		workerImagePullSecs  string
-		serviceAccount       string
-		pollInterval         time.Duration
-		daprEnabled          bool
-		daprdImage           string
-		otlpInsecure         bool
+		metricsAddr         string
+		namespace           string
+		workerImage         string
+		workerImagePullSecs string
+		serviceAccount      string
+		pollInterval        time.Duration
+		daprEnabled         bool
+		daprdImage          string
+		otlpEndpoint        string
+		otlpInsecure        bool
 	)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "metrics server bind address")
 	flag.StringVar(&namespace, "namespace", envOr("HARMOSTES_NAMESPACE", "harmostes"), "namespace the controller watches + creates worker Jobs in")
@@ -47,6 +48,7 @@ func main() {
 	flag.DurationVar(&pollInterval, "poll-interval", envDurationOr("HARMOSTES_POLL_INTERVAL", 5*time.Minute), "default run cadence for Workflows without a schedule")
 	flag.BoolVar(&daprEnabled, "dapr-enabled", false, "inject the Dapr sidecar into worker Jobs (requires the namespace/SA trusted by the Dapr sentry)")
 	flag.StringVar(&daprdImage, "daprd-image", envOr("HARMOSTES_DAPRD_IMAGE", ""), "forked daprd sidecar image for worker Jobs (empty = stock daprd, no OTLP push)")
+	flag.StringVar(&otlpEndpoint, "otlp-endpoint", envOr("HARMOSTES_OTLP_ENDPOINT", ""), "OTLP collector endpoint stamped on worker Jobs as OTEL_EXPORTER_OTLP_ENDPOINT (enables worker pipeline spans; empty = disabled)")
 	flag.BoolVar(&otlpInsecure, "otlp-insecure", false, "set OTEL_EXPORTER_OTLP_INSECURE on worker sidecars (plain gRPC for cluster-internal collectors)")
 	opts := zap.Options{Development: false}
 	opts.BindFlags(flag.CommandLine)
@@ -76,8 +78,8 @@ func main() {
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 k8s.Scheme(),
-		Cache:                 cache.Options{DefaultNamespaces: map[string]cache.Config{namespace: {}}},
-		Metrics:               metricsserver.Options{BindAddress: metricsAddr},
+		Cache:                  cache.Options{DefaultNamespaces: map[string]cache.Config{namespace: {}}},
+		Metrics:                metricsserver.Options{BindAddress: metricsAddr},
 		HealthProbeBindAddress: ":8081",
 	})
 	if err != nil {
@@ -95,6 +97,7 @@ func main() {
 		JobNamespace:        namespace,
 		DaprEnabled:         daprEnabled,
 		DaprdImage:          daprdImage,
+		OTLPEndpoint:        otlpEndpoint,
 		OTLPInsecure:        otlpInsecure,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog("controller setup", err)

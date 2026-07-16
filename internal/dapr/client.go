@@ -13,6 +13,9 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
 )
 
 // Client is the Dapr surface harmostes uses.
@@ -44,12 +47,22 @@ func New(baseURL string) *HTTPClient {
 	return &HTTPClient{BaseURL: baseURL, HTTP: &http.Client{}}
 }
 
+// inject stamps the active W3C trace context (traceparent + tracestate) onto the
+// outbound request so the Dapr sidecar creates its state/pubsub span as a child
+// of the harmostes span that triggered the call — the trace-join (Phase 2). No-op
+// when no span is active in ctx or telemetry is disabled (the global propagator
+// is no-op until observability.Init configures W3C).
+func inject(ctx context.Context, req *http.Request) {
+	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(req.Header))
+}
+
 func (c *HTTPClient) GetState(ctx context.Context, store, key string) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
 		fmt.Sprintf("%s/v1.0/state/%s/%s", c.BaseURL, store, key), nil)
 	if err != nil {
 		return "", err
 	}
+	inject(ctx, req)
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return "", err
@@ -84,6 +97,7 @@ func (c *HTTPClient) SaveState(ctx context.Context, store, key, value string) er
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	inject(ctx, req)
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return err
@@ -108,6 +122,7 @@ func (c *HTTPClient) DeleteState(ctx context.Context, store, key string) error {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	inject(ctx, req)
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return err
@@ -128,6 +143,7 @@ func (c *HTTPClient) Publish(ctx context.Context, pubsub, topic, jsonPayload str
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	inject(ctx, req)
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return err

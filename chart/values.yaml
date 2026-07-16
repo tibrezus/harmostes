@@ -3,7 +3,7 @@
 namespace: harmostes
 
 image:
-  controller: ghcr.io/tibrezus/harmostes-controller:0.3.1
+  controller: ghcr.io/tibrezus/harmostes-controller:0.6.0   # Phase 0: requires --daprd-image/--otlp-insecure flags (≥0.6.0)
   worker: ghcr.io/tibrezus/harmostes-worker:0.4.2
   pullSecret: ghcr-pull   # set to "" to disable
 

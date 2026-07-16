@@ -31,6 +31,10 @@ spec:
           args:
             - --namespace={{ .Values.namespace }}
             - --dapr-enabled={{ .Values.dapr.injectWorker }}
+            {{- if .Values.observability.enabled }}
+            - --daprd-image={{ .Values.observability.daprdImage }}
+            - --otlp-insecure={{ .Values.observability.otlpInsecure }}
+            {{- end }}
             - --worker-image={{ .Values.image.worker }}
             - --service-account={{ .Values.controller.serviceAccount }}
             - --poll-interval={{ .Values.controller.pollInterval }}

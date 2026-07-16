@@ -33,6 +33,7 @@ spec:
             - --dapr-enabled={{ .Values.dapr.injectWorker }}
             {{- if .Values.observability.enabled }}
             - --daprd-image={{ .Values.observability.daprdImage }}
+            - --otlp-endpoint={{ .Values.observability.otlpEndpoint }}
             - --otlp-insecure={{ .Values.observability.otlpInsecure }}
             {{- end }}
             - --worker-image={{ .Values.image.worker }}

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
+	corev1 "k8s.io/api/core/v1"
 )
 
 // TestBuildDaprAnnotations covers the Dapr sidecar-annotation contract for
@@ -81,5 +82,57 @@ func TestBuildDaprAnnotations(t *testing.T) {
 				t.Errorf("buildDaprAnnotations() =\n  %v\nwant\n  %v", got, tt.want)
 			}
 		})
+	}
+}
+
+// envMap folds an EnvVar slice into a name→value map (for assertions; ValueFrom
+// vars show an empty value, which the presence check tolerates).
+func envMap(envs []corev1.EnvVar) map[string]string {
+	m := make(map[string]string, len(envs))
+	for _, e := range envs {
+		m[e.Name] = e.Value
+	}
+	return m
+}
+
+// TestWorkerEnv locks the Phase 2 contract: the OTel exporter config is stamped on
+// every worker Job so the worker's own pipeline spans + traceparent join are
+// enabled (endpoint set) or cleanly disabled (empty), alongside the unchanged
+// identity + token env.
+func TestWorkerEnv(t *testing.T) {
+	wf := &v1alpha1.Workflow{}
+	wf.Name = "llm-wiki"
+	wf.Namespace = "harmostes"
+	const ep = "signoz-otel-collector.signoz.svc.cluster.local:4317"
+
+	t.Run("otel enabled stamps endpoint + insecure", func(t *testing.T) {
+		env := envMap(WorkflowReconciler{OTLPEndpoint: ep, OTLPInsecure: true}.workerEnv(wf))
+		if env["OTEL_EXPORTER_OTLP_ENDPOINT"] != ep {
+			t.Errorf("OTEL_EXPORTER_OTLP_ENDPOINT = %q, want %q", env["OTEL_EXPORTER_OTLP_ENDPOINT"], ep)
+		}
+		if env["OTEL_EXPORTER_OTLP_INSECURE"] != "true" {
+			t.Errorf("OTEL_EXPORTER_OTLP_INSECURE = %q, want true", env["OTEL_EXPORTER_OTLP_INSECURE"])
+		}
+	})
+
+	t.Run("otel disabled when endpoint empty", func(t *testing.T) {
+		env := envMap(WorkflowReconciler{}.workerEnv(wf))
+		if env["OTEL_EXPORTER_OTLP_ENDPOINT"] != "" {
+			t.Errorf("expected empty endpoint (disabled), got %q", env["OTEL_EXPORTER_OTLP_ENDPOINT"])
+		}
+		if env["OTEL_EXPORTER_OTLP_INSECURE"] != "false" {
+			t.Errorf("OTEL_EXPORTER_OTLP_INSECURE = %q, want false", env["OTEL_EXPORTER_OTLP_INSECURE"])
+		}
+	})
+
+	// identity + tokens are always present regardless of observability config.
+	env := envMap(WorkflowReconciler{}.workerEnv(wf))
+	for _, k := range []string{"HARMOSTES_WORKFLOW", "HARMOSTES_NAMESPACE", "HARMOSTES_WORKDIR", "DAPR_HTTP_ENDPOINT", "HARMOSTES_GIT_TOKEN", "LITELLM_API_KEY"} {
+		if _, ok := env[k]; !ok {
+			t.Errorf("missing required env var %q", k)
+		}
+	}
+	if env["HARMOSTES_WORKFLOW"] != "llm-wiki" || env["HARMOSTES_NAMESPACE"] != "harmostes" {
+		t.Errorf("identity env = workflow=%q ns=%q", env["HARMOSTES_WORKFLOW"], env["HARMOSTES_NAMESPACE"])
 	}
 }

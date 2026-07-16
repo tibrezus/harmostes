@@ -8,6 +8,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -32,6 +33,7 @@ type WorkflowReconciler struct {
 	JobNamespace        string // namespace to create worker Jobs in (default: the workflow's)
 	DaprEnabled         bool   // inject the Dapr sidecar into worker Jobs (best-effort events/state)
 	DaprdImage          string // rezuscloud/dapr fork sidecar image; empty = stock daprd (events/state only, no OTLP push)
+	OTLPEndpoint        string // OTLP collector endpoint stamped on worker Jobs (enables the worker's own OTel SDK; empty = disabled)
 	OTLPInsecure        bool   // set OTEL_EXPORTER_OTLP_INSECURE on worker sidecars (fork's GetIsSecure() defaults to TLS)
 }
 
@@ -153,6 +155,28 @@ func (r *WorkflowReconciler) buildDaprAnnotations(wf *v1alpha1.Workflow) map[str
 	return a
 }
 
+// workerEnv builds the worker container's environment for a Workflow run:
+// identity (workflow/namespace/source), the Dapr sidecar endpoint, the model/git
+// tokens (from secrets — never in the CR spec), and the OTel exporter config
+// (Phase 2: OTEL_EXPORTER_OTLP_ENDPOINT enables the worker's own pipeline spans +
+// traceparent join; an empty endpoint disables telemetry).
+func (r WorkflowReconciler) workerEnv(wf *v1alpha1.Workflow) []corev1.EnvVar {
+	return []corev1.EnvVar{
+		{Name: "HARMOSTES_WORKFLOW", Value: wf.Name},
+		{Name: "HARMOSTES_NAMESPACE", Value: wf.Namespace},
+		{Name: "HARMOSTES_WORKDIR", Value: "/workspace"},
+		{Name: "HARMOSTES_SOURCE", Value: wf.Spec.Source.Revision},
+		{Name: "DAPR_HTTP_ENDPOINT", Value: "http://127.0.0.1:3500"},
+		{Name: "OTEL_EXPORTER_OTLP_ENDPOINT", Value: r.OTLPEndpoint},
+		{Name: "OTEL_EXPORTER_OTLP_INSECURE", Value: strconv.FormatBool(r.OTLPInsecure)},
+		{Name: "HARMOSTES_GIT_TOKEN", ValueFrom: secretRef("harmostes-github-token", "token")},
+		{Name: "HARMOSTES_RZC_USERNAME", ValueFrom: secretRef("harmostes-rzc-token", "username")},
+		{Name: "HARMOSTES_RZC_PASSWORD", ValueFrom: secretRef("harmostes-rzc-token", "password")},
+		{Name: "LITELLM_URL", ValueFrom: secretRef("harmostes-litellm-token", "url")},
+		{Name: "LITELLM_API_KEY", ValueFrom: secretRef("harmostes-litellm-token", "key")},
+	}
+}
+
 // createWorkerJob builds + creates the worker Job for one pipeline run.
 func (r *WorkflowReconciler) createWorkerJob(ctx context.Context, wf *v1alpha1.Workflow) error {
 	ns := r.JobNamespace
@@ -188,18 +212,7 @@ func (r *WorkflowReconciler) createWorkerJob(ctx context.Context, wf *v1alpha1.W
 						Name:            "worker",
 						Image:           r.WorkerImage,
 						ImagePullPolicy: pullPolicy,
-						Env: []corev1.EnvVar{
-							{Name: "HARMOSTES_WORKFLOW", Value: wf.Name},
-							{Name: "HARMOSTES_NAMESPACE", Value: wf.Namespace},
-							{Name: "HARMOSTES_WORKDIR", Value: "/workspace"},
-							{Name: "HARMOSTES_SOURCE", Value: wf.Spec.Source.Revision},
-							{Name: "DAPR_HTTP_ENDPOINT", Value: "http://127.0.0.1:3500"},
-							{Name: "HARMOSTES_GIT_TOKEN", ValueFrom: secretRef("harmostes-github-token", "token")},
-							{Name: "HARMOSTES_RZC_USERNAME", ValueFrom: secretRef("harmostes-rzc-token", "username")},
-							{Name: "HARMOSTES_RZC_PASSWORD", ValueFrom: secretRef("harmostes-rzc-token", "password")},
-							{Name: "LITELLM_URL", ValueFrom: secretRef("harmostes-litellm-token", "url")},
-							{Name: "LITELLM_API_KEY", ValueFrom: secretRef("harmostes-litellm-token", "key")},
-						},
+						Env:             r.workerEnv(wf),
 					}},
 				},
 			},

@@ -147,6 +147,29 @@ func (r *WorkflowReconciler) createWorkerJob(ctx context.Context, wf *v1alpha1.W
 			"dapr.io/config":  "harmostes-config",
 		}
 	}
+
+	// Collect ConfigMap names referenced by the Workflow spec (plugins + task
+	// templates) and mount each at /plugins/<configMap>/ so the worker's
+	// BuiltinResolver can find ConfigMap-delivered scripts.
+	configMaps := collectConfigMaps(wf)
+	var volumes []corev1.Volume
+	var volumeMounts []corev1.VolumeMount
+	for _, cm := range configMaps {
+		volName := "cm-" + cm
+		volumes = append(volumes, corev1.Volume{
+			Name: volName,
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{Name: cm},
+					DefaultMode: pointerInt32(0o755), // scripts must be executable
+				},
+			},
+		})
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{
+			Name: volName, MountPath: "/plugins/" + cm, ReadOnly: true,
+		})
+	}
+
 	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: fmt.Sprintf("harmostes-%s-", wf.Name),
@@ -165,6 +188,7 @@ func (r *WorkflowReconciler) createWorkerJob(ctx context.Context, wf *v1alpha1.W
 				Spec: corev1.PodSpec{
 					ServiceAccountName: r.ServiceAccountName,
 					RestartPolicy:      corev1.RestartPolicyNever,
+					Volumes:            volumes,
 					Containers: []corev1.Container{{
 						Name:            "worker",
 						Image:           r.WorkerImage,
@@ -180,7 +204,9 @@ func (r *WorkflowReconciler) createWorkerJob(ctx context.Context, wf *v1alpha1.W
 							{Name: "HARMOSTES_RZC_PASSWORD", ValueFrom: secretRef("harmostes-rzc-token", "password")},
 							{Name: "LITELLM_URL", ValueFrom: secretRef("harmostes-litellm-token", "url")},
 							{Name: "LITELLM_API_KEY", ValueFrom: secretRef("harmostes-litellm-token", "key")},
+							{Name: "HARMOSTES_CODEBERG_TOKEN", ValueFrom: secretRef("harmostes-codeberg-token", "token")},
 						},
+						VolumeMounts: volumeMounts,
 					}},
 				},
 			},
@@ -194,6 +220,26 @@ func (r *WorkflowReconciler) createWorkerJob(ctx context.Context, wf *v1alpha1.W
 		return err
 	}
 	return r.Create(ctx, job)
+}
+
+// collectConfigMaps finds all unique ConfigMap names referenced in a Workflow
+// spec (prepare/gate/deploy plugins + task template). The controller mounts
+// each at /plugins/<name>/ so the worker's BuiltinResolver can execute
+// ConfigMap-delivered plugin scripts.
+func collectConfigMaps(wf *v1alpha1.Workflow) []string {
+	seen := map[string]bool{}
+	var names []string
+	add := func(name string) {
+		if name != "" && !seen[name] {
+			seen[name] = true
+			names = append(names, name)
+		}
+	}
+	add(wf.Spec.Prepare.Plugin.ConfigMap)
+	add(wf.Spec.Agent.Gate.Plugin.ConfigMap)
+	add(wf.Spec.Deploy.Plugin.ConfigMap)
+	add(wf.Spec.Agent.TaskTemplate.ConfigMap)
+	return names
 }
 
 // SetupWithManager registers the reconciler + its watches.

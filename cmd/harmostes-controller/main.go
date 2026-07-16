@@ -8,6 +8,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
@@ -20,7 +21,11 @@ import (
 
 	"github.com/tibrezus/harmostes/internal/controller"
 	"github.com/tibrezus/harmostes/internal/k8s"
+	"github.com/tibrezus/harmostes/internal/observability"
 )
+
+// version is the controller image version (set via -ldflags at build; "dev" locally).
+var version = "dev"
 
 func main() {
 	var (
@@ -47,6 +52,27 @@ func main() {
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+
+	// Observability: OTLP tracer/meter providers (disabled when
+	// OTEL_EXPORTER_OTLP_ENDPOINT is unset). Flushed on graceful shutdown (the
+	// controller is long-running; boot-error exits skip it, which is fine — no
+	// telemetry is emitted before the manager starts).
+	obsShutdown, obsErr := observability.Init(context.Background(), observability.Config{
+		Component:    "harmostes-controller",
+		Version:      version,
+		OTLPEndpoint: os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
+		Insecure:     os.Getenv("OTEL_EXPORTER_OTLP_INSECURE") == "true",
+		PodName:      os.Getenv("POD_NAME"),
+		PodNamespace: namespace,
+	})
+	if obsErr != nil {
+		setupLog("observability init (telemetry disabled)", obsErr)
+	}
+	defer func() {
+		if obsShutdown != nil {
+			_ = observability.ShutdownWithTimeout(context.Background(), obsShutdown, observability.ShutdownTimeout)
+		}
+	}()
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 k8s.Scheme(),

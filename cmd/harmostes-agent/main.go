@@ -26,7 +26,12 @@ import (
 	"time"
 
 	"github.com/tibrezus/harmostes/internal/agent"
+	"github.com/tibrezus/harmostes/internal/observability"
 )
+
+var version = "dev"
+
+var obsShutdown observability.ShutdownFunc
 
 func main() {
 	if len(os.Args) < 2 || os.Args[1] != "task" {
@@ -86,6 +91,17 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(*timeout)*time.Second)
 	defer cancel()
 
+	if sh, err := observability.Init(ctx, observability.Config{
+		Component:    "harmostes-agent",
+		Version:      version,
+		OTLPEndpoint: os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
+		Insecure:     os.Getenv("OTEL_EXPORTER_OTLP_INSECURE") == "true",
+	}); err != nil {
+		hlog("observability init failed — telemetry disabled: %v", err)
+	} else {
+		obsShutdown = sh
+	}
+
 	hlog("starting pi --mode rpc (model=%s tools=%s workdir=%s)", *model, *tools, *workdir)
 	rpc, err := agent.NewRPC(ctx, agent.RPCOptions{
 		Args:    []string{"--skill", *skill, "--model", *model, "--tools", *tools},
@@ -95,7 +111,7 @@ func main() {
 	})
 	if err != nil {
 		hlog("ERROR: start pi: %v", err)
-		os.Exit(2)
+		finish(2)
 	}
 	defer rpc.Abort(context.Background())
 
@@ -103,18 +119,27 @@ func main() {
 	res, err := agent.Task(ctx, rpc, g, task, *maxFixes, logger)
 	if err != nil {
 		hlog("ERROR: %v", err)
-		os.Exit(2)
+		finish(2)
 	}
 	if res.Green {
 		hlog("✅ gate GREEN (after %d pass(es))", res.Attempts)
-		os.Exit(0)
+		finish(0)
 	}
 	hlog("❌ gate still failing after %d evaluation(s) — escalate", res.Attempts)
-	os.Exit(1)
+	finish(1)
 }
 
 func hlog(format string, args ...any) {
 	log.Printf("[harmostes] "+format, args...)
+}
+
+// finish flushes telemetry then exits — the single post-Init exit path so an
+// agent run never drops spans/metrics (Phase 1 lifecycle).
+func finish(code int) {
+	if obsShutdown != nil {
+		_ = observability.ShutdownWithTimeout(context.Background(), obsShutdown, observability.ShutdownTimeout)
+	}
+	os.Exit(code)
 }
 
 func toolSuffix(ev agent.Event) string {

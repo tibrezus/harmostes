@@ -1,6 +1,7 @@
 # harmostes-controller — the monitor controller (controller-runtime).
 # Distrolesss static: tiny, no shell, Go-only runtime.
-FROM golang:1.23-bookworm AS build
+# Go 1.25: the OTel SDK (internal/observability, Phase 1) requires it.
+FROM golang:1.25-bookworm AS build
 WORKDIR /src
 ENV GOTOOLCHAIN=local
 COPY go.mod go.sum ./

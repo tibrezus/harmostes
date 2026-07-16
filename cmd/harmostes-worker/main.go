@@ -17,7 +17,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
@@ -33,8 +33,18 @@ import (
 	"github.com/tibrezus/harmostes/internal/agent"
 	"github.com/tibrezus/harmostes/internal/dapr"
 	"github.com/tibrezus/harmostes/internal/k8s"
+	"github.com/tibrezus/harmostes/internal/observability"
 	"github.com/tibrezus/harmostes/internal/worker"
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
+)
+
+// version is the worker image version (set via -ldflags at build time; "dev"
+// locally). Surfaced as the OTel service.version resource attribute.
+var version = "dev"
+
+var (
+	logger     *slog.Logger
+	obsShutdown observability.ShutdownFunc
 )
 
 func main() {
@@ -44,11 +54,25 @@ func main() {
 	source := os.Getenv("HARMOSTES_SOURCE")
 	_ = flag.CommandLine.Parse(os.Args[1:])
 
-	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
-	log.SetPrefix("[harmostes-worker] ")
-
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
+
+	// Observability first: structured JSON logger (trace-aware) + OTLP providers.
+	// An unset OTEL_EXPORTER_OTLP_ENDPOINT disables telemetry (no-op providers) —
+	// local dev + tests never need a collector.
+	logger = observability.NewLogger("harmostes-worker", os.Stdout)
+	if sh, err := observability.Init(ctx, observability.Config{
+		Component:    "harmostes-worker",
+		Version:      version,
+		OTLPEndpoint: os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
+		Insecure:     os.Getenv("OTEL_EXPORTER_OTLP_INSECURE") == "true",
+		PodName:      os.Getenv("POD_NAME"),
+		PodNamespace: namespace,
+	}); err != nil {
+		logger.Error("observability init failed — telemetry disabled", "error", err)
+	} else {
+		obsShutdown = sh
+	}
 
 	cfg, err := ctrl.GetConfig()
 	if err != nil {
@@ -82,7 +106,7 @@ func main() {
 	// ready daprd. Mirrors the proven llm-wiki / fork-maintenance pattern.
 	waitForDapr(os.Getenv("DAPR_HTTP_ENDPOINT"))
 
-	logfFn := func(format string, a ...any) { log.Printf(format, a...) }
+	logfFn := func(format string, a ...any) { logger.Info(fmt.Sprintf(format, a...)) }
 
 	deps := worker.Deps{
 		Plugins: worker.BuiltinResolver{
@@ -116,12 +140,10 @@ func main() {
 	switch res.Outcome {
 	case worker.OutcomeGreen, worker.OutcomeSkipped:
 		logf("complete: %s (%s)", res.Outcome, res.Message)
-		shutdownDapr()
-		os.Exit(0)
+		finish(0)
 	default:
 		logf("complete: %s (%s)", res.Outcome, res.Message)
-		shutdownDapr()
-		os.Exit(1)
+		finish(1)
 	}
 }
 
@@ -161,11 +183,33 @@ func envOr(key, def string) string {
 	return def
 }
 
-func logf(format string, a ...any) { log.Printf(format, a...) }
-func fatal(format string, a ...any) {
-	log.Printf("ERROR: "+format, a...)
+func logf(format string, a ...any) { logger.Info(fmt.Sprintf(format, a...)) }
+
+// finish is the single exit path for the worker: it flushes telemetry, then
+// drains the Dapr sidecar, then exits. Every outcome (green/skipped, failed,
+// fatal) routes through it so the ephemeral Job never drops telemetry — the
+// Phase 1 guarantee. Telemetry is flushed BEFORE the sidecar, which carries
+// some of it.
+func finish(code int) {
+	flushTelemetry()
 	shutdownDapr()
-	os.Exit(2)
+	os.Exit(code)
+}
+
+// flushTelemetry pushes in-flight spans/metrics within ShutdownTimeout. A nil
+// obsShutdown (disabled/failed Init) is a no-op.
+func flushTelemetry() {
+	if obsShutdown == nil {
+		return
+	}
+	if err := observability.ShutdownWithTimeout(context.Background(), obsShutdown, observability.ShutdownTimeout); err != nil {
+		logger.Error("telemetry flush error", "error", err)
+	}
+}
+
+func fatal(format string, a ...any) {
+	logger.Error(fmt.Sprintf(format, a...))
+	finish(2)
 }
 
 // shutdownDapr asks the Dapr sidecar to terminate so the pod reaches Completed
@@ -250,5 +294,5 @@ func waitForDapr(endpoint string) {
 		}
 		time.Sleep(time.Second)
 	}
-	log.Printf("warn: Dapr sidecar not ready at %s after 30s — proceeding without events/state", endpoint)
+	logf("warn: Dapr sidecar not ready at %s after 30s — proceeding without events/state", endpoint)
 }

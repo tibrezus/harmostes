@@ -1,0 +1,78 @@
+# harmostes continuous integration — build, vet, test, dependency-tidy check,
+# and Helm chart validation. Runs on every pull request and on every push to
+# main. This is the dev-workflow "CI green" gate: a PR may merge only once every
+# job here passes. See AGENTS.md / the dev-workflow skill.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel superseded runs on the same ref so stale pushes don't burn runner
+# minutes. Applies to PRs (re-push) and main (force-with-lease edge cases).
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least privilege: CI reads source only — no deployments, no package writes.
+permissions:
+  contents: read
+
+jobs:
+  go:
+    name: Go (vet · build · test · tidy)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # .agents is a submodule (tibrezus/agents) — skills the worker image
+          # bakes in. Init it so the build/test environment matches `make test`.
+          submodules: recursive
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          # Single source of truth for the Go toolchain version.
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download modules
+        run: go mod download
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go build (all packages)
+        run: go build ./...
+
+      - name: go test (race + coverage)
+        run: go test -race -cover ./...
+
+      # Fails if go.mod/go.sum drift from `go mod tidy` — catches dependency
+      # checked in half-way or a missing go.sum entry.
+      - name: go mod tidy (must be a no-op)
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
+  chart:
+    name: Helm chart (lint · template)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: latest
+
+      - name: helm lint
+        run: helm lint chart/
+
+      # Render smoke test — catches template/Go-template syntax errors and
+      # references to undefined values before they reach a cluster.
+      - name: helm template (render smoke test)
+        run: helm template harmostes chart/ --set namespace=harmostes > /dev/null

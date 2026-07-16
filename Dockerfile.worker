@@ -13,7 +13,8 @@
 # Build: make docker TAG=0.1.0   (or: docker build -t ... -f Dockerfile.worker .)
 
 # --- stage 1: build the Go worker binary ---
-FROM golang:1.23-bookworm AS build
+# Go 1.25: the OTel SDK (internal/observability, Phase 1) requires it.
+FROM golang:1.25-bookworm AS build
 WORKDIR /src
 ENV GOTOOLCHAIN=local
 COPY go.mod go.sum ./

@@ -91,9 +91,18 @@ RUN git config --global user.name 'harmostes-bot' && \
 # runtime, so every worker pod gets the latest skills without an image rebuild.
 # The .agents submodule in the repo is for local dev only.
 
-# pi extensions (the litellm-provider registers the litellm/* model prefix from
-# LITELLM_URL + LITELLM_API_KEY env vars injected by the controller)
+# pi extensions:
+# - litellm-provider: registers the litellm/* model prefix from LITELLM_URL +
+#   LITELLM_API_KEY env vars injected by the controller
+# - pi-searxng: web search + content fetch (for pr-review's selective
+#   best-practice/CVE lookup). Auto-discovered via settings.json packages.
 COPY extensions/litellm-provider /extensions/litellm-provider
+RUN pi install npm:pi-searxng
+# pi settings: auto-load the searxng extension on every pi invocation
+RUN mkdir -p /root/.pi/agent && \
+    echo '{"packages":["npm:pi-searxng"]}' > /root/.pi/agent/settings.json
+# SearXNG instance in the cluster (searxng namespace)
+ENV SEARXNG_URL=http://searxng.searxng.svc.cluster.local:8080
 
 # Where the plugin contract expects them to run + read/write
 WORKDIR /workspace

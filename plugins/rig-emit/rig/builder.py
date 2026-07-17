@@ -159,6 +159,7 @@ class RIGBuilder:
     def add_aggregator(self, agg: Aggregator) -> Aggregator:
         agg.id = self._aid()
         self.aggregators.append(agg)
+        self._name_to_id[agg.name] = agg.id
         return agg
 
     def add_runner(self, runner: Runner) -> Runner:
@@ -170,6 +171,7 @@ class RIGBuilder:
     def add_test(self, test: TestDefinition) -> TestDefinition:
         test.id = self._tid()
         self.tests.append(test)
+        self._name_to_id[test.name] = test.id
         return test
 
     # ── Name → ID resolution ─────────────────────────────────────────

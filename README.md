@@ -90,3 +90,5 @@ plugins per workflow. The mapping is in [ARCHITECTURE.md](ARCHITECTURE.md#the-tw
 The next workflows (anything "watch a thing, mostly do it deterministically,
 have an agent finish + validate it") become a Workflow CR + a plugin, not a new
 bespoke controller.
+
+<!-- test trigger for adversarial pr-review 1784298180 -->

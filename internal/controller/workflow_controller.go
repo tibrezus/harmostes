@@ -42,6 +42,56 @@ type WorkflowReconciler struct {
 	SkillsRepo          string // git URL cloned by the init container into /skills before the worker starts
 }
 
+// collectConfigMaps scans the Workflow spec for all ConfigMap references (prepare
+// plugin, gate plugin, deploy plugin, task template) and returns unique names.
+// These are mounted at /plugins/<name>/ so the worker's BuiltinResolver can
+// execute ConfigMap-delivered scripts.
+func collectConfigMaps(wf *v1alpha1.Workflow) []string {
+	seen := map[string]bool{}
+	var names []string
+	add := func(cm string) {
+		if cm != "" && !seen[cm] {
+			seen[cm] = true
+			names = append(names, cm)
+		}
+	}
+	add(wf.Spec.Prepare.Plugin.ConfigMap)
+	add(wf.Spec.Agent.Gate.Plugin.ConfigMap)
+	add(wf.Spec.Deploy.Plugin.ConfigMap)
+	add(wf.Spec.Agent.TaskTemplate.ConfigMap)
+	return names
+}
+
+// configMapVolumes builds corev1.Volume entries for each referenced ConfigMap.
+func configMapVolumes(wf *v1alpha1.Workflow) []corev1.Volume {
+	var vols []corev1.Volume
+	for _, cm := range collectConfigMaps(wf) {
+		vols = append(vols, corev1.Volume{
+			Name: cm,
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{Name: cm},
+					DefaultMode:          pointerInt32(0755), // executable scripts
+				},
+			},
+		})
+	}
+	return vols
+}
+
+// configMapVolumeMounts builds VolumeMount entries mounting each ConfigMap at
+// /plugins/<name>/.
+func configMapVolumeMounts(wf *v1alpha1.Workflow) []corev1.VolumeMount {
+	var mounts []corev1.VolumeMount
+	for _, cm := range collectConfigMaps(wf) {
+		mounts = append(mounts, corev1.VolumeMount{
+			Name:      cm,
+			MountPath: "/plugins/" + cm,
+		})
+	}
+	return mounts
+}
+
 // labelsFor ties a worker Job to its Workflow.
 func labelsFor(name string) map[string]string {
 	return map[string]string{"app.kubernetes.io/managed-by": "harmostes", "harmostes.dev/workflow": name}
@@ -265,12 +315,12 @@ func (r *WorkflowReconciler) createWorkerJob(ctx context.Context, wf *v1alpha1.W
 						Image:           r.WorkerImage,
 						ImagePullPolicy: pullPolicy,
 						Env:             r.workerEnvWithTraceparent(wf, traceparent),
-						VolumeMounts:    []corev1.VolumeMount{{Name: "skills", MountPath: "/skills"}},
+						VolumeMounts:    append([]corev1.VolumeMount{{Name: "skills", MountPath: "/skills"}}, configMapVolumeMounts(wf)...),
 					}},
-					Volumes: []corev1.Volume{{
+					Volumes: append([]corev1.Volume{{
 						Name:         "skills",
 						VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
-					}},
+					}}, configMapVolumes(wf)...),
 				},
 			},
 		},

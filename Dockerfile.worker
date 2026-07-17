@@ -86,9 +86,10 @@ RUN git config --global user.name 'harmostes-bot' && \
     git config --global user.email 'harmostes-bot@harmostes.dev' && \
     git config --global --add safe.directory '*'
 
-# Skills — single source of truth: the tibrezus/agents repo (git submodule at
-# .agents). No standalone copies; the submodule IS the clone.
-COPY .agents/skills /skills
+# Skills are NOT baked into the image — the controller injects an init
+# container that clones the agents repo (source of truth) into /skills at
+# runtime, so every worker pod gets the latest skills without an image rebuild.
+# The .agents submodule in the repo is for local dev only.
 
 # pi extensions (the litellm-provider registers the litellm/* model prefix from
 # LITELLM_URL + LITELLM_API_KEY env vars injected by the controller)

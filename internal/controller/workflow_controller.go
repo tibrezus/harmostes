@@ -35,6 +35,7 @@ type WorkflowReconciler struct {
 	DaprdImage          string // rezuscloud/dapr fork sidecar image; empty = stock daprd (events/state only, no OTLP push)
 	OTLPEndpoint        string // OTLP collector endpoint stamped on worker Jobs (enables the worker's own OTel SDK; empty = disabled)
 	OTLPInsecure        bool   // set OTEL_EXPORTER_OTLP_INSECURE on worker sidecars (fork's GetIsSecure() defaults to TLS)
+	SkillsRepo          string // git URL cloned by the init container into /skills before the worker starts
 }
 
 // labelsFor ties a worker Job to its Workflow.
@@ -208,11 +209,25 @@ func (r *WorkflowReconciler) createWorkerJob(ctx context.Context, wf *v1alpha1.W
 				Spec: corev1.PodSpec{
 					ServiceAccountName: r.ServiceAccountName,
 					RestartPolicy:      corev1.RestartPolicyNever,
+					InitContainers: []corev1.Container{{
+						Name:            "sync-skills",
+						Image:           r.WorkerImage, // reuse worker image (has git)
+						ImagePullPolicy: pullPolicy,
+						Command: []string{"sh", "-c", fmt.Sprintf(
+							"git clone --depth 1 %s /tmp/agents && cp -r /tmp/agents/skills /skills",
+							r.SkillsRepo)},
+						VolumeMounts: []corev1.VolumeMount{{Name: "skills", MountPath: "/skills"}},
+					}},
 					Containers: []corev1.Container{{
 						Name:            "worker",
 						Image:           r.WorkerImage,
 						ImagePullPolicy: pullPolicy,
 						Env:             r.workerEnv(wf),
+						VolumeMounts:    []corev1.VolumeMount{{Name: "skills", MountPath: "/skills"}},
+					}},
+					Volumes: []corev1.Volume{{
+						Name: "skills",
+						VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
 					}},
 				},
 			},

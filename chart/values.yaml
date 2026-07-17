@@ -7,6 +7,9 @@ image:
   worker: ghcr.io/tibrezus/harmostes-worker:0.4.2
   pullSecret: ghcr-pull   # set to "" to disable
 
+skills:
+  repo: https://github.com/tibrezus/agents.git   # cloned by init container into /skills on every worker pod
+
 controller:
   serviceAccount: harmostes-controller
   pollInterval: 5m        # default run cadence for Workflows without a schedule

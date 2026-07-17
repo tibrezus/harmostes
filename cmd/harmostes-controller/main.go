@@ -39,6 +39,7 @@ func main() {
 		daprdImage          string
 		otlpEndpoint        string
 		otlpInsecure        bool
+		skillsRepo          string
 	)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "metrics server bind address")
 	flag.StringVar(&namespace, "namespace", envOr("HARMOSTES_NAMESPACE", "harmostes"), "namespace the controller watches + creates worker Jobs in")
@@ -49,6 +50,7 @@ func main() {
 	flag.BoolVar(&daprEnabled, "dapr-enabled", false, "inject the Dapr sidecar into worker Jobs (requires the namespace/SA trusted by the Dapr sentry)")
 	flag.StringVar(&daprdImage, "daprd-image", envOr("HARMOSTES_DAPRD_IMAGE", ""), "forked daprd sidecar image for worker Jobs (empty = stock daprd, no OTLP push)")
 	flag.StringVar(&otlpEndpoint, "otlp-endpoint", envOr("HARMOSTES_OTLP_ENDPOINT", ""), "OTLP collector endpoint stamped on worker Jobs as OTEL_EXPORTER_OTLP_ENDPOINT (enables worker pipeline spans; empty = disabled)")
+	flag.StringVar(&skillsRepo, "skills-repo", envOr("HARMOSTES_SKILLS_REPO", "https://github.com/tibrezus/agents.git"), "git URL cloned into /skills by the worker init container")
 	flag.BoolVar(&otlpInsecure, "otlp-insecure", false, "set OTEL_EXPORTER_OTLP_INSECURE on worker sidecars (plain gRPC for cluster-internal collectors)")
 	opts := zap.Options{Development: false}
 	opts.BindFlags(flag.CommandLine)
@@ -99,6 +101,7 @@ func main() {
 		DaprdImage:          daprdImage,
 		OTLPEndpoint:        otlpEndpoint,
 		OTLPInsecure:        otlpInsecure,
+		SkillsRepo:          skillsRepo,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog("controller setup", err)
 		os.Exit(1)

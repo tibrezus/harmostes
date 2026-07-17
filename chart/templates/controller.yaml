@@ -37,6 +37,7 @@ spec:
             - --otlp-insecure={{ .Values.observability.otlpInsecure }}
             {{- end }}
             - --worker-image={{ .Values.image.worker }}
+            - --skills-repo={{ .Values.skills.repo }}
             - --service-account={{ .Values.controller.serviceAccount }}
             - --poll-interval={{ .Values.controller.pollInterval }}
             {{- if .Values.image.pullSecret }}

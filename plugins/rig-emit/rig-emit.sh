@@ -57,6 +57,17 @@ log "generating RIG (language=${SRC_LANG:-auto})…"
 COMPONENTS=$(python3 -c "import json;print(len(json.load(open('$RIG_FILE'))['components']))" 2>/dev/null || echo 0)
 log "RIG: $COMPONENTS components"
 
+# Generate model.c4 deterministically from the RIG + source code comments.
+# This replaces the LLM arch-sync step entirely.
+MODEL_FILE="$DEST_DIR/model.c4"
+mkdir -p "$DEST_DIR"
+if [ -f "$EMITTER_DIR/rig-to-c4.py" ]; then
+  log "generating model.c4 (deterministic, from RIG + code comments)…"
+  python3 "$EMITTER_DIR/rig-to-c4.py" "$RIG_FILE" --source-dir "$SRC_DIR" -o "$MODEL_FILE" 2>&1 | tail -1 || log "WARN: model.c4 generation failed (non-fatal)"
+else
+  log "rig-to-c4.py not found — skipping model.c4 generation"
+fi
+
 DEST_DIR="$WS_DIR/raw/arch/$PROJECT"
 mkdir -p "$DEST_DIR"
 DEST_FILE="$DEST_DIR/rig.json"

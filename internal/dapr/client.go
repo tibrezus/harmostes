@@ -15,7 +15,12 @@ import (
 	"strings"
 
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
+
+	"github.com/tibrezus/harmostes/internal/observability"
 )
 
 // Client is the Dapr surface harmostes uses.
@@ -151,6 +156,99 @@ func (c *HTTPClient) Publish(ctx context.Context, pubsub, topic, jsonPayload str
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("dapr publish %s/%s: %s", pubsub, topic, resp.Status)
+	}
+	return nil
+}
+
+// Tracing returns a Client decorator that emits a client span for every
+// building-block call, so harmostes's side of the Dapr boundary is observable
+// and interlocks with daprd's now-native OTel. daprd emits the matching runtime
+// span as a CHILD of this span: the inner HTTP client injects this span's W3C
+// traceparent, yielding a continuous
+//
+//	harmostes.phase → dapr.<op> → daprd.<op> trace.
+//
+// Span-only by design: daprd already counts + times these calls in its own
+// dapr_* metrics (scraped), so harmostes emits only the one thing daprd
+// structurally cannot — the initiator/client span (which phase caused it, which
+// store/topic, ok/error status). Volume, latency, and error rate for the Dapr
+// dependency are read from daprd's dapr_* metrics, not re-counted here.
+//
+// A nil client returns nil (a no-op wire-up). With telemetry disabled (no Init)
+// the tracer is no-op, so this is zero-overhead and behaviour-preserving.
+func Tracing(c Client) Client {
+	if c == nil {
+		return nil
+	}
+	return &tracingClient{inner: c}
+}
+
+// tracingClient implements Client by delegating to inner, wrapping each call in
+// a dapr.<op> client span with semantic attributes (rpc.system=dapr so the
+// backend's service-map / dependency views group Dapr calls) + error/status.
+type tracingClient struct{ inner Client }
+
+func (t *tracingClient) GetState(ctx context.Context, store, key string) (string, error) {
+	var v string
+	err := t.run(ctx, "state.get", func(ctx context.Context) error {
+		var e error
+		v, e = t.inner.GetState(ctx, store, key)
+		return e
+	},
+		attribute.String("rpc.system", "dapr"),
+		attribute.String("rpc.method", "state.get"),
+		attribute.String("dapr.store", store),
+		attribute.String("dapr.key", key),
+	)
+	return v, err
+}
+
+func (t *tracingClient) SaveState(ctx context.Context, store, key, value string) error {
+	return t.run(ctx, "state.save", func(ctx context.Context) error {
+		return t.inner.SaveState(ctx, store, key, value)
+	},
+		attribute.String("rpc.system", "dapr"),
+		attribute.String("rpc.method", "state.save"),
+		attribute.String("dapr.store", store),
+		attribute.String("dapr.key", key),
+	)
+}
+
+func (t *tracingClient) DeleteState(ctx context.Context, store, key string) error {
+	return t.run(ctx, "state.delete", func(ctx context.Context) error {
+		return t.inner.DeleteState(ctx, store, key)
+	},
+		attribute.String("rpc.system", "dapr"),
+		attribute.String("rpc.method", "state.delete"),
+		attribute.String("dapr.store", store),
+		attribute.String("dapr.key", key),
+	)
+}
+
+func (t *tracingClient) Publish(ctx context.Context, pubsub, topic, jsonPayload string) error {
+	return t.run(ctx, "publish", func(ctx context.Context) error {
+		return t.inner.Publish(ctx, pubsub, topic, jsonPayload)
+	},
+		attribute.String("rpc.system", "dapr"),
+		attribute.String("rpc.method", "publish"),
+		attribute.String("messaging.system", "dapr"),
+		attribute.String("messaging.destination.name", topic),
+		attribute.String("dapr.pubsub", pubsub),
+		attribute.String("dapr.topic", topic),
+	)
+}
+
+// run executes fn under a dapr.<op> client span, recording the error/status on
+// it. The span context flows into fn, so the inner client's W3C injection nests
+// daprd's runtime span under it (the trace-join). Latency + outcome counts are
+// owned by daprd's dapr_* metrics, not re-counted here.
+func (t *tracingClient) run(ctx context.Context, op string, fn func(context.Context) error, attrs ...attribute.KeyValue) error {
+	ctx, span := observability.Tracer().Start(ctx, "dapr."+op, trace.WithAttributes(attrs...))
+	defer span.End()
+	if err := fn(ctx); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return err
 	}
 	return nil
 }

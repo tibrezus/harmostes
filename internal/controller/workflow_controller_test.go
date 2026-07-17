@@ -1,11 +1,27 @@
 package controller
 
 import (
+	"context"
 	"maps"
+	"strings"
 	"testing"
+	"time"
+
+	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/types"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
-	corev1 "k8s.io/api/core/v1"
+	"github.com/tibrezus/harmostes/internal/k8s"
+	"github.com/tibrezus/harmostes/internal/observability"
 )
 
 // TestBuildDaprAnnotations covers the Dapr sidecar-annotation contract for
@@ -135,4 +151,157 @@ func TestWorkerEnv(t *testing.T) {
 	if env["HARMOSTES_WORKFLOW"] != "llm-wiki" || env["HARMOSTES_NAMESPACE"] != "harmostes" {
 		t.Errorf("identity env = workflow=%q ns=%q", env["HARMOSTES_WORKFLOW"], env["HARMOSTES_NAMESPACE"])
 	}
+}
+
+// TestWorkerEnvWithTraceparent locks the Phase 4 trace-handoff env contract: a
+// non-empty traceparent is stamped as HARMOSTES_TRACEPARENT so the worker's root
+// span links to the controller's reconcile span; an empty one is omitted (the
+// worker's root span is then its own trace root — local-dev path).
+func TestWorkerEnvWithTraceparent(t *testing.T) {
+	wf := &v1alpha1.Workflow{}
+	wf.Name = "llm-wiki"
+	const tp = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
+
+	t.Run("traceparent stamped when set", func(t *testing.T) {
+		env := envMap(WorkflowReconciler{}.workerEnvWithTraceparent(wf, tp))
+		if env[observability.TraceparentCarrierKey] != tp {
+			t.Errorf("%s = %q, want %q", observability.TraceparentCarrierKey, env[observability.TraceparentCarrierKey], tp)
+		}
+	})
+	t.Run("traceparent omitted when empty", func(t *testing.T) {
+		env := envMap(WorkflowReconciler{}.workerEnvWithTraceparent(wf, ""))
+		if _, ok := env[observability.TraceparentCarrierKey]; ok {
+			t.Errorf("%s should be absent for an empty traceparent", observability.TraceparentCarrierKey)
+		}
+	})
+}
+
+// TestReconcileEmitsSpanAndHandoff is the Phase 4 acceptance test: a due
+// reconcile emits a harmostes.controller.reconcile span (with due/reason attrs)
+// + a controller.create_worker_job child, AND stamps the reconcile span's W3C
+// traceparent on the spawned worker Job (so the worker's run-span is a child).
+func TestReconcileEmitsSpanAndHandoff(t *testing.T) {
+	exp := withTestTracer(t)
+
+	wf := &v1alpha1.Workflow{}
+	wf.Name = "llm-wiki"
+	wf.Namespace = "harmostes"
+	wf.Generation = 2 // spec changed since last observed → due
+	wf.Status.ObservedGeneration = 1
+
+	cl := fake.NewClientBuilder().
+		WithScheme(k8s.Scheme()).
+		WithStatusSubresource(&v1alpha1.Workflow{}).
+		WithObjects(wf).
+		Build()
+
+	r := &WorkflowReconciler{
+		Client:             cl,
+		Scheme:             k8s.Scheme(),
+		WorkerImage:        "ghcr.io/tibrezus/harmostes-worker:dev",
+		ServiceAccountName: "harmostes-controller",
+		PollInterval:       5 * time.Minute,
+		JobNamespace:       "harmostes",
+		SkillsRepo:         "https://github.com/tibrezus/agents.git",
+	}
+
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: "llm-wiki", Namespace: "harmostes"},
+	}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	// 1. reconcile span + create_worker_job child were emitted.
+	spans := exp.GetSpans()
+	names := spanNameSet(spans)
+	if !names["harmostes.controller.reconcile"] {
+		t.Errorf("missing reconcile span; got %v", names)
+	}
+	if !names["controller.create_worker_job"] {
+		t.Errorf("missing create_worker_job child span; got %v", names)
+	}
+
+	// 2. the reconcile span carries the due/reason attributes.
+	rec := spanByName(spans, "harmostes.controller.reconcile")
+	if due, ok := attrBool(rec, "harmostes.due"); !ok || !due {
+		t.Errorf("reconcile span harmostes.due = %v(ok=%v), want true", due, ok)
+	}
+	if reason, _ := attrString(rec, "harmostes.reason"); reason != "spec changed" {
+		t.Errorf("reconcile span harmostes.reason = %q, want \"spec changed\"", reason)
+	}
+
+	// 3. the spawned worker Job carries the traceparent, referencing the
+	//    reconcile span's trace so the worker's root span is its child.
+	var jobs batchv1.JobList
+	if err := cl.List(context.Background(), &jobs, client.MatchingLabels{"app.kubernetes.io/managed-by": "harmostes"}); err != nil {
+		t.Fatalf("list jobs: %v", err)
+	}
+	if len(jobs.Items) != 1 {
+		t.Fatalf("expected 1 worker Job, got %d", len(jobs.Items))
+	}
+	tp := envMap(jobs.Items[0].Spec.Template.Spec.Containers[0].Env)[observability.TraceparentCarrierKey]
+	if tp == "" {
+		t.Fatal("worker Job missing HARMOSTES_TRACEPARENT env (trace handoff not wired)")
+	}
+	wantPrefix := "00-" + rec.SpanContext.TraceID().String() + "-"
+	if !strings.HasPrefix(tp, wantPrefix) {
+		t.Errorf("traceparent %q does not reference the reconcile trace (want prefix %q)", tp, wantPrefix)
+	}
+}
+
+// --- span helpers (hermetic OTel for the controller package) ---
+
+// withTestTracer installs an in-memory span exporter (synchronous) as the global
+// tracer for the test, plus the W3C TraceContext propagator that observability.Init
+// sets in production (the trace-handoff path reads it). Both restored on cleanup.
+func withTestTracer(t *testing.T) *tracetest.InMemoryExporter {
+	t.Helper()
+	prev := otel.GetTracerProvider()
+	exp := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exp))
+	otel.SetTracerProvider(tp)
+	prevProp := otel.GetTextMapPropagator()
+	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
+		propagation.TraceContext{}, propagation.Baggage{}))
+	t.Cleanup(func() {
+		otel.SetTracerProvider(prev)
+		otel.SetTextMapPropagator(prevProp)
+		_ = tp.Shutdown(context.Background())
+	})
+	return exp
+}
+
+func spanNameSet(spans []tracetest.SpanStub) map[string]bool {
+	m := make(map[string]bool, len(spans))
+	for _, s := range spans {
+		m[s.Name] = true
+	}
+	return m
+}
+
+func spanByName(spans []tracetest.SpanStub, name string) tracetest.SpanStub {
+	for _, s := range spans {
+		if s.Name == name {
+			return s
+		}
+	}
+	return tracetest.SpanStub{}
+}
+
+func attrBool(s tracetest.SpanStub, key string) (bool, bool) {
+	for _, a := range s.Attributes {
+		if string(a.Key) == key {
+			return a.Value.AsBool(), true
+		}
+	}
+	return false, false
+}
+
+func attrString(s tracetest.SpanStub, key string) (string, bool) {
+	for _, a := range s.Attributes {
+		if string(a.Key) == key {
+			return a.Value.AsString(), true
+		}
+	}
+	return "", false
 }

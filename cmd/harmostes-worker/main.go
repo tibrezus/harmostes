@@ -129,7 +129,8 @@ func main() {
 		}},
 	}
 
-	runCtx, runCancel := context.WithTimeout(ctx, runTimeout(&wf))
+	runCtx := observability.ContextWithTraceparent(ctx, os.Getenv(observability.TraceparentCarrierKey))
+	runCtx, runCancel := context.WithTimeout(runCtx, runTimeout(&wf))
 	defer runCancel()
 	res, err := worker.Run(runCtx, deps, worker.Options{
 		Workflow: &wf, Workdir: workdir, Source: source, ExtraEnv: os.Environ(),

@@ -18,6 +18,18 @@ spec:
       labels:
         app.kubernetes.io/name: harmostes
         app.kubernetes.io/component: controller
+      {{- if .Values.observability.controllerSidecar }}
+      annotations:
+        dapr.io/enabled: "true"
+        dapr.io/app-id: harmostes-controller
+        dapr.io/config: harmostes-config
+        {{- if .Values.observability.daprdImage }}
+        dapr.io/sidecar-image: {{ .Values.observability.daprdImage | quote }}
+        {{- end }}
+        {{- if .Values.observability.otlpInsecure }}
+        dapr.io/env: "OTEL_EXPORTER_OTLP_INSECURE=true"
+        {{- end }}
+      {{- end }}
     spec:
       serviceAccountName: {{ .Values.controller.serviceAccount }}
       {{- if .Values.image.pullSecret }}
@@ -46,5 +58,17 @@ spec:
           env:
             - name: HARMOSTES_WORKER_IMAGE
               value: {{ .Values.image.worker }}
+            {{- if .Values.observability.enabled }}
+            # Controller's own OTel SDK: exports its reconcile/create-worker spans +
+            # metrics (Phase 4). Without these, observability.Init is a no-op.
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.observability.otlpEndpoint | quote }}
+            - name: OTEL_EXPORTER_OTLP_INSECURE
+              value: {{ .Values.observability.otlpInsecure | quote }}
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            {{- end }}
           resources:
             {{- toYaml .Values.controller.resources | nindent 12 }}

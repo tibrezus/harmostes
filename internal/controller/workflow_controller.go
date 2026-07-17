@@ -11,6 +11,9 @@ import (
 	"strconv"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -20,6 +23,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
+	"github.com/tibrezus/harmostes/internal/observability"
 )
 
 // WorkflowReconciler schedules worker Jobs for due Workflows.
@@ -49,6 +53,12 @@ func labelsFor(name string) map[string]string {
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
 
 func (r *WorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	ctx, span := observability.Tracer().Start(ctx, "harmostes.controller.reconcile",
+		trace.WithAttributes(attribute.String("harmostes.workflow", req.Name)))
+	defer span.End()
+	start := time.Now()
+	defer func() { recordReconcileSeconds(ctx, req.Name, time.Since(start)) }()
+
 	logger := log.FromContext(ctx)
 
 	var wf v1alpha1.Workflow
@@ -61,21 +71,35 @@ func (r *WorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	// A worker Job already running for this Workflow? Wait for it.
 	if active, err := r.hasActiveJob(ctx, wf.Namespace, wf.Name); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return ctrl.Result{}, err
 	} else if active {
+		span.SetAttributes(attribute.Bool("harmostes.active_job", true))
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
 	due, requeueAfter := r.isDue(&wf)
+	span.SetAttributes(
+		attribute.Bool("harmostes.due", due),
+		attribute.String("harmostes.reason", dueReason(&wf)),
+	)
 	if !due {
 		return ctrl.Result{RequeueAfter: requeueAfter}, nil
 	}
 
 	logger.Info("scheduling worker", "workflow", wf.Name, "reason", dueReason(&wf))
-	if err := r.createWorkerJob(ctx, &wf); err != nil {
+	// Trace handoff: stamp the reconcile span's W3C context onto the worker Job
+	// so its root harmostes.worker.run span is a child of this reconcile span —
+	// one trace from "controller noticed a change" through "worker ran".
+	tp := observability.TraceparentFromContext(ctx)
+	if err := r.createWorkerJob(ctx, &wf, tp); err != nil {
 		logger.Error(err, "create worker job")
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return ctrl.Result{RequeueAfter: time.Minute}, err
 	}
+	recordWorkflowRunScheduled(ctx, wf.Name)
 
 	// Mark this generation as observed (scheduling happened); the worker records
 	// the run outcome (gateStatus, lastRunAt, …) via its StatusPatcher.
@@ -178,8 +202,26 @@ func (r WorkflowReconciler) workerEnv(wf *v1alpha1.Workflow) []corev1.EnvVar {
 	}
 }
 
-// createWorkerJob builds + creates the worker Job for one pipeline run.
-func (r *WorkflowReconciler) createWorkerJob(ctx context.Context, wf *v1alpha1.Workflow) error {
+// workerEnvWithTraceparent returns the worker env with the W3C traceparent of the
+// controller's reconcile span appended (Phase 4 trace handoff), so the worker's
+// root harmostes.worker.run span is a child of the controller's. An empty
+// traceparent (telemetry disabled / no recording span) omits it — the worker's
+// root span is then its own trace root (the local-dev path).
+func (r WorkflowReconciler) workerEnvWithTraceparent(wf *v1alpha1.Workflow, traceparent string) []corev1.EnvVar {
+	env := r.workerEnv(wf)
+	if traceparent != "" {
+		env = append(env, corev1.EnvVar{Name: observability.TraceparentCarrierKey, Value: traceparent})
+	}
+	return env
+}
+
+// createWorkerJob builds + creates the worker Job for one pipeline run. The
+// traceparent (the W3C context of the reconcile span) is stamped on the worker
+// container's env so the worker's root run-span is a child of the reconcile span.
+func (r *WorkflowReconciler) createWorkerJob(ctx context.Context, wf *v1alpha1.Workflow, traceparent string) error {
+	ctx, span := observability.Tracer().Start(ctx, "controller.create_worker_job",
+		trace.WithAttributes(attribute.String("harmostes.workflow", wf.Name)))
+	defer span.End()
 	ns := r.JobNamespace
 	if ns == "" {
 		ns = wf.Namespace
@@ -222,11 +264,11 @@ func (r *WorkflowReconciler) createWorkerJob(ctx context.Context, wf *v1alpha1.W
 						Name:            "worker",
 						Image:           r.WorkerImage,
 						ImagePullPolicy: pullPolicy,
-						Env:             r.workerEnv(wf),
+						Env:             r.workerEnvWithTraceparent(wf, traceparent),
 						VolumeMounts:    []corev1.VolumeMount{{Name: "skills", MountPath: "/skills"}},
 					}},
 					Volumes: []corev1.Volume{{
-						Name: "skills",
+						Name:         "skills",
 						VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
 					}},
 				},
@@ -238,13 +280,21 @@ func (r *WorkflowReconciler) createWorkerJob(ctx context.Context, wf *v1alpha1.W
 	}
 	// Set the Workflow as owner so the Job is GC'd with it.
 	if err := ctrl.SetControllerReference(wf, job, r.Scheme); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return err
 	}
-	return r.Create(ctx, job)
+	if err := r.Create(ctx, job); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return err
+	}
+	return nil
 }
 
 // SetupWithManager registers the reconciler + its watches.
 func (r *WorkflowReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	r.registerActiveJobsGauge()
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&v1alpha1.Workflow{}).
 		Owns(&batchv1.Job{}).

@@ -114,7 +114,7 @@ func main() {
 			ConfigMapRoot: "/plugins",
 		},
 		Tasks:          k8s.ConfigMapTasks{Client: cl, Namespace: namespace},
-		Dapr:           dapr.New(os.Getenv("DAPR_HTTP_ENDPOINT")),
+		Dapr:           dapr.Tracing(dapr.New(os.Getenv("DAPR_HTTP_ENDPOINT"))),
 		Status:         k8s.StatusPatcher{Client: cl, Namespace: namespace},
 		DaprStateStore: envOr("HARMOSTES_STATE_STORE", "statestore"),
 		DaprPubSub:     envOr("HARMOSTES_PUBSUB", "pubsub"),

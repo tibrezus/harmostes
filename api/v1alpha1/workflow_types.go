@@ -109,9 +109,10 @@ type ForkSource struct {
 
 // PrepareSpec runs a deterministic plugin that produces an artifact.
 type PrepareSpec struct {
-	Plugin PluginRef `json:"plugin"`
-	Output string    `json:"output,omitempty"` // artifact path/branch/ref produced
-	Detect string    `json:"detect,omitempty"` // changed | conflict | always
+	Plugin PluginRef       `json:"plugin"`
+	Output string           `json:"output,omitempty"` // artifact path/branch/ref produced
+	Detect string           `json:"detect,omitempty"` // changed | conflict | always
+	Config json.RawMessage  `json:"config,omitempty"` // arbitrary config passed to the plugin as HARMOSTES_SPEC
 }
 
 // AgentSpec is the framework-native LLM step (NOT a plugin).
@@ -123,6 +124,7 @@ type AgentSpec struct {
 	Gate         GateRef      `json:"gate"`               // validation plugin
 	MaxFixes     int          `json:"maxFixes,omitempty"` // default 3
 	Timeout      int          `json:"timeout,omitempty"`  // seconds, default 1800
+	Scope        string       `json:"scope,omitempty"`    // optional task scope override
 }
 
 // TaskTemplate names the prompt text for the agent (lives in a ConfigMap).

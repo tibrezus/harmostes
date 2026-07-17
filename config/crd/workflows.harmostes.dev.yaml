@@ -89,6 +89,9 @@ spec:
                         args: { type: array, items: { type: string } }
                     output: { type: string }                   # artifact produced (path / branch / ref)
                     detect: { type: string, enum: [changed, conflict, always] }
+                    config:                                    # arbitrary config passed to the plugin
+                      type: object
+                      x-kubernetes-preserve-unknown-fields: true
 
                 agent:
                   type: object
@@ -116,6 +119,7 @@ spec:
                             args: { type: array, items: { type: string } }
                     maxFixes: { type: integer, default: 3 }
                     timeout: { type: integer, default: 1800 }
+                    scope: { type: string }                    # optional task scope override
 
                 deploy:
                   type: object

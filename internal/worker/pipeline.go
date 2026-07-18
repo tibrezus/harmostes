@@ -164,6 +164,17 @@ func Run(ctx context.Context, deps Deps, opts Options) (res Result, err error) {
 		logf("prepare: RIG hash differs from last processed — agent will run")
 	}
 
+	// Persist the new RIG hash immediately so that if the agent or deploy fails
+	// later, the next run can still skip — the source structure hasn't changed.
+	// Without this, a persistent deploy failure (e.g. git merge conflict) would
+	// cause the agent to re-run every poll cycle, wasting LLM tokens on an
+	// unchanged source.
+	if rigHash, ok := prepRes.Event["rig_hash"].(string); ok && rigHash != "" {
+		patchStatus(pctx, deps, name, func(s *v1alpha1.WorkflowStatus) {
+			s.LastRigHash = rigHash
+		})
+	}
+
 	logf("prepare: artifact=%s changed=true", prepRes.Artifact)
 	prepSpan.End()
 

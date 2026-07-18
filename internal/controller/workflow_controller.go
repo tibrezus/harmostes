@@ -176,11 +176,24 @@ func (r *WorkflowReconciler) hasActiveJob(ctx context.Context, ns, name string) 
 }
 
 // isDue decides whether a run should start now. Due if the spec generation
-// changed since last observed, or the poll interval elapsed since the last run.
+// changed since last observed, the poll interval elapsed since the last run,
+// or a webhook trigger annotation is present.
 func (r *WorkflowReconciler) isDue(wf *v1alpha1.Workflow) (bool, time.Duration) {
+	// Webhook trigger: check for trigger-revision annotation
+	if triggerRev := wf.Annotations["harmostes.dev/trigger-revision"]; triggerRev != "" {
+		// Trigger if revision changed from last processed
+		if triggerRev != wf.Status.LastProcessedRevision {
+			return true, 0 // Trigger immediately
+		}
+		// Re-queue after short interval (webhook may arrive before annotation is processed)
+		return false, 10 * time.Second
+	}
+
+	// Spec changed
 	if wf.Status.ObservedGeneration != wf.Generation {
 		return true, r.PollInterval
 	}
+	// Schedule elapsed
 	if !wf.Status.LastRunAt.IsZero() {
 		elapsed := time.Since(wf.Status.LastRunAt.Time)
 		if elapsed < r.PollInterval {
@@ -191,6 +204,11 @@ func (r *WorkflowReconciler) isDue(wf *v1alpha1.Workflow) (bool, time.Duration) 
 }
 
 func dueReason(wf *v1alpha1.Workflow) string {
+	// Webhook trigger
+	if triggerRev := wf.Annotations["harmostes.dev/trigger-revision"]; triggerRev != "" {
+		return "webhook"
+	}
+	// Spec changed
 	if wf.Status.ObservedGeneration != wf.Generation {
 		return "spec changed"
 	}

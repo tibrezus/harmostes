@@ -10,6 +10,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
@@ -304,4 +305,69 @@ func attrString(s tracetest.SpanStub, key string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+func TestIsDue_WebhookTrigger(t *testing.T) {
+	tests := []struct {
+		name           string
+		wf             *v1alpha1.Workflow
+		wantDue        bool
+		wantRequeueAfter time.Duration
+	}{
+		{
+			name: "webhook trigger with new revision",
+			wf: &v1alpha1.Workflow{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						"harmostes.dev/trigger-revision": "abc123",
+					},
+				},
+				Status: v1alpha1.WorkflowStatus{
+					LastProcessedRevision: "def456",
+				},
+			},
+			wantDue:         true,
+			wantRequeueAfter: 0,
+		},
+		{
+			name: "webhook trigger with same revision",
+			wf: &v1alpha1.Workflow{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						"harmostes.dev/trigger-revision": "abc123",
+					},
+				},
+				Status: v1alpha1.WorkflowStatus{
+					LastProcessedRevision: "abc123",
+				},
+			},
+			wantDue:         false,
+			wantRequeueAfter: 10 * time.Second,
+		},
+		{
+			name: "no webhook trigger, schedule elapsed",
+			wf: &v1alpha1.Workflow{
+				Status: v1alpha1.WorkflowStatus{
+					LastRunAt:      metav1.Time{Time: time.Now().Add(-10 * time.Minute)},
+					ObservedGeneration: 1,
+				},
+			},
+			wantDue:         true,
+			wantRequeueAfter: 5 * time.Minute,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := &WorkflowReconciler{PollInterval: 5 * time.Minute}
+			due, requeueAfter := r.isDue(tt.wf)
+			if due != tt.wantDue {
+				t.Errorf("isDue() due = %v, want %v", due, tt.wantDue)
+			}
+			// Allow small tolerance for time-based tests
+			if tt.wantRequeueAfter > 0 && (requeueAfter > tt.wantRequeueAfter+time.Second || requeueAfter < tt.wantRequeueAfter-time.Second) {
+				t.Errorf("isDue() requeueAfter = %v, want ~%v", requeueAfter, tt.wantRequeueAfter)
+			}
+		})
+	}
 }

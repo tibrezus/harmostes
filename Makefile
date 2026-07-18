@@ -6,12 +6,14 @@
 MODULE        := github.com/tibrezus/harmostes
 IMG_CONTROLLER ?= ghcr.io/tibrezus/harmostes-controller
 IMG_WORKER     ?= ghcr.io/tibrezus/harmostes-worker
+IMG_UI         ?= ghcr.io/tibrezus/harmostes-ui
 TAG           ?= dev
+DS_SRC        ?= ../rezuscloud/design-system
 
 BIN_DIR       := bin
 GO            := go
 
-.PHONY: all build test vet tidy generate manifests controller-worker docker docker-push clean
+.PHONY: all build test vet tidy generate manifests controller-worker docker docker-push docker-ui ui-css-sync clean
 
 all: test build
 
@@ -53,6 +55,21 @@ docker:
 
 docker-push: docker
 	docker push $(IMG_WORKER):$(TAG)
+
+## docker-ui: build the harmostes-ui image.
+docker-ui:
+	docker build -t $(IMG_UI):$(TAG) -f Dockerfile.ui .
+
+## ui-css-sync: re-extract component CSS from the design system repo.
+##   Run after updating the design system: make ui-css-sync DS_SRC=../rezuscloud/design-system
+ui-css-sync:
+	@python3 -c "\
+	import re, glob; \
+		parts = []; \
+		[parts.extend(re.findall(r'<style>(.*?)</style>', open(f).read(), re.DOTALL)) for f in sorted(glob.glob('$(DS_SRC)/components/*.html'))]; \
+		css = '\\n\\n'.join(p.strip() for p in parts); \
+		open('internal/ui/static/css/components.css', 'w').write('/* Consolidated component styles — extracted from rezuscloud/design-system\\n   Do not edit by hand. Regenerate with: make ui-css-sync */\\n\\n' + css + '\\n'); \
+		print(f'Synced {len(parts)} component style blocks → internal/ui/static/css/components.css')"
 
 clean:
 	rm -rf $(BIN_DIR)

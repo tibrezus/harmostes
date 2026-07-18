@@ -1,0 +1,11 @@
+{{define "pages/error.html"}}
+<div class="ds-alert ds-alert--negative">
+	<span class="ds-alert-icon">
+		<svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 1a7 7 0 100 14A7 7 0 008 1zm.75 9.5h-1.5v-1.5h1.5v1.5zm0-3h-1.5v-4h1.5v4z"></path></svg>
+	</span>
+	<div class="ds-alert-content">
+		<span class="ds-alert-title">Error</span>
+		<p class="ds-alert-text">{{.Error}}</p>
+	</div>
+</div>
+{{end}}

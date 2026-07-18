@@ -27,6 +27,18 @@ dapr:
   valkeyDB: "3"
   injectWorker: true    # Dapr sidecar injected into worker Jobs (events/state + clean shutdown)
 
+# harmostes-ui: self-service multi-tenant web interface (HTMX + Go templates).
+# Authenticated via Authentik forward-auth. Each user sees only workflows
+# labeled harmostes.dev/owner=<their-username>.
+ui:
+  enabled: true
+  image: ghcr.io/tibrezus/harmostes-ui:dev
+  serviceAccount: harmostes-ui
+  host: harmostes.rezus.cloud   # Gateway API HTTPRoute hostname (behind Authentik forward-auth)
+  resources:
+    requests: { cpu: 50m, memory: 64Mi }
+    limits:   { cpu: 500m, memory: 256Mi }
+
 # Observability via the rezuscloud/dapr fork: push traces+metrics+logs over OTLP
 # to SigNoz through a unified spec.observability.otel block, deployed per-pod via
 # dapr.io/sidecar-image. See llm-wiki: concepts/harmostes-observability.md and

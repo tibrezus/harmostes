@@ -2,3 +2,4 @@
 *.test
 vendor/
 harmostes-controller
+harmostes-ui

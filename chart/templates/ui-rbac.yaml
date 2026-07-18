@@ -1,0 +1,43 @@
+{{- if .Values.ui.enabled }}
+# RBAC for harmostes-ui: read-only access to Workflows + Jobs (Phase A).
+# Phase C will add Secrets CRUD (token management).
+# Isolation is code-enforced: the UI filters by harmostes.dev/owner label.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Values.ui.serviceAccount }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: harmostes
+    app.kubernetes.io/component: ui
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: harmostes-ui
+  namespace: {{ .Values.namespace }}
+rules:
+  # Read workflows (filtered by owner label in Go code)
+  - apiGroups: ["harmostes.dev"]
+    resources: ["workflows"]
+    verbs: ["get", "list", "watch"]
+  # Read jobs (run history, filtered by owner label)
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: harmostes-ui
+  namespace: {{ .Values.namespace }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.ui.serviceAccount }}
+    namespace: {{ .Values.namespace }}
+roleRef:
+  kind: Role
+  name: harmostes-ui
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}

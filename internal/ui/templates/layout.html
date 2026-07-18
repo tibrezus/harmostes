@@ -1,0 +1,68 @@
+{{- /* layout.html — base layout for harmostes-ui.
+     Data: { Page: string, Content: any, User: *Identity }
+     The page template is selected by the "Page" field and executed with "Content".
+*/ -}}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>harmostes — {{.Page}}</title>
+	<link rel="stylesheet" href="/static/css/app.css">
+	<link rel="stylesheet" href="/static/css/tokens.css">
+	<link rel="stylesheet" href="/static/css/components.css">
+	<script>
+		// Apply theme before paint to avoid flash.
+		(function() {
+			var t = localStorage.getItem('harmostes-theme') || 'dark';
+			if (t === 'dark') document.documentElement.classList.add('dark');
+		})();
+	</script>
+</head>
+<body>
+<div class="app-layout">
+	<!-- Sidebar -->
+	<aside class="ds-sidebar">
+		<div class="ds-sidebar-header">
+			<div class="ds-sidebar-logo">
+				<span class="ds-sidebar-logo-rezus">harmostes</span>
+			</div>
+		</div>
+		<nav class="ds-sidebar-nav" aria-label="Main navigation">
+			<a href="/workflows" class="ds-sidebar-link {{if eq .Page "workflows"}}ds-sidebar-link--active{{end}}">
+				<svg class="ds-sidebar-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M1 3h14v2H1V3zm0 4h14v2H1V7zm0 4h14v2H1v-2z"></path></svg>
+				Workflows
+			</a>
+			<a href="/tokens" class="ds-sidebar-link {{if eq .Page "tokens"}}ds-sidebar-link--active{{end}}">
+				<svg class="ds-sidebar-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1a3 3 0 00-3 3v2H4a1 1 0 00-1 1v6a1 1 0 001 1h8a1 1 0 001-1V7a1 1 0 00-1-1h-1V4a3 3 0 00-3-3zm-1 3a1 1 0 112 0v2H7V4z"></path></svg>
+				Tokens
+			</a>
+		</nav>
+		<div class="ds-sidebar-footer">
+			<span class="ds-sidebar-version">v0.7.0-dev</span>
+		</div>
+	</aside>
+
+	<!-- Main content -->
+	<main class="app-main">
+		<div class="page-header">
+			<span class="page-title">{{.Page}}</span>
+			<div style="display: flex; align-items: center; gap: 1rem;">
+				{{- if .User}}
+				<span class="user-badge">
+					<span class="ds-status-dot ds-status-dot--positive"></span>
+					<span class="user-badge-name">{{.User.Username}}</span>
+				</span>
+				{{- end}}
+				<button class="theme-toggle" onclick="document.documentElement.classList.toggle('dark'); localStorage.setItem('harmostes-theme', document.documentElement.classList.contains('dark') ? 'dark' : 'light');">
+					<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1a7 7 0 100 14A7 7 0 008 1zm0 2a5 5 0 110 10V3z"></path></svg>
+				</button>
+			</div>
+		</div>
+
+		{{.Content}}
+	</main>
+</div>
+<script src="/static/htmx.min.js"></script>
+</body>
+</html>

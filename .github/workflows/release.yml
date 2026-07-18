@@ -33,6 +33,9 @@ jobs:
           - target: worker
             dockerfile: Dockerfile.worker
             image: ghcr.io/tibrezus/harmostes-worker
+          - target: ui
+            dockerfile: Dockerfile.ui
+            image: ghcr.io/tibrezus/harmostes-ui
     steps:
       - name: Checkout (with .agents submodule for worker skills)
         uses: actions/checkout@v4
@@ -102,6 +105,7 @@ jobs:
           yq -i '.appVersion = strenv(V)' chart/Chart.yaml
           yq -i '.image.controller = "ghcr.io/tibrezus/harmostes-controller:" + strenv(V)' chart/values.yaml
           yq -i '.image.worker = "ghcr.io/tibrezus/harmostes-worker:" + strenv(V)' chart/values.yaml
+          yq -i '.ui.image = "ghcr.io/tibrezus/harmostes-ui:" + strenv(V)' chart/values.yaml
           echo "--- Chart.yaml (version/appVersion) ---"
           yq '.version, .appVersion' chart/Chart.yaml
           echo "--- values.yaml (image) ---"

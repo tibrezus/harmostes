@@ -15,7 +15,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Generate RIG
-        uses: rezuscloud/llm-wiki/.github/actions/repo-map@792d3404060b4b201ef78ba4396fdc33cc6eb47f
+        uses: tibrezus/llm-wiki/.github/actions/repo-map@2ebca7840afbb1850731f4d45fb47a97e5c7faf7
         with:
           language: go
           focus-package-prefixes: |

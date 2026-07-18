@@ -107,8 +107,8 @@ spec:
 
                 agent:
                   type: object
-                  required: [model, taskTemplate, gate]
                   properties:
+                    enabled: { type: boolean, default: true }     # false = deterministic-only (skip LLM)
                     model: { type: string }                    # zai/glm-5.2
                     skill: { type: string }                    # /skills/…/SKILL.md
                     tools: { type: array, items: { type: string } }

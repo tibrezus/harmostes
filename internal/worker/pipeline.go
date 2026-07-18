@@ -168,50 +168,59 @@ func Run(ctx context.Context, deps Deps, opts Options) (res Result, err error) {
 	prepSpan.End()
 
 	// ── 2. agent (framework-native: the harmostes primitive + gate) ───────────
-	actx, agentSpan := tracer.Start(runCtx, "agent")
-	gateCmd, gateArgs, gerr := deps.Plugins.Resolve(actx, wf.Spec.Agent.Gate.Plugin, "gate")
-	if gerr != nil {
-		return failPhase(actx, agentSpan, deps, name, "resolve gate plugin: "+gerr.Error(), gerr)
-	}
-	gateSpec, _ := json.Marshal(wf.Spec.Agent.Gate)
-	gate := GatePlugin{Name: wf.Spec.Agent.Gate.Plugin.Name, Command: gateCmd, Args: gateArgs, Env: envFor("gate", string(gateSpec)), ExtraEnv: opts.ExtraEnv}
+	// Deterministic-only mode: skip the LLM agent entirely. The prepare step
+	// (rig.json + model.c4 + Mermaid) already ran; deploy will push those
+	// deterministic artifacts without any LLM prose generation.
+	agentEnabled := wf.Spec.Agent.Enabled == nil || *wf.Spec.Agent.Enabled
+	if !agentEnabled {
+		logf("agent: disabled (deterministic-only mode) — skipping LLM step")
+		// Fall through to deploy; the deploy step sets status.
+	} else {
+		actx, agentSpan := tracer.Start(runCtx, "agent")
+		gateCmd, gateArgs, gerr := deps.Plugins.Resolve(actx, wf.Spec.Agent.Gate.Plugin, "gate")
+		if gerr != nil {
+			return failPhase(actx, agentSpan, deps, name, "resolve gate plugin: "+gerr.Error(), gerr)
+		}
+		gateSpec, _ := json.Marshal(wf.Spec.Agent.Gate)
+		gate := GatePlugin{Name: wf.Spec.Agent.Gate.Plugin.Name, Command: gateCmd, Args: gateArgs, Env: envFor("gate", string(gateSpec)), ExtraEnv: opts.ExtraEnv}
 
-	task, terr := deps.Tasks.Get(actx, wf.Spec.Agent.TaskTemplate)
-	if terr != nil {
-		return failPhase(actx, agentSpan, deps, name, "resolve task template: "+terr.Error(), terr)
-	}
-	// Scope the agent to THIS workflow's project only. A harmostes namespace runs
-	// many Workflows (one per project); without this, a generic task like "sync the
-	// projects under raw/arch/" would have the agent touch every project.
-	task = task + "\n\nSCOPE: this Workflow owns exactly ONE project: " + name + ". Work ONLY on " +
-		"raw/arch/" + name + "/, its model.c4, and wiki/entities/" + name + ".md " +
-		"(plus index.md/log.md). Do NOT read or modify any other project under " +
-		"raw/arch/ — those are owned by other Workflows."
-	maxFixes := wf.Spec.Agent.MaxFixes
-	if maxFixes == 0 {
-		maxFixes = 3
-	}
+		task, terr := deps.Tasks.Get(actx, wf.Spec.Agent.TaskTemplate)
+		if terr != nil {
+			return failPhase(actx, agentSpan, deps, name, "resolve task template: "+terr.Error(), terr)
+		}
+		// Scope the agent to THIS workflow's project only. A harmostes namespace runs
+		// many Workflows (one per project); without this, a generic task like "sync the
+		// projects under raw/arch/" would have the agent touch every project.
+		task = task + "\n\nSCOPE: this Workflow owns exactly ONE project: " + name + ". Work ONLY on " +
+			"raw/arch/" + name + "/, its model.c4, and wiki/entities/" + name + ".md " +
+			"(plus index.md/log.md). Do NOT read or modify any other project under " +
+			"raw/arch/ — those are owned by other Workflows."
+		maxFixes := wf.Spec.Agent.MaxFixes
+		if maxFixes == 0 {
+			maxFixes = 3
+		}
 
-	logf("agent: task=%q gate=%s maxFixes=%d", wf.Spec.Agent.TaskTemplate.Name, wf.Spec.Agent.Gate.Plugin.Name, maxFixes)
-	agentRes, aerr := deps.Agent.Run(actx, task, gate, maxFixes, logBridge(logf))
-	if aerr != nil {
-		return failPhase(actx, agentSpan, deps, name, "agent run: "+aerr.Error(), aerr)
-	}
-	agentSpan.SetAttributes(attribute.Int("harmostes.gate.attempts", agentRes.Attempts))
-	if !agentRes.Green {
-		msg := fmt.Sprintf("gate failed after %d evaluation(s)", agentRes.Attempts)
-		publish(actx, deps, wf, "onFailed", PluginResult{Status: "failed"})
-		patchStatus(actx, deps, name, func(s *v1alpha1.WorkflowStatus) {
-			s.GateStatus = "failed"
-			s.Message = msg
-			s.LastRunAt = nowMeta()
-		})
-		agentSpan.SetStatus(codes.Error, msg)
+		logf("agent: task=%q gate=%s maxFixes=%d", wf.Spec.Agent.TaskTemplate.Name, wf.Spec.Agent.Gate.Plugin.Name, maxFixes)
+		agentRes, aerr := deps.Agent.Run(actx, task, gate, maxFixes, logBridge(logf))
+		if aerr != nil {
+			return failPhase(actx, agentSpan, deps, name, "agent run: "+aerr.Error(), aerr)
+		}
+		agentSpan.SetAttributes(attribute.Int("harmostes.gate.attempts", agentRes.Attempts))
+		if !agentRes.Green {
+			msg := fmt.Sprintf("gate failed after %d evaluation(s)", agentRes.Attempts)
+			publish(actx, deps, wf, "onFailed", PluginResult{Status: "failed"})
+			patchStatus(actx, deps, name, func(s *v1alpha1.WorkflowStatus) {
+				s.GateStatus = "failed"
+				s.Message = msg
+				s.LastRunAt = nowMeta()
+			})
+			agentSpan.SetStatus(codes.Error, msg)
+			agentSpan.End()
+			return Result{Outcome: OutcomeFailed, Message: msg}, nil
+		}
+		logf("agent: gate GREEN after %d pass(es)", agentRes.Attempts)
 		agentSpan.End()
-		return Result{Outcome: OutcomeFailed, Message: msg}, nil
-	}
-	logf("agent: gate GREEN after %d pass(es)", agentRes.Attempts)
-	agentSpan.End()
+	} // end agent-enabled block
 
 	// ── 3. deploy (deterministic) ─────────────────────────────────────────────
 	dctx, deploySpan := tracer.Start(runCtx, "deploy")

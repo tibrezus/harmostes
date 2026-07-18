@@ -140,6 +140,7 @@ type PrepareSpec struct {
 
 // AgentSpec is the framework-native LLM step (NOT a plugin).
 type AgentSpec struct {
+	Enabled      *bool        `json:"enabled,omitempty"`  // nil/true = run, false = skip (deterministic-only)
 	Model        string       `json:"model"`              // e.g. zai/glm-5.2
 	Skill        string       `json:"skill"`              // path to SKILL.md
 	Tools        []string     `json:"tools,omitempty"`    // tool allowlist

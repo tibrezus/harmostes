@@ -91,20 +91,29 @@ type WorkspaceRepoSpec struct {
 
 // SourceSpec is what the workflow monitors.
 type SourceSpec struct {
-	Kind     string      `json:"kind"`           // git | schedule | event | webhook
-	Repo     string      `json:"repo,omitempty"` // Flux GitRepository name, or direct URL
-	Branch   string      `json:"branch,omitempty"`
-	Revision string      `json:"revision,omitempty"` // pin (git)
-	Schedule string      `json:"schedule,omitempty"` // cron (schedule)
-	Topic    string      `json:"topic,omitempty"`    // inbound event (event)
-	Language string      `json:"language,omitempty"` // lc4: go/zig/… (passed to prepare)
-	Fork     *ForkSource `json:"fork,omitempty"`     // fork-maintenance: the fork to sync into
+	Kind     string       `json:"kind"`            // git | schedule | event | webhook
+	Repo     string       `json:"repo,omitempty"`  // Flux GitRepository name, or direct URL
+	Branch   string       `json:"branch,omitempty"`
+	Revision string       `json:"revision,omitempty"` // pin (git)
+	Schedule string       `json:"schedule,omitempty"` // cron (schedule)
+	Topic    string       `json:"topic,omitempty"`   // inbound event (event)
+	Language string       `json:"language,omitempty"` // lc4: go/zig/… (passed to prepare)
+	Fork     *ForkSource   `json:"fork,omitempty"`     // fork-maintenance: the fork to sync into
+	Webhook  *WebhookSpec  `json:"webhook,omitempty"`  // webhook trigger config (HMAC secret + host URL)
 }
 
 // ForkSource identifies the fork a fork-maintenance workflow keeps in sync.
 type ForkSource struct {
 	URL    string `json:"url"`
 	Branch string `json:"branch"`
+}
+
+// WebhookSpec configures a webhook trigger for a workflow. When enabled,
+// external git hosts (GitHub, GitLab, Forgejo) send push events to the
+// webhook endpoint, and the controller schedules an immediate run.
+type WebhookSpec struct {
+	Secret string `json:"secret"` // HMAC secret for verifying webhook signatures (stored in Secret, never in CR spec)
+	URL    string `json:"url"`    // Git host URL (for signature verification: github.com, gitlab.com, forgejo host)
 }
 
 // PrepareSpec runs a deterministic plugin that produces an artifact.

@@ -28,6 +28,12 @@ rules:
   - apiGroups: ["batch"]
     resources: ["jobs"]
     verbs: ["get", "list", "watch"]
+  # Read pods + pod logs (Phase E: run detail log viewer). Pods are looked up
+  # by job-name label; logs are streamed from the worker container. Access is
+  # gated by the workflow owner-label check in the run-detail handler.
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list"]
   # Per-user git token Secrets (Phase C). The UI creates/lists/deletes token
   # secrets labeled harmostes.dev/owner=<username> + harmostes.dev/token=<platform>.
   # Code-enforced isolation: the Go handlers filter by owner label and never

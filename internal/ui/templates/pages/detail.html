@@ -1,6 +1,6 @@
 {{define "pages/detail.html"}}
 {{$wf := .Workflow}}
-<div style="margin-bottom: 1.5rem;">
+<div style="margin-bottom: 1.5rem; display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;">
 	<span style="font-family: var(--font-mono); font-size: 1.5rem; color: var(--fg);">{{$wf.Name}}</span>
 	{{if $wf.Spec.Disabled}}
 	<span class="status-badge status-badge--muted">Disabled</span>
@@ -11,6 +11,18 @@
 	{{else}}
 	<span class="status-badge status-badge--muted">Unknown</span>
 	{{end}}
+	<div style="margin-left: auto; display: flex; gap: 0.5rem;">
+		<form action="/workflows/{{$wf.Name}}/trigger" method="POST" style="display: inline;">
+			<button type="submit" class="ds-btn ds-btn--primary ds-btn--sm" {{if $wf.Spec.Disabled}}disabled{{end}}>Trigger Run</button>
+		</form>
+		<form action="/workflows/{{$wf.Name}}/toggle" method="POST" style="display: inline;">
+			<button type="submit" class="ds-btn ds-btn--secondary ds-btn--sm">{{if $wf.Spec.Disabled}}Enable{{else}}Disable{{end}}</button>
+		</form>
+		<form action="/workflows/{{$wf.Name}}/delete" method="POST" style="display: inline;"
+			onsubmit="return confirm('Delete workflow {{$wf.Name}}? This cannot be undone.')">
+			<button type="submit" class="ds-btn ds-btn--danger ds-btn--sm">Delete</button>
+		</form>
+	</div>
 </div>
 
 <div class="detail-grid">

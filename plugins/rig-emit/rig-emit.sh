@@ -69,6 +69,14 @@ else
   log "rig-to-c4.py not found — skipping model.c4 generation"
 fi
 
+# Generate Mermaid diagrams deterministically from the C4 model.
+# The full artifact set (rig.json + model.c4 + *.mmd) is deterministic —
+# the LLM agent never touches these files.
+if [ -f "$MODEL_FILE" ]; then
+  log "generating Mermaid diagrams (deterministic, from model.c4)…"
+  likec4 gen mermaid -o "$DEST_DIR" "$DEST_DIR" 2>&1 | tail -1 || log "WARN: mermaid generation failed (non-fatal)"
+fi
+
 DEST_FILE="$DEST_DIR/rig.json"
 
 # Compute the RIG hash for deterministic skip (stored in Workflow status by the

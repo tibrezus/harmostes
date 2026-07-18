@@ -68,6 +68,15 @@ RUN curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-x86_64-${Z
     && rm /tmp/zig.tar.xz \
     && zig version
 
+# GitHub CLI — for platform wiki offloading (push low-level details to the
+# project's GitHub wiki via `gh api` or `git clone <repo>.wiki.git`).
+ARG GH_VERSION=2.63.2
+RUN curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz" \
+        -o /tmp/gh.tar.gz \
+    && tar -xzf /tmp/gh.tar.gz -C /tmp \
+    && mv "/tmp/gh_${GH_VERSION}_linux_amd64/bin/gh" /usr/local/bin/gh \
+    && rm -rf /tmp/gh*
+
 # The framework binaries
 COPY --from=build /out/harmostes-worker /usr/local/bin/harmostes-worker
 COPY --from=build /out/harmostes-agent  /usr/local/bin/harmostes-agent
@@ -78,6 +87,7 @@ COPY plugins/rig-emit/rig-emit.sh  /usr/local/lib/harmostes/plugins/rig-emit.sh
 COPY plugins/rig-emit/rig        /usr/local/lib/harmostes/plugins/rig
 COPY plugins/rig-emit/emit-rig.py  /usr/local/lib/harmostes/plugins/emit-rig.py
 COPY plugins/rig-emit/emit-rig.sh  /usr/local/lib/harmostes/plugins/emit-rig.sh
+COPY plugins/rig-emit/rig-to-c4.py /usr/local/lib/harmostes/plugins/rig-to-c4.py
 COPY plugins/wiki-lint/wiki-lint.sh /usr/local/lib/harmostes/plugins/wiki-lint.sh
 COPY plugins/git-push/git-push.sh   /usr/local/lib/harmostes/plugins/git-push.sh
 RUN chmod +x /usr/local/lib/harmostes/plugins/*.sh

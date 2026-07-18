@@ -1,0 +1,29 @@
+name: Generate RIG
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  rig:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Generate RIG
+        uses: rezuscloud/llm-wiki/.github/actions/repo-map@v1
+        with:
+          language: go
+          focus-package-prefixes: |
+            github.com/tibrezus/harmostes/cmd
+            github.com/tibrezus/harmostes/internal
+
+      - name: Upload RIG to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: repo-map.json
+          fail_on_unmatched_files: true

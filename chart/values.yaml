@@ -39,6 +39,9 @@ observability:
   otlpInsecure: true   # GetIsSecure() defaults to TLS; cluster-internal collector uses plain gRPC
   samplingRate: "0.5"  # Dapr tracing sample fraction (traces are rare; bump for debugging)
   # Opt the controller Deployment into the forked daprd sidecar (decision #5).
-  # The controller app does not itself use Dapr building blocks, so the sidecar
+  # The controller app can use Dapr building blocks for inbound events (webhooks)
+  # and outbound event notification (pub/sub). Enable for event-driven workflows.
+  # controllerSidecar: false
+  # (Note: the controller app does not itself use Dapr building blocks, so the sidecar
   # is off by default; enable for the monitor's daprd runtime metrics.
-  controllerSidecar: false
+  controllerSidecar: true

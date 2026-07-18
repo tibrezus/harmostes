@@ -110,10 +110,24 @@ type ForkSource struct {
 
 // WebhookSpec configures a webhook trigger for a workflow. When enabled,
 // external git hosts (GitHub, GitLab, Forgejo) send push events to the
-// webhook endpoint, and the controller schedules an immediate run.
+// controller's webhook endpoint, and the controller schedules an immediate run.
+//
+// Two modes:
+//   1. **direct** (testing): HMAC secret specified directly in spec (NOT recommended)
+//   2. **secretRef** (production): Secret reference (from Kubernetes Secret)
+//
+// Controller resolves secretRef and passes secret to HMAC verification.
+// This keeps secrets out of git (GitOps-friendly).
 type WebhookSpec struct {
-	Secret string `json:"secret"` // HMAC secret for verifying webhook signatures (stored in Secret, never in CR spec)
-	URL    string `json:"url"`    // Git host URL (for signature verification: github.com, gitlab.com, forgejo host)
+	Secret     string      `json:"secret,omitempty"`        // HMAC secret (testing only, NOT recommended for production)
+	SecretRef  *SecretRef   `json:"secretRef,omitempty"`   // Secret reference (production)
+	URL        string      `json:"url"`               // Git host URL (for signature verification)
+}
+
+// SecretRef references a Kubernetes Secret by name + key.
+type SecretRef struct {
+	Name string `json:"name"` // Secret name
+	Key   string `json:"key"`   // Secret key
 }
 
 // PrepareSpec runs a deterministic plugin that produces an artifact.

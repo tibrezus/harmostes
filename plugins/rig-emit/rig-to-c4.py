@@ -131,6 +131,113 @@ def extract_doc_comment(filepath: Path, language: str) -> str:
     )
 
 
+# ── Exported symbol extraction ────────────────────────────────────────
+
+# Caps per file to keep model.c4 readable. A file with 100 exports
+# would bloat the model without helping an agent find reuse targets.
+_MAX_EXPORTS = 20
+
+
+def _extract_go_exports(raw: str) -> list[str]:
+    """Extract exported Go symbols (capitalized func/type/var/const)."""
+    exports: list[str] = []
+    for line in raw.split("\n"):
+        stripped = line.strip()
+        # func ExportedName(
+        if m := re.match(r"^func\s+(?:\([^)]*\)\s+)?([A-Z][A-Za-z0-9_]*)", stripped):
+            exports.append(f"func {m.group(1)}")
+        # type ExportedName struct/interface/...
+        elif m := re.match(r"^type\s+([A-Z][A-Za-z0-9_]*)", stripped):
+            exports.append(f"type {m.group(1)}")
+        # var/const ExportedName (block or single)
+        elif m := re.match(r"^(?:var|const)\s+([A-Z][A-Za-z0-9_]*)", stripped):
+            exports.append(m.group(1))
+        if len(exports) >= _MAX_EXPORTS:
+            break
+    return exports
+
+
+def _extract_zig_exports(raw: str) -> list[str]:
+    """Extract exported Zig symbols (pub fn, pub const, pub var)."""
+    exports: list[str] = []
+    for line in raw.split("\n"):
+        stripped = line.strip()
+        if m := re.match(r"^pub\s+fn\s+([A-Za-z0-9_]*)", stripped):
+            exports.append(f"fn {m.group(1)}")
+        elif m := re.match(r"^pub\s+const\s+([A-Za-z0-9_]*)", stripped):
+            # Distinguish struct/type aliases from plain constants
+            if "struct" in stripped or "type" in stripped.lower():
+                exports.append(f"type {m.group(1)}")
+            else:
+                exports.append(m.group(1))
+        elif m := re.match(r"^pub\s+var\s+([A-Za-z0-9_]*)", stripped):
+            exports.append(f"var {m.group(1)}")
+        if len(exports) >= _MAX_EXPORTS:
+            break
+    return exports
+
+
+def _extract_python_exports(raw: str) -> list[str]:
+    """Extract module-level Python def/class/async def."""
+    exports: list[str] = []
+    for line in raw.split("\n"):
+        # Module-level only: no leading whitespace
+        if line and not line[0].isspace():
+            stripped = line.strip()
+            if m := re.match(r"^(?:async\s+)?def\s+([A-Za-z0-9_]*)", stripped):
+                exports.append(f"def {m.group(1)}")
+            elif m := re.match(r"^class\s+([A-Za-z0-9_]*)", stripped):
+                exports.append(f"class {m.group(1)}")
+        if len(exports) >= _MAX_EXPORTS:
+            break
+    return exports
+
+
+def _extract_c_exports(raw: str) -> list[str]:
+    """Extract C/CUDA function declarations (non-static, name before '(')."""
+    exports: list[str] = []
+    for line in raw.split("\n"):
+        stripped = line.strip()
+        # Skip preprocessor, comments, static, blank lines
+        if (not stripped or stripped.startswith("#") or stripped.startswith("//")
+                or stripped.startswith("/*") or stripped.startswith("*")):
+            continue
+        # Match: return-type function-name(...  — exclude static/inline-only
+        if "(" in stripped and not stripped.startswith("static"):
+            # Extract the word immediately before the first '('
+            if m := re.search(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(", stripped):
+                name = m.group(1)
+                # Filter out C keywords that appear before '('
+                if name not in ("if", "for", "while", "switch", "return",
+                                "sizeof", "typedef", "extern", "struct"):
+                    exports.append(f"fn {name}")
+        if len(exports) >= _MAX_EXPORTS:
+            break
+    return exports
+
+
+def extract_exports(filepath: Path, language: str) -> list[str]:
+    """Extract exported function/type names from a source file.
+
+    Returns a list of strings like ['fn ParseConfig', 'type Config'].
+    Empty list if the file doesn't exist or the language is unsupported.
+    """
+    try:
+        raw = filepath.read_text(encoding="utf-8", errors="replace")
+    except (OSError, UnicodeDecodeError):
+        return []
+
+    if language == "go":
+        return _extract_go_exports(raw)
+    if language == "zig":
+        return _extract_zig_exports(raw)
+    if language == "python":
+        return _extract_python_exports(raw)
+    if language in ("c", "cuda", "cpp", "c++"):
+        return _extract_c_exports(raw)
+    return []
+
+
 def sanitize_for_c4(text: str) -> str:
     """Sanitize text for safe embedding in LikeC4 single-quoted strings.
 
@@ -311,32 +418,42 @@ def generate_c4(rig: dict, source_dir: Path | None) -> str:
         lines.append(f"    {c4_id} = container '{c_name}' {{")
         lines.append(f"      description '{container_desc}'")
 
-        # Nested components: source files with doc comments
-        files_with_comments = 0
-        files_without_comments = 0
+        # Nested components: source files with doc comments or exports
+        files_rendered = 0
+        files_without_anything = 0
         for sf in srcs:
             sf_path = source_dir / sf if source_dir else Path(sf)
             comment = ""
+            exports: list[str] = []
             if source_dir and sf_path.exists():
                 comment = extract_doc_comment(sf_path, c_lang)
+                exports = extract_exports(sf_path, c_lang)
 
-            if comment:
+            # Render the file as a C4 component if it has a doc comment OR exports.
+            # Exports-only files are valuable: they show the API surface even when
+            # the developer wrote no top-of-file doc comment.
+            if comment or exports:
                 sf_ident = unique_ident(Path(sf).stem, used_idents)
-                comment_trunc = sanitize_for_c4(truncate(comment))
                 lines.append(f"")
                 lines.append(f"      // {sf}")
+                if exports:
+                    lines.append(f"      // Exports: {', '.join(exports)}")
                 lines.append(f"      {sf_ident} = component '{Path(sf).name}' {{")
-                lines.append(f"        description '{comment_trunc}'")
+                if comment:
+                    lines.append(f"        description '{sanitize_for_c4(truncate(comment))}'")
+                else:
+                    lines.append(f"        description 'No doc comment. Exports: {', '.join(exports)}'")
                 lines.append(f"      }}")
-                files_with_comments += 1
+                files_rendered += 1
             else:
-                files_without_comments += 1
+                files_without_anything += 1
 
-        if files_without_comments:
-            lines.append(f"      // {files_without_comments} file(s) without doc comments: "
+        if files_without_anything:
+            lines.append(f"      // {files_without_anything} file(s) without doc comments or exports: "
                          + ", ".join(Path(sf).name for sf in srcs if not (
                              source_dir and (source_dir / sf).exists() and
-                             extract_doc_comment(source_dir / sf, c_lang)
+                             (extract_doc_comment(source_dir / sf, c_lang)
+                              or extract_exports(source_dir / sf, c_lang))
                          ))[:200])
 
         lines.append("    }")
@@ -380,12 +497,15 @@ def generate_c4(rig: dict, source_dir: Path | None) -> str:
         c4_id = c4_ids[c["id"]]
         srcs = c.get("source_files", [])
         # Only create a component view if there are nested elements
-        # (files with doc comments). We check if any file has a comment.
+        # (files with doc comments or exports).
         has_nested = False
         if source_dir:
             for sf in srcs:
                 sf_path = source_dir / sf
-                if sf_path.exists() and extract_doc_comment(sf_path, c.get("programming_language", "")):
+                lang = c.get("programming_language", "")
+                if sf_path.exists() and (
+                    extract_doc_comment(sf_path, lang) or extract_exports(sf_path, lang)
+                ):
                     has_nested = True
                     break
         if has_nested and len(srcs) <= 30:

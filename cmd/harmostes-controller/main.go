@@ -19,6 +19,7 @@ import (
 
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
@@ -103,9 +104,20 @@ func main() {
 			os.Exit(1)
 		}
 
+		// Create a direct (non-cached) client for webhook secret resolution.
+		// The manager's cached client uses an informer that needs list+watch on
+		// all secrets in the namespace — a broader permission than necessary.
+		// A direct client needs only `get` on secrets and avoids informer sync
+		// delays on the webhook hot path.
+		webhookClient, err := client.New(mgr.GetConfig(), client.Options{Scheme: mgr.GetScheme()})
+		if err != nil {
+			setupLog("failed to create webhook client", err)
+			os.Exit(1)
+		}
+
 		// Create webhook mux
 		webhookMux := http.NewServeMux()
-		webhookHandler := webhook.NewHandler(mgr.GetClient(), ctrl.Log.WithName("webhook"))
+		webhookHandler := webhook.NewHandler(webhookClient, ctrl.Log.WithName("webhook"))
 
 		// Register routes: /webhook/{workflow-name}
 		webhookMux.HandleFunc("/webhook/", func(w http.ResponseWriter, req *http.Request) {

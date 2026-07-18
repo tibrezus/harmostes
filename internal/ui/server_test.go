@@ -16,7 +16,12 @@ func TestExtractIdentity_AuthentikHeaders(t *testing.T) {
 		wantNil  bool
 	}{
 		{
-			name:     "preferred username header",
+			name:     "authentik username header (2026.x)",
+			headers:  map[string]string{"X-Authentik-Username": "alice"},
+			wantUser: "alice",
+		},
+		{
+			name:     "preferred username header (legacy)",
 			headers:  map[string]string{"X-Forwarded-Preferred-Username": "alice"},
 			wantUser: "alice",
 		},
@@ -36,7 +41,16 @@ func TestExtractIdentity_AuthentikHeaders(t *testing.T) {
 			wantNil: true,
 		},
 		{
-			name: "with email and groups",
+			name: "with email and groups (authentik pipe-separated)",
+			headers: map[string]string{
+				"X-Authentik-Username": "carol",
+				"X-Authentik-Email":    "carol@example.com",
+				"X-Authentik-Groups":   "admins|users",
+			},
+			wantUser: "carol",
+		},
+		{
+			name: "with email and groups (legacy comma-separated)",
 			headers: map[string]string{
 				"X-Forwarded-Preferred-Username": "carol",
 				"X-Forwarded-Email":              "carol@example.com",
@@ -71,9 +85,10 @@ func TestExtractIdentity_AuthentikHeaders(t *testing.T) {
 }
 
 func TestExtractIdentity_Groups(t *testing.T) {
+	// Authentik pipe-separated groups
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Header.Set("X-Forwarded-Preferred-Username", "dave")
-	req.Header.Set("X-Forwarded-Groups", "admins, developers, ")
+	req.Header.Set("X-Authentik-Username", "dave")
+	req.Header.Set("X-Authentik-Groups", "admins|developers|")
 
 	id := extractIdentity(req)
 	if id == nil {
@@ -84,6 +99,22 @@ func TestExtractIdentity_Groups(t *testing.T) {
 	}
 	if id.Groups[0] != "admins" || id.Groups[1] != "developers" {
 		t.Errorf("groups = %v, want [admins developers]", id.Groups)
+	}
+
+	// Legacy comma-separated groups
+	req2 := httptest.NewRequest(http.MethodGet, "/", nil)
+	req2.Header.Set("X-Forwarded-Preferred-Username", "eve")
+	req2.Header.Set("X-Forwarded-Groups", "admins, developers, ")
+
+	id2 := extractIdentity(req2)
+	if id2 == nil {
+		t.Fatal("expected identity")
+	}
+	if len(id2.Groups) != 2 {
+		t.Fatalf("expected 2 groups, got %d: %v", len(id2.Groups), id2.Groups)
+	}
+	if id2.Groups[0] != "admins" || id2.Groups[1] != "developers" {
+		t.Errorf("groups = %v, want [admins developers]", id2.Groups)
 	}
 }
 
@@ -114,7 +145,7 @@ func TestAuthMiddleware_PassesAuthenticated(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/workflows", nil)
-	req.Header.Set("X-Forwarded-Preferred-Username", "alice")
+	req.Header.Set("X-Authentik-Username", "alice")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 

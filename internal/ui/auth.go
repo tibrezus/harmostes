@@ -19,15 +19,21 @@ type Identity struct {
 }
 
 // authMiddleware extracts the user identity from Authentik forward-auth headers.
-// Authentik's proxy provider injects these headers on every authenticated
-// request:
+// Authentik's proxy outpost (2026.x) injects X-Authentik-* headers on every
+// authenticated request:
 //
-//	X-Forwarded-Preferred-Username  — the user's username (primary identity)
-//	X-Forwarded-Email               — the user's email
-//	X-Forwarded-Groups              — comma-separated group list
+//	X-Authentik-Username  — the user's username (primary identity)
+//	X-Authentik-Email     — the user's email
+//	X-Authentik-Groups    — pipe-separated group list
 //
-// If no identity header is present, the request is rejected with 401. In
-// development (without Authentik), set HARMOSTES_DEV_USER to bypass.
+// Older forward-auth setups and oauth2-proxy use X-Forwarded-* variants:
+//
+//	X-Forwarded-Preferred-Username / X-Forwarded-User  — username
+//	X-Forwarded-Email                                 — email
+//	X-Forwarded-Groups                                — comma-separated groups
+//
+// Both sets are accepted. If no identity header is present, the request is
+// rejected with 401. In development (without Authentik), use X-Harmostes-Dev-User.
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id := extractIdentity(r)
@@ -45,10 +51,25 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 // extractIdentity reads Authentik forward-auth headers, or falls back to
 // HARMOSTES_DEV_USER for local development. Returns nil if no identity found.
 func extractIdentity(r *http.Request) *Identity {
-	// Authentik forward-auth headers
-	username := r.Header.Get("X-Forwarded-Preferred-Username")
+	// Authentik proxy outpost headers (2026.x)
+	username := r.Header.Get("X-Authentik-Username")
+	email := r.Header.Get("X-Authentik-Email")
+	groupsRaw := r.Header.Get("X-Authentik-Groups")
+	groupSep := "|" // Authentik uses pipe separator
+
+	// Fallback: standard forward-auth headers (oauth2-proxy, older Authentik)
+	if username == "" {
+		username = r.Header.Get("X-Forwarded-Preferred-Username")
+	}
 	if username == "" {
 		username = r.Header.Get("X-Forwarded-User")
+	}
+	if email == "" {
+		email = r.Header.Get("X-Forwarded-Email")
+	}
+	if groupsRaw == "" {
+		groupsRaw = r.Header.Get("X-Forwarded-Groups")
+		groupSep = "," // X-Forwarded-Groups uses comma
 	}
 
 	// Development override (no Authentik in local dev)
@@ -59,10 +80,9 @@ func extractIdentity(r *http.Request) *Identity {
 		return nil
 	}
 
-	email := r.Header.Get("X-Forwarded-Email")
 	groups := []string{}
-	if g := r.Header.Get("X-Forwarded-Groups"); g != "" {
-		for _, grp := range strings.Split(g, ",") {
+	if groupsRaw != "" {
+		for _, grp := range strings.Split(groupsRaw, groupSep) {
 			grp = strings.TrimSpace(grp)
 			if grp != "" {
 				groups = append(groups, grp)

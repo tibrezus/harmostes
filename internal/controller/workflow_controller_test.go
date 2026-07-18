@@ -545,3 +545,95 @@ func TestHasActiveJobIgnoresOtherOwner(t *testing.T) {
 		t.Error("should not find bob's job when querying for alice's workflow")
 	}
 }
+
+// TestWorkerEnvTokenRef is the Phase C acceptance test: when a Workflow
+// specifies workspaceRepo.tokenRef, the worker Job's HARMOSTES_GIT_TOKEN env
+// var references that Secret (per-user token) instead of the shared cluster
+// secret. A workflow WITHOUT tokenRef falls back to the shared secret.
+func TestWorkerEnvTokenRef(t *testing.T) {
+	r := &WorkflowReconciler{}
+
+	t.Run("with tokenRef uses per-user secret", func(t *testing.T) {
+		wf := &v1alpha1.Workflow{
+			Spec: v1alpha1.WorkflowSpec{
+				WorkspaceRepo: &v1alpha1.WorkspaceRepoSpec{
+					URL: "https://github.com/rezuscloud/wiki.git",
+					TokenRef: &v1alpha1.SecretRef{
+						Name: "alice-github-abcd1234",
+						Key:  "token",
+					},
+				},
+			},
+		}
+
+		env := r.workerEnv(wf)
+		var gitTokenVar *corev1.EnvVar
+		for i := range env {
+			if env[i].Name == "HARMOSTES_GIT_TOKEN" {
+				gitTokenVar = &env[i]
+				break
+			}
+		}
+		if gitTokenVar == nil {
+			t.Fatal("HARMOSTES_GIT_TOKEN env var not found")
+		}
+		if gitTokenVar.ValueFrom == nil || gitTokenVar.ValueFrom.SecretKeyRef == nil {
+			t.Fatal("expected SecretKeyRef for per-user token")
+		}
+		if gitTokenVar.ValueFrom.SecretKeyRef.Name != "alice-github-abcd1234" {
+			t.Errorf("secret name = %q, want alice-github-abcd1234", gitTokenVar.ValueFrom.SecretKeyRef.Name)
+		}
+		if gitTokenVar.ValueFrom.SecretKeyRef.Key != "token" {
+			t.Errorf("secret key = %q, want token", gitTokenVar.ValueFrom.SecretKeyRef.Key)
+		}
+	})
+
+	t.Run("without tokenRef uses shared cluster secret", func(t *testing.T) {
+		wf := &v1alpha1.Workflow{
+			Spec: v1alpha1.WorkflowSpec{
+				WorkspaceRepo: &v1alpha1.WorkspaceRepoSpec{
+					URL: "https://github.com/rezuscloud/wiki.git",
+				},
+			},
+		}
+
+		env := r.workerEnv(wf)
+		var gitTokenVar *corev1.EnvVar
+		for i := range env {
+			if env[i].Name == "HARMOSTES_GIT_TOKEN" {
+				gitTokenVar = &env[i]
+				break
+			}
+		}
+		if gitTokenVar == nil {
+			t.Fatal("HARMOSTES_GIT_TOKEN env var not found")
+		}
+		if gitTokenVar.ValueFrom == nil || gitTokenVar.ValueFrom.SecretKeyRef == nil {
+			t.Fatal("expected SecretKeyRef for shared token")
+		}
+		if gitTokenVar.ValueFrom.SecretKeyRef.Name != "harmostes-github-token" {
+			t.Errorf("secret name = %q, want harmostes-github-token (shared)", gitTokenVar.ValueFrom.SecretKeyRef.Name)
+		}
+	})
+
+	t.Run("nil workspaceRepo uses shared cluster secret", func(t *testing.T) {
+		wf := &v1alpha1.Workflow{
+			Spec: v1alpha1.WorkflowSpec{},
+		}
+
+		env := r.workerEnv(wf)
+		var gitTokenVar *corev1.EnvVar
+		for i := range env {
+			if env[i].Name == "HARMOSTES_GIT_TOKEN" {
+				gitTokenVar = &env[i]
+				break
+			}
+		}
+		if gitTokenVar == nil {
+			t.Fatal("HARMOSTES_GIT_TOKEN env var not found")
+		}
+		if gitTokenVar.ValueFrom.SecretKeyRef.Name != "harmostes-github-token" {
+			t.Errorf("secret name = %q, want harmostes-github-token (shared)", gitTokenVar.ValueFrom.SecretKeyRef.Name)
+		}
+	})
+}

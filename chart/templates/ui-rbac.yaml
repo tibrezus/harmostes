@@ -1,7 +1,8 @@
 {{- if .Values.ui.enabled }}
-# RBAC for harmostes-ui: read-only access to Workflows + Jobs (Phase A).
-# Phase C will add Secrets CRUD (token management).
+# RBAC for harmostes-ui: read-only Workflows + Jobs (Phase A),
+# Secrets CRUD for per-user token management (Phase C).
 # Isolation is code-enforced: the UI filters by harmostes.dev/owner label.
+# Token VALUES are never returned to the browser (write-only secrets).
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -26,6 +27,16 @@ rules:
   - apiGroups: ["batch"]
     resources: ["jobs"]
     verbs: ["get", "list", "watch"]
+  # Per-user git token Secrets (Phase C). The UI creates/lists/deletes token
+  # secrets labeled harmostes.dev/owner=<username> + harmostes.dev/token=<platform>.
+  # Code-enforced isolation: the Go handlers filter by owner label and never
+  # return secret values to the browser. K8s RBAC cannot scope secrets by label
+  # (resourceNames are fixed at deploy time), so the Role grants access to all
+  # secrets in the namespace — the owner-label filter in the handlers is the
+  # actual security boundary.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "create", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

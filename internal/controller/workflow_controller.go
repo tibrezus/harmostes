@@ -277,6 +277,25 @@ func (r *WorkflowReconciler) buildDaprAnnotations(wf *v1alpha1.Workflow) map[str
 // (Phase 2: OTEL_EXPORTER_OTLP_ENDPOINT enables the worker's own pipeline spans +
 // traceparent join; an empty endpoint disables telemetry).
 func (r WorkflowReconciler) workerEnv(wf *v1alpha1.Workflow) []corev1.EnvVar {
+	// Default git token: shared cluster secret.
+	gitToken := corev1.EnvVar{
+		Name:      "HARMOSTES_GIT_TOKEN",
+		ValueFrom: secretRef("harmostes-github-token", "token"),
+	}
+	// Phase C: if the workflow specifies a per-user tokenRef, use that instead.
+	// This is how multi-tenant workflows get their own git credentials.
+	if wf.Spec.WorkspaceRepo != nil && wf.Spec.WorkspaceRepo.TokenRef != nil {
+		gitToken = corev1.EnvVar{
+			Name: "HARMOSTES_GIT_TOKEN",
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: wf.Spec.WorkspaceRepo.TokenRef.Name},
+					Key:                  wf.Spec.WorkspaceRepo.TokenRef.Key,
+				},
+			},
+		}
+	}
+
 	return []corev1.EnvVar{
 		{Name: "HARMOSTES_WORKFLOW", Value: wf.Name},
 		{Name: "HARMOSTES_NAMESPACE", Value: wf.Namespace},
@@ -285,7 +304,7 @@ func (r WorkflowReconciler) workerEnv(wf *v1alpha1.Workflow) []corev1.EnvVar {
 		{Name: "DAPR_HTTP_ENDPOINT", Value: "http://127.0.0.1:3500"},
 		{Name: "OTEL_EXPORTER_OTLP_ENDPOINT", Value: r.OTLPEndpoint},
 		{Name: "OTEL_EXPORTER_OTLP_INSECURE", Value: strconv.FormatBool(r.OTLPInsecure)},
-		{Name: "HARMOSTES_GIT_TOKEN", ValueFrom: secretRef("harmostes-github-token", "token")},
+		gitToken,
 		{Name: "HARMOSTES_RZC_USERNAME", ValueFrom: secretRef("harmostes-rzc-token", "username")},
 		{Name: "HARMOSTES_RZC_PASSWORD", ValueFrom: secretRef("harmostes-rzc-token", "password")},
 		{Name: "LITELLM_URL", ValueFrom: secretRef("harmostes-litellm-token", "url")},

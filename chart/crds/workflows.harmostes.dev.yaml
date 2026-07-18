@@ -89,6 +89,12 @@ spec:
                     branch: { type: string }
                     dir: { type: string }          # checkout location under WORKDIR (default "repo")
                     shadow: { type: string }       # push here instead (parallel/dry-run)
+                    tokenRef:                      # per-user git token (Phase C). Overrides the shared cluster secret.
+                      type: object
+                      required: [name, key]
+                      properties:
+                        name: { type: string }     # Secret name
+                        key: { type: string }      # Secret key
 
                 prepare:
                   type: object

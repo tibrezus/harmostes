@@ -83,10 +83,11 @@ type WorkflowSpec struct {
 // deploy plugin pushes it. For llm-wiki this is the wiki repo; for fork-
 // maintenance, the fork.
 type WorkspaceRepoSpec struct {
-	URL    string `json:"url"`              // git URL (may embed a token for HTTPS)
-	Branch string `json:"branch"`           // branch to fetch + (by default) push
-	Dir    string `json:"dir,omitempty"`    // checkout location under WORKDIR (default "repo")
-	Shadow string `json:"shadow,omitempty"` // if set, push to this branch instead (parallel/dry-run)
+	URL      string     `json:"url"`                // git URL (may embed a token for HTTPS)
+	Branch   string     `json:"branch"`             // branch to fetch + (by default) push
+	Dir      string     `json:"dir,omitempty"`      // checkout location under WORKDIR (default "repo")
+	Shadow   string     `json:"shadow,omitempty"`   // if set, push to this branch instead (parallel/dry-run)
+	TokenRef *SecretRef `json:"tokenRef,omitempty"` // per-user git token (Phase C). If set, overrides the shared cluster secret.
 }
 
 // SourceSpec is what the workflow monitors.

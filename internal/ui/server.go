@@ -69,6 +69,11 @@ func (s *Server) Routes() http.Handler {
 	pages.HandleFunc("GET /workflows", s.handleWorkflowList)
 	pages.HandleFunc("GET /workflows/{name}", s.handleWorkflowDetail)
 
+	// Token management (Phase C)
+	pages.HandleFunc("GET /tokens", s.handleTokenList)
+	pages.HandleFunc("POST /tokens", s.handleTokenCreate)
+	pages.HandleFunc("POST /tokens/{name}/delete", s.handleTokenDelete)
+
 	mux.Handle("/", s.authMiddleware(pages))
 
 	return mux
@@ -134,6 +139,7 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, page string, dat
 	layout := s.templates.Lookup("layout.html")
 	if err := layout.Execute(w, map[string]any{
 		"Page":    pageTitle(page),
+		"PageKey": pageKey(page),
 		"Content": template.HTML(buf.String()),
 		"User":    user,
 	}); err != nil {
@@ -206,10 +212,24 @@ func pageTitle(page string) string {
 		return "Workflows"
 	case "pages/detail.html":
 		return "Workflow Detail"
+	case "pages/tokens.html":
+		return "Tokens"
 	case "pages/error.html":
 		return "Error"
 	default:
 		return page
+	}
+}
+
+// pageKey returns a lowercase key for nav active-state matching in the layout.
+func pageKey(page string) string {
+	switch {
+	case strings.HasPrefix(page, "pages/workflows"):
+		return "workflows"
+	case strings.HasPrefix(page, "pages/tokens"):
+		return "tokens"
+	default:
+		return ""
 	}
 }
 

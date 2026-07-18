@@ -6,15 +6,19 @@ package ui
 
 import (
 	"bytes"
+	"context"
 	"embed"
 	"fmt"
 	"html/template"
+	"io"
 	"io/fs"
 	"log/slog"
 	"net/http"
 	"strings"
 
 	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
@@ -26,26 +30,41 @@ var templateFS embed.FS
 //go:embed static
 var staticFS embed.FS
 
+// logFetchFunc fetches container logs from a pod. It is nil-safe: handlers
+// check for nil before calling. This indirection makes the log-viewer testable
+// without a real k8s API server (the fake controller-runtime client can list
+// pods, but cannot stream logs).
+type logFetchFunc func(ctx context.Context, namespace, podName, container string) (string, error)
+
 // Server is the harmostes-ui HTTP server.
 type Server struct {
 	k8sClient client.Client
+	logFetch  logFetchFunc // pod log viewer (Phase E); nil = logs unavailable
 	namespace string
 	logger    *slog.Logger
 	templates *template.Template
 }
 
 // New creates a Server with parsed templates and the given k8s client.
-func New(k8sClient client.Client, namespace string, logger *slog.Logger) (*Server, error) {
+// If kubeClient is non-nil, the run-detail log viewer is enabled.
+func New(k8sClient client.Client, namespace string, logger *slog.Logger, kubeClient kubernetes.Interface) (*Server, error) {
 	tmpl, err := parseTemplates()
 	if err != nil {
 		return nil, fmt.Errorf("parse templates: %w", err)
 	}
-	return &Server{
+
+	s := &Server{
 		k8sClient: k8sClient,
 		namespace: namespace,
 		logger:    logger,
 		templates: tmpl,
-	}, nil
+	}
+
+	if kubeClient != nil {
+		s.logFetch = makeLogFetchFunc(kubeClient)
+	}
+
+	return s, nil
 }
 
 // Routes returns the HTTP handler with all routes registered.
@@ -69,6 +88,7 @@ func (s *Server) Routes() http.Handler {
 	pages.HandleFunc("GET /workflows", s.handleWorkflowList)
 	pages.HandleFunc("GET /workflows/new", s.handleWorkflowNew)
 	pages.HandleFunc("GET /workflows/{name}", s.handleWorkflowDetail)
+	pages.HandleFunc("GET /workflows/{name}/runs/{job}", s.handleRunDetail)
 	pages.HandleFunc("POST /workflows", s.handleWorkflowCreate)
 	pages.HandleFunc("POST /workflows/{name}/delete", s.handleWorkflowDelete)
 	pages.HandleFunc("POST /workflows/{name}/trigger", s.handleWorkflowTrigger)
@@ -86,8 +106,10 @@ func (s *Server) Routes() http.Handler {
 
 func parseTemplates() (*template.Template, error) {
 	tmpl := template.New("").Funcs(template.FuncMap{
-		"statusClass": statusClass,
-		"statusText":  statusText,
+		"statusClass":  statusClass,
+		"statusText":   statusText,
+		"splitLines":   splitLines,
+		"logLineClass": logLineClass,
 		"default": func(def any, val any) any { /* note: arg order is def, val */
 			if val == nil || val == "" {
 				return def
@@ -188,6 +210,39 @@ func (s *Server) listJobs(r *http.Request, workflow, owner string) ([]batchv1.Jo
 	return jobList.Items, nil
 }
 
+// listPodsForJob returns pods created by a Job (filtered by the job-name label
+// that the batch controller sets automatically).
+func (s *Server) listPodsForJob(r *http.Request, jobName string) ([]corev1.Pod, error) {
+	var podList corev1.PodList
+	if err := s.k8sClient.List(r.Context(), &podList,
+		client.InNamespace(s.namespace),
+		client.MatchingLabels{"job-name": jobName},
+	); err != nil {
+		return nil, fmt.Errorf("list pods for job %s: %w", jobName, err)
+	}
+	return podList.Items, nil
+}
+
+// makeLogFetchFunc returns a logFetchFunc backed by a kubernetes clientset. It
+// streams the worker container's logs and returns them as a string.
+func makeLogFetchFunc(kubeClient kubernetes.Interface) logFetchFunc {
+	return func(ctx context.Context, namespace, podName, container string) (string, error) {
+		req := kubeClient.CoreV1().Pods(namespace).GetLogs(podName, &corev1.PodLogOptions{
+			Container: container,
+		})
+		stream, err := req.Stream(ctx)
+		if err != nil {
+			return "", fmt.Errorf("open log stream: %w", err)
+		}
+		defer stream.Close()
+		var buf bytes.Buffer
+		if _, err := io.Copy(&buf, stream); err != nil {
+			return "", fmt.Errorf("read log stream: %w", err)
+		}
+		return buf.String(), nil
+	}
+}
+
 // statusClass maps a gate status to a CSS class for badges/dots.
 func statusClass(status string) string {
 	switch status {
@@ -225,6 +280,8 @@ func pageTitle(page string) string {
 		return "Tokens"
 	case "pages/workflow_new.html":
 		return "New Workflow"
+	case "pages/run_detail.html":
+		return "Run Detail"
 	case "pages/error.html":
 		return "Error"
 	default:

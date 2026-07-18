@@ -26,6 +26,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"k8s.io/client-go/kubernetes"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -58,7 +59,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	server, err := ui.New(k8sClient, namespace, logger)
+	// kubernetes clientset for pod log streaming (Phase E: run detail).
+	kubeClient, err := kubernetes.NewForConfig(ctrl.GetConfigOrDie())
+	if err != nil {
+		logger.Error("create kubernetes clientset", "err", err)
+		os.Exit(1)
+	}
+
+	server, err := ui.New(k8sClient, namespace, logger, kubeClient)
 	if err != nil {
 		logger.Error("create ui server", "err", err)
 		os.Exit(1)

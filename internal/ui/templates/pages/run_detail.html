@@ -1,0 +1,69 @@
+{{define "pages/run_detail.html"}}
+{{$wf := .Workflow}}
+{{$job := .Job}}
+<div style="margin-bottom: 1.5rem;">
+	<a href="/workflows/{{$wf.Name}}" style="font-family: var(--font-mono); font-size: 0.875rem; color: var(--fg-muted);">← {{$wf.Name}}</a>
+</div>
+
+<div style="margin-bottom: 1.5rem; display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;">
+	<span style="font-family: var(--font-mono); font-size: 1.25rem; color: var(--fg);">{{$job.Name}}</span>
+	{{if $job.Status.Succeeded}}
+	<span class="status-badge status-badge--green">Succeeded</span>
+	{{else if $job.Status.Failed}}
+	<span class="status-badge status-badge--red">Failed</span>
+	{{else if .PodPhase}}
+	<span class="status-badge status-badge--muted">{{.PodPhase}}</span>
+	{{else}}
+	<span class="status-badge status-badge--muted">Pending</span>
+	{{end}}
+</div>
+
+<!-- Run metadata -->
+<div class="detail-grid">
+	<div class="detail-section">
+		<div class="detail-label">Timing</div>
+		<div class="detail-value">started: {{if not $job.Status.StartTime.IsZero}}{{$job.Status.StartTime.Format "2006-01-02 15:04:05 MST"}}{{else}}—{{end}}</div>
+		<div class="detail-value">finished: {{if not $job.Status.CompletionTime.IsZero}}{{$job.Status.CompletionTime.Format "2006-01-02 15:04:05 MST"}}{{else}}—{{end}}</div>
+		<div class="detail-value">duration: {{.Duration}}</div>
+	</div>
+
+	<div class="detail-section">
+		<div class="detail-label">Pod</div>
+		{{if .PodName}}
+		<div class="detail-value" style="font-family: var(--font-mono); font-size: 0.8rem; word-break: break-all;">{{.PodName}}</div>
+		<div class="detail-value">phase: {{.PodPhase}}</div>
+		{{else}}
+		<div class="detail-value" style="color: var(--fg-muted);">No pod found</div>
+		{{end}}
+	</div>
+
+	<div class="detail-section">
+		<div class="detail-label">Outcome</div>
+		{{if .ExitCode}}
+		<div class="detail-value">exit: {{.ExitCode}}</div>
+		{{else if $job.Status.Succeeded}}
+		<div class="detail-value">exit: 0</div>
+		{{else}}
+		<div class="detail-value">exit: —</div>
+		{{end}}
+		<div class="detail-value">attempts: {{$job.Status.Failed | default 0}}</div>
+	</div>
+</div>
+
+<!-- Logs -->
+<div class="detail-section" style="margin-top: 1.5rem;">
+	<div class="detail-label">Worker Logs</div>
+	{{if .LogsError}}
+	<div style="color: var(--ds-red, #c00); margin-top: 0.5rem; font-size: 0.875rem;">{{.LogsError}}</div>
+	{{else if not .HasLogs}}
+	<div style="color: var(--fg-muted); margin-top: 0.5rem; font-size: 0.875rem;">Log viewer not configured.</div>
+	{{else if .Logs}}
+	<pre class="log-output">{{range $line := splitLines .Logs}}<div class="log-line {{$line | logLineClass}}">{{$line}}</div>
+{{end}}</pre>
+	{{else if .PodName}}
+	<div style="color: var(--fg-muted); margin-top: 0.5rem; font-size: 0.875rem;">No log output (pod may still be starting or produced no output).</div>
+	{{else}}
+	<div style="color: var(--fg-muted); margin-top: 0.5rem; font-size: 0.875rem;">No logs available.</div>
+	{{end}}
+</div>
+{{end}}

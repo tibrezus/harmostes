@@ -93,12 +93,12 @@
 			{{else}}
 			<span class="run-dot run-dot--skip"></span>
 			{{end}}
-			<span class="run-info">
+			<a href="/workflows/{{$wf.Name}}/runs/{{.Name}}" class="run-info">
 				{{.Name}}
 				{{if .Status.CompletionTime}}
 				— {{.Status.CompletionTime.Format "15:04:05"}}
 				{{end}}
-			</span>
+			</a>
 			<span class="run-time">
 				{{if and (not .Status.StartTime.IsZero) (not .Status.CompletionTime.IsZero)}}
 				{{.Status.CompletionTime.Sub .Status.StartTime.Time}}

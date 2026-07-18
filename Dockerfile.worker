@@ -75,6 +75,7 @@ COPY --from=build /out/harmostes-agent  /usr/local/bin/harmostes-agent
 # Built-in plugins shipped in the image (ConfigMap plugins mount under /plugins)
 COPY plugins/noop/noop.sh      /usr/local/lib/harmostes/plugins/noop.sh
 COPY plugins/rig-emit/rig-emit.sh  /usr/local/lib/harmostes/plugins/rig-emit.sh
+COPY plugins/rig-emit/rig        /usr/local/lib/harmostes/plugins/rig
 COPY plugins/rig-emit/emit-rig.py  /usr/local/lib/harmostes/plugins/emit-rig.py
 COPY plugins/rig-emit/emit-rig.sh  /usr/local/lib/harmostes/plugins/emit-rig.sh
 COPY plugins/wiki-lint/wiki-lint.sh /usr/local/lib/harmostes/plugins/wiki-lint.sh

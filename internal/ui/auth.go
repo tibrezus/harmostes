@@ -32,6 +32,13 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id := extractIdentity(r)
 		if id == nil {
+			if s.logger != nil {
+				headers := make([]string, 0)
+				for k, v := range r.Header {
+					headers = append(headers, k+"="+strings.Join(v, ","))
+				}
+				s.logger.Info("auth rejected — headers", "headers", headers)
+			}
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			w.WriteHeader(http.StatusUnauthorized)
 			w.Write([]byte("401 Unauthorized — no Authentik identity headers\n"))

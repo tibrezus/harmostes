@@ -19,10 +19,11 @@ metadata:
   name: harmostes-ui
   namespace: {{ .Values.namespace }}
 rules:
-  # Read workflows (filtered by owner label in Go code)
+  # Read + create/update/delete workflows (filtered by owner label in Go code).
+  # Phase D: CRUD operations from the self-service UI.
   - apiGroups: ["harmostes.dev"]
     resources: ["workflows"]
-    verbs: ["get", "list", "watch"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   # Read jobs (run history, filtered by owner label)
   - apiGroups: ["batch"]
     resources: ["jobs"]

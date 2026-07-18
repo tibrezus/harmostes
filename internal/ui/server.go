@@ -67,7 +67,12 @@ func (s *Server) Routes() http.Handler {
 	pages := http.NewServeMux()
 	pages.HandleFunc("GET /", s.handleIndex)
 	pages.HandleFunc("GET /workflows", s.handleWorkflowList)
+	pages.HandleFunc("GET /workflows/new", s.handleWorkflowNew)
 	pages.HandleFunc("GET /workflows/{name}", s.handleWorkflowDetail)
+	pages.HandleFunc("POST /workflows", s.handleWorkflowCreate)
+	pages.HandleFunc("POST /workflows/{name}/delete", s.handleWorkflowDelete)
+	pages.HandleFunc("POST /workflows/{name}/trigger", s.handleWorkflowTrigger)
+	pages.HandleFunc("POST /workflows/{name}/toggle", s.handleWorkflowToggle)
 
 	// Token management (Phase C)
 	pages.HandleFunc("GET /tokens", s.handleTokenList)
@@ -214,6 +219,8 @@ func pageTitle(page string) string {
 		return "Workflow Detail"
 	case "pages/tokens.html":
 		return "Tokens"
+	case "pages/workflow_new.html":
+		return "New Workflow"
 	case "pages/error.html":
 		return "Error"
 	default:
@@ -228,6 +235,8 @@ func pageKey(page string) string {
 		return "workflows"
 	case strings.HasPrefix(page, "pages/tokens"):
 		return "tokens"
+	case strings.HasPrefix(page, "pages/workflow_new"):
+		return "workflows" // active state stays on Workflows nav
 	default:
 		return ""
 	}

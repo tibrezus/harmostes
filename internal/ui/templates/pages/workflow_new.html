@@ -1,0 +1,154 @@
+{{define "pages/workflow_new.html"}}
+{{$p := .ActivePreset}}
+<div class="ds-section">
+	<div class="ds-section-header">
+		<span class="ds-section-title">Create Workflow</span>
+	</div>
+</div>
+
+<form action="/workflows" method="POST" class="ds-form">
+	<!-- Template selection -->
+	<div class="ds-card" style="margin-bottom: 1.5rem;">
+		<div class="ds-card-header">
+			<span class="ds-card-title">Template</span>
+		</div>
+		<div class="ds-card-body">
+			<div class="ds-form-row">
+				<label class="ds-form-label">Preset</label>
+				<select class="ds-form-select" name="preset" id="preset-select" onchange="applyPreset()">
+					{{range .Presets}}
+					<option value="{{.ID}}" {{if eq .ID $p.ID}}selected{{end}}>{{.Name}}</option>
+					{{end}}
+				</select>
+			</div>
+			<p class="ds-form-help" id="preset-desc">{{$p.Description}}</p>
+		</div>
+	</div>
+
+	<!-- Basic info -->
+	<div class="ds-card" style="margin-bottom: 1.5rem;">
+		<div class="ds-card-header">
+			<span class="ds-card-title">Repository</span>
+		</div>
+		<div class="ds-card-body">
+			<div class="ds-form-row">
+				<label class="ds-form-label" for="name">Workflow Name</label>
+				<input class="ds-form-input" type="text" id="name" name="name"
+					placeholder="my-wiki-sync" required
+					pattern="[a-z0-9]([-a-z0-9]*[a-z0-9])?"
+					title="Lowercase, alphanumeric with hyphens">
+			</div>
+			<div class="ds-form-row">
+				<label class="ds-form-label" for="repoUrl">Repository URL</label>
+				<input class="ds-form-input" type="text" id="repoUrl" name="repoUrl"
+					placeholder="git@github.com:rezuscloud/llm-wiki.git" required>
+			</div>
+			<div class="ds-form-row">
+				<label class="ds-form-label" for="branch">Branch</label>
+				<input class="ds-form-input" type="text" id="branch" name="branch"
+					placeholder="main" value="main">
+			</div>
+			<div class="ds-form-row">
+				<label class="ds-form-label" for="tokenSecret">Git Token</label>
+				<select class="ds-form-select" id="tokenSecret" name="tokenSecret">
+					<option value="">— Use shared cluster token —</option>
+					{{range .Tokens}}
+					<option value="{{.Name}}">{{.Name}} ({{.Platform}})</option>
+					{{end}}
+				</select>
+				<p class="ds-form-help">Select a per-user token from your <a href="/tokens">Tokens</a>, or use the shared cluster credential.</p>
+			</div>
+		</div>
+	</div>
+
+	<!-- Pipeline -->
+	<div class="ds-card" style="margin-bottom: 1.5rem;">
+		<div class="ds-card-header">
+			<span class="ds-card-title">Pipeline</span>
+		</div>
+		<div class="ds-card-body">
+			<div class="ds-form-row">
+				<label class="ds-form-label" for="preparePlugin">Prepare Plugin</label>
+				<input class="ds-form-input" type="text" id="preparePlugin" name="preparePlugin"
+					value="{{$p.Prepare}}" {{if $p.Prepare}}readonly{{end}}
+					placeholder="rig-emit">
+			</div>
+			<div class="ds-form-row">
+				<label class="ds-form-label" for="gatePlugin">Gate Plugin</label>
+				<input class="ds-form-input" type="text" id="gatePlugin" name="gatePlugin"
+					value="{{$p.Gate}}" {{if $p.Gate}}readonly{{end}}
+					placeholder="wiki-lint">
+			</div>
+			<div class="ds-form-row">
+				<label class="ds-form-label" for="deployPlugin">Deploy Plugin</label>
+				<input class="ds-form-input" type="text" id="deployPlugin" name="deployPlugin"
+					value="{{$p.Deploy}}" {{if $p.Deploy}}readonly{{end}}
+					placeholder="git-push">
+			</div>
+		</div>
+	</div>
+
+	<!-- Agent settings -->
+	<div class="ds-card" style="margin-bottom: 1.5rem;">
+		<div class="ds-card-header">
+			<span class="ds-card-title">Agent</span>
+		</div>
+		<div class="ds-card-body">
+			<div class="ds-form-row">
+				<label class="ds-form-label" for="model">Model</label>
+				<select class="ds-form-select" id="model" name="model">
+					{{range .Models}}
+					<option value="{{.}}" {{if eq . "litellm/zai/glm-5.2"}}selected{{end}}>{{.}}</option>
+					{{end}}
+				</select>
+			</div>
+			<div class="ds-form-row">
+				<label class="ds-form-label" for="schedule">Schedule (cron)</label>
+				<input class="ds-form-input" type="text" id="schedule" name="schedule"
+					value="*/30 * * * *" placeholder="*/30 * * * *">
+			</div>
+		</div>
+	</div>
+
+	<div class="ds-form-actions">
+		<button type="submit" class="ds-btn ds-btn--primary">Create Workflow</button>
+		<a href="/workflows" class="ds-btn ds-btn--secondary">Cancel</a>
+	</div>
+</form>
+
+<script>
+// Preset data for client-side plugin switching.
+var presets = {
+	{{range .Presets}}
+	"{{.ID}}": {
+		prepare: "{{.Prepare}}",
+		gate: "{{.Gate}}",
+		deploy: "{{.Deploy}}",
+		desc: "{{.Description}}",
+	},
+	{{end}}
+};
+
+function applyPreset() {
+	var sel = document.getElementById('preset-select');
+	var p = presets[sel.value];
+	if (!p) return;
+
+	// Update description
+	document.getElementById('preset-desc').textContent = p.desc;
+
+	// Update plugin fields
+	['prepare', 'gate', 'deploy'].forEach(function(kind) {
+		var field = document.getElementById(kind + 'Plugin');
+		field.value = p[kind];
+		// If the preset has a value, make the field read-only (preset lock).
+		// For custom preset (empty values), unlock the field.
+		if (p[kind]) {
+			field.setAttribute('readonly', '');
+		} else {
+			field.removeAttribute('readonly');
+		}
+	});
+}
+</script>
+{{end}}

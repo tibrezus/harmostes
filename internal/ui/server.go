@@ -61,6 +61,12 @@ func (s *Server) Routes() http.Handler {
 	fileServer := http.FileServer(http.FS(staticSub))
 	mux.Handle("GET /static/", http.StripPrefix("/static/", fileServer))
 
+	// Health check (no auth — kubelet probes don't send forward-auth headers)
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok"))
+	})
+
 	// Pages — all wrapped in auth middleware
 	pages := http.NewServeMux()
 	pages.HandleFunc("GET /", s.handleIndex)

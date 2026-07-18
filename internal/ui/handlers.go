@@ -49,9 +49,11 @@ func (s *Server) handleWorkflowDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Enforce owner isolation: if the workflow has an owner label and it
-	// doesn't match the current user, treat as not found.
-	if wf.Labels[OwnerLabel] != "" && wf.Labels[OwnerLabel] != owner {
+	// Enforce owner isolation: a workflow without an owner label is
+	// "unmanaged" (GitOps-created system workflow) and is NOT surfaced in
+	// the self-service UI. A workflow with a non-matching owner label is
+	// treated as not found.
+	if wf.Labels[v1alpha1.OwnerLabel] != owner {
 		http.NotFound(w, r)
 		return
 	}

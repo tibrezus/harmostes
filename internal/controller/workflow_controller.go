@@ -92,9 +92,19 @@ func configMapVolumeMounts(wf *v1alpha1.Workflow) []corev1.VolumeMount {
 	return mounts
 }
 
-// labelsFor ties a worker Job to its Workflow.
-func labelsFor(name string) map[string]string {
-	return map[string]string{"app.kubernetes.io/managed-by": "harmostes", "harmostes.dev/workflow": name}
+// labelsFor ties a worker Job to its Workflow. It propagates the
+// harmostes.dev/owner label (if present) so the UI's owner-filtered Job
+// queries can list a user's run history. Workflows without an owner label
+// (GitOps-created system workflows) produce Jobs without one.
+func labelsFor(wf *v1alpha1.Workflow) map[string]string {
+	labels := map[string]string{
+		"app.kubernetes.io/managed-by": "harmostes",
+		v1alpha1.WorkflowLabel:         wf.Name,
+	}
+	if owner := wf.Labels[v1alpha1.OwnerLabel]; owner != "" {
+		labels[v1alpha1.OwnerLabel] = owner
+	}
+	return labels
 }
 
 // +kubebuilder:rbac:groups=harmostes.dev,resources=workflows,verbs=get;list;watch;create;update;patch;delete
@@ -120,7 +130,7 @@ func (r *WorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 
 	// A worker Job already running for this Workflow? Wait for it.
-	if active, err := r.hasActiveJob(ctx, wf.Namespace, wf.Name); err != nil {
+	if active, err := r.hasActiveJob(ctx, &wf); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return ctrl.Result{}, err
@@ -175,9 +185,9 @@ func (r *WorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 // hasActiveJob reports whether a non-terminal worker Job exists for the workflow.
 // With backoffLimit=0 a Job is terminal once it has any succeeded or failed pod;
 // a Pending/Running job (Succeeded==0 && Failed==0) counts as active.
-func (r *WorkflowReconciler) hasActiveJob(ctx context.Context, ns, name string) (bool, error) {
+func (r *WorkflowReconciler) hasActiveJob(ctx context.Context, wf *v1alpha1.Workflow) (bool, error) {
 	var jobs batchv1.JobList
-	if err := r.List(ctx, &jobs, client.InNamespace(ns), client.MatchingLabels(labelsFor(name))); err != nil {
+	if err := r.List(ctx, &jobs, client.InNamespace(wf.Namespace), client.MatchingLabels(labelsFor(wf))); err != nil {
 		return false, err
 	}
 	for _, j := range jobs.Items {
@@ -318,7 +328,7 @@ func (r *WorkflowReconciler) createWorkerJob(ctx context.Context, wf *v1alpha1.W
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: fmt.Sprintf("harmostes-%s-", wf.Name),
 			Namespace:    ns,
-			Labels:       labelsFor(wf.Name),
+			Labels:       labelsFor(wf),
 			Annotations:  daprAnnotations,
 		},
 		Spec: batchv1.JobSpec{
@@ -326,7 +336,7 @@ func (r *WorkflowReconciler) createWorkerJob(ctx context.Context, wf *v1alpha1.W
 			TTLSecondsAfterFinished: pointerInt32(3600),
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
-					Labels:      labelsFor(wf.Name),
+					Labels:      labelsFor(wf),
 					Annotations: daprAnnotations,
 				},
 				Spec: corev1.PodSpec{

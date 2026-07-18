@@ -371,3 +371,177 @@ func TestIsDue_WebhookTrigger(t *testing.T) {
 		})
 	}
 }
+
+// TestLabelsFor locks the Phase B tenant-model contract: labelsFor produces the
+// standard managed-by + workflow labels, and propagates the harmostes.dev/owner
+// label from the Workflow to the Job when present. A Workflow without an owner
+// label (GitOps-created system workflow) produces a Job without one.
+func TestLabelsFor(t *testing.T) {
+	t.Run("with owner label propagates it", func(t *testing.T) {
+		wf := &v1alpha1.Workflow{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:   "llm-wiki",
+				Labels: map[string]string{v1alpha1.OwnerLabel: "alice"},
+			},
+		}
+		got := labelsFor(wf)
+		want := map[string]string{
+			"app.kubernetes.io/managed-by": "harmostes",
+			v1alpha1.WorkflowLabel:         "llm-wiki",
+			v1alpha1.OwnerLabel:            "alice",
+		}
+		if !maps.Equal(got, want) {
+			t.Errorf("labelsFor() = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("without owner label omits it", func(t *testing.T) {
+		wf := &v1alpha1.Workflow{
+			ObjectMeta: metav1.ObjectMeta{Name: "llm-wiki"},
+		}
+		got := labelsFor(wf)
+		if _, ok := got[v1alpha1.OwnerLabel]; ok {
+			t.Errorf("labelsFor() should not include owner label for unmanaged workflow, got %v", got)
+		}
+		if got[v1alpha1.WorkflowLabel] != "llm-wiki" {
+			t.Errorf("workflow label = %q, want llm-wiki", got[v1alpha1.WorkflowLabel])
+		}
+	})
+}
+
+// TestReconcilePropagatesOwnerLabel is the Phase B acceptance test: when a
+// Workflow with harmostes.dev/owner=alice triggers a reconcile, the spawned
+// worker Job carries the same owner label — so the UI's owner-filtered Job
+// queries return alice's run history.
+func TestReconcilePropagatesOwnerLabel(t *testing.T) {
+	_ = withTestTracer(t)
+
+	wf := &v1alpha1.Workflow{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "llm-wiki",
+			Labels: map[string]string{v1alpha1.OwnerLabel: "alice"},
+		},
+		Spec:   v1alpha1.WorkflowSpec{},
+		Status: v1alpha1.WorkflowStatus{},
+	}
+	wf.Namespace = "harmostes"
+	wf.Generation = 2 // spec changed → due
+	wf.Status.ObservedGeneration = 1
+
+	cl := fake.NewClientBuilder().
+		WithScheme(k8s.Scheme()).
+		WithStatusSubresource(&v1alpha1.Workflow{}).
+		WithObjects(wf).
+		Build()
+
+	r := &WorkflowReconciler{
+		Client:             cl,
+		Scheme:             k8s.Scheme(),
+		WorkerImage:        "ghcr.io/tibrezus/harmostes-worker:dev",
+		ServiceAccountName: "harmostes-controller",
+		PollInterval:       5 * time.Minute,
+		JobNamespace:       "harmostes",
+		SkillsRepo:         "https://github.com/tibrezus/agents.git",
+	}
+
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: "llm-wiki", Namespace: "harmostes"},
+	}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	var jobs batchv1.JobList
+	if err := cl.List(context.Background(), &jobs, client.MatchingLabels{v1alpha1.OwnerLabel: "alice"}); err != nil {
+		t.Fatalf("list jobs by owner: %v", err)
+	}
+	if len(jobs.Items) != 1 {
+		t.Fatalf("expected 1 worker Job with owner=alice, got %d", len(jobs.Items))
+	}
+
+	job := jobs.Items[0]
+	// Both the Job and its Pod template carry the owner label.
+	if job.Labels[v1alpha1.OwnerLabel] != "alice" {
+		t.Errorf("Job ObjectMeta owner label = %q, want alice", job.Labels[v1alpha1.OwnerLabel])
+	}
+	if job.Spec.Template.Labels[v1alpha1.OwnerLabel] != "alice" {
+		t.Errorf("Pod template owner label = %q, want alice", job.Spec.Template.Labels[v1alpha1.OwnerLabel])
+	}
+}
+
+// TestHasActiveJobWithOwner verifies that hasActiveJob finds a job using the
+// full label set (workflow + owner), not just the workflow name.
+func TestHasActiveJobWithOwner(t *testing.T) {
+	wf := &v1alpha1.Workflow{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "llm-wiki",
+			Namespace: "harmostes",
+			Labels:    map[string]string{v1alpha1.OwnerLabel: "alice"},
+		},
+	}
+
+	activeJob := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "harmostes-llm-wiki-1",
+			Namespace: "harmostes",
+			Labels:    labelsFor(wf),
+		},
+		Status: batchv1.JobStatus{}, // Succeeded=0, Failed=0 → active
+	}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(k8s.Scheme()).
+		WithObjects(activeJob).
+		Build()
+
+	r := &WorkflowReconciler{Client: cl}
+	active, err := r.hasActiveJob(context.Background(), wf)
+	if err != nil {
+		t.Fatalf("hasActiveJob: %v", err)
+	}
+	if !active {
+		t.Error("expected active job to be found with owner+workflow labels")
+	}
+}
+
+// TestHasActiveJobIgnoresOtherOwner verifies that a job for the same workflow
+// name but a DIFFERENT owner (cross-tenant) is not counted as active — the
+// label filter is scoped by owner.
+func TestHasActiveJobIgnoresOtherOwner(t *testing.T) {
+	wfMine := &v1alpha1.Workflow{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "llm-wiki",
+			Namespace: "harmostes",
+			Labels:    map[string]string{v1alpha1.OwnerLabel: "alice"},
+		},
+	}
+
+	// A job owned by bob (different tenant)
+	wfBob := &v1alpha1.Workflow{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "llm-wiki",
+			Labels: map[string]string{v1alpha1.OwnerLabel: "bob"},
+		},
+	}
+	bobJob := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "harmostes-llm-wiki-bob",
+			Namespace: "harmostes",
+			Labels:    labelsFor(wfBob),
+		},
+		Status: batchv1.JobStatus{},
+	}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(k8s.Scheme()).
+		WithObjects(bobJob).
+		Build()
+
+	r := &WorkflowReconciler{Client: cl}
+	active, err := r.hasActiveJob(context.Background(), wfMine)
+	if err != nil {
+		t.Fatalf("hasActiveJob: %v", err)
+	}
+	if active {
+		t.Error("should not find bob's job when querying for alice's workflow")
+	}
+}

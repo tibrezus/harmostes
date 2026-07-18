@@ -168,6 +168,14 @@ func Run(ctx context.Context, deps Deps, opts Options) (res Result, err error) {
 	prepSpan.End()
 
 	// ── 2. agent (framework-native: the harmostes primitive + gate) ───────────
+	// Deterministic-only mode: skip the LLM agent entirely. The prepare step
+	// (rig.json + model.c4 + Mermaid) already ran; deploy will push those
+	// deterministic artifacts without any LLM prose generation.
+	agentEnabled := wf.Spec.Agent.Enabled == nil || *wf.Spec.Agent.Enabled
+	if !agentEnabled {
+		logf("agent: disabled (deterministic-only mode) — skipping LLM step")
+		// Fall through to deploy; the deploy step sets status.
+	} else {
 	actx, agentSpan := tracer.Start(runCtx, "agent")
 	gateCmd, gateArgs, gerr := deps.Plugins.Resolve(actx, wf.Spec.Agent.Gate.Plugin, "gate")
 	if gerr != nil {
@@ -212,6 +220,7 @@ func Run(ctx context.Context, deps Deps, opts Options) (res Result, err error) {
 	}
 	logf("agent: gate GREEN after %d pass(es)", agentRes.Attempts)
 	agentSpan.End()
+	} // end agent-enabled block
 
 	// ── 3. deploy (deterministic) ─────────────────────────────────────────────
 	dctx, deploySpan := tracer.Start(runCtx, "deploy")

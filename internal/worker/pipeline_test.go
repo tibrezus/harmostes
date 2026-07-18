@@ -181,6 +181,39 @@ func TestPipelineAgentFailed(t *testing.T) {
 	}
 }
 
+func TestPipelineAgentDisabled(t *testing.T) {
+	// When spec.agent.enabled == false, the pipeline skips the LLM agent
+	// entirely and goes straight from prepare to deploy (deterministic-only).
+	resolver := fakeResolver{paths: map[string]string{
+		"prepare": writeScript(t, `echo '{"changed":true,"artifact":"rig.json"}'`),
+		"deploy":  writeScript(t, `echo '{"artifact":"pushed","event":{"commit":"abc"}}'`),
+		// gate is intentionally OMITTED: the pipeline must not resolve it.
+	}}
+	d := &fakeDapr{}
+	st := &fakeStatus{}
+	agentCalled := false
+	wf := newWorkflow()
+	wf.Spec.Agent.Enabled = ptr(false)
+	deps := Deps{
+		Plugins: resolver, Tasks: fakeTasks{task: "x"},
+		Dapr: d, Status: st,
+		Agent: fakeAgentRunnerFunc(func() (bool, int) { agentCalled = true; return true, 1 }),
+	}
+	res, err := Run(context.Background(), deps, Options{Workflow: wf, Workdir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome != OutcomeGreen {
+		t.Fatalf("expected green (deterministic-only), got %s", res.Outcome)
+	}
+	if agentCalled {
+		t.Fatal("agent must NOT run when spec.agent.enabled == false")
+	}
+	if st.last.GateStatus != "green" {
+		t.Fatalf("status gate = %q, want green", st.last.GateStatus)
+	}
+}
+
 // fakeAgentRunnerFunc adapts a closure into an AgentRunner (for the skip test's
 // "agent must not be called" assertion).
 type fakeAgentRunnerFunc func() (green bool, attempts int)
@@ -348,3 +381,5 @@ func TestPipelineEmitsSpansAgentFailed(t *testing.T) {
 		t.Errorf("agent span status = %v, want Error", spanByName(spans, "agent").Status.Code)
 	}
 }
+
+func ptr[T any](v T) *T { return &v }

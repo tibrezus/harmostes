@@ -34,13 +34,15 @@ tidy:
 
 ## generate: regenerate DeepCopy + CRD with controller-gen (requires:
 ##   go install sigs.k8s.io/controller-tools/cmd/controller-gen@latest).
-##   Until then, DeepCopy is hand-written (JSON round-trip) and the CRD is
-##   maintained at config/crd/workflows.harmostes.dev.yaml.
+##   NOTE: the harmostes CRD uses hand-maintained group registration (no
+##   +kubebuilder:group markers), so controller-gen alone cannot reconstruct it
+##   fully. The CRD at config/crd/workflows.harmostes.dev.yaml is the source of
+##   truth; controller-gen output is a cross-check, not the generator.
 generate: manifests
-	controller-gen object:header="LICENSE" paths="./api/..."
+	controller-gen object paths="./api/..."
 
 manifests:
-	controller-gen crd:crd:crdVersions=v1 paths="./api/..." output:crd:artifacts:config=config/crd
+	controller-gen crd paths="./api/..." output:dir=/tmp/crd-gen
 
 ## docker: build the multi-arch worker base image (Go worker binary + pi + plugin runtime).
 ##   Submodules (vendor/agents) must be initialised first — the Dockerfile COPYs

@@ -67,6 +67,18 @@ spec:
                       properties:
                         url: { type: string }
                         branch: { type: string }
+                    webhook:                       # webhook trigger config (HMAC secret + host URL)
+                      type: object
+                      description: Webhook trigger config (push events from GitHub/GitLab/Forgejo)
+                      properties:
+                        secret: { type: string }   # HMAC secret (testing only; NOT recommended for production)
+                        url: { type: string }      # git host URL (for signature verification)
+                        secretRef:                 # Secret reference (production; GitOps-friendly)
+                          type: object
+                          required: [name, key]
+                          properties:
+                            name: { type: string } # Secret name
+                            key: { type: string }  # Secret key
                 workspaceRepo:                      # the repo the pipeline operates on (the wiki; the fork)
                   type: object
                   properties:
@@ -89,6 +101,9 @@ spec:
                         args: { type: array, items: { type: string } }
                     output: { type: string }                   # artifact produced (path / branch / ref)
                     detect: { type: string, enum: [changed, conflict, always] }
+                    config:                                    # arbitrary config passed to the plugin
+                      type: object
+                      x-kubernetes-preserve-unknown-fields: true
 
                 agent:
                   type: object
@@ -116,6 +131,7 @@ spec:
                             args: { type: array, items: { type: string } }
                     maxFixes: { type: integer, default: 3 }
                     timeout: { type: integer, default: 1800 }
+                    scope: { type: string }                    # optional task scope override
 
                 deploy:
                   type: object
@@ -159,6 +175,7 @@ spec:
                 observedGeneration: { type: integer }
                 lastProcessedRevision: { type: string }
                 lastAgentCommit: { type: string }
+                lastRigHash: { type: string }
                 gateStatus: { type: string, enum: [green, failed, unknown] }
                 lastRunAt: { type: string }
                 message: { type: string }

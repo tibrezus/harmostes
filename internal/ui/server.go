@@ -170,13 +170,17 @@ func (s *Server) listWorkflows(r *http.Request, owner string) ([]v1alpha1.Workfl
 // listJobs returns worker Jobs for a workflow, filtered by owner.
 func (s *Server) listJobs(r *http.Request, workflow, owner string) ([]batchv1.Job, error) {
 	var jobList batchv1.JobList
+	// controller-runtime's MatchingLabels applies a label selector. Passing two
+	// MatchingLabels options causes the second to OVERWRITE the first (they each
+	// set ListOptions.LabelSelector independently). We must combine into a single
+	// map so both the workflow and owner labels are part of one selector.
+	labels := map[string]string{"harmostes.dev/workflow": workflow}
+	if owner != "" {
+		labels[v1alpha1.OwnerLabel] = owner
+	}
 	opts := []client.ListOption{
 		client.InNamespace(s.namespace),
-		client.MatchingLabels{"harmostes.dev/workflow": workflow},
-	}
-	if owner != "" {
-		// Jobs inherit the owner label from the controller.
-		opts = append(opts, client.MatchingLabels{v1alpha1.OwnerLabel: owner})
+		client.MatchingLabels(labels),
 	}
 	if err := s.k8sClient.List(r.Context(), &jobList, opts...); err != nil {
 		return nil, fmt.Errorf("list jobs: %w", err)

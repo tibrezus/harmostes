@@ -9,8 +9,8 @@ import (
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/types"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
@@ -309,9 +309,9 @@ func attrString(s tracetest.SpanStub, key string) (string, bool) {
 
 func TestIsDue_WebhookTrigger(t *testing.T) {
 	tests := []struct {
-		name           string
-		wf             *v1alpha1.Workflow
-		wantDue        bool
+		name             string
+		wf               *v1alpha1.Workflow
+		wantDue          bool
 		wantRequeueAfter time.Duration
 	}{
 		{
@@ -326,7 +326,7 @@ func TestIsDue_WebhookTrigger(t *testing.T) {
 					LastProcessedRevision: "def456",
 				},
 			},
-			wantDue:         true,
+			wantDue:          true,
 			wantRequeueAfter: 0,
 		},
 		{
@@ -341,18 +341,18 @@ func TestIsDue_WebhookTrigger(t *testing.T) {
 					LastProcessedRevision: "abc123",
 				},
 			},
-			wantDue:         false,
+			wantDue:          false,
 			wantRequeueAfter: 10 * time.Second,
 		},
 		{
 			name: "no webhook trigger, schedule elapsed",
 			wf: &v1alpha1.Workflow{
 				Status: v1alpha1.WorkflowStatus{
-					LastRunAt:      metav1.Time{Time: time.Now().Add(-10 * time.Minute)},
+					LastRunAt:          metav1.Time{Time: time.Now().Add(-10 * time.Minute)},
 					ObservedGeneration: 1,
 				},
 			},
-			wantDue:         true,
+			wantDue:          true,
 			wantRequeueAfter: 5 * time.Minute,
 		},
 	}

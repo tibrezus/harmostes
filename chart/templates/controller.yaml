@@ -21,7 +21,6 @@ spec:
       {{- if .Values.observability.controllerSidecar }}
       annotations:
         dapr.io/enabled: "true"
-        dapr.io/subscribe: "git.push:*"
         dapr.io/app-id: harmostes-controller
         dapr.io/config: harmostes-config
         {{- if .Values.observability.daprdImage }}

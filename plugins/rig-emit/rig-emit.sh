@@ -83,7 +83,18 @@ DEST_FILE="$DEST_DIR/rig.json"
 # pipeline). This is more reliable than comparing with the workspace file because
 # deploys may push to shadow branches — the workspace repo on 'main' can lag.
 RIG_HASH=$(sha256sum "$RIG_FILE" | cut -d' ' -f1)
-cp "$RIG_FILE" "$DEST_FILE"
 log "RIG hash=$RIG_HASH ($COMPONENTS components)"
 
+# Byte-for-byte comparison with the existing rig.json in the workspace repo.
+# If identical, return changed=false so the pipeline short-circuits BEFORE the
+# agent runs — no LLM tokens consumed. Only a genuinely different RIG triggers
+# the agent.
+if [ -f "$DEST_FILE" ] && cmp -s "$RIG_FILE" "$DEST_FILE"; then
+  log "RIG unchanged (byte-for-byte identical to existing) — deterministic skip"
+  echo "{\"changed\":false,\"artifact\":\"raw/arch/$PROJECT/rig.json\",\"status\":\"ok\",\"event\":{\"components\":$COMPONENTS,\"rig_hash\":\"$RIG_HASH\"}}"
+  exit 0
+fi
+
+cp "$RIG_FILE" "$DEST_FILE"
+log "RIG changed — agent will run"
 echo "{\"changed\":true,\"artifact\":\"raw/arch/$PROJECT/rig.json\",\"status\":\"ok\",\"event\":{\"components\":$COMPONENTS,\"rig_hash\":\"$RIG_HASH\"}}"

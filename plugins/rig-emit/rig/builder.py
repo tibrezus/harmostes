@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import json
 import subprocess
-from datetime import datetime, timezone
 from pathlib import Path
 
 from .model import (
@@ -232,7 +231,6 @@ class RIGBuilder:
                 "ref": self._git_ref(),
                 "language": self.primary_language(),
                 "build_system": "+".join(extractors),
-                "generated_at": datetime.now(timezone.utc).isoformat(),
                 "generator": "tibrezus/llm-wiki/.github/actions/repo-map@v2",
             },
             "evidence": [{"id": e.id, "line": e.line, "call_stack": e.call_stack}

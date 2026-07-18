@@ -1,0 +1,252 @@
+/*
+ * harmostes-ui — application CSS.
+ * Imports tokens (theme variables) + components (design system).
+ * Page-specific styles for the harmostes dashboard live here.
+ */
+
+@import "./tokens.css";
+@import "./components.css";
+
+/* ===== Global reset ===== */
+*, *::before, *::after {
+	box-sizing: border-box;
+	margin: 0;
+	padding: 0;
+}
+
+html {
+	font-family: var(--font-body);
+	background: var(--bg);
+	color: var(--fg);
+	font-size: 16px;
+	line-height: 1.5;
+}
+
+body {
+	min-height: 100vh;
+}
+
+a {
+	color: var(--accent);
+	text-decoration: none;
+}
+
+a:hover {
+	text-decoration: underline;
+}
+
+h1, h2, h3, h4, h5, h6 {
+	font-family: var(--font-display);
+}
+
+code, pre {
+	font-family: var(--font-mono);
+}
+
+/* ===== Layout ===== */
+.app-layout {
+	display: grid;
+	grid-template-columns: auto 1fr;
+	min-height: 100vh;
+}
+
+.app-main {
+	padding: 1.5rem;
+	overflow-x: auto;
+}
+
+/* ===== Page header ===== */
+.page-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	margin-bottom: 1.5rem;
+}
+
+.page-title {
+	font-family: var(--font-display);
+	font-size: 1.25rem;
+	color: var(--fg);
+}
+
+/* ===== Workflow cards grid ===== */
+.wf-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(20rem, 1fr));
+	gap: 1rem;
+}
+
+.wf-card {
+	background: var(--bg-alt);
+	padding: 1.25rem;
+	border-bottom: 3px solid var(--border);
+	transition: border-color 0.15s ease;
+}
+
+.wf-card:hover {
+	border-bottom-color: var(--accent);
+}
+
+.wf-card-header {
+	display: flex;
+	align-items: flex-start;
+	justify-content: space-between;
+	margin-bottom: 0.75rem;
+}
+
+.wf-card-name {
+	font-family: var(--font-mono);
+	font-size: 1.125rem;
+	color: var(--fg);
+}
+
+.wf-card-meta {
+	font-family: var(--font-body);
+	font-size: 0.8125rem;
+	color: var(--fg-muted);
+}
+
+.wf-card-row {
+	display: flex;
+	gap: 0.5rem;
+	align-items: center;
+	font-size: 0.8125rem;
+	color: var(--fg-muted);
+	margin-top: 0.25rem;
+}
+
+/* ===== Status badge ===== */
+.status-badge {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.375rem;
+	font-family: var(--font-mono);
+	font-size: 0.75rem;
+	padding: 0.125rem 0.5rem;
+	text-transform: uppercase;
+}
+
+.status-badge--green {
+	background: var(--color-positive);
+	color: var(--color-paper);
+}
+
+.dark .status-badge--green {
+	background: var(--color-positive-next);
+	color: var(--color-next-black);
+}
+
+.status-badge--red {
+	background: var(--color-negative);
+	color: var(--color-paper);
+}
+
+.dark .status-badge--red {
+	background: var(--color-negative-next);
+	color: var(--color-next-black);
+}
+
+.status-badge--muted {
+	background: var(--border);
+	color: var(--fg);
+}
+
+/* ===== Detail page ===== */
+.detail-grid {
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	gap: 1.5rem;
+	margin-top: 1rem;
+}
+
+.detail-section {
+	background: var(--bg-alt);
+	padding: 1.25rem;
+}
+
+.detail-label {
+	font-family: var(--font-display);
+	font-size: 0.6875rem;
+	text-transform: uppercase;
+	color: var(--fg-muted);
+	margin-bottom: 0.5rem;
+}
+
+.detail-value {
+	font-family: var(--font-mono);
+	font-size: 0.875rem;
+	color: var(--fg);
+}
+
+/* ===== Theme toggle button ===== */
+.theme-toggle {
+	background: var(--bg-alt);
+	border: none;
+	padding: 0.5rem;
+	cursor: pointer;
+	font-family: var(--font-display);
+	font-size: 0.6875rem;
+	color: var(--fg-muted);
+	display: flex;
+	align-items: center;
+	gap: 0.25rem;
+}
+
+.theme-toggle:hover {
+	color: var(--accent);
+}
+
+/* ===== User indicator (header) ===== */
+.user-badge {
+	font-family: var(--font-mono);
+	font-size: 0.8125rem;
+	color: var(--fg-muted);
+	display: flex;
+	align-items: center;
+	gap: 0.5rem;
+}
+
+.user-badge-name {
+	color: var(--accent);
+}
+
+/* ===== Runs timeline ===== */
+.run-timeline {
+	list-style: none;
+}
+
+.run-item {
+	display: grid;
+	grid-template-columns: auto 1fr auto;
+	gap: 1rem;
+	align-items: center;
+	padding: 0.75rem 0;
+	border-bottom: 1px solid var(--border);
+}
+
+.run-item:last-child {
+	border-bottom: none;
+}
+
+.run-dot {
+	width: 0.5rem;
+	height: 0.5rem;
+	flex-shrink: 0;
+}
+
+.run-dot--ok { background: var(--color-positive); }
+.dark .run-dot--ok { background: var(--color-positive-next); }
+.run-dot--fail { background: var(--color-negative); animation: ds-status-blink 2s step-end infinite; }
+.dark .run-dot--fail { background: var(--color-negative-next); }
+.run-dot--skip { background: var(--border); }
+
+.run-info {
+	font-family: var(--font-body);
+	font-size: 0.8125rem;
+}
+
+.run-time {
+	font-family: var(--font-mono);
+	font-size: 0.75rem;
+	color: var(--fg-muted);
+}

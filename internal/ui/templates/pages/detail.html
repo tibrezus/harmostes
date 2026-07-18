@@ -1,0 +1,100 @@
+{{define "pages/detail.html"}}
+{{$wf := .Workflow}}
+<div style="margin-bottom: 1.5rem;">
+	<span style="font-family: var(--font-mono); font-size: 1.5rem; color: var(--fg);">{{$wf.Name}}</span>
+	{{if $wf.Spec.Disabled}}
+	<span class="status-badge status-badge--muted">Disabled</span>
+	{{else if eq $wf.Status.GateStatus "green"}}
+	<span class="status-badge status-badge--green">Green</span>
+	{{else if eq $wf.Status.GateStatus "failed"}}
+	<span class="status-badge status-badge--red">Failed</span>
+	{{else}}
+	<span class="status-badge status-badge--muted">Unknown</span>
+	{{end}}
+</div>
+
+<div class="detail-grid">
+	<!-- Pipeline config -->
+	<div class="detail-section">
+		<div class="detail-label">Pipeline</div>
+		<div class="detail-value">prepare: {{$wf.Spec.Prepare.Plugin.Name}}</div>
+		<div class="detail-value">gate: {{$wf.Spec.Agent.Gate.Plugin.Name}}</div>
+		<div class="detail-value">deploy: {{$wf.Spec.Deploy.Plugin.Name}}</div>
+		{{if $wf.Spec.Agent.Model}}
+		<div class="detail-value">model: {{$wf.Spec.Agent.Model}}</div>
+		{{end}}
+		{{if $wf.Spec.Agent.MaxFixes}}
+		<div class="detail-value">maxFixes: {{$wf.Spec.Agent.MaxFixes}}</div>
+		{{end}}
+	</div>
+
+	<!-- Source -->
+	<div class="detail-section">
+		<div class="detail-label">Source</div>
+		<div class="detail-value">kind: {{$wf.Spec.Source.Kind}}</div>
+		{{if $wf.Spec.Source.Repo}}
+		<div class="detail-value">repo: {{$wf.Spec.Source.Repo}}</div>
+		{{end}}
+		{{if $wf.Spec.Source.Branch}}
+		<div class="detail-value">branch: {{$wf.Spec.Source.Branch}}</div>
+		{{end}}
+		{{if $wf.Spec.WorkspaceRepo}}
+		<div style="margin-top: 0.5rem;" class="detail-label">Workspace</div>
+		<div class="detail-value">{{$wf.Spec.WorkspaceRepo.URL}}</div>
+		<div class="detail-value">branch: {{$wf.Spec.WorkspaceRepo.Branch}}</div>
+		{{end}}
+	</div>
+</div>
+
+<!-- Status -->
+<div class="detail-section" style="margin-top: 1.5rem;">
+	<div class="detail-label">Status</div>
+	<div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin-top: 0.5rem;">
+		<div>
+			<div class="detail-label">Gate</div>
+			<div class="detail-value">{{$wf.Status.GateStatus | default "unknown"}}</div>
+		</div>
+		<div>
+			<div class="detail-label">Last Run</div>
+			<div class="detail-value">{{if not $wf.Status.LastRunAt.IsZero}}{{$wf.Status.LastRunAt.Format "2006-01-02 15:04:05 MST"}}{{else}}never{{end}}</div>
+		</div>
+		<div>
+			<div class="detail-label">Last Commit</div>
+			<div class="detail-value">{{if $wf.Status.LastAgentCommit}}{{truncate $wf.Status.LastAgentCommit 12}}{{else}}—{{end}}</div>
+		</div>
+	</div>
+</div>
+
+<!-- Run history -->
+<div class="detail-section" style="margin-top: 1.5rem;">
+	<div class="detail-label">Run History</div>
+	{{if not .Jobs}}
+	<p class="detail-value" style="color: var(--fg-muted); margin-top: 0.5rem;">No runs recorded.</p>
+	{{else}}
+	<ul class="run-timeline">
+		{{range .Jobs}}
+		<li class="run-item">
+			{{if .Status.Succeeded}}
+			<span class="run-dot run-dot--ok"></span>
+			{{else if .Status.Failed}}
+			<span class="run-dot run-dot--fail"></span>
+			{{else}}
+			<span class="run-dot run-dot--skip"></span>
+			{{end}}
+			<span class="run-info">
+				{{.Name}}
+				{{if .Status.CompletionTime}}
+				— {{.Status.CompletionTime.Format "15:04:05"}}
+				{{end}}
+			</span>
+			<span class="run-time">
+				{{if and (not .Status.StartTime.IsZero) (not .Status.CompletionTime.IsZero)}}
+				{{.Status.CompletionTime.Sub .Status.StartTime.Time}}
+				{{end}}
+			</span>
+		</li>
+		{{end}}
+	</ul>
+	{{end}}
+</div>
+{{end}}

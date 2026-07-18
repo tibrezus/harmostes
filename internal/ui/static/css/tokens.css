@@ -1,0 +1,65 @@
+/*
+ * Theme tokens — converted from rezuscloud/design-system/css/rezus.css
+ * Tailwind v4 @theme block → plain CSS custom properties on :root.
+ * The .dark class (set on <html>) switches to NeXT mode overrides.
+ */
+
+/* ===== Mac mode (light, default) ===== */
+:root {
+	/* Neutrals — warm-tinted (amber hue 85) */
+	--color-paper: oklch(99.5% 0.004 85);
+	--color-surface: oklch(95.5% 0.004 85);
+	--color-surface-strong: oklch(88.5% 0.006 85);
+	--color-ink: oklch(14% 0.008 65);
+	--color-ink-muted: oklch(30% 0.008 65);
+	--color-rule: oklch(72% 0.005 85);
+
+	/* Accent */
+	--color-accent-gold: oklch(78% 0.16 75);
+	--color-accent-gold-dark: oklch(65% 0.14 75);
+
+	/* NeXT palette (used by components in both modes) */
+	--color-next-black: oklch(6% 0.005 270);
+	--color-next-dark: oklch(20% 0.006 270);
+	--color-next-mid: oklch(34% 0.006 270);
+	--color-next-light: oklch(58% 0.006 270);
+	--color-next-white: oklch(88% 0.004 270);
+	--color-next-subtle: oklch(72% 0.012 85);
+	--color-next-bevel-hi: oklch(55% 0.006 270);
+	--color-next-bevel-lo: oklch(2% 0.004 270);
+	--color-next-teal: oklch(60% 0.08 170);
+	--color-next-teal-hi: oklch(70% 0.07 170);
+
+	/* Semantic */
+	--color-positive: oklch(55% 0.12 150);
+	--color-positive-next: oklch(75% 0.14 150);
+	--color-negative: oklch(50% 0.12 25);
+	--color-negative-next: oklch(65% 0.14 25);
+
+	/* Fonts */
+	--font-display: "Silkscreen", system-ui, sans-serif;
+	--font-body: system-ui, -apple-system, "Segoe UI", sans-serif;
+	--font-mono: "VT323", "Courier New", monospace;
+
+	/* Semantic aliases for components */
+	--bg: var(--color-paper);
+	--bg-alt: var(--color-surface);
+	--bg-strong: var(--color-surface-strong);
+	--fg: var(--color-ink);
+	--fg-muted: var(--color-ink-muted);
+	--border: var(--color-rule);
+	--accent: var(--color-accent-gold);
+	--accent-dark: var(--color-accent-gold-dark);
+}
+
+/* ===== NeXT mode (dark) ===== */
+.dark {
+	--bg: var(--color-next-black);
+	--bg-alt: var(--color-next-dark);
+	--bg-strong: var(--color-next-mid);
+	--fg: var(--color-next-white);
+	--fg-muted: var(--color-next-light);
+	--border: var(--color-next-mid);
+	--accent: var(--color-next-teal);
+	--accent-dark: var(--color-next-teal-hi);
+}

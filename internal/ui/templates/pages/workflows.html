@@ -1,0 +1,44 @@
+{{define "pages/workflows.html"}}
+{{- if not .Workflows}}
+<div class="ds-empty">
+	<div class="ds-empty-icon">
+		<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+			<path stroke-linecap="round" stroke-linejoin="round" d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4"></path>
+		</svg>
+	</div>
+	<span class="ds-empty-title">No Workflows Yet</span>
+	<p class="ds-empty-text">You have no workflows. Create one to start automating with harmostes.</p>
+</div>
+{{- else}}
+<div class="wf-grid">
+	{{range .Workflows}}
+	<a href="/workflows/{{.Name}}" class="wf-card" style="text-decoration: none; color: inherit;">
+		<div class="wf-card-header">
+			<span class="wf-card-name">{{.Name}}</span>
+			{{if .Spec.Disabled}}
+			<span class="status-badge status-badge--muted">Disabled</span>
+			{{else if eq .Status.GateStatus "green"}}
+			<span class="status-badge status-badge--green">Green</span>
+			{{else if eq .Status.GateStatus "failed"}}
+			<span class="status-badge status-badge--red">Failed</span>
+			{{else}}
+			<span class="status-badge status-badge--muted">Unknown</span>
+			{{end}}
+		</div>
+		<div class="wf-card-row">
+			<span>Source: {{.Spec.Source.Kind}}</span>
+			{{if .Spec.Source.Repo}}<span class="wf-card-meta">{{truncate .Spec.Source.Repo 30}}</span>{{end}}
+		</div>
+		<div class="wf-card-row">
+			<span>Gate: {{.Spec.Agent.Gate.Plugin.Name}}</span>
+		</div>
+		{{if not .Status.LastRunAt.IsZero}}
+		<div class="wf-card-row">
+			<span>Last run: {{.Status.LastRunAt.Format "2006-01-02 15:04 MST"}}</span>
+		</div>
+		{{end}}
+	</a>
+	{{end}}
+</div>
+{{- end}}
+{{end}}

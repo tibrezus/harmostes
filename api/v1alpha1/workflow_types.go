@@ -91,15 +91,15 @@ type WorkspaceRepoSpec struct {
 
 // SourceSpec is what the workflow monitors.
 type SourceSpec struct {
-	Kind     string       `json:"kind"`            // git | schedule | event | webhook
-	Repo     string       `json:"repo,omitempty"`  // Flux GitRepository name, or direct URL
+	Kind     string       `json:"kind"`           // git | schedule | event | webhook
+	Repo     string       `json:"repo,omitempty"` // Flux GitRepository name, or direct URL
 	Branch   string       `json:"branch,omitempty"`
 	Revision string       `json:"revision,omitempty"` // pin (git)
 	Schedule string       `json:"schedule,omitempty"` // cron (schedule)
-	Topic    string       `json:"topic,omitempty"`   // inbound event (event)
+	Topic    string       `json:"topic,omitempty"`    // inbound event (event)
 	Language string       `json:"language,omitempty"` // lc4: go/zig/… (passed to prepare)
-	Fork     *ForkSource   `json:"fork,omitempty"`     // fork-maintenance: the fork to sync into
-	Webhook  *WebhookSpec  `json:"webhook,omitempty"`  // webhook trigger config (HMAC secret + host URL)
+	Fork     *ForkSource  `json:"fork,omitempty"`     // fork-maintenance: the fork to sync into
+	Webhook  *WebhookSpec `json:"webhook,omitempty"`  // webhook trigger config (HMAC secret + host URL)
 }
 
 // ForkSource identifies the fork a fork-maintenance workflow keeps in sync.
@@ -110,18 +110,32 @@ type ForkSource struct {
 
 // WebhookSpec configures a webhook trigger for a workflow. When enabled,
 // external git hosts (GitHub, GitLab, Forgejo) send push events to the
-// webhook endpoint, and the controller schedules an immediate run.
+// controller's webhook endpoint, and the controller schedules an immediate run.
+//
+// Two modes:
+//  1. **direct** (testing): HMAC secret specified directly in spec (NOT recommended)
+//  2. **secretRef** (production): Secret reference (from Kubernetes Secret)
+//
+// Controller resolves secretRef and passes secret to HMAC verification.
+// This keeps secrets out of git (GitOps-friendly).
 type WebhookSpec struct {
-	Secret string `json:"secret"` // HMAC secret for verifying webhook signatures (stored in Secret, never in CR spec)
-	URL    string `json:"url"`    // Git host URL (for signature verification: github.com, gitlab.com, forgejo host)
+	Secret    string     `json:"secret,omitempty"`    // HMAC secret (testing only, NOT recommended for production)
+	SecretRef *SecretRef `json:"secretRef,omitempty"` // Secret reference (production)
+	URL       string     `json:"url"`                 // Git host URL (for signature verification)
+}
+
+// SecretRef references a Kubernetes Secret by name + key.
+type SecretRef struct {
+	Name string `json:"name"` // Secret name
+	Key  string `json:"key"`  // Secret key
 }
 
 // PrepareSpec runs a deterministic plugin that produces an artifact.
 type PrepareSpec struct {
 	Plugin PluginRef       `json:"plugin"`
-	Output string           `json:"output,omitempty"` // artifact path/branch/ref produced
-	Detect string           `json:"detect,omitempty"` // changed | conflict | always
-	Config json.RawMessage  `json:"config,omitempty"` // arbitrary config passed to the plugin as HARMOSTES_SPEC
+	Output string          `json:"output,omitempty"` // artifact path/branch/ref produced
+	Detect string          `json:"detect,omitempty"` // changed | conflict | always
+	Config json.RawMessage `json:"config,omitempty"` // arbitrary config passed to the plugin as HARMOSTES_SPEC
 }
 
 // AgentSpec is the framework-native LLM step (NOT a plugin).

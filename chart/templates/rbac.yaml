@@ -24,6 +24,10 @@ rules:
   - apiGroups: [""]
     resources: ["configmaps", "events"]
     verbs: ["get", "list", "watch", "create", "update", "patch"]
+  # Webhook handler reads Secrets to resolve webhook.secretRef for HMAC verification.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

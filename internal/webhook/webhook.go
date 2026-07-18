@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/go-logr/logr"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -41,14 +42,14 @@ func NewHandler(k8sClient client.Client, logger logr.Logger) *Handler {
 
 // PushEvent represents a generic git push event (simplified from GitHub/GitLab/Forgejo schemas).
 type PushEvent struct {
-	Ref        string `json:"ref"`         // e.g., "refs/heads/main"
+	Ref        string `json:"ref"` // e.g., "refs/heads/main"
 	Repository struct {
-		URL       string `json:"url"`        // clone URL
-		HTMLURL   string `json:"html_url"`  // web URL
+		URL      string `json:"url"`       // clone URL
+		HTMLURL  string `json:"html_url"`  // web URL
 		FullName string `json:"full_name"` // org/repo
 	} `json:"repository"`
-	After      string `json:"after"`  // new HEAD commit SHA
-	Before     string `json:"before"` // old HEAD commit SHA (0000000000000000000000000000000000000000 = new branch)
+	After  string `json:"after"`  // new HEAD commit SHA
+	Before string `json:"before"` // old HEAD commit SHA (0000000000000000000000000000000000000000 = new branch)
 }
 
 // ServeHTTP handles webhook POST requests.
@@ -76,15 +77,40 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request, workflowNa
 		return
 	}
 
-	// Verify signature if webhook secret is configured
-	if wf.Spec.Source.Webhook != nil && wf.Spec.Source.Webhook.Secret != "" {
-		// GitHub: X-Hub-Signature-256: sha256=...
-		// GitLab: X-Gitlab-Token (secret)
-		// Forgejo: X-Forgejo-Signature: sha256=...
-		if !h.verifySignature(req, body, wf.Spec.Source.Webhook.URL, wf.Spec.Source.Webhook.Secret) {
-			h.log.Info("webhook signature verification failed", "workflow", workflowName)
-			http.Error(w, "signature verification failed", http.StatusUnauthorized)
-			return
+	// Resolve secret from secretRef or direct secret field
+	var secretValue string
+	if wf.Spec.Source.Webhook != nil {
+		// Production mode: read from Kubernetes Secret
+		if wf.Spec.Source.Webhook.SecretRef != nil {
+			var secret corev1.Secret
+			if err := h.Get(req.Context(), types.NamespacedName{
+				Namespace: req.URL.Query().Get("namespace"),
+				Name:      wf.Spec.Source.Webhook.SecretRef.Name,
+			}, &secret); err != nil {
+				h.log.Error(err, "failed to read webhook secret", "secret", wf.Spec.Source.Webhook.SecretRef.Name)
+				http.Error(w, "failed to read webhook secret", http.StatusBadGateway)
+				return
+			}
+			secretValue = string(secret.Data[wf.Spec.Source.Webhook.SecretRef.Key])
+			if secretValue == "" {
+				h.log.Info("webhook secret key is empty", "secret", wf.Spec.Source.Webhook.SecretRef.Name, "key", wf.Spec.Source.Webhook.SecretRef.Key)
+				http.Error(w, "webhook secret key is empty", http.StatusInternalServerError)
+				return
+			}
+		} else {
+			// Testing/legacy mode: direct secret value (NOT recommended)
+			secretValue = wf.Spec.Source.Webhook.Secret
+		}
+
+		if secretValue != "" && wf.Spec.Source.Webhook.URL != "" {
+			// GitHub: X-Hub-Signature-256: sha256=...
+			// GitLab: X-Gitlab-Token (secret)
+			// Forgejo: X-Forgejo-Signature: sha256=...
+			if !h.verifySignature(req, body, wf.Spec.Source.Webhook.URL, secretValue) {
+				h.log.Info("webhook signature verification failed", "workflow", workflowName)
+				http.Error(w, "signature verification failed", http.StatusUnauthorized)
+				return
+			}
 		}
 	}
 

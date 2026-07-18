@@ -68,7 +68,7 @@
 		</div>
 		<div>
 			<div class="detail-label">Last Run</div>
-			<div class="detail-value">{{if not $wf.Status.LastRunAt.IsZero}}{{$wf.Status.LastRunAt.Format "2006-01-02 15:04:05 MST"}}{{else}}never{{end}}</div>
+			<div class="detail-value">{{if not $wf.Status.LastRunAt.Time.IsZero}}{{$wf.Status.LastRunAt.Format "2006-01-02 15:04:05 MST"}}{{else}}never{{end}}</div>
 		</div>
 		<div>
 			<div class="detail-label">Last Commit</div>

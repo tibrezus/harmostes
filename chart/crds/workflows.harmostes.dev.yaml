@@ -20,6 +20,9 @@ spec:
       subresources:
         status: {}
       additionalPrinterColumns:
+        - name: Owner
+          type: string
+          jsonPath: .metadata.labels.harmostes\.dev/owner
         - name: Source
           type: string
           jsonPath: .spec.source.kind

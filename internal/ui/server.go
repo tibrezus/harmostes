@@ -26,10 +26,6 @@ var templateFS embed.FS
 //go:embed static
 var staticFS embed.FS
 
-// OwnerLabel is the label harmostes-ui uses to isolate workflows per user.
-// The value is the Authentik username extracted from forward-auth headers.
-const OwnerLabel = "harmostes.dev/owner"
-
 // Server is the harmostes-ui HTTP server.
 type Server struct {
 	k8sClient client.Client
@@ -150,7 +146,7 @@ func (s *Server) listWorkflows(r *http.Request, owner string) ([]v1alpha1.Workfl
 	var list v1alpha1.WorkflowList
 	opts := []client.ListOption{}
 	if owner != "" {
-		opts = append(opts, client.InNamespace(s.namespace), client.MatchingLabels{OwnerLabel: owner})
+		opts = append(opts, client.InNamespace(s.namespace), client.MatchingLabels{v1alpha1.OwnerLabel: owner})
 	} else {
 		opts = append(opts, client.InNamespace(s.namespace))
 	}
@@ -169,7 +165,7 @@ func (s *Server) listJobs(r *http.Request, workflow, owner string) ([]batchv1.Jo
 	}
 	if owner != "" {
 		// Jobs inherit the owner label from the controller.
-		opts = append(opts, client.MatchingLabels{OwnerLabel: owner})
+		opts = append(opts, client.MatchingLabels{v1alpha1.OwnerLabel: owner})
 	}
 	if err := s.k8sClient.List(r.Context(), &jobList, opts...); err != nil {
 		return nil, fmt.Errorf("list jobs: %w", err)
@@ -215,4 +211,37 @@ func pageTitle(page string) string {
 	default:
 		return page
 	}
+}
+
+// SanitizeLabels strips any client-supplied harmostes.dev/owner label from a
+// label map and stamps the authenticated user's username instead. This is the
+// anti-spoofing boundary: the owner label is ALWAYS set by the server from the
+// verified Authentik identity, never trusted from client input (a malicious
+// user could otherwise set owner=alice to create a workflow under another
+// user's namespace).
+//
+// It also strips harmostes.dev/workflow (a controller-managed label) to
+// prevent accidental or malicious override of the workflow linkage.
+func SanitizeLabels(labels map[string]string, owner string) map[string]string {
+	if labels == nil {
+		labels = map[string]string{}
+	}
+	delete(labels, v1alpha1.OwnerLabel)
+	delete(labels, v1alpha1.WorkflowLabel)
+	if owner != "" {
+		labels[v1alpha1.OwnerLabel] = owner
+	}
+	return labels
+}
+
+// StampOwnerLabel sets the owner label on a Workflow CR's ObjectMeta, stripping
+// any pre-existing value first. Used by the Workflow CRUD handlers (Phase D)
+// to ensure every UI-created CR carries the authenticated user's identity.
+func StampOwnerLabel(obj *v1alpha1.Workflow, owner string) {
+	if obj.Labels == nil {
+		obj.Labels = map[string]string{}
+	}
+	delete(obj.Labels, v1alpha1.OwnerLabel)
+	delete(obj.Labels, v1alpha1.WorkflowLabel)
+	obj.Labels[v1alpha1.OwnerLabel] = owner
 }

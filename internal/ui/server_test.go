@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
 )
 
 func TestExtractIdentity_AuthentikHeaders(t *testing.T) {
@@ -159,4 +161,65 @@ func TestParseTemplates(t *testing.T) {
 			t.Errorf("template %q not found", page)
 		}
 	}
+}
+
+// TestSanitizeLabels_AntiSpoof is the Phase B anti-spoofing acceptance test:
+// a client-supplied harmostes.dev/owner label is always stripped and replaced
+// with the authenticated user's username. The server never trusts the
+// client-supplied owner — a malicious user cannot create a workflow under
+// another user's identity.
+func TestSanitizeLabels_AntiSpoof(t *testing.T) {
+	t.Run("strips spoofed owner and stamps authenticated user", func(t *testing.T) {
+		input := map[string]string{
+			v1alpha1.OwnerLabel:    "victim", // attacker tries to impersonate
+			v1alpha1.WorkflowLabel: "llm-wiki",
+			"env":                  "prod",
+		}
+		got := SanitizeLabels(input, "alice")
+		if got[v1alpha1.OwnerLabel] != "alice" {
+			t.Errorf("owner = %q, want alice (spoofed value must be replaced)", got[v1alpha1.OwnerLabel])
+		}
+		if _, ok := got[v1alpha1.WorkflowLabel]; ok {
+			t.Error("workflow label should be stripped (controller-managed)")
+		}
+		if got["env"] != "prod" {
+			t.Error("non-harmostes labels should be preserved")
+		}
+	})
+
+	t.Run("nil map returns new map with owner", func(t *testing.T) {
+		got := SanitizeLabels(nil, "alice")
+		if got[v1alpha1.OwnerLabel] != "alice" {
+			t.Errorf("owner = %q, want alice", got[v1alpha1.OwnerLabel])
+		}
+	})
+
+	t.Run("empty owner omits label", func(t *testing.T) {
+		input := map[string]string{v1alpha1.OwnerLabel: "someone"}
+		got := SanitizeLabels(input, "")
+		if _, ok := got[v1alpha1.OwnerLabel]; ok {
+			t.Error("owner label should be absent when owner is empty")
+		}
+	})
+}
+
+// TestStampOwnerLabel verifies that StampOwnerLabel sets the owner on a
+// Workflow CR, stripping any pre-existing value first (anti-spoof).
+func TestStampOwnerLabel(t *testing.T) {
+	t.Run("stamps owner on fresh CR", func(t *testing.T) {
+		wf := &v1alpha1.Workflow{}
+		StampOwnerLabel(wf, "alice")
+		if wf.Labels[v1alpha1.OwnerLabel] != "alice" {
+			t.Errorf("owner = %q, want alice", wf.Labels[v1alpha1.OwnerLabel])
+		}
+	})
+
+	t.Run("replaces spoofed owner", func(t *testing.T) {
+		wf := &v1alpha1.Workflow{}
+		wf.Labels = map[string]string{v1alpha1.OwnerLabel: "victim"}
+		StampOwnerLabel(wf, "alice")
+		if wf.Labels[v1alpha1.OwnerLabel] != "alice" {
+			t.Errorf("owner = %q, want alice (must replace spoofed value)", wf.Labels[v1alpha1.OwnerLabel])
+		}
+	})
 }

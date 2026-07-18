@@ -151,6 +151,19 @@ func (r *WorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 	recordWorkflowRunScheduled(ctx, wf.Name)
 
+	// If this run was triggered by a webhook, clear the trigger annotation now
+	// that a worker has been scheduled. Without this, the status patch from
+	// observeGeneration (below) triggers another reconcile, which sees the
+	// annotation again and schedules another worker — an infinite rapid-fire
+	// loop (~1 worker per reconcile cycle, every few seconds).
+	if triggerRev := wf.Annotations["harmostes.dev/trigger-revision"]; triggerRev != "" {
+		base := wf.DeepCopy()
+		delete(wf.Annotations, "harmostes.dev/trigger-revision")
+		if err := r.Patch(ctx, &wf, client.MergeFrom(base)); err != nil {
+			logger.Error(err, "clear webhook trigger annotation")
+		}
+	}
+
 	// Mark this generation as observed (scheduling happened); the worker records
 	// the run outcome (gateStatus, lastRunAt, …) via its StatusPatcher.
 	if err := r.observeGeneration(ctx, &wf); err != nil {

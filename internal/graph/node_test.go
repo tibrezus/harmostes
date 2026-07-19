@@ -81,10 +81,14 @@ func TestNewDefaultRegistry(t *testing.T) {
 		PluginResolver: &fakeResolver{},
 		AgentRunner:    &fakeAgentRunner{},
 		TaskResolver:   &fakeTaskResolver{},
+		DaprClient:     newFakeDaprClient(),
 	}
 	r := NewDefaultRegistry(deps)
 
-	expected := []string{"agent", "branch", "gate", "plugin"}
+	expected := []string{
+		"agent", "branch", "dapr-publish", "dapr-state-get", "dapr-state-set",
+		"gate", "plugin",
+	}
 	got := r.Types()
 	if len(got) != len(expected) {
 		t.Fatalf("types = %v, want %v", got, expected)

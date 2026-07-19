@@ -19,6 +19,7 @@ import (
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
 	"github.com/tibrezus/harmostes/internal/agent"
+	"github.com/tibrezus/harmostes/internal/dapr"
 	"github.com/tibrezus/harmostes/internal/worker"
 )
 
@@ -124,6 +125,7 @@ type Dependencies struct {
 	PluginResolver worker.PluginResolver // resolves plugin refs to commands
 	AgentRunner    AgentRunner           // runs the agent task→gate loop
 	TaskResolver   TaskResolver          // resolves task templates (ConfigMap keys, etc.)
+	DaprClient     dapr.Client           // Dapr sidecar client (state + pub/sub). Optional — nil-safe.
 }
 
 // AgentRunner runs the agent task→gate→feedback loop. This mirrors
@@ -149,5 +151,9 @@ func NewDefaultRegistry(deps Dependencies) *Registry {
 	r.Register(NewGateExecutor(deps.PluginResolver))
 	r.Register(NewAgentExecutor(deps.AgentRunner, deps.TaskResolver, deps.PluginResolver))
 	r.Register(NewBranchExecutor())
+	// Dapr node types (G3) — nil-safe: return error if executed without a client.
+	r.Register(NewStateGetExecutor(deps.DaprClient))
+	r.Register(NewStateSetExecutor(deps.DaprClient))
+	r.Register(NewPublishExecutor(deps.DaprClient))
 	return r
 }

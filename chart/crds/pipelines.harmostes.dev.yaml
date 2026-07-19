@@ -1,0 +1,144 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: pipelines.harmostes.dev
+  labels:
+    app.kubernetes.io/name: harmostes
+    app.kubernetes.io/managed-by: flux
+spec:
+  group: harmostes.dev
+  scope: Namespaced
+  names:
+    plural: pipelines
+    singular: pipeline
+    kind: Pipeline
+    shortNames: [pipe]
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: [spec]
+          properties:
+            apiVersion:
+              type: string
+            kind:
+              type: string
+            metadata:
+              type: object
+            spec:
+              type: object
+              required: [trigger, graph]
+              properties:
+                trigger:
+                  type: object
+                  required: [type]
+                  properties:
+                    type:
+                      type: string
+                      enum: [webhook, schedule, event, manual]
+                    config:
+                      type: object
+                      x-kubernetes-preserve-unknown-fields: true
+                graph:
+                  type: object
+                  required: [nodes]
+                  properties:
+                    nodes:
+                      type: array
+                      minItems: 1
+                      items:
+                        type: object
+                        required: [id, type]
+                        properties:
+                          id:
+                            type: string
+                            minLength: 1
+                            maxLength: 63
+                            pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+                          type:
+                            type: string
+                            enum:
+                              - plugin
+                              - agent
+                              - gate
+                              - branch
+                              - dapr-state-get
+                              - dapr-state-set
+                              - dapr-publish
+                              - vela-app
+                              - flux-reconcile
+                              - http-call
+                              - human-gate
+                          config:
+                            type: object
+                            x-kubernetes-preserve-unknown-fields: true
+                          outputs:
+                            type: array
+                            items:
+                              type: string
+                          when:
+                            type: string
+                    edges:
+                      type: array
+                      items:
+                        type: object
+                        required: [from, to]
+                        properties:
+                          from:
+                            type: string
+                          to:
+                            type: string
+                          when:
+                            type: string
+                          maxRetries:
+                            type: integer
+                            minimum: 0
+                dapr:
+                  type: object
+                  properties:
+                    appID:
+                      type: string
+                    components:
+                      type: array
+                      items:
+                        type: string
+                disabled:
+                  type: boolean
+            status:
+              type: object
+              properties:
+                observedGeneration:
+                  type: integer
+                phase:
+                  type: string
+                nodeCount:
+                  type: integer
+                lastRunAt:
+                  type: string
+                  format: date-time
+                message:
+                  type: string
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    x-kubernetes-preserve-unknown-fields: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Trigger
+          type: string
+          jsonPath: .spec.trigger.type
+        - name: Nodes
+          type: integer
+          jsonPath: .status.nodeCount
+        - name: Status
+          type: string
+          jsonPath: .status.phase
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp

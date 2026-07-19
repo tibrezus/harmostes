@@ -31,6 +31,7 @@ func Resource(resource string) schema.GroupResource {
 
 func addKnownTypes(scheme *runtime.Scheme) error {
 	scheme.AddKnownTypes(SchemeGroupVersion, &Workflow{}, &WorkflowList{})
+	scheme.AddKnownTypes(SchemeGroupVersion, &Pipeline{}, &PipelineList{})
 	metav1.AddToGroupVersion(scheme, SchemeGroupVersion)
 	return nil
 }

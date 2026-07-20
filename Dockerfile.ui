@@ -1,6 +1,25 @@
 # Dockerfile.ui — harmostes-ui: multi-tenant self-service web interface.
-# Single-stage Go build. Templates + static assets are embedded via go:embed.
+# Three stages: Node (SPA build) → Go (binary build) → distroless (runtime).
+#
+# The React SPA (web/) is built by Vite, outputting to internal/ui/static/spa/.
+# The Go binary then embeds it via go:embed (//go:embed static).
 
+# ---------------------------------------------------------------------------
+# Stage 1: Build the React SPA (Vite → static/spa/)
+# ---------------------------------------------------------------------------
+FROM node:22-slim AS spa-builder
+
+WORKDIR /web
+
+COPY web/package.json web/package-lock.json* ./
+RUN npm ci
+
+COPY web/ ./
+RUN npm run build
+
+# ---------------------------------------------------------------------------
+# Stage 2: Build the Go binary (embeds the SPA)
+# ---------------------------------------------------------------------------
 FROM golang:1.25-bookworm AS builder
 
 WORKDIR /src
@@ -9,13 +28,21 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Build
+# Copy source
 COPY . .
+
+# Copy the built SPA into the embed path (overwriting the placeholder).
+COPY --from=spa-builder /web/dist/ ./internal/ui/static/spa/
+
+# Build
 RUN CGO_ENABLED=0 GOOS=linux go build \
     -ldflags "-X main.version=$(git describe --tags --always 2>/dev/null || echo dev)" \
     -o /out/harmostes-ui \
     ./cmd/harmostes-ui/
 
+# ---------------------------------------------------------------------------
+# Stage 3: Distroless runtime
+# ---------------------------------------------------------------------------
 FROM gcr.io/distroless/static-debian12:nonroot
 
 COPY --from=builder /out/harmostes-ui /harmostes-ui

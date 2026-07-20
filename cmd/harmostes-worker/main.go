@@ -33,6 +33,7 @@ import (
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
 	"github.com/tibrezus/harmostes/internal/agent"
 	"github.com/tibrezus/harmostes/internal/dapr"
+	"github.com/tibrezus/harmostes/internal/graph"
 	"github.com/tibrezus/harmostes/internal/k8s"
 	"github.com/tibrezus/harmostes/internal/observability"
 	"github.com/tibrezus/harmostes/internal/worker"
@@ -129,6 +130,40 @@ func main() {
 		}},
 	}
 
+	// Graph-native mode: if a Pipeline CR is specified, dispatch to the graph
+	// executor instead of the fixed-shape worker.Run pipeline.
+	if pipelineName := os.Getenv("HARMOSTES_PIPELINE"); pipelineName != "" {
+		graphCtx := observability.ContextWithTraceparent(ctx, os.Getenv(observability.TraceparentCarrierKey))
+		graphCtx, graphCancel := context.WithTimeout(graphCtx, 30*time.Minute)
+		defer graphCancel()
+		var pipe v1alpha1.Pipeline
+		if err := cl.Get(graphCtx, client.ObjectKey{Namespace: namespace, Name: pipelineName}, &pipe); err != nil {
+			fatal("get pipeline %s/%s: %v", namespace, pipelineName, err)
+		}
+		logf("pipeline %s/%s — graph execution (%d nodes, %d edges)", namespace, pipelineName, len(pipe.Spec.Graph.Nodes), len(pipe.Spec.Graph.Edges))
+		graphDeps := graph.Dependencies{
+			PluginResolver: deps.Plugins,
+			AgentRunner:    deps.Agent,
+			TaskResolver:   taskResolverAdapter{inner: deps.Tasks},
+			DaprClient:     deps.Dapr,
+		}
+		result, err := graph.ExecuteGraph(graphCtx, pipe.Spec.Graph, pipelineName, graphDeps,
+			graph.WithStateStore(deps.DaprStateStore),
+			graph.WithPubSub(deps.DaprPubSub),
+			graph.WithLogger(logfFn),
+		)
+		flushTelemetry()
+		if err != nil {
+			fatal("graph pipeline error: %v", err)
+		}
+		if result.Status == graph.StatusGreen {
+			logf("graph complete: %s", result.Message)
+			finish(0)
+		}
+		logf("graph complete: %s (%s)", result.Status, result.Message)
+		finish(1)
+	}
+
 	runCtx := observability.ContextWithTraceparent(ctx, os.Getenv(observability.TraceparentCarrierKey))
 	runCtx, runCancel := context.WithTimeout(runCtx, runTimeout(&wf))
 	defer runCancel()
@@ -159,6 +194,16 @@ func runTimeout(wf *v1alpha1.Workflow) time.Duration {
 // builtinPlugins maps plugin names to executable paths shipped in the worker
 // image (under /usr/local/lib/harmostes/plugins/<name>). Populated as plugins
 // are ported (see plugins/README.md).
+// taskResolverAdapter adapts worker.TaskResolver (which takes a TaskTemplate) to
+// graph.TaskResolver (which takes a plain string ref). The graph model's agent
+// node stores the task as a string (e.g. "tasks/wiki-update"); this wraps it in
+// a TaskTemplate{Name: ref} for the underlying resolver.
+type taskResolverAdapter struct{ inner worker.TaskResolver }
+
+func (a taskResolverAdapter) Get(ctx context.Context, ref string) (string, error) {
+	return a.inner.Get(ctx, v1alpha1.TaskTemplate{Name: ref})
+}
+
 func builtinPlugins() map[string]string {
 	return map[string]string{
 		"noop":      "/usr/local/lib/harmostes/plugins/noop.sh",

@@ -18,6 +18,11 @@ rules:
   - apiGroups: ["harmostes.dev"]
     resources: ["workflows", "workflows/status", "workflows/finalizers"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Pipeline CRs (graph-native platform — G1+). Worker reads Pipeline CRs to
+  # execute their graph spec.
+  - apiGroups: ["harmostes.dev"]
+    resources: ["pipelines", "pipelines/status", "pipelines/finalizers"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["batch"]
     resources: ["jobs"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
@@ -42,3 +47,44 @@ roleRef:
   kind: Role
   name: harmostes-controller
   apiGroup: rbac.authorization.k8s.io
+{{- if .Values.worker.deployRBAC.enabled }}
+---
+# ClusterRole for deployment node types (G6: vela-app, flux-reconcile).
+# These nodes create/update/delete/wait resources in ANY namespace, so a
+# ClusterRole is required. Opt-in via values.yaml:
+#   worker.deployRBAC.enabled: true
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: harmostes-deploy-nodes
+  labels:
+    app.kubernetes.io/name: harmostes
+rules:
+  # KubeVela Application CR (vela-app node).
+  - apiGroups: ["core.oam.dev"]
+    resources: ["applications"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Flux CRs (flux-reconcile node).
+  - apiGroups: ["helm.toolkit.fluxcd.io"]
+    resources: ["helmreleases"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: ["kustomize.toolkit.fluxcd.io"]
+    resources: ["kustomizations"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: ["source.toolkit.fluxcd.io"]
+    resources: ["gitrepositories", "ocirepositories", "helmrepositories", "helmcharts", "buckets"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: harmostes-deploy-nodes
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.controller.serviceAccount }}
+    namespace: {{ .Values.namespace }}
+roleRef:
+  kind: ClusterRole
+  name: harmostes-deploy-nodes
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}

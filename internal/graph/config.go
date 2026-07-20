@@ -49,6 +49,27 @@ type BranchNodeConfig struct {
 	Condition string `json:"condition"`
 }
 
+// VelaAppConfig configures a "vela-app" node — create/update/delete/wait a
+// KubeVela Application CR. The application field is the raw spec (components,
+// traits, policies) without metadata.
+type VelaAppConfig struct {
+	Action      string         `json:"action"`      // apply | delete | wait
+	Name        string         `json:"name"`        // Application name
+	Namespace   string         `json:"namespace"`   // target namespace (default: env.Namespace)
+	Application map[string]any `json:"application"` // raw KubeVela Application spec
+	Timeout     string         `json:"timeout"`     // for wait action (e.g. "600s")
+}
+
+// FluxReconcileConfig configures a "flux-reconcile" node — triggers Flux
+// reconciliation of a resource by annotating it with fluxcd.io/reconcileAt,
+// then optionally polls until Ready=True.
+type FluxReconcileConfig struct {
+	Resource  string `json:"resource"`  // kind/name (e.g. "helmrelease/my-service")
+	Namespace string `json:"namespace"` // target namespace (default: env.Namespace)
+	Wait      bool   `json:"wait"`      // poll until Ready
+	Timeout   string `json:"timeout"`   // e.g. "600s" (default: "300s")
+}
+
 // parseConfig unmarshals a node's raw JSON config into the target type.
 func parseConfig[T any](raw json.RawMessage) (T, error) {
 	var cfg T

@@ -437,7 +437,7 @@ func TestNewDefaultRegistryIncludesDaprTypes(t *testing.T) {
 
 	expected := []string{
 		"agent", "branch", "dapr-publish", "dapr-state-get", "dapr-state-set",
-		"gate", "plugin",
+		"flux-reconcile", "gate", "plugin", "vela-app",
 	}
 	got := r.Types()
 	if len(got) != len(expected) {

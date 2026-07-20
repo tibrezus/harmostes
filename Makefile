@@ -13,7 +13,7 @@ DS_SRC        ?= ../rezuscloud/design-system
 BIN_DIR       := bin
 GO            := go
 
-.PHONY: all build test vet tidy generate manifests controller-worker docker docker-push docker-ui ui-css-sync clean
+.PHONY: all build test vet tidy generate manifests controller-worker docker docker-push docker-ui web-build web-dev ui-css-sync clean
 
 all: test build
 
@@ -56,9 +56,20 @@ docker:
 docker-push: docker
 	docker push $(IMG_WORKER):$(TAG)
 
-## docker-ui: build the harmostes-ui image.
+## docker-ui: build the harmostes-ui image (includes SPA build stage).
 docker-ui:
 	docker build -t $(IMG_UI):$(TAG) -f Dockerfile.ui .
+
+## web-build: build the React SPA and copy output to the embed path.
+##   Run before `go build` or `go test ./internal/ui/` to test SPA routes locally.
+web-build:
+	cd web && npm ci && npm run build
+	rm -rf internal/ui/static/spa/assets
+	cp -r web/dist/* internal/ui/static/spa/
+
+## web-dev: start the Vite dev server (hot reload, proxies /api to :8083).
+web-dev:
+	cd web && npm run dev
 
 ## ui-css-sync: re-extract component CSS from the design system repo.
 ##   Run after updating the design system: make ui-css-sync DS_SRC=../rezuscloud/design-system

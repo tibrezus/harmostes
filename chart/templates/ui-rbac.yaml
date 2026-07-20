@@ -24,6 +24,10 @@ rules:
   - apiGroups: ["harmostes.dev"]
     resources: ["workflows"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Pipeline CRUD (Phase G5: canvas UI). Same owner-label isolation as workflows.
+  - apiGroups: ["harmostes.dev"]
+    resources: ["pipelines"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   # Read jobs (run history, filtered by owner label)
   - apiGroups: ["batch"]
     resources: ["jobs"]

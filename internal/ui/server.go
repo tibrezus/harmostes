@@ -94,6 +94,17 @@ func (s *Server) Routes() http.Handler {
 	pages.HandleFunc("POST /workflows/{name}/trigger", s.handleWorkflowTrigger)
 	pages.HandleFunc("POST /workflows/{name}/toggle", s.handleWorkflowToggle)
 
+	// Pipeline management (Phase G5 — canvas UI)
+	pages.HandleFunc("GET /pipelines", s.handleSPA)
+	pages.HandleFunc("GET /pipelines/new", s.handleSPA)
+	pages.HandleFunc("GET /pipelines/{name}", s.handleSPA)
+
+	// Pipeline JSON API (called by the React SPA)
+	pages.HandleFunc("GET /api/pipelines", s.handlePipelineAPIList)
+	pages.HandleFunc("GET /api/pipelines/{name}", s.handlePipelineAPIGet)
+	pages.HandleFunc("PUT /api/pipelines/{name}", s.handlePipelineAPIPut)
+	pages.HandleFunc("DELETE /api/pipelines/{name}", s.handlePipelineAPIDelete)
+
 	// Token management (Phase C)
 	pages.HandleFunc("GET /tokens", s.handleTokenList)
 	pages.HandleFunc("POST /tokens", s.handleTokenCreate)

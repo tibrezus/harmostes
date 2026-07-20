@@ -3,3 +3,7 @@
 vendor/
 harmostes-controller
 harmostes-ui
+web/node_modules/
+web/dist/
+internal/ui/static/spa/assets/
+web/tsconfig.tsbuildinfo

@@ -87,7 +87,7 @@ func TestNewDefaultRegistry(t *testing.T) {
 
 	expected := []string{
 		"agent", "branch", "dapr-publish", "dapr-state-get", "dapr-state-set",
-		"gate", "plugin",
+		"flux-reconcile", "gate", "plugin", "vela-app",
 	}
 	got := r.Types()
 	if len(got) != len(expected) {
@@ -115,6 +115,8 @@ func TestDeterministicFlags(t *testing.T) {
 		{NewGateExecutor(&fakeResolver{}), true, "gate"},
 		{NewBranchExecutor(), true, "branch"},
 		{NewAgentExecutor(&fakeAgentRunner{}, nil, nil), false, "agent"},
+		{NewVelaAppExecutor(nil), true, "vela-app"},
+		{NewFluxReconcileExecutor(nil), true, "flux-reconcile"},
 	}
 
 	for _, tt := range tests {
@@ -137,6 +139,8 @@ func TestTypeMethods(t *testing.T) {
 		{NewGateExecutor(&fakeResolver{}), "gate"},
 		{NewBranchExecutor(), "branch"},
 		{NewAgentExecutor(&fakeAgentRunner{}, nil, nil), "agent"},
+		{NewVelaAppExecutor(nil), "vela-app"},
+		{NewFluxReconcileExecutor(nil), "flux-reconcile"},
 	}
 
 	for _, tt := range tests {

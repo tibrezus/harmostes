@@ -27,6 +27,12 @@ dapr:
   valkeyDB: "3"
   injectWorker: true    # Dapr sidecar injected into worker Jobs (events/state + clean shutdown)
 
+# Worker deployment-node RBAC (G6: vela-app, flux-reconcile). Opt-in —
+# grants cluster-wide access to KubeVela Application + Flux CRs.
+worker:
+  deployRBAC:
+    enabled: false
+
 # harmostes-ui: self-service multi-tenant web interface (HTMX + Go templates).
 # Authenticated via Authentik forward-auth. Each user sees only workflows
 # labeled harmostes.dev/owner=<their-username>.

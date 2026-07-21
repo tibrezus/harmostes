@@ -97,11 +97,17 @@ func (h *EventHub) Subscribe(pipeline string) (*subscriber, func()) {
 // Non-blocking: if a subscriber's channel is full, the event is dropped for
 // that subscriber (logged but not fatal).
 func (h *EventHub) Publish(ev Event) {
+	// Copy subscriber pointers under the lock, then iterate the copy without
+	// the lock. This avoids a race between Publish (iterating the map) and
+	// cancel (deleting from the map).
 	h.mu.RLock()
-	subs := h.subs[ev.Pipeline]
+	subs := make([]*subscriber, 0, len(h.subs[ev.Pipeline]))
+	for sub := range h.subs[ev.Pipeline] {
+		subs = append(subs, sub)
+	}
 	h.mu.RUnlock()
 
-	for sub := range subs {
+	for _, sub := range subs {
 		select {
 		case sub.ch <- ev:
 		default:

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -31,6 +32,21 @@ const DefaultPubSub = "harmostes-pubsub"
 
 // LifecycleTopic is the pub/sub topic for node lifecycle events.
 const LifecycleTopic = "harmostes-events"
+
+// LifecycleEvent is the wire format for pipeline/node lifecycle events
+// published to the Dapr pub/sub topic. The UI subscribes to these events to
+// drive real-time canvas updates (G7).
+type LifecycleEvent struct {
+	Event      string      `json:"event"`                // pipeline.started, node.started, node.completed, node.failed, pipeline.completed, pipeline.failed
+	Pipeline   string      `json:"pipeline"`             // pipeline CR name
+	Node       string      `json:"node,omitempty"`       // node ID (empty for pipeline-level events)
+	NodeType   string      `json:"nodeType,omitempty"`   // node type (agent, gate, plugin, etc.)
+	Status     string      `json:"status,omitempty"`     // green | failed (empty for started events)
+	Feedback   string      `json:"feedback,omitempty"`   // gate feedback or error message
+	Outputs    NodeOutputs `json:"outputs,omitempty"`    // node outputs (agent metrics, deployment results)
+	DurationMs int64       `json:"durationMs,omitempty"` // execution duration in milliseconds (completed/failed events)
+	Timestamp  time.Time   `json:"timestamp"`            // event creation time (UTC)
+}
 
 // ExecutionResult is the outcome of a full graph execution.
 type ExecutionResult struct {
@@ -155,7 +171,10 @@ func (e *GraphExecutor) Execute(ctx context.Context, graph v1alpha1.GraphSpec, p
 	}
 
 	// Publish pipeline.started lifecycle event.
-	e.publishLifecycle(ctx, "pipeline.started", pipelineName, "", NodeResult{})
+	e.publishLifecycle(ctx, LifecycleEvent{
+		Event:    "pipeline.started",
+		Pipeline: pipelineName,
+	})
 
 	edgeCount := make(map[string]int) // "from→to" → traversal count
 	iterations := 0
@@ -181,7 +200,13 @@ func (e *GraphExecutor) Execute(ctx context.Context, graph v1alpha1.GraphSpec, p
 		env := NodeEnv{Inputs: snapshotOutputs(result.NodeResults)}
 
 		e.log("node %s: type=%s executing", nodeID, node.Type)
-		e.publishLifecycle(ctx, "node.started", pipelineName, nodeID, NodeResult{})
+		startTime := time.Now()
+		e.publishLifecycle(ctx, LifecycleEvent{
+			Event:    "node.started",
+			Pipeline: pipelineName,
+			Node:     nodeID,
+			NodeType: node.Type,
+		})
 
 		// Execute via registry.
 		exec, err := e.registry.Get(node.Type)
@@ -189,11 +214,20 @@ func (e *GraphExecutor) Execute(ctx context.Context, graph v1alpha1.GraphSpec, p
 			result.Status = StatusFailed
 			result.Message = fmt.Sprintf("node %s: %v", nodeID, err)
 			result.NodeResults[nodeID] = NodeResult{Status: StatusFailed, Feedback: err.Error()}
-			e.publishLifecycle(ctx, "node.failed", pipelineName, nodeID, result.NodeResults[nodeID])
+			e.publishLifecycle(ctx, LifecycleEvent{
+				Event:      "node.failed",
+				Pipeline:   pipelineName,
+				Node:       nodeID,
+				NodeType:   node.Type,
+				Status:     string(StatusFailed),
+				Feedback:   err.Error(),
+				DurationMs: time.Since(startTime).Milliseconds(),
+			})
 			break
 		}
 
 		nodeResult, execErr := exec.Execute(ctx, node, env)
+		durationMs := time.Since(startTime).Milliseconds()
 		if execErr != nil {
 			nodeResult.Status = StatusFailed
 			if nodeResult.Feedback == "" {
@@ -206,8 +240,20 @@ func (e *GraphExecutor) Execute(ctx context.Context, graph v1alpha1.GraphSpec, p
 
 		result.NodeResults[nodeID] = nodeResult
 		e.checkpoint(ctx, pipelineName, nodeID, nodeResult)
-		e.publishLifecycle(ctx, "node.completed", pipelineName, nodeID, nodeResult)
-		e.log("node %s: status=%s", nodeID, nodeResult.Status)
+		completedEvent := LifecycleEvent{
+			Event:      "node.completed",
+			Pipeline:   pipelineName,
+			Node:       nodeID,
+			NodeType:   node.Type,
+			Status:     string(nodeResult.Status),
+			Feedback:   nodeResult.Feedback,
+			DurationMs: durationMs,
+		}
+		if nodeResult.Status == StatusFailed {
+			completedEvent.Event = "node.failed"
+		}
+		e.publishLifecycle(ctx, completedEvent)
+		e.log("node %s: status=%s duration=%dms", nodeID, nodeResult.Status, durationMs)
 
 		if nodeResult.Status == StatusFailed {
 			// Node failed: check if any outgoing edge handles failure (when: failed).
@@ -223,7 +269,12 @@ func (e *GraphExecutor) Execute(ctx context.Context, graph v1alpha1.GraphSpec, p
 			if !handled {
 				result.Status = StatusFailed
 				result.Message = fmt.Sprintf("node %s failed: %s", nodeID, nodeResult.Feedback)
-				e.publishLifecycle(ctx, "pipeline.failed", pipelineName, "", result.NodeResults[nodeID])
+				e.publishLifecycle(ctx, LifecycleEvent{
+					Event:    "pipeline.failed",
+					Pipeline: pipelineName,
+					Status:   string(StatusFailed),
+					Feedback: result.Message,
+				})
 				return result, nil
 			}
 			continue
@@ -239,7 +290,11 @@ func (e *GraphExecutor) Execute(ctx context.Context, graph v1alpha1.GraphSpec, p
 
 	// Pipeline succeeded: all reachable nodes completed.
 	result.Message = "pipeline completed"
-	e.publishLifecycle(ctx, "pipeline.completed", pipelineName, "", NodeResult{})
+	e.publishLifecycle(ctx, LifecycleEvent{
+		Event:    "pipeline.completed",
+		Pipeline: pipelineName,
+		Status:   string(StatusGreen),
+	})
 	return result, nil
 }
 
@@ -296,31 +351,20 @@ func (e *GraphExecutor) checkpoint(ctx context.Context, pipelineName, nodeID str
 	}
 }
 
-// publishLifecycle publishes a node lifecycle event to the Dapr pub/sub.
+// publishLifecycle publishes a lifecycle event to the Dapr pub/sub topic.
 // Best-effort: errors are logged but do not fail the pipeline.
-func (e *GraphExecutor) publishLifecycle(ctx context.Context, event, pipelineName, nodeID string, result NodeResult) {
+func (e *GraphExecutor) publishLifecycle(ctx context.Context, ev LifecycleEvent) {
 	if e.dapr == nil {
 		return
 	}
-	payload := map[string]any{
-		"event":    event,
-		"pipeline": pipelineName,
-	}
-	if nodeID != "" {
-		payload["node"] = nodeID
-	}
-	if result.Status != "" {
-		payload["status"] = string(result.Status)
-	}
-	if result.Feedback != "" {
-		payload["feedback"] = result.Feedback
-	}
-	b, err := json.Marshal(payload)
+	ev.Timestamp = time.Now().UTC()
+	b, err := json.Marshal(ev)
 	if err != nil {
+		e.log("warn: publish %s: marshal: %v", ev.Event, err)
 		return
 	}
 	if err := e.dapr.Publish(ctx, e.pubsub, LifecycleTopic, string(b)); err != nil {
-		e.log("warn: publish %s: %v", event, err)
+		e.log("warn: publish %s: %v", ev.Event, err)
 	}
 }
 

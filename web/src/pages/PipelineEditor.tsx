@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ReactFlow,
   Background,
@@ -11,19 +11,18 @@ import {
   type Edge,
   type Node,
   type NodeTypes,
-  type NodeProps,
-  Handle,
-  Position,
   MarkerType,
   BackgroundVariant,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 
-import type { EdgeSpec, GraphSpec, NodeSpec, NodeType, RFNodeData } from "../types";
+import type { EdgeSpec, GraphSpec, NodeSpec, NodeType, RFNodeData, LifecycleEvent, NodeExecMeta } from "../types";
 import { NODE_TYPES } from "../nodeTypes";
 import { PipelineNode } from "../components/PipelineNode";
 import { NodePalette } from "../components/NodePalette";
 import { ConfigPanel } from "../components/ConfigPanel";
+import { RunTimeline } from "../components/RunTimeline";
+import { usePipelineEvents } from "../hooks/usePipelineEvents";
 
 // Register custom node types for React Flow.
 const nodeTypes: NodeTypes = {
@@ -145,6 +144,23 @@ export function PipelineEditor({ name }: PipelineEditorProps) {
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState("");
+  const [timelineOpen, setTimelineOpen] = useState(false);
+  const [liveMode, setLiveMode] = useState(false);
+
+  // SSE lifecycle events for this pipeline (G7 live execution).
+  // Only connect when viewing an existing (saved) pipeline.
+  const ssePipelineName = !isNew && pipelineName ? pipelineName : undefined;
+  const { events: pipelineEvents, connected: sseConnected } = usePipelineEvents(ssePipelineName);
+
+  // Auto-enable live mode when the first event arrives.
+  const lastEventCount = useRef(0);
+  useEffect(() => {
+    if (pipelineEvents.length > 0 && pipelineEvents.length !== lastEventCount.current) {
+      lastEventCount.current = pipelineEvents.length;
+      setLiveMode(true);
+      if (!timelineOpen) setTimelineOpen(true);
+    }
+  }, [pipelineEvents, timelineOpen]);
 
   // Load existing pipeline.
   useEffect(() => {
@@ -181,6 +197,41 @@ export function PipelineEditor({ name }: PipelineEditorProps) {
   useEffect(() => {
     if (!loading) setDirty(true);
   }, [nodes, edges, triggerType, loading]);
+
+  // Sync execution states to nodes when events arrive (G7 live execution).
+  // This overlays execution metadata (state, feedback, metrics) on the
+  // existing canvas nodes without changing their positions or structure.
+  useEffect(() => {
+    if (pipelineEvents.length === 0 || nodes.length === 0) return;
+    const execMap = deriveExecStates(pipelineEvents);
+    setNodes((nds) =>
+      nds.map((n) => {
+        const exec = execMap[n.id];
+        // Only update if the exec state changed (avoid unnecessary re-renders).
+        if (exec || n.data.exec) {
+          return { ...n, data: { ...n.data, exec } };
+        }
+        return n;
+      })
+    );
+  }, [pipelineEvents, setNodes]); // intentionally exclude nodes — we use setNodes callback
+
+  // Animate edges to show data flow direction during execution.
+  useEffect(() => {
+    if (!liveMode || pipelineEvents.length === 0) return;
+    const execMap = deriveExecStates(pipelineEvents);
+    setEdges((eds) =>
+      eds.map((e) => {
+        const sourceExec = execMap[e.source];
+        const targetExec = execMap[e.target];
+        // Animate: source completed (green) and target running.
+        const animate =
+          (sourceExec?.state === "green" && targetExec?.state === "running") ||
+          targetExec?.state === "running";
+        return { ...e, animated: animate || e.data?.when === "failed" };
+      })
+    );
+  }, [pipelineEvents, liveMode, setEdges]);
 
   const onConnect = useCallback(
     (conn: Connection) => {
@@ -435,6 +486,16 @@ export function PipelineEditor({ name }: PipelineEditorProps) {
           {saving ? "Saving…" : "Save"}
         </button>
         {saveMsg && <span className={saveMsg.startsWith("Error") ? "error" : "save-ok"}>{saveMsg}</span>}
+        {liveMode && (
+          <span className={`live-indicator ${sseConnected ? "live-indicator--connected" : "live-indicator--disconnected"}`}>
+            <span className="live-indicator-dot" />
+            {sseConnected ? "Live" : "Reconnecting…"}
+          </span>
+        )}
+        <button className="btn btn-secondary btn-sm" onClick={() => setTimelineOpen(!timelineOpen)}>
+          {timelineOpen ? "Hide Timeline" : "Timeline"}
+          {pipelineEvents.length > 0 && <span className="timeline-badge">{pipelineEvents.length}</span>}
+        </button>
         <button className="btn btn-secondary btn-sm" onClick={() => setYamlOpen(!yamlOpen)}>
           {yamlOpen ? "Hide YAML" : "Show YAML"}
         </button>
@@ -478,6 +539,13 @@ export function PipelineEditor({ name }: PipelineEditorProps) {
           onDeleteNode={deleteSelectedNode}
         />
       </div>
+
+      {/* Bottom: Timeline panel (collapsible, G7 live execution) */}
+      {timelineOpen && (
+        <div className="timeline-panel">
+          <RunTimeline events={pipelineEvents} />
+        </div>
+      )}
 
       {/* Bottom: YAML panel (collapsible) */}
       {yamlOpen && (
@@ -525,4 +593,41 @@ function setNestedValue(obj: Record<string, unknown>, path: string, value: strin
       cur[lastKey] = value;
     }
   }
+}
+
+// deriveExecStates processes a stream of lifecycle events and builds a map of
+// node ID → execution metadata. The last event for each node wins (e.g.
+// node.started → running, then node.completed → green).
+function deriveExecStates(events: LifecycleEvent[]): Record<string, NodeExecMeta | undefined> {
+  const map: Record<string, NodeExecMeta> = {};
+  for (const ev of events) {
+    if (!ev.node) continue;
+    switch (ev.event) {
+      case "node.started":
+        map[ev.node] = {
+          state: "running",
+          startedAt: ev.timestamp,
+        };
+        break;
+      case "node.completed":
+        map[ev.node] = {
+          state: ev.status === "failed" ? "failed" : "green",
+          feedback: ev.feedback,
+          outputs: ev.outputs,
+          durationMs: ev.durationMs,
+          startedAt: map[ev.node]?.startedAt,
+          completedAt: ev.timestamp,
+        };
+        break;
+      case "node.failed":
+        map[ev.node] = {
+          state: "failed",
+          feedback: ev.feedback,
+          durationMs: ev.durationMs,
+          completedAt: ev.timestamp,
+        };
+        break;
+    }
+  }
+  return map;
 }

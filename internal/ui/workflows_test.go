@@ -38,6 +38,7 @@ func workflowTestServer(existing ...client.Object) *Server {
 		namespace: "harmostes",
 		logger:    slog.Default(),
 		templates: tmpl,
+		hub:       NewEventHub(),
 	}
 }
 

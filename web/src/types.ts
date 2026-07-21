@@ -100,6 +100,7 @@ export interface RFNodeData {
   spec: NodeSpec;
   label: string;
   typeMeta: NodeTypeMeta;
+  exec?: NodeExecMeta; // live execution state (G7)
   [key: string]: unknown;
 }
 
@@ -107,4 +108,32 @@ export interface RFEdgeData {
   when?: string;
   maxRetries?: number;
   [key: string]: unknown;
+}
+
+// ---- Live execution (G7) ----
+
+// Lifecycle event from the graph executor, delivered via Dapr pub/sub → SSE.
+export interface LifecycleEvent {
+  event: string; // pipeline.started, node.started, node.completed, node.failed, pipeline.completed, pipeline.failed
+  pipeline: string;
+  node?: string;
+  nodeType?: string;
+  status?: string; // green | failed
+  feedback?: string;
+  outputs?: Record<string, unknown>;
+  durationMs?: number;
+  timestamp: string;
+}
+
+// Node execution state on the canvas.
+export type NodeExecState = "pending" | "running" | "green" | "failed";
+
+// Node execution metadata derived from lifecycle events.
+export interface NodeExecMeta {
+  state: NodeExecState;
+  feedback?: string;
+  durationMs?: number;
+  outputs?: Record<string, unknown>;
+  startedAt?: string;
+  completedAt?: string;
 }

@@ -43,6 +43,7 @@ type Server struct {
 	namespace string
 	logger    *slog.Logger
 	templates *template.Template
+	hub       *EventHub // pipeline lifecycle event fan-out (G7 live execution)
 }
 
 // New creates a Server with parsed templates and the given k8s client.
@@ -58,6 +59,7 @@ func New(k8sClient client.Client, namespace string, logger *slog.Logger, kubeCli
 		namespace: namespace,
 		logger:    logger,
 		templates: tmpl,
+		hub:       NewEventHub(),
 	}
 
 	if kubeClient != nil {
@@ -82,6 +84,11 @@ func (s *Server) Routes() http.Handler {
 		w.Write([]byte("ok"))
 	})
 
+	// Dapr pub/sub subscription endpoints (no auth — daprd is a trusted in-pod
+	// sidecar; it doesn't send Authentik forward-auth headers).
+	mux.HandleFunc("GET /dapr/subscribe", s.handleDaprSubscribe)
+	mux.HandleFunc("POST /dapr/events", s.handleDaprEvent)
+
 	// Pages — all wrapped in auth middleware
 	pages := http.NewServeMux()
 	pages.HandleFunc("GET /", s.handleIndex)
@@ -104,6 +111,9 @@ func (s *Server) Routes() http.Handler {
 	pages.HandleFunc("GET /api/pipelines/{name}", s.handlePipelineAPIGet)
 	pages.HandleFunc("PUT /api/pipelines/{name}", s.handlePipelineAPIPut)
 	pages.HandleFunc("DELETE /api/pipelines/{name}", s.handlePipelineAPIDelete)
+
+	// Pipeline lifecycle SSE stream (G7 live execution)
+	pages.HandleFunc("GET /api/pipelines/{name}/events", s.handlePipelineSSE)
 
 	// Token management (Phase C)
 	pages.HandleFunc("GET /tokens", s.handleTokenList)

@@ -23,6 +23,20 @@ spec:
       labels:
         app.kubernetes.io/name: harmostes
         app.kubernetes.io/component: ui
+      annotations:
+        # Dapr sidecar for pub/sub subscription (G7 live execution).
+        # The sidecar subscribes to harmostes-events topic and delivers
+        # lifecycle events to the UI's /dapr/events endpoint.
+        dapr.io/enabled: "true"
+        dapr.io/app-id: harmostes-ui
+        dapr.io/app-port: "8083"
+        dapr.io/config: harmostes-config
+        {{- if .Values.observability.daprdImage }}
+        dapr.io/sidecar-image: {{ .Values.observability.daprdImage | quote }}
+        {{- end }}
+        {{- if .Values.observability.otlpInsecure }}
+        dapr.io/env: "OTEL_EXPORTER_OTLP_INSECURE=true"
+        {{- end }}
     spec:
       serviceAccountName: {{ .Values.ui.serviceAccount }}
       {{- if .Values.image.pullSecret }}

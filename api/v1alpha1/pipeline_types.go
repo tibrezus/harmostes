@@ -110,6 +110,14 @@ type NodeSpec struct {
 	// node to execute. Uses template expressions (Jinja2-style).
 	//+optional
 	When string `json:"when,omitempty"`
+
+	// Timeout is the maximum duration this node is allowed to run before being
+	// killed (circuit breaker). Format is a Go duration string: "30s", "5m",
+	// "1h". Empty means no timeout (inherits the pipeline's overall deadline).
+	// When the timeout fires, the node is marked failed with feedback
+	// "timed out after {duration}".
+	//+optional
+	Timeout string `json:"timeout,omitempty"`
 }
 
 // EdgeSpec defines a directed edge between two nodes.

@@ -1,0 +1,18 @@
+{{- if .Values.ui.enabled }}
+{{- if .Values.ui.rbac }}
+# RBAC policy ConfigMap (G8): maps node types to allowed Authentik groups.
+# The UI loads this at startup via --rbac-policy. Empty = all unrestricted.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: harmostes-ui-rbac
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: harmostes
+    app.kubernetes.io/component: ui
+data:
+  policy.json: |-
+{{ .Values.ui.rbac.nodeTypePolicy | toJson | indent 4 }}
+{{- end }}
+{{- end }}

@@ -2,17 +2,35 @@ package ui
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"net/http"
 	"sort"
 	"strings"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
+	"github.com/tibrezus/harmostes/internal/rbac"
 )
+
+// ---------------------------------------------------------------------------
+// Audit logging (G8 enterprise)
+// ---------------------------------------------------------------------------
+//
+// Every pipeline CRUD operation is logged as a structured audit event. These
+// events flow to stdout (JSON) → OTel collector → SigNoz, where they can be
+// queried to answer "who changed pipeline X, and when?"
+
+// auditLog emits a structured audit event.
+func (s *Server) auditLog(action, resource, user string, extra ...any) {
+	attrs := []any{"audit", "true", "action", action, "resource", resource, "user", user}
+	attrs = append(attrs, extra...)
+	s.logger.Info("audit: "+action, attrs...)
+}
 
 // ---------------------------------------------------------------------------
 // JSON helpers
@@ -137,6 +155,29 @@ func (s *Server) handlePipelineAPIPut(w http.ResponseWriter, r *http.Request) {
 		req.Spec.Trigger.Type = "manual"
 	}
 
+	// RBAC enforcement (G8): check if the user is authorized to use all node
+	// types in the graph. Deployment node types (vela-app, flux-reconcile) are
+	// restricted to ops/admin by default.
+	var userGroups []string
+	if owner != nil {
+		userGroups = owner.Groups
+	}
+	if s.nodePolicy != nil {
+		if err := s.nodePolicy.Authorize(userGroups, req.Spec.Graph.Nodes); err != nil {
+			var rbacErr *rbac.Error
+			if errors.As(err, &rbacErr) {
+				s.auditLog("pipeline.create_denied", name, ownerName, "violations", rbacErr.Violations)
+				s.writeJSON(w, http.StatusForbidden, map[string]any{
+					"error":      "unauthorized node types in pipeline graph",
+					"violations": rbacErr.Violations,
+				})
+				return
+			}
+			s.writeAPIError(w, http.StatusForbidden, "authorization error: %v", err)
+			return
+		}
+	}
+
 	// Check if the Pipeline already exists (update vs create).
 	var existing v1alpha1.Pipeline
 	err := s.k8sClient.Get(r.Context(), client.ObjectKey{Namespace: s.namespace, Name: name}, &existing)
@@ -147,10 +188,17 @@ func (s *Server) handlePipelineAPIPut(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		existing.Spec = req.Spec
+		// Provenance annotations (G8): record who last modified the pipeline.
+		if existing.Annotations == nil {
+			existing.Annotations = map[string]string{}
+		}
+		existing.Annotations["harmostes.dev/last-modified-by"] = ownerName
+		existing.Annotations["harmostes.dev/last-modified-at"] = time.Now().UTC().Format(time.RFC3339)
 		if err := s.k8sClient.Update(r.Context(), &existing); err != nil {
 			s.writeAPIError(w, http.StatusInternalServerError, "update pipeline: %v", err)
 			return
 		}
+		s.auditLog("pipeline.update", name, ownerName, "nodes", len(req.Spec.Graph.Nodes))
 		s.writeJSON(w, http.StatusOK, existing)
 		return
 	}
@@ -167,11 +215,19 @@ func (s *Server) handlePipelineAPIPut(w http.ResponseWriter, r *http.Request) {
 	if ownerName != "" {
 		pipe.Labels[v1alpha1.OwnerLabel] = ownerName
 	}
+	// Provenance annotations (G8): record who created the pipeline.
+	if pipe.Annotations == nil {
+		pipe.Annotations = map[string]string{}
+	}
+	pipe.Annotations["harmostes.dev/created-by"] = ownerName
+	pipe.Annotations["harmostes.dev/last-modified-by"] = ownerName
+	pipe.Annotations["harmostes.dev/last-modified-at"] = time.Now().UTC().Format(time.RFC3339)
 
 	if err := s.k8sClient.Create(r.Context(), &pipe); err != nil {
 		s.writeAPIError(w, http.StatusInternalServerError, "create pipeline: %v", err)
 		return
 	}
+	s.auditLog("pipeline.create", name, ownerName, "nodes", len(req.Spec.Graph.Nodes))
 	s.writeJSON(w, http.StatusCreated, pipe)
 }
 
@@ -197,6 +253,7 @@ func (s *Server) handlePipelineAPIDelete(w http.ResponseWriter, r *http.Request)
 		s.writeAPIError(w, http.StatusInternalServerError, "delete pipeline: %v", err)
 		return
 	}
+	s.auditLog("pipeline.delete", name, ownerName)
 	s.writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 

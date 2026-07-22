@@ -16,6 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
+	"github.com/tibrezus/harmostes/internal/rbac"
 )
 
 // pipelineTestServer builds a Server with a fake k8s client preloaded with objects.
@@ -32,10 +33,11 @@ func pipelineTestServer(existing ...client.Object) *Server {
 	tmpl, _ := parseTemplates()
 
 	return &Server{
-		k8sClient: cl,
-		namespace: "harmostes",
-		logger:    slog.Default(),
-		templates: tmpl,
+		k8sClient:  cl,
+		namespace:  "harmostes",
+		logger:     slog.Default(),
+		templates:  tmpl,
+		nodePolicy: nil, // RBAC disabled by default in existing pipeline tests
 	}
 }
 
@@ -365,5 +367,115 @@ func TestSanitizePipelineName(t *testing.T) {
 		if got := sanitizePipelineName(tt.input); got != tt.want {
 			t.Errorf("sanitizePipelineName(%q) = %q, want %q", tt.input, got, tt.want)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// RBAC enforcement (G8 enterprise)
+// ---------------------------------------------------------------------------
+
+// pipelineTestServerWithPolicy builds a Server with a specific RBAC policy.
+func pipelineTestServerWithPolicy(policy rbac.NodePolicy, existing ...client.Object) *Server {
+	s := pipelineTestServer(existing...)
+	s.nodePolicy = policy
+	return s
+}
+
+// reqWithAuthAndGroups creates a request with identity (username + groups).
+func reqWithAuthAndGroups(method, target, body string, groups ...string) *http.Request {
+	req := reqWithAuth(method, target, body)
+	// Override identity with groups via context.
+	ctx := context.WithValue(req.Context(), identityKey, &Identity{
+		Username: "alice",
+		Groups:   groups,
+	})
+	return req.WithContext(ctx)
+}
+
+func TestPipelineRBACDeniedForNonOpsUser(t *testing.T) {
+	body := `{"spec":{"trigger":{"type":"manual"},"graph":{"nodes":[{"id":"deploy","type":"vela-app","config":{"action":"apply"}}]}}}`
+	r := reqWithAuthAndGroups("PUT", "/api/pipelines/restricted-pipe", body, "users")
+	r.SetPathValue("name", "restricted-pipe")
+	w := httptest.NewRecorder()
+
+	s := pipelineTestServerWithPolicy(rbac.DefaultNodePolicy())
+	s.handlePipelineAPIPut(w, r)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for non-ops user, got %d", w.Code)
+	}
+
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	violations, ok := resp["violations"].([]any)
+	if !ok || len(violations) != 1 {
+		t.Fatalf("expected 1 violation in response, got %v", resp)
+	}
+}
+
+func TestPipelineRBACAllowedForOpsUser(t *testing.T) {
+	body := `{"spec":{"trigger":{"type":"manual"},"graph":{"nodes":[{"id":"deploy","type":"vela-app","config":{"action":"apply"}}]}}}`
+	r := reqWithAuthAndGroups("PUT", "/api/pipelines/ops-pipe", body, "ops")
+	r.SetPathValue("name", "ops-pipe")
+	w := httptest.NewRecorder()
+
+	s := pipelineTestServerWithPolicy(rbac.DefaultNodePolicy())
+	s.handlePipelineAPIPut(w, r)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201 for ops user, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestPipelineRBACUnrestrictedTypesPassForAllUsers(t *testing.T) {
+	body := `{"spec":{"trigger":{"type":"manual"},"graph":{"nodes":[{"id":"build","type":"plugin"},{"id":"agent","type":"agent"}]}}}`
+	r := reqWithAuth("PUT", "/api/pipelines/simple-pipe", body)
+	r.SetPathValue("name", "simple-pipe")
+	w := httptest.NewRecorder()
+
+	s := pipelineTestServerWithPolicy(rbac.DefaultNodePolicy())
+	s.handlePipelineAPIPut(w, r)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201 for unrestricted types, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestPipelineRBACDisabledWhenPolicyNil(t *testing.T) {
+	body := `{"spec":{"trigger":{"type":"manual"},"graph":{"nodes":[{"id":"deploy","type":"vela-app","config":{"action":"apply"}}]}}}`
+	r := reqWithAuth("PUT", "/api/pipelines/no-rbac-pipe", body)
+	r.SetPathValue("name", "no-rbac-pipe")
+	w := httptest.NewRecorder()
+
+	s := pipelineTestServer() // nodePolicy: nil
+	s.handlePipelineAPIPut(w, r)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201 with no policy, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestPipelineRBACMultipleViolations(t *testing.T) {
+	body := `{"spec":{"trigger":{"type":"manual"},"graph":{"nodes":[
+		{"id":"build","type":"plugin"},
+		{"id":"deploy","type":"vela-app"},
+		{"id":"sync","type":"flux-reconcile"}
+	]}}}`
+	r := reqWithAuthAndGroups("PUT", "/api/pipelines/multi-violation", body, "users")
+	r.SetPathValue("name", "multi-violation")
+	w := httptest.NewRecorder()
+
+	s := pipelineTestServerWithPolicy(rbac.DefaultNodePolicy())
+	s.handlePipelineAPIPut(w, r)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", w.Code)
+	}
+
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	violations, _ := resp["violations"].([]any)
+	if len(violations) != 2 {
+		t.Fatalf("expected 2 violations (plugin is unrestricted), got %d", len(violations))
 	}
 }

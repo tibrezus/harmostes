@@ -22,6 +22,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
+	"github.com/tibrezus/harmostes/internal/rbac"
 )
 
 //go:embed templates/*.html templates/pages/*.html
@@ -38,28 +39,32 @@ type logFetchFunc func(ctx context.Context, namespace, podName, container string
 
 // Server is the harmostes-ui HTTP server.
 type Server struct {
-	k8sClient client.Client
-	logFetch  logFetchFunc // pod log viewer (Phase E); nil = logs unavailable
-	namespace string
-	logger    *slog.Logger
-	templates *template.Template
-	hub       *EventHub // pipeline lifecycle event fan-out (G7 live execution)
+	k8sClient  client.Client
+	logFetch   logFetchFunc // pod log viewer (Phase E); nil = logs unavailable
+	namespace  string
+	logger     *slog.Logger
+	templates  *template.Template
+	hub        *EventHub       // pipeline lifecycle event fan-out (G7 live execution)
+	nodePolicy rbac.NodePolicy // node-type RBAC (G8 enterprise); nil = unrestricted
 }
 
 // New creates a Server with parsed templates and the given k8s client.
 // If kubeClient is non-nil, the run-detail log viewer is enabled.
-func New(k8sClient client.Client, namespace string, logger *slog.Logger, kubeClient kubernetes.Interface) (*Server, error) {
+// nodePolicy restricts which node types a user can include in pipelines;
+// pass nil for unrestricted access.
+func New(k8sClient client.Client, namespace string, logger *slog.Logger, kubeClient kubernetes.Interface, nodePolicy rbac.NodePolicy) (*Server, error) {
 	tmpl, err := parseTemplates()
 	if err != nil {
 		return nil, fmt.Errorf("parse templates: %w", err)
 	}
 
 	s := &Server{
-		k8sClient: k8sClient,
-		namespace: namespace,
-		logger:    logger,
-		templates: tmpl,
-		hub:       NewEventHub(),
+		k8sClient:  k8sClient,
+		namespace:  namespace,
+		logger:     logger,
+		templates:  tmpl,
+		hub:        NewEventHub(),
+		nodePolicy: nodePolicy,
 	}
 
 	if kubeClient != nil {

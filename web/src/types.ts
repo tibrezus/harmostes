@@ -7,6 +7,7 @@ export interface NodeSpec {
   config?: Record<string, unknown>;
   outputs?: string[];
   when?: string;
+  timeout?: string; // G8: per-node circuit breaker (Go duration: 30s, 5m)
 }
 
 export interface EdgeSpec {

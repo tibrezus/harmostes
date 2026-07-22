@@ -34,11 +34,12 @@ func workflowTestServer(existing ...client.Object) *Server {
 	tmpl, _ := parseTemplates()
 
 	return &Server{
-		k8sClient: cl,
-		namespace: "harmostes",
-		logger:    slog.Default(),
-		templates: tmpl,
-		hub:       NewEventHub(),
+		k8sClient:  cl,
+		namespace:  "harmostes",
+		logger:     slog.Default(),
+		templates:  tmpl,
+		hub:        NewEventHub(),
+		nodePolicy: nil,
 	}
 }
 

@@ -82,6 +82,9 @@ spec:
                               type: string
                           when:
                             type: string
+                          timeout:
+                            type: string
+                            description: "Maximum execution duration (Go duration string: 30s, 5m). Empty = no limit."
                     edges:
                       type: array
                       items:

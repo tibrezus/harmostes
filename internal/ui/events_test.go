@@ -354,10 +354,11 @@ func newTestServerWithHub(t *testing.T) *Server {
 		t.Fatalf("parse templates: %v", err)
 	}
 	return &Server{
-		namespace: "default",
-		logger:    slog.Default(),
-		templates: tmpl,
-		hub:       NewEventHub(),
+		namespace:  "default",
+		logger:     slog.Default(),
+		templates:  tmpl,
+		hub:        NewEventHub(),
+		nodePolicy: nil,
 	}
 }
 

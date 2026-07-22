@@ -350,6 +350,21 @@ export function PipelineEditor({ name }: PipelineEditorProps) {
     [selectedNodeId, nodes, setNodes, setEdges]
   );
 
+  // Update selected node's timeout (G8 circuit breaker).
+  const updateNodeTimeout = useCallback(
+    (timeout: string) => {
+      if (!selectedNodeId) return;
+      setNodes((nds) =>
+        nds.map((n) =>
+          n.id === selectedNodeId
+            ? { ...n, data: { ...n.data, spec: { ...n.data.spec, timeout } } }
+            : n
+        )
+      );
+    },
+    [selectedNodeId, setNodes]
+  );
+
   // Update edge condition.
   const updateEdgeCondition = useCallback(
     (edgeId: string, when: string, maxRetries: number) => {
@@ -393,6 +408,12 @@ export function PipelineEditor({ name }: PipelineEditorProps) {
       });
       if (!resp.ok) {
         const body = await resp.json().catch(() => ({ error: resp.statusText }));
+        if (resp.status === 403 && body.violations) {
+          const msgs = (body.violations as any[])
+            .map((v) => `${v.nodeType} (${v.nodeId}): requires ${v.requires.join(" | ")}`)
+            .join("\n");
+          throw new Error(`RBAC violation — your groups lack permission:\n${msgs}`);
+        }
         throw new Error(body.error || `HTTP ${resp.status}`);
       }
       setSaveMsg("Saved ✓");
@@ -535,6 +556,7 @@ export function PipelineEditor({ name }: PipelineEditorProps) {
           edge={selectedEdge}
           onUpdateConfig={updateNodeConfig}
           onUpdateNodeId={updateNodeId}
+          onUpdateNodeTimeout={updateNodeTimeout}
           onUpdateEdge={updateEdgeCondition}
           onDeleteNode={deleteSelectedNode}
         />

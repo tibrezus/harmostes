@@ -7,6 +7,7 @@ interface ConfigPanelProps {
   edge: Edge | null;
   onUpdateConfig: (key: string, value: string) => void;
   onUpdateNodeId: (newId: string) => void;
+  onUpdateNodeTimeout: (timeout: string) => void;
   onUpdateEdge: (edgeId: string, when: string, maxRetries: number) => void;
   onDeleteNode: () => void;
 }
@@ -16,6 +17,7 @@ export function ConfigPanel({
   edge,
   onUpdateConfig,
   onUpdateNodeId,
+  onUpdateNodeTimeout,
   onUpdateEdge,
   onDeleteNode,
 }: ConfigPanelProps) {
@@ -83,6 +85,17 @@ export function ConfigPanel({
           onChange={(e) => onUpdateConfig("__when__", e.target.value)}
         />
         <p className="config-field-hint">Optional: template expression for node execution condition.</p>
+      </div>
+
+      <div className="config-panel-section">
+        <label className="config-label">Timeout (circuit breaker)</label>
+        <input
+          className="config-input"
+          placeholder="30s, 5m, 1h"
+          value={data.spec.timeout || ""}
+          onChange={(e) => onUpdateNodeTimeout(e.target.value)}
+        />
+        <p className="config-field-hint">Max execution time before the node is killed. Empty = no limit.</p>
       </div>
 
       <div className="config-panel-actions">

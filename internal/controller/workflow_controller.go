@@ -322,6 +322,22 @@ func (r WorkflowReconciler) workerEnvWithTraceparent(wf *v1alpha1.Workflow, trac
 	if traceparent != "" {
 		env = append(env, corev1.EnvVar{Name: observability.TraceparentCarrierKey, Value: traceparent})
 	}
+	// Provenance (G8): stamp who/what triggered this run. The worker passes
+	// these to the graph executor, which includes them in lifecycle events.
+	triggeredBy := wf.Labels[v1alpha1.OwnerLabel]
+	if triggeredBy == "" {
+		triggeredBy = "system"
+	}
+	triggerSource := "controller" // default: periodic poll
+	if wf.Annotations["harmostes.dev/trigger-revision"] != "" {
+		triggerSource = "webhook"
+	} else if wf.Spec.Source.Schedule != "" {
+		triggerSource = "schedule"
+	}
+	env = append(env,
+		corev1.EnvVar{Name: "HARMOSTES_TRIGGERED_BY", Value: triggeredBy},
+		corev1.EnvVar{Name: "HARMOSTES_TRIGGER_SOURCE", Value: triggerSource},
+	)
 	return env
 }
 

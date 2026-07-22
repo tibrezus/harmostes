@@ -33,6 +33,11 @@ const DefaultPubSub = "harmostes-pubsub"
 // LifecycleTopic is the pub/sub topic for node lifecycle events.
 const LifecycleTopic = "harmostes-events"
 
+// DeadLetterTopic is the pub/sub topic for failed pipeline events. The UI
+// subscribes to this topic to show a "failed pipelines" view with retry
+// buttons.
+const DeadLetterTopic = "harmostes-dead-letter"
+
 // LifecycleEvent is the wire format for pipeline/node lifecycle events
 // published to the Dapr pub/sub topic. The UI subscribes to these events to
 // drive real-time canvas updates (G7).
@@ -46,6 +51,24 @@ type LifecycleEvent struct {
 	Outputs    NodeOutputs `json:"outputs,omitempty"`    // node outputs (agent metrics, deployment results)
 	DurationMs int64       `json:"durationMs,omitempty"` // execution duration in milliseconds (completed/failed events)
 	Timestamp  time.Time   `json:"timestamp"`            // event creation time (UTC)
+
+	// Provenance (G8): who/what triggered this pipeline run.
+	TriggeredBy   string `json:"triggeredBy,omitempty"`   // username or "system"
+	TriggerSource string `json:"triggerSource,omitempty"` // webhook | schedule | manual | controller
+}
+
+// DeadLetterEvent is published when a pipeline fails. It carries enough
+// context for the UI to show a retry button: the pipeline name, the failing
+// node, the error, and the trigger source (so the user knows whether to
+// retry manually or wait for the next webhook).
+type DeadLetterEvent struct {
+	Pipeline      string                `json:"pipeline"`
+	FailedNode    string                `json:"failedNode,omitempty"`
+	Error         string                `json:"error"`
+	NodeResults   map[string]NodeResult `json:"nodeResults,omitempty"`
+	TriggeredBy   string                `json:"triggeredBy,omitempty"`
+	TriggerSource string                `json:"triggerSource,omitempty"`
+	Timestamp     time.Time             `json:"timestamp"`
 }
 
 // ExecutionResult is the outcome of a full graph execution.
@@ -67,6 +90,10 @@ type GraphExecutor struct {
 	stateStore string
 	pubsub     string
 	log        func(format string, args ...any)
+
+	// Provenance (G8): stamped on all lifecycle events.
+	triggeredBy   string
+	triggerSource string
 }
 
 // GraphExecutorOption configures a GraphExecutor.
@@ -85,6 +112,15 @@ func WithPubSub(name string) GraphExecutorOption {
 // WithLogger sets a structured logger for the executor.
 func WithLogger(log func(format string, args ...any)) GraphExecutorOption {
 	return func(e *GraphExecutor) { e.log = log }
+}
+
+// WithProvenance stamps the trigger source on all lifecycle events (G8).
+// The worker reads these from env vars set by the controller.
+func WithProvenance(triggeredBy, triggerSource string) GraphExecutorOption {
+	return func(e *GraphExecutor) {
+		e.triggeredBy = triggeredBy
+		e.triggerSource = triggerSource
+	}
 }
 
 // NewGraphExecutor creates a graph executor with the given registry and optional
@@ -226,12 +262,33 @@ func (e *GraphExecutor) Execute(ctx context.Context, graph v1alpha1.GraphSpec, p
 			break
 		}
 
-		nodeResult, execErr := exec.Execute(ctx, node, env)
+		// Per-node timeout (G8 circuit breaker): if the node has a timeout,
+		// wrap its execution in a context with deadline. On timeout, the node
+		// is marked failed with "timed out after {duration}".
+		execCtx := ctx
+		var timeoutStr string
+		if node.Timeout != "" {
+			if d, err := time.ParseDuration(node.Timeout); err == nil && d > 0 {
+				var cancel context.CancelFunc
+				execCtx, cancel = context.WithTimeout(ctx, d)
+				defer cancel()
+				timeoutStr = node.Timeout
+			} else {
+				e.log("warn: node %s: invalid timeout %q, ignoring", nodeID, node.Timeout)
+			}
+		}
+
+		nodeResult, execErr := exec.Execute(execCtx, node, env)
 		durationMs := time.Since(startTime).Milliseconds()
 		if execErr != nil {
 			nodeResult.Status = StatusFailed
 			if nodeResult.Feedback == "" {
-				nodeResult.Feedback = execErr.Error()
+				// Check if the error was a timeout (G8 circuit breaker).
+				if timeoutStr != "" && (execErr == context.DeadlineExceeded || strings.Contains(execErr.Error(), "deadline exceeded")) {
+					nodeResult.Feedback = fmt.Sprintf("timed out after %s", timeoutStr)
+				} else {
+					nodeResult.Feedback = execErr.Error()
+				}
 			}
 		}
 		if nodeResult.Status == "" {
@@ -275,6 +332,8 @@ func (e *GraphExecutor) Execute(ctx context.Context, graph v1alpha1.GraphSpec, p
 					Status:   string(StatusFailed),
 					Feedback: result.Message,
 				})
+				// Dead-letter (G8): publish failure context for the retry UI.
+				e.publishDeadLetter(ctx, pipelineName, nodeID, result.Message, result.NodeResults)
 				return result, nil
 			}
 			continue
@@ -358,6 +417,8 @@ func (e *GraphExecutor) publishLifecycle(ctx context.Context, ev LifecycleEvent)
 		return
 	}
 	ev.Timestamp = time.Now().UTC()
+	ev.TriggeredBy = e.triggeredBy
+	ev.TriggerSource = e.triggerSource
 	b, err := json.Marshal(ev)
 	if err != nil {
 		e.log("warn: publish %s: marshal: %v", ev.Event, err)
@@ -365,6 +426,32 @@ func (e *GraphExecutor) publishLifecycle(ctx context.Context, ev LifecycleEvent)
 	}
 	if err := e.dapr.Publish(ctx, e.pubsub, LifecycleTopic, string(b)); err != nil {
 		e.log("warn: publish %s: %v", ev.Event, err)
+	}
+}
+
+// publishDeadLetter publishes a dead-letter event when a pipeline fails.
+// The UI subscribes to this topic to show a "failed pipelines" view with
+// retry buttons. Best-effort: errors are logged but not fatal.
+func (e *GraphExecutor) publishDeadLetter(ctx context.Context, pipelineName, failedNode, errMsg string, nodeResults map[string]NodeResult) {
+	if e.dapr == nil {
+		return
+	}
+	ev := DeadLetterEvent{
+		Pipeline:      pipelineName,
+		FailedNode:    failedNode,
+		Error:         errMsg,
+		NodeResults:   nodeResults,
+		TriggeredBy:   e.triggeredBy,
+		TriggerSource: e.triggerSource,
+		Timestamp:     time.Now().UTC(),
+	}
+	b, err := json.Marshal(ev)
+	if err != nil {
+		e.log("warn: dead-letter marshal: %v", err)
+		return
+	}
+	if err := e.dapr.Publish(ctx, e.pubsub, DeadLetterTopic, string(b)); err != nil {
+		e.log("warn: dead-letter publish: %v", err)
 	}
 }
 

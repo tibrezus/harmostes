@@ -152,6 +152,10 @@ func main() {
 			graph.WithStateStore(deps.DaprStateStore),
 			graph.WithPubSub(deps.DaprPubSub),
 			graph.WithLogger(logfFn),
+			graph.WithProvenance(
+				os.Getenv("HARMOSTES_TRIGGERED_BY"),
+				os.Getenv("HARMOSTES_TRIGGER_SOURCE"),
+			),
 		)
 		flushTelemetry()
 		if err != nil {

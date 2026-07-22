@@ -44,6 +44,13 @@ ui:
   resources:
     requests: { cpu: 50m, memory: 64Mi }
     limits:   { cpu: 500m, memory: 256Mi }
+  # RBAC (G8): restrict node types by Authentik group. The policy is mounted
+  # as a JSON ConfigMap and loaded at startup. Empty map = all unrestricted.
+  # Default: deployment nodes (vela-app, flux-reconcile) require ops or admin.
+  rbac:
+    nodeTypePolicy:
+      vela-app: ["ops", "admin"]
+      flux-reconcile: ["ops", "admin"]
 
 # Observability via the rezuscloud/dapr fork: push traces+metrics+logs over OTLP
 # to SigNoz through a unified spec.observability.otel block, deployed per-pod via

@@ -70,15 +70,15 @@ type WorkflowList struct {
 //
 // A Workflow can be defined in two equivalent forms:
 //
-//   1. **Declarative** (default): the fixed prepare → agent → deploy pipeline.
-//      Populate Prepare, Agent, and Deploy. The worker runs worker.Run().
-//      This is what all existing production workflows use.
+//  1. **Declarative** (default): the fixed prepare → agent → deploy pipeline.
+//     Populate Prepare, Agent, and Deploy. The worker runs worker.Run().
+//     This is what all existing production workflows use.
 //
-//   2. **Graph-native**: an explicit directed graph of nodes + edges. Populate
-//      Graph with nodes (any type from the node executor registry) and edges
-//      (sequential, conditional, loop-back). The worker runs the graph
-//      executor. This allows arbitrary pipeline shapes — branches, parallel
-//      paths, custom node types (dapr-state, vela-app, etc.).
+//  2. **Graph-native**: an explicit directed graph of nodes + edges. Populate
+//     Graph with nodes (any type from the node executor registry) and edges
+//     (sequential, conditional, loop-back). The worker runs the graph
+//     executor. This allows arbitrary pipeline shapes — branches, parallel
+//     paths, custom node types (dapr-state, vela-app, etc.).
 //
 // If Graph is non-nil, the worker uses the graph executor and ignores the
 // Prepare/Agent/Deploy fields. The Source field is always used (for trigger

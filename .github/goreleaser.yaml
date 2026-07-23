@@ -1,0 +1,171 @@
+version: 2
+
+project_name: harmostes
+
+# Build the React SPA before compiling Go binaries. The SPA output lands in
+# internal/ui/static/spa/ where cmd/harmostes-ui embeds it via go:embed.
+# Controller/worker/agent binaries don't import internal/ui, so they're
+# unaffected by the SPA build.
+before:
+  hooks:
+    - go mod tidy
+    - cmd: bash -c "cd web && npm ci && npm run build && rm -rf ../internal/ui/static/spa/assets && mkdir -p ../internal/ui/static/spa/assets && cp -r dist/* ../internal/ui/static/spa/"
+      env:
+        - FORCE_COLOR=1
+
+# All binaries are linux/amd64-only:
+#   - controller/worker run as k8s Deployments/Jobs on amd64 nodes
+#   - worker Dockerfile hardcodes zig-linux-x86_64
+#   - cluster has no arm64 workload nodes
+builds:
+  - id: controller
+    main: ./cmd/harmostes-controller
+    binary: harmostes-controller
+    env: [CGO_ENABLED=0]
+    flags: [-trimpath]
+    goos: [linux]
+    goarch: [amd64]
+    ldflags:
+      - -s -w
+      - -X github.com/tibrezus/harmostes/version.Version={{.Version}}
+      - -X github.com/tibrezus/harmostes/version.GitCommit={{.ShortCommit}}
+      - -X github.com/tibrezus/harmostes/version.BuildTime={{.CommitDate}}
+
+  - id: worker
+    main: ./cmd/harmostes-worker
+    binary: harmostes-worker
+    env: [CGO_ENABLED=0]
+    flags: [-trimpath]
+    goos: [linux]
+    goarch: [amd64]
+    ldflags:
+      - -s -w
+      - -X github.com/tibrezus/harmostes/version.Version={{.Version}}
+      - -X github.com/tibrezus/harmostes/version.GitCommit={{.ShortCommit}}
+      - -X github.com/tibrezus/harmostes/version.BuildTime={{.CommitDate}}
+
+  - id: agent
+    main: ./cmd/harmostes-agent
+    binary: harmostes-agent
+    env: [CGO_ENABLED=0]
+    flags: [-trimpath]
+    goos: [linux]
+    goarch: [amd64]
+    ldflags:
+      - -s -w
+      - -X github.com/tibrezus/harmostes/version.Version={{.Version}}
+      - -X github.com/tibrezus/harmostes/version.GitCommit={{.ShortCommit}}
+      - -X github.com/tibrezus/harmostes/version.BuildTime={{.CommitDate}}
+
+  - id: ui
+    main: ./cmd/harmostes-ui
+    binary: harmostes-ui
+    env: [CGO_ENABLED=0]
+    flags: [-trimpath]
+    goos: [linux]
+    goarch: [amd64]
+    ldflags:
+      - -s -w
+      - -X github.com/tibrezus/harmostes/version.Version={{.Version}}
+      - -X github.com/tibrezus/harmostes/version.GitCommit={{.ShortCommit}}
+      - -X github.com/tibrezus/harmostes/version.BuildTime={{.CommitDate}}
+
+archives:
+  - id: harmostes
+    formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - README.md
+      - ARCHITECTURE.md
+      - chart/**/*
+      - examples/**/*
+
+sboms:
+  - artifacts: archive
+
+# Three Docker images. GoReleaser builds the binaries (above), then dockers_v2
+# packages each into an image using a release Dockerfile (.github/Dockerfile.*.release).
+#
+# Auth: packages are user-owned (tibrezus/*), so GITHUB_TOKEN can't push.
+# The workflow logs in with HARMOSTES_GITHUB_TOKEN (PAT) before GoReleaser runs.
+dockers_v2:
+  - id: controller
+    ids: [controller]
+    dockerfile: .github/Dockerfile.controller.release
+    images:
+      - ghcr.io/tibrezus/harmostes-controller
+    tags:
+      - "{{ .Version }}"
+      - "{{ .Major }}.{{ .Minor }}"
+      - latest
+    platforms:
+      - linux/amd64
+    labels:
+      org.opencontainers.image.title: Harmostes Controller
+      org.opencontainers.image.description: Kubernetes controller for harmostes workflows
+      org.opencontainers.image.source: "{{ .GitURL }}"
+      org.opencontainers.image.version: "{{ .Version }}"
+
+  - id: worker
+    ids: [worker, agent]
+    dockerfile: .github/Dockerfile.worker.release
+    images:
+      - ghcr.io/tibrezus/harmostes-worker
+    tags:
+      - "{{ .Version }}"
+      - "{{ .Major }}.{{ .Minor }}"
+      - latest
+    extra_files:
+      - plugins
+      - extensions
+    platforms:
+      - linux/amd64
+    labels:
+      org.opencontainers.image.title: Harmostes Worker
+      org.opencontainers.image.description: Pipeline execution worker (Node + Go + lint tools)
+      org.opencontainers.image.source: "{{ .GitURL }}"
+      org.opencontainers.image.version: "{{ .Version }}"
+
+  - id: ui
+    ids: [ui]
+    dockerfile: .github/Dockerfile.ui.release
+    images:
+      - ghcr.io/tibrezus/harmostes-ui
+    tags:
+      - "{{ .Version }}"
+      - "{{ .Major }}.{{ .Minor }}"
+      - latest
+    platforms:
+      - linux/amd64
+    labels:
+      org.opencontainers.image.title: Harmostes UI
+      org.opencontainers.image.description: Multi-tenant self-service web interface
+      org.opencontainers.image.source: "{{ .GitURL }}"
+      org.opencontainers.image.version: "{{ .Version }}"
+
+# Publish the OCI Helm chart after images are built. The chart embeds the
+# image versions (see .github/scripts/publish-chart.sh), making chart + images
+# an atomic release unit consumed by Flux's HelmRepository(type:oci).
+after:
+  hooks:
+    - cmd: bash .github/scripts/publish-chart.sh
+      env:
+        - CHART_VERSION={{ .Version }}
+        - HARMOSTES_GITHUB_TOKEN
+
+signs:
+  - cmd: cosign
+    args: ["sign-blob", "--yes", "--bundle", "${signature}", "${artifact}"]
+    artifacts: checksum
+
+changelog:
+  sort: asc
+  filters:
+    exclude: ["^docs:", "^test:", "^ci:", "^chore:"]
+
+release:
+  github:
+    owner: tibrezus
+    name: harmostes
+  extra_files:
+    - glob: harmostes-*.tgz

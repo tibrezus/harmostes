@@ -27,10 +27,8 @@ import (
 	"github.com/tibrezus/harmostes/internal/k8s"
 	"github.com/tibrezus/harmostes/internal/observability"
 	"github.com/tibrezus/harmostes/internal/webhook"
+	"github.com/tibrezus/harmostes/version"
 )
-
-// version is the controller image version (set via -ldflags at build; "dev" locally).
-var version = "dev"
 
 func main() {
 	var (
@@ -70,7 +68,7 @@ func main() {
 	// telemetry is emitted before the manager starts).
 	obsShutdown, obsErr := observability.Init(context.Background(), observability.Config{
 		Component:    "harmostes-controller",
-		Version:      version,
+		Version:      version.Version,
 		OTLPEndpoint: os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
 		Insecure:     os.Getenv("OTEL_EXPORTER_OTLP_INSECURE") == "true",
 		PodName:      os.Getenv("POD_NAME"),

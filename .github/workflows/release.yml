@@ -154,7 +154,7 @@ jobs:
       # Publish the OCI Helm chart after images are built. The chart embeds
       # the image versions, making chart + images an atomic release unit.
       - name: Set up Helm
-        uses: azure/setup-helm@v4
+        uses: azure/setup-helm@v5
 
       - name: Set up yq
         uses: mikefarah/yq@v4
@@ -245,7 +245,7 @@ jobs:
           GORELEASER_CURRENT_TAG: v${{ steps.gitversion.outputs.semVer }}
 
       - name: Set up Helm
-        uses: azure/setup-helm@v4
+        uses: azure/setup-helm@v5
 
       - name: Set up yq
         uses: mikefarah/yq@v4

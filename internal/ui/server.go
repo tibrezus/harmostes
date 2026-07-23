@@ -114,6 +114,8 @@ func (s *Server) Routes() http.Handler {
 
 	// Workflow graph API (compiles a Workflow CR spec → GraphSpec for the canvas)
 	pages.HandleFunc("GET /api/workflows/{name}/graph", s.handleWorkflowGraphAPI)
+	pages.HandleFunc("PUT /api/workflows/{name}/graph", s.handleWorkflowGraphPut)
+	pages.HandleFunc("POST /api/workflows/{name}/convert", s.handleWorkflowGraphConvert)
 
 	// Pipeline JSON API (called by the React SPA)
 	pages.HandleFunc("GET /api/pipelines", s.handlePipelineAPIList)

@@ -127,17 +127,33 @@ func main() {
 		}},
 	}
 
-	// Graph-native mode: if a Pipeline CR is specified, dispatch to the graph
-	// executor instead of the fixed-shape worker.Run pipeline.
-	if pipelineName := os.Getenv("HARMOSTES_PIPELINE"); pipelineName != "" {
+	// Graph-native mode: dispatch to the graph executor if the Workflow CR
+	// has spec.graph (graph-native Workflow) or if a Pipeline CR is specified
+	// via HARMOSTES_PIPELINE (legacy Pipeline CR). Otherwise, fall through to
+	// the declarative worker.Run() pipeline.
+	var execGraph v1alpha1.GraphSpec
+	var execName string
+	if wf.Spec.Graph != nil {
+		// Graph-native Workflow CR — the graph IS the spec.
+		execGraph = *wf.Spec.Graph
+		execName = wf.Name
+		logf("workflow %s/%s — graph-native mode (%d nodes, %d edges)", namespace, wf.Name, len(execGraph.Nodes), len(execGraph.Edges))
+	} else if pipelineName := os.Getenv("HARMOSTES_PIPELINE"); pipelineName != "" {
+		// Legacy Pipeline CR (deprecated — graph-native Workflows replace it).
+		var pipe v1alpha1.Pipeline
+		if err := cl.Get(ctx, client.ObjectKey{Namespace: namespace, Name: pipelineName}, &pipe); err != nil {
+			fatal("get pipeline %s/%s: %v", namespace, pipelineName, err)
+		}
+		execGraph = pipe.Spec.Graph
+		execName = pipelineName
+		logf("pipeline %s/%s — graph execution (%d nodes, %d edges)", namespace, pipelineName, len(execGraph.Nodes), len(execGraph.Edges))
+	}
+
+	if execName != "" {
 		graphCtx := observability.ContextWithTraceparent(ctx, os.Getenv(observability.TraceparentCarrierKey))
 		graphCtx, graphCancel := context.WithTimeout(graphCtx, 30*time.Minute)
 		defer graphCancel()
-		var pipe v1alpha1.Pipeline
-		if err := cl.Get(graphCtx, client.ObjectKey{Namespace: namespace, Name: pipelineName}, &pipe); err != nil {
-			fatal("get pipeline %s/%s: %v", namespace, pipelineName, err)
-		}
-		logf("pipeline %s/%s — graph execution (%d nodes, %d edges)", namespace, pipelineName, len(pipe.Spec.Graph.Nodes), len(pipe.Spec.Graph.Edges))
+
 		graphDeps := graph.Dependencies{
 			PluginResolver: deps.Plugins,
 			AgentRunner:    deps.Agent,
@@ -145,7 +161,7 @@ func main() {
 			DaprClient:     deps.Dapr,
 			KubeClient:     graph.NewKubeClient(cl),
 		}
-		result, err := graph.ExecuteGraph(graphCtx, pipe.Spec.Graph, pipelineName, graphDeps,
+		result, err := graph.ExecuteGraph(graphCtx, execGraph, execName, graphDeps,
 			graph.WithStateStore(deps.DaprStateStore),
 			graph.WithPubSub(deps.DaprPubSub),
 			graph.WithLogger(logfFn),

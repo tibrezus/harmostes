@@ -12,6 +12,7 @@
 	<span class="status-badge status-badge--muted">Unknown</span>
 	{{end}}
 	<div style="margin-left: auto; display: flex; gap: 0.5rem;">
+		<a href="/workflows/{{$wf.Name}}/canvas" class="ds-btn ds-btn--secondary ds-btn--sm">📊 Canvas</a>
 		<form action="/workflows/{{$wf.Name}}/trigger" method="POST" style="display: inline;">
 			<button type="submit" class="ds-btn ds-btn--primary ds-btn--sm" {{if $wf.Spec.Disabled}}disabled{{end}}>Trigger Run</button>
 		</form>

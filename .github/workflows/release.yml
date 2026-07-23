@@ -106,7 +106,7 @@ jobs:
           fetch-depth: 0
           ref: v${{ needs.version.outputs.semVer }}
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: false
@@ -181,7 +181,7 @@ jobs:
         run: |
           echo "SemVer: ${{ steps.gitversion.outputs.semVer }}"
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: false

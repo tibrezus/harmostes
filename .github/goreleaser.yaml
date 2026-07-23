@@ -9,9 +9,7 @@ project_name: harmostes
 before:
   hooks:
     - go mod tidy
-    - cmd: bash -c "cd web && npm ci && npm run build && rm -rf ../internal/ui/static/spa/assets && mkdir -p ../internal/ui/static/spa/assets && cp -r dist/* ../internal/ui/static/spa/"
-      env:
-        - FORCE_COLOR=1
+    - bash -c "cd web && npm ci && npm run build && rm -rf ../internal/ui/static/spa/assets && mkdir -p ../internal/ui/static/spa/assets && cp -r dist/* ../internal/ui/static/spa/"
 
 # All binaries are linux/amd64-only:
 #   - controller/worker run as k8s Deployments/Jobs on amd64 nodes
@@ -143,15 +141,8 @@ dockers_v2:
       org.opencontainers.image.source: "{{ .GitURL }}"
       org.opencontainers.image.version: "{{ .Version }}"
 
-# Publish the OCI Helm chart after images are built. The chart embeds the
-# image versions (see .github/scripts/publish-chart.sh), making chart + images
-# an atomic release unit consumed by Flux's HelmRepository(type:oci).
-after:
-  hooks:
-    - cmd: bash .github/scripts/publish-chart.sh
-      env:
-        - CHART_VERSION={{ .Version }}
-        - HARMOSTES_GITHUB_TOKEN
+# The OCI Helm chart is published by a separate workflow step after GoReleaser
+# (GoReleaser OSS has no global after.hooks). See .github/workflows/release.yml.
 
 signs:
   - cmd: cosign
@@ -167,5 +158,3 @@ release:
   github:
     owner: tibrezus
     name: harmostes
-  extra_files:
-    - glob: harmostes-*.tgz

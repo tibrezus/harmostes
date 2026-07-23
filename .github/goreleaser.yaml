@@ -144,11 +144,6 @@ dockers_v2:
 # The OCI Helm chart is published by a separate workflow step after GoReleaser
 # (GoReleaser OSS has no global after.hooks). See .github/workflows/release.yml.
 
-signs:
-  - cmd: cosign
-    args: ["sign-blob", "--yes", "--bundle", "${signature}", "${artifact}"]
-    artifacts: checksum
-
 changelog:
   sort: asc
   filters:

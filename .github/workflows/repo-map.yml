@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Generate RIG
         uses: tibrezus/llm-wiki/.github/actions/repo-map@2ebca7840afbb1850731f4d45fb47a97e5c7faf7

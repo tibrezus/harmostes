@@ -27,9 +27,8 @@ import (
 
 	"github.com/tibrezus/harmostes/internal/agent"
 	"github.com/tibrezus/harmostes/internal/observability"
+	"github.com/tibrezus/harmostes/version"
 )
-
-var version = "dev"
 
 var obsShutdown observability.ShutdownFunc
 
@@ -93,7 +92,7 @@ func main() {
 
 	if sh, err := observability.Init(ctx, observability.Config{
 		Component:    "harmostes-agent",
-		Version:      version,
+		Version:      version.Version,
 		OTLPEndpoint: os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
 		Insecure:     os.Getenv("OTEL_EXPORTER_OTLP_INSECURE") == "true",
 	}); err != nil {

@@ -1,128 +1,225 @@
-# harmostes release pipeline — atomic images + OCI Helm chart, driven by a git
-# tag. This is the fix for "chart and image drift": a single tag vX.Y.Z builds
-# the controller + worker images AND publishes an OCI chart whose image defaults
-# point at that same version, so Flux can deploy a release where the chart and
-# its images always match (never the chart outrunning the image, as in #4).
+# harmostes release pipeline — GitVersion + GoReleaser + OCI Helm chart.
 #
-# Release flow: `git tag v0.7.0 && git push origin v0.7.0`.
-#   → build+push ghcr.io/tibrezus/harmostes-{controller,worker}:0.7.0
-#   → publish OCI chart oci://ghcr.io/tibrezus/harmostes:0.7.0
-#   → GitHub Release with auto-generated notes
-name: release
+# Pattern: push to main → GitVersion computes semver from conventional commits →
+# creates tag → GoReleaser builds 4 Go binaries, 3 Docker images, archives +
+# SBOM + cosign-signed checksums → publishes OCI Helm chart → GitHub Release.
+#
+# The OCI chart is consumed by Flux's HelmRepository(type:oci) in k8s-config,
+# which auto-upgrades the HelmRelease on every new chart version. The chart's
+# image defaults are baked to match the release (chart X.Y.Z carries images
+# X.Y.Z), so chart + images always advance atomically.
+#
+# Adapted from rezuscloud/rezuscloud and rezuscloud/platform-website.
+# Key difference: packages are user-owned (tibrezus/*), so GITHUB_TOKEN can't
+# push to GHCR — HARMOSTES_GITHUB_TOKEN (PAT) is used for Docker login + chart push.
+name: Release
 
 on:
   push:
-    tags: ['v*']
-  workflow_dispatch: {} # manual trigger for validation without re-tagging
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      snapshot:
+        description: Run in snapshot mode (no publish)
+        type: boolean
+        default: false
 
 permissions:
-  contents: write  # create the GitHub Release
+  contents: write  # create tags + GitHub Release
   packages: write  # push images + OCI chart to ghcr
 
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
-  images:
-    name: build & push image (${{ matrix.target }}, amd64)
+  version:
+    name: Determine Version
+    if: github.event.inputs.snapshot != 'true'
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: controller
-            dockerfile: Dockerfile.controller
-            image: ghcr.io/tibrezus/harmostes-controller
-          - target: worker
-            dockerfile: Dockerfile.worker
-            image: ghcr.io/tibrezus/harmostes-worker
-          - target: ui
-            dockerfile: Dockerfile.ui
-            image: ghcr.io/tibrezus/harmostes-ui
+    outputs:
+      semVer: ${{ steps.gitversion.outputs.semVer }}
+      sha: ${{ steps.gitversion.outputs.sha }}
+      tagExists: ${{ steps.check_tag.outputs.exists }}
     steps:
-      - name: Checkout (with .agents submodule for worker skills)
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
-          submodules: recursive
+          fetch-depth: 0
 
-      - name: Derive version (strip leading v)
-        id: ver
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+      - name: Setup .NET
+        run: |
+          curl -sSL https://dot.net/v1/dotnet-install.sh | bash /dev/stdin --channel 9.0 --install-dir "$HOME/.dotnet"
+          echo "$HOME/.dotnet" >> "$GITHUB_PATH"
 
-      - name: Set up Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Install GitVersion
+        uses: gittools/actions/gitversion/setup@v4.5.0
+        with:
+          versionSpec: '6.7.x'
 
-      - name: Login to ghcr
-        uses: docker/login-action@v3
+      - name: Determine Version
+        id: gitversion
+        uses: gittools/actions/gitversion/execute@v4.5.0
+        with:
+          configFilePath: .github/GitVersion.yml
+          disableShallowCloneCheck: true
+
+      - name: Display Version
+        run: |
+          echo "SemVer: ${{ steps.gitversion.outputs.semVer }}"
+          echo "MajorMinorPatch: ${{ steps.gitversion.outputs.majorMinorPatch }}"
+
+      - name: Check if tag exists
+        id: check_tag
+        run: |
+          TAG="v${{ steps.gitversion.outputs.semVer }}"
+          if git tag -l "$TAG" | grep -q .; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Tag $TAG already exists"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "Tag $TAG does not exist, will create"
+          fi
+
+      - name: Create git tag
+        if: steps.check_tag.outputs.exists == 'false'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const tag = `v${{ steps.gitversion.outputs.semVer }}`;
+            const sha = '${{ steps.gitversion.outputs.sha }}';
+            console.log(`Creating tag ${tag} at ${sha}`);
+            await github.rest.git.createRef({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: `refs/tags/${tag}`,
+              sha: sha
+            });
+
+  release:
+    name: Release
+    needs: version
+    if: github.event.inputs.snapshot != 'true' && needs.version.outputs.tagExists == 'false'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: v${{ needs.version.outputs.semVer }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
-          # The ghcr packages are user-owned + unlinked to the repo, so the
-          # GITHUB_TOKEN can't push (403). Use the platform GitHub PAT
-          # (write:packages) sourced from BSM, mirrored into this Actions secret.
+          # Packages are user-owned (tibrezus/*) — GITHUB_TOKEN can't push.
+          # Use the platform PAT (write:packages) sourced from BSM.
           username: x-access-token
           password: ${{ secrets.HARMOSTES_GITHUB_TOKEN }}
 
-      # amd64-only: the worker Dockerfile hardcodes zig-linux-x86_64, and the
-      # cluster's only arm64 node is a tainted control-plane (no workloads land
-      # there). Revisit when an arm64 workload pool exists.
-      - name: Build & push
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ${{ matrix.dockerfile }}
-          platforms: linux/amd64
-          push: true
-          tags: |
-            ${{ matrix.image }}:${{ steps.ver.outputs.version }}
-            ${{ matrix.image }}:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
 
-  chart:
-    name: publish OCI chart
-    needs: images
+      - name: Install GoReleaser
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          version: "~> v2"
+          install-only: true
+
+      - name: Install gettext-base
+        run: which envsubst || (sudo apt-get update -q && sudo apt-get install -y gettext-base)
+
+      - uses: sigstore/cosign-installer@v4.1.1
+
+      - uses: anchore/sbom-action/download-syft@v0
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          version: "~> v2"
+          args: release --clean --config .github/goreleaser.yaml
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HARMOSTES_GITHUB_TOKEN: ${{ secrets.HARMOSTES_GITHUB_TOKEN }}
+
+  snapshot:
+    name: Snapshot Build
+    if: github.event.inputs.snapshot == 'true'
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Derive version (strip leading v)
-        id: ver
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-
-      - name: Set up Helm
-        uses: azure/setup-helm@v4
-
-      - name: Set up yq
-        uses: mikefarah/yq@v4
-
-      # Bake the release version into the chart so the published artifact is
-      # self-contained: chart version == appVersion == image tags. These edits
-      # are in the ephemeral checkout; they are NOT committed to main (main is
-      # the dev source; the OCI artifact is the release).
-      - name: Align chart version + image refs to the release tag
-        env:
-          V: ${{ steps.ver.outputs.version }}
-        run: |
-          yq -i '.version = strenv(V)' chart/Chart.yaml
-          yq -i '.appVersion = strenv(V)' chart/Chart.yaml
-          yq -i '.image.controller = "ghcr.io/tibrezus/harmostes-controller:" + strenv(V)' chart/values.yaml
-          yq -i '.image.worker = "ghcr.io/tibrezus/harmostes-worker:" + strenv(V)' chart/values.yaml
-          yq -i '.ui.image = "ghcr.io/tibrezus/harmostes-ui:" + strenv(V)' chart/values.yaml
-          echo "--- Chart.yaml (version/appVersion) ---"
-          yq '.version, .appVersion' chart/Chart.yaml
-          echo "--- values.yaml (image) ---"
-          yq '.image' chart/values.yaml
-
-      - name: Login to ghcr
-        run: echo "${{ secrets.HARMOSTES_GITHUB_TOKEN }}" | helm registry login ghcr.io -u x-access-token --password-stdin
-
-      - name: Package + push OCI chart
-        env:
-          V: ${{ steps.ver.outputs.version }}
-        run: |
-          helm package chart/ --dependency-update
-          helm push "harmostes-${V}.tgz" oci://ghcr.io/tibrezus
-
-      - name: GitHub Release
-        uses: softprops/action-gh-release@v2
+      - uses: actions/checkout@v4
         with:
-          generate_release_notes: true
-          files: harmostes-*.tgz
+          fetch-depth: 0
+
+      - name: Setup .NET
+        run: |
+          curl -sSL https://dot.net/v1/dotnet-install.sh | bash /dev/stdin --channel 9.0 --install-dir "$HOME/.dotnet"
+          echo "$HOME/.dotnet" >> "$GITHUB_PATH"
+
+      - name: Install GitVersion
+        uses: gittools/actions/gitversion/setup@v4.5.0
+        with:
+          versionSpec: '6.7.x'
+
+      - name: Determine Version
+        id: gitversion
+        uses: gittools/actions/gitversion/execute@v4.5.0
+        with:
+          configFilePath: .github/GitVersion.yml
+          disableShallowCloneCheck: true
+
+      - name: Display Version
+        run: echo "SemVer: ${{ steps.gitversion.outputs.semVer }}"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: x-access-token
+          password: ${{ secrets.HARMOSTES_GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Install GoReleaser
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          version: "~> v2"
+          install-only: true
+
+      - name: Install gettext-base
+        run: which envsubst || (sudo apt-get update -q && sudo apt-get install -y gettext-base)
+
+      - uses: sigstore/cosign-installer@v4.1.1
+
+      - uses: anchore/sbom-action/download-syft@v0
+
+      - name: Run GoReleaser (snapshot)
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          version: "~> v2"
+          args: release --snapshot --clean --config .github/goreleaser.yaml
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HARMOSTES_GITHUB_TOKEN: ${{ secrets.HARMOSTES_GITHUB_TOKEN }}
+          GORELEASER_CURRENT_TAG: v${{ steps.gitversion.outputs.semVer }}

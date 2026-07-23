@@ -1,0 +1,13 @@
+# Release Dockerfile for harmostes-ui.
+# GoReleaser pre-builds the binary (with the React SPA embedded via go:embed);
+# this image just packages it.
+# Single-platform: linux/amd64 (cluster has no arm64 workload nodes).
+FROM gcr.io/distroless/static-debian12:nonroot
+
+ARG TARGETPLATFORM=linux/amd64
+
+COPY ${TARGETPLATFORM}/harmostes-ui /harmostes-ui
+
+USER nonroot:nonroot
+
+ENTRYPOINT ["/harmostes-ui"]

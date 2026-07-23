@@ -1,0 +1,87 @@
+# Release Dockerfile for harmostes-worker.
+#
+# GoReleaser pre-builds the Go binaries (harmostes-worker + harmostes-agent).
+# This image carries the full runtime: Node.js (pi.dev host), lint tools,
+# Go toolchain (emit-rig extractor), Zig, gh CLI, built-in plugins.
+#
+# Mirrors Dockerfile.worker stage 2 but with binaries COPY'd from GoReleaser
+# instead of built in a multi-stage Go stage. Single-platform: linux/amd64.
+FROM node:22-bookworm-slim
+
+ARG TARGETPLATFORM=linux/amd64
+
+# System tools plugins are likely to need.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git ca-certificates curl jq yq bash openssh-client xz-utils \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# pi.dev harness (the only non-Go runtime — Node, the agent's tool host)
+RUN npm install -g @earendil-works/pi-coding-agent
+
+# Lint tools — wiki-lint gate runs ci-lint.sh (markdownlint, remark,
+# mermaid via Chromium, likec4). Pre-installed for speed.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        unzip python3-pip libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libxkbcommon0 \
+        libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 \
+        libpango-1.0-0 libcairo2 libasound2 fonts-liberation \
+    && apt-get clean && rm -rf /var/lib/apt/lists/* \
+    && npm install -g markdownlint-cli2 @mermaid-js/mermaid-cli likec4 \
+    && npx -y puppeteer browsers install chrome \
+    && python3 -m pip install --no-cache-dir --break-system-packages pyyaml mdlint-obsidian
+
+# Go toolchain (for emit-rig's go-modules extractor — runs `go list`).
+ARG GO_VERSION=1.25.0
+RUN curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" \
+        -o /tmp/go.tar.gz \
+    && tar -C /usr/local -xzf /tmp/go.tar.gz \
+    && rm /tmp/go.tar.gz
+ENV GOPATH=/go PATH=/usr/local/go/bin:/go/bin:${PATH}
+RUN mkdir -p /go
+
+# Zig — emit-rig.py zig-build extractor.
+ARG ZIG_VERSION=0.14.0
+RUN curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-x86_64-${ZIG_VERSION}.tar.xz" \
+        -o /tmp/zig.tar.xz \
+    && tar -xf /tmp/zig.tar.xz -C /usr/local \
+    && ln -s "/usr/local/zig-linux-x86_64-${ZIG_VERSION}/zig" /usr/local/bin/zig \
+    && rm /tmp/zig.tar.xz \
+    && zig version
+
+# GitHub CLI — platform wiki offloading.
+ARG GH_VERSION=2.63.2
+RUN curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz" \
+        -o /tmp/gh.tar.gz \
+    && tar -xzf /tmp/gh.tar.gz -C /tmp \
+    && mv "/tmp/gh_${GH_VERSION}_linux_amd64/bin/gh" /usr/local/bin/gh \
+    && rm -rf /tmp/gh*
+
+# Framework binaries (pre-built by GoReleaser).
+COPY ${TARGETPLATFORM}/harmostes-worker /usr/local/bin/harmostes-worker
+COPY ${TARGETPLATFORM}/harmostes-agent  /usr/local/bin/harmostes-agent
+
+# Built-in plugins shipped in the image.
+COPY plugins/noop/noop.sh          /usr/local/lib/harmostes/plugins/noop.sh
+COPY plugins/rig-emit/rig-emit.sh  /usr/local/lib/harmostes/plugins/rig-emit.sh
+COPY plugins/rig-emit/rig          /usr/local/lib/harmostes/plugins/rig
+COPY plugins/rig-emit/emit-rig.py  /usr/local/lib/harmostes/plugins/emit-rig.py
+COPY plugins/rig-emit/emit-rig.sh  /usr/local/lib/harmostes/plugins/emit-rig.sh
+COPY plugins/rig-emit/rig-to-c4.py /usr/local/lib/harmostes/plugins/rig-to-c4.py
+COPY plugins/wiki-lint/wiki-lint.sh /usr/local/lib/harmostes/plugins/wiki-lint.sh
+COPY plugins/git-push/git-push.sh   /usr/local/lib/harmostes/plugins/git-push.sh
+RUN chmod +x /usr/local/lib/harmostes/plugins/*.sh
+
+# Git identity — the agent commits its own work.
+RUN git config --global user.name 'harmostes-bot' && \
+    git config --global user.email 'harmostes-bot@harmostes.dev' && \
+    git config --global --add safe.directory '*'
+
+# pi extensions.
+COPY extensions/litellm-provider /extensions/litellm-provider
+RUN pi install npm:pi-searxng
+RUN mkdir -p /root/.pi/agent && \
+    echo '{"packages":["npm:pi-searxng"]}' > /root/.pi/agent/settings.json
+ENV SEARXNG_URL=http://searxng.searxng.svc.cluster.local:8080
+
+WORKDIR /workspace
+
+ENTRYPOINT ["/usr/local/bin/harmostes-worker"]

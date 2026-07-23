@@ -1,0 +1,10 @@
+# Release Dockerfile for harmostes-controller.
+# GoReleaser pre-builds the binary; this image just packages it.
+# Single-platform: linux/amd64 (cluster has no arm64 workload nodes).
+FROM gcr.io/distroless/static-debian12
+
+ARG TARGETPLATFORM=linux/amd64
+
+COPY ${TARGETPLATFORM}/harmostes-controller /usr/local/bin/harmostes-controller
+
+ENTRYPOINT ["/usr/local/bin/harmostes-controller"]

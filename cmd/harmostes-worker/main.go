@@ -37,11 +37,8 @@ import (
 	"github.com/tibrezus/harmostes/internal/k8s"
 	"github.com/tibrezus/harmostes/internal/observability"
 	"github.com/tibrezus/harmostes/internal/worker"
+	"github.com/tibrezus/harmostes/version"
 )
-
-// version is the worker image version (set via -ldflags at build time; "dev"
-// locally). Surfaced as the OTel service.version resource attribute.
-var version = "dev"
 
 var (
 	logger      *slog.Logger
@@ -64,7 +61,7 @@ func main() {
 	logger = observability.NewLogger("harmostes-worker", os.Stdout)
 	if sh, err := observability.Init(ctx, observability.Config{
 		Component:    "harmostes-worker",
-		Version:      version,
+		Version:      version.Version,
 		OTLPEndpoint: os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
 		Insecure:     os.Getenv("OTEL_EXPORTER_OTLP_INSECURE") == "true",
 		PodName:      os.Getenv("POD_NAME"),

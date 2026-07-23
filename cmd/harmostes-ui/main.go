@@ -35,9 +35,8 @@ import (
 	"github.com/tibrezus/harmostes/internal/k8s"
 	"github.com/tibrezus/harmostes/internal/rbac"
 	"github.com/tibrezus/harmostes/internal/ui"
+	"github.com/tibrezus/harmostes/version"
 )
-
-var version = "dev"
 
 func main() {
 	var (
@@ -52,7 +51,7 @@ func main() {
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
-	})).With("component", "harmostes-ui", "version", version)
+	})).With("component", "harmostes-ui", "version", version.Version)
 
 	// Resolve RBAC policy: explicit file > default policy (deployment nodes
 	// restricted to ops/admin). If the file is empty/unreadable, fall back to

@@ -99,6 +99,7 @@ func (s *Server) Routes() http.Handler {
 	pages.HandleFunc("GET /", s.handleIndex)
 	pages.HandleFunc("GET /workflows", s.handleWorkflowList)
 	pages.HandleFunc("GET /workflows/new", s.handleWorkflowNew)
+	pages.HandleFunc("GET /workflows/{name}/canvas", s.handleSPA) // workflow canvas (read-only compiled graph)
 	pages.HandleFunc("GET /workflows/{name}", s.handleWorkflowDetail)
 	pages.HandleFunc("GET /workflows/{name}/runs/{job}", s.handleRunDetail)
 	pages.HandleFunc("POST /workflows", s.handleWorkflowCreate)
@@ -110,6 +111,9 @@ func (s *Server) Routes() http.Handler {
 	pages.HandleFunc("GET /pipelines", s.handleSPA)
 	pages.HandleFunc("GET /pipelines/new", s.handleSPA)
 	pages.HandleFunc("GET /pipelines/{name}", s.handleSPA)
+
+	// Workflow graph API (compiles a Workflow CR spec → GraphSpec for the canvas)
+	pages.HandleFunc("GET /api/workflows/{name}/graph", s.handleWorkflowGraphAPI)
 
 	// Pipeline JSON API (called by the React SPA)
 	pages.HandleFunc("GET /api/pipelines", s.handlePipelineAPIList)

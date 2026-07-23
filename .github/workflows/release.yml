@@ -178,7 +178,8 @@ jobs:
           disableShallowCloneCheck: true
 
       - name: Display Version
-        run: echo "SemVer: ${{ steps.gitversion.outputs.semVer }}"
+        run: |
+          echo "SemVer: ${{ steps.gitversion.outputs.semVer }}"
 
       - uses: actions/setup-go@v5
         with:

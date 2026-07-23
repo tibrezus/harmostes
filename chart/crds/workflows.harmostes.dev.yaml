@@ -51,7 +51,7 @@ spec:
           properties:
             spec:
               type: object
-              required: [source, prepare, agent, deploy]
+              required: [source]
               properties:
                 source:
                   type: object
@@ -177,6 +177,37 @@ spec:
                     kind: { type: string, enum: [keda-scaledjob, cronjob] }
                     schedule: { type: string }
                 disabled: { type: boolean }   # suspend scheduling (defined but not run)
+
+                # Graph-native mode: explicit directed graph of nodes + edges.
+                # If present, the worker uses the graph executor and ignores
+                # prepare/agent/deploy. This allows arbitrary pipeline shapes.
+                graph:
+                  type: object
+                  description: Graph-native pipeline (nodes + edges). Overrides prepare/agent/deploy.
+                  properties:
+                    nodes:
+                      type: array
+                      items:
+                        type: object
+                        required: [id, type]
+                        properties:
+                          id: { type: string }
+                          type:
+                            type: string
+                            enum: [plugin, agent, gate, branch, dapr-state-get, dapr-state-set, dapr-publish, vela-app, flux-reconcile, http-call, human-gate]
+                          config: { type: object, x-kubernetes-preserve-unknown-fields: true }
+                          outputs: { type: array, items: { type: string } }
+                          when: { type: string }
+                          timeout: { type: string }
+                    edges:
+                      type: array
+                      items:
+                        type: object
+                        properties:
+                          from: { type: string }
+                          to: { type: string }
+                          when: { type: string }
+                          maxRetries: { type: integer }
 
             status:
               type: object

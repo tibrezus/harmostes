@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -176,5 +177,122 @@ func TestHandleWorkflowGraphAPI_AgentDisabled(t *testing.T) {
 	}
 	if len(resp.Graph.Edges) != 1 {
 		t.Errorf("expected 1 edge (prepare→deploy), got %d", len(resp.Graph.Edges))
+	}
+}
+
+// TestHandleWorkflowGraphPut verifies that PUT /api/workflows/{name}/graph
+// saves the graph to spec.graph, making the workflow graph-native.
+func TestHandleWorkflowGraphPut(t *testing.T) {
+	wf := &v1alpha1.Workflow{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "editable-wf",
+			Namespace: "harmostes",
+			Labels:    map[string]string{v1alpha1.OwnerLabel: "alice"},
+		},
+		Spec: v1alpha1.WorkflowSpec{
+			Source:  v1alpha1.SourceSpec{Kind: "git"},
+			Prepare: v1alpha1.PrepareSpec{Plugin: v1alpha1.PluginRef{Name: "rig-emit"}},
+			Agent:   v1alpha1.AgentSpec{Model: "test", Skill: "test", Gate: v1alpha1.GateRef{Plugin: v1alpha1.PluginRef{Name: "noop"}}},
+			Deploy:  v1alpha1.DeploySpec{Plugin: v1alpha1.PluginRef{Name: "git-push"}},
+		},
+	}
+
+	s := workflowTestServer(wf)
+
+	graphJSON := `{"graph":{"nodes":[{"id":"n1","type":"plugin","config":{"name":"noop"}}],"edges":[]}}`
+	req := httptest.NewRequest(http.MethodPut, "/api/workflows/editable-wf/graph", strings.NewReader(graphJSON))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(withIdentity(req.Context(), &Identity{Username: "alice"}))
+	req.SetPathValue("name", "editable-wf")
+
+	rr := httptest.NewRecorder()
+	s.handleWorkflowGraphPut(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var resp workflowGraphResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !resp.GraphNative {
+		t.Error("expected graphNative=true after PUT")
+	}
+	if len(resp.Graph.Nodes) != 1 {
+		t.Errorf("expected 1 node, got %d", len(resp.Graph.Nodes))
+	}
+}
+
+// TestHandleWorkflowGraphConvert verifies that POST /api/workflows/{name}/convert
+// compiles a declarative workflow into spec.graph.
+func TestHandleWorkflowGraphConvert(t *testing.T) {
+	wf := &v1alpha1.Workflow{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "declarative-wf",
+			Namespace: "harmostes",
+			Labels:    map[string]string{v1alpha1.OwnerLabel: "alice"},
+		},
+		Spec: v1alpha1.WorkflowSpec{
+			Source:  v1alpha1.SourceSpec{Kind: "git"},
+			Prepare: v1alpha1.PrepareSpec{Plugin: v1alpha1.PluginRef{Name: "rig-emit"}},
+			Agent:   v1alpha1.AgentSpec{Model: "test", Skill: "test", Gate: v1alpha1.GateRef{Plugin: v1alpha1.PluginRef{Name: "wiki-lint"}}},
+			Deploy:  v1alpha1.DeploySpec{Plugin: v1alpha1.PluginRef{Name: "git-push"}},
+		},
+	}
+
+	s := workflowTestServer(wf)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/workflows/declarative-wf/convert", nil)
+	req = req.WithContext(withIdentity(req.Context(), &Identity{Username: "alice"}))
+	req.SetPathValue("name", "declarative-wf")
+
+	rr := httptest.NewRecorder()
+	s.handleWorkflowGraphConvert(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var resp workflowGraphResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !resp.GraphNative {
+		t.Error("expected graphNative=true after convert")
+	}
+	if len(resp.Graph.Nodes) != 3 {
+		t.Errorf("expected 3 compiled nodes (prepare, agent, deploy), got %d", len(resp.Graph.Nodes))
+	}
+}
+
+// TestHandleWorkflowGraphConvert_AlreadyGraphNative verifies that converting
+// an already-graph-native workflow returns 409 Conflict.
+func TestHandleWorkflowGraphConvert_AlreadyGraphNative(t *testing.T) {
+	wf := &v1alpha1.Workflow{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "already-graph",
+			Namespace: "harmostes",
+			Labels:    map[string]string{v1alpha1.OwnerLabel: "alice"},
+		},
+		Spec: v1alpha1.WorkflowSpec{
+			Source: v1alpha1.SourceSpec{Kind: "git"},
+			Graph: &v1alpha1.GraphSpec{
+				Nodes: []v1alpha1.NodeSpec{{ID: "n1", Type: "plugin"}},
+			},
+		},
+	}
+
+	s := workflowTestServer(wf)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/workflows/already-graph/convert", nil)
+	req = req.WithContext(withIdentity(req.Context(), &Identity{Username: "alice"}))
+	req.SetPathValue("name", "already-graph")
+
+	rr := httptest.NewRecorder()
+	s.handleWorkflowGraphConvert(rr, req)
+
+	if rr.Code != http.StatusConflict {
+		t.Errorf("expected 409, got %d", rr.Code)
 	}
 }

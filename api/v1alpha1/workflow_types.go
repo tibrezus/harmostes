@@ -67,12 +67,29 @@ type WorkflowList struct {
 }
 
 // WorkflowSpec declares one harmostes pipeline.
+//
+// A Workflow can be defined in two equivalent forms:
+//
+//   1. **Declarative** (default): the fixed prepare → agent → deploy pipeline.
+//      Populate Prepare, Agent, and Deploy. The worker runs worker.Run().
+//      This is what all existing production workflows use.
+//
+//   2. **Graph-native**: an explicit directed graph of nodes + edges. Populate
+//      Graph with nodes (any type from the node executor registry) and edges
+//      (sequential, conditional, loop-back). The worker runs the graph
+//      executor. This allows arbitrary pipeline shapes — branches, parallel
+//      paths, custom node types (dapr-state, vela-app, etc.).
+//
+// If Graph is non-nil, the worker uses the graph executor and ignores the
+// Prepare/Agent/Deploy fields. The Source field is always used (for trigger
+// configuration: git, schedule, webhook).
 type WorkflowSpec struct {
 	Source        SourceSpec         `json:"source"`
 	WorkspaceRepo *WorkspaceRepoSpec `json:"workspaceRepo,omitempty"` // the repo the pipeline operates on (prepare populates, agent edits, deploy pushes)
-	Prepare       PrepareSpec        `json:"prepare"`
-	Agent         AgentSpec          `json:"agent"`
-	Deploy        DeploySpec         `json:"deploy"`
+	Prepare       PrepareSpec        `json:"prepare,omitempty"`
+	Agent         AgentSpec          `json:"agent,omitempty"`
+	Deploy        DeploySpec         `json:"deploy,omitempty"`
+	Graph         *GraphSpec         `json:"graph,omitempty"` // graph-native mode: explicit nodes + edges (overrides Prepare/Agent/Deploy)
 	Events        *EventsSpec        `json:"events,omitempty"`
 	Cache         *CacheSpec         `json:"cache,omitempty"`
 	Scaling       *ScalingSpec       `json:"scaling,omitempty"`

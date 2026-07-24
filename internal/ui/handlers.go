@@ -38,7 +38,6 @@ func (s *Server) handleWorkflowList(w http.ResponseWriter, r *http.Request) {
 		Count    int
 		Items    []v1alpha1.Workflow
 	}
-	groups := []gateGroup{}
 	groupMap := map[string]*gateGroup{}
 	for i := range workflows {
 		wf := &workflows[i]
@@ -55,23 +54,19 @@ func (s *Server) handleWorkflowList(w http.ResponseWriter, r *http.Request) {
 				Gate:     gateName,
 				Label:    gateCategoryLabel(cat) + " — " + label,
 				Category: cat,
+				Items:    []v1alpha1.Workflow{},
 			}
 			groupMap[gateName] = g
-			groups = append(groups, gateGroup{}) // placeholder; updated below
 		}
 		g.Items = append(g.Items, *wf)
 		g.Count++
 	}
 
-	// Copy back from map (map pointers were updated in-place).
-	for i := range groups {
-		g := groupMap[groups[i].Gate]
-		if g != nil {
-			groups[i] = *g
-		}
+	// Convert map to slice, sorted by category.
+	groups := make([]gateGroup, 0, len(groupMap))
+	for _, g := range groupMap {
+		groups = append(groups, *g)
 	}
-
-	// Sort groups by category for stable display.
 	sort.Slice(groups, func(i, j int) bool {
 		return groups[i].Category < groups[j].Category
 	})

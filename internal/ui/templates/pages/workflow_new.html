@@ -1,5 +1,5 @@
 {{define "pages/workflow_new.html"}}
-{{$p := .ActivePreset}}
+{{$g := .ActiveGate}}
 <div class="ds-section">
 	<div class="ds-section-header">
 		<span class="ds-section-title">Create Workflow</span>
@@ -7,25 +7,39 @@
 </div>
 
 <form action="/workflows" method="POST" class="ds-form">
-	<!-- Template selection -->
+	<!-- Gate selection — the gate IS the workflow type -->
 	<div class="ds-card" style="margin-bottom: 1.5rem;">
 		<div class="ds-card-header">
-			<span class="ds-card-title">Template</span>
+			<span class="ds-card-title">Gate — defines the workflow structure</span>
 		</div>
 		<div class="ds-card-body">
-			<div class="ds-form-row">
-				<label class="ds-form-label">Preset</label>
-				<select class="ds-form-select" name="preset" id="preset-select" onchange="applyPreset()">
-					{{range .Presets}}
-					<option value="{{.ID}}" {{if eq .ID $p.ID}}selected{{end}}>{{.Name}}</option>
-					{{end}}
-				</select>
+			<div class="gate-selector">
+				{{range .Gates}}
+				<label class="gate-option {{if eq .Name $g.Name}}gate-option--active{{end}}">
+					<input type="radio" name="gate" value="{{.Name}}" {{if eq .Name $g.Name}}checked{{end}}
+						onchange="window.location.href='/workflows/new?gate={{.Name}}'"
+						{{if eq .Name $g.Name}}{{end}}>
+					<div class="gate-option-body">
+						<span class="gate-option-label">{{.Label}}</span>
+						<span class="gate-option-name">{{.Name}}</span>
+						<span class="gate-option-desc">{{.Description}}</span>
+						<div class="gate-option-structure">
+							<span class="gate-struct-node">{{.PreparePlugin}}</span>
+							<span class="gate-struct-arrow">→</span>
+							<span class="gate-struct-node">agent</span>
+							<span class="gate-struct-arrow">→</span>
+							<span class="gate-struct-node gate-struct-node--gate">{{.Name}}</span>
+							<span class="gate-struct-arrow">→</span>
+							<span class="gate-struct-node">{{.DeployPlugin}}</span>
+						</div>
+					</div>
+				</label>
+				{{end}}
 			</div>
-			<p class="ds-form-help" id="preset-desc">{{$p.Description}}</p>
 		</div>
 	</div>
 
-	<!-- Basic info -->
+	<!-- Repository — the only project-specific input -->
 	<div class="ds-card" style="margin-bottom: 1.5rem;">
 		<div class="ds-card-header">
 			<span class="ds-card-title">Repository</span>
@@ -61,33 +75,6 @@
 		</div>
 	</div>
 
-	<!-- Pipeline -->
-	<div class="ds-card" style="margin-bottom: 1.5rem;">
-		<div class="ds-card-header">
-			<span class="ds-card-title">Pipeline</span>
-		</div>
-		<div class="ds-card-body">
-			<div class="ds-form-row">
-				<label class="ds-form-label" for="preparePlugin">Prepare Plugin</label>
-				<input class="ds-form-input" type="text" id="preparePlugin" name="preparePlugin"
-					value="{{$p.Prepare}}" {{if $p.Prepare}}readonly{{end}}
-					placeholder="rig-emit">
-			</div>
-			<div class="ds-form-row">
-				<label class="ds-form-label" for="gatePlugin">Gate Plugin</label>
-				<input class="ds-form-input" type="text" id="gatePlugin" name="gatePlugin"
-					value="{{$p.Gate}}" {{if $p.Gate}}readonly{{end}}
-					placeholder="wiki-lint">
-			</div>
-			<div class="ds-form-row">
-				<label class="ds-form-label" for="deployPlugin">Deploy Plugin</label>
-				<input class="ds-form-input" type="text" id="deployPlugin" name="deployPlugin"
-					value="{{$p.Deploy}}" {{if $p.Deploy}}readonly{{end}}
-					placeholder="git-push">
-			</div>
-		</div>
-	</div>
-
 	<!-- Agent settings -->
 	<div class="ds-card" style="margin-bottom: 1.5rem;">
 		<div class="ds-card-header">
@@ -110,45 +97,27 @@
 		</div>
 	</div>
 
+	<!-- Structure summary (read-only, determined by the gate) -->
+	<div class="ds-card" style="margin-bottom: 1.5rem; background: var(--bg-muted, #f8f9fa);">
+		<div class="ds-card-header">
+			<span class="ds-card-title">Workflow Structure (determined by gate)</span>
+		</div>
+		<div class="ds-card-body">
+			<div class="gate-option-structure" style="font-size: 0.95rem;">
+				<span class="gate-struct-node">{{$g.PreparePlugin}}</span>
+				<span class="gate-struct-arrow">→</span>
+				<span class="gate-struct-node">agent ({{$g.SkillPath}})</span>
+				<span class="gate-struct-arrow">→</span>
+				<span class="gate-struct-node gate-struct-node--gate">{{$g.Name}}</span>
+				<span class="gate-struct-arrow">→</span>
+				<span class="gate-struct-node">{{$g.DeployPlugin}}</span>
+			</div>
+		</div>
+	</div>
+
 	<div class="ds-form-actions">
 		<button type="submit" class="ds-btn ds-btn--primary">Create Workflow</button>
 		<a href="/workflows" class="ds-btn ds-btn--secondary">Cancel</a>
 	</div>
 </form>
-
-<script>
-// Preset data for client-side plugin switching.
-var presets = {
-	{{range .Presets}}
-	"{{.ID}}": {
-		prepare: "{{.Prepare}}",
-		gate: "{{.Gate}}",
-		deploy: "{{.Deploy}}",
-		desc: "{{.Description}}",
-	},
-	{{end}}
-};
-
-function applyPreset() {
-	var sel = document.getElementById('preset-select');
-	var p = presets[sel.value];
-	if (!p) return;
-
-	// Update description
-	document.getElementById('preset-desc').textContent = p.desc;
-
-	// Update plugin fields
-	['prepare', 'gate', 'deploy'].forEach(function(kind) {
-		var field = document.getElementById(kind + 'Plugin');
-		field.value = p[kind];
-		// If the preset has a value, make the field read-only (preset lock).
-		// For custom preset (empty values), unlock the field.
-		if (p[kind]) {
-			field.setAttribute('readonly', '');
-		} else {
-			field.removeAttribute('readonly');
-		}
-	});
-}
-</script>
 {{end}}

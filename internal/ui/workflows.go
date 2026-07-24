@@ -82,7 +82,7 @@ var knownPlugins = map[string][]string{
 }
 
 // handleWorkflowNew renders the create form. It loads the user's tokens (for
-// the token selector) and the preset catalog.
+// the token selector) and the gate catalog.
 func (s *Server) handleWorkflowNew(w http.ResponseWriter, r *http.Request) {
 	owner := identityFromContext(r.Context()).Username
 
@@ -92,21 +92,31 @@ func (s *Server) handleWorkflowNew(w http.ResponseWriter, r *http.Request) {
 		tokens = nil // non-fatal — form renders without token dropdown
 	}
 
-	presetID := r.URL.Query().Get("preset")
-	if presetID == "" {
-		presetID = "llm-wiki"
+	gateID := r.URL.Query().Get("gate")
+	if gateID == "" {
+		gateID = "wiki-lint"
 	}
 
 	s.render(w, r, "pages/workflow_new.html", map[string]any{
-		"Presets":      presets,
-		"ActivePreset": presetFor(presetID),
-		"Tokens":       tokens,
-		"Plugins":      knownPlugins,
-		"Models":       []string{"litellm/zai/glm-5.2", "litellm/zai/glm-5.1", "litellm/zai/glm-4.7"},
+		"Gates":      gateCatalog,
+		"ActiveGate": gateByID(gateID),
+		"Tokens":     tokens,
+		"Models":     []string{"litellm/zai/glm-5.2", "litellm/zai/glm-5.1", "litellm/zai/glm-4.7"},
 	})
 }
 
-// presetFor returns the preset with the given ID, or the custom preset as fallback.
+// gateByID returns the GateArchetype for the given gate name, or nil.
+func gateByID(id string) *GateArchetype {
+	for i := range gateCatalog {
+		if gateCatalog[i].Name == id {
+			return &gateCatalog[i]
+		}
+	}
+	return nil
+}
+
+// presetFor is retained for backward compatibility with older template references.
+// Deprecated: use gateByID instead.
 func presetFor(id string) preset {
 	for _, p := range presets {
 		if p.ID == id {
@@ -133,7 +143,7 @@ func (s *Server) handleWorkflowCreate(w http.ResponseWriter, r *http.Request) {
 	if branch == "" {
 		branch = "main"
 	}
-	presetID := r.FormValue("preset")
+	gateID := r.FormValue("gate")
 	tokenSecret := r.FormValue("tokenSecret")
 	model := strings.TrimSpace(r.FormValue("model"))
 	if model == "" {
@@ -158,24 +168,18 @@ func (s *Server) handleWorkflowCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	p := presetFor(presetID)
-
-	// Plugin selection: preset provides defaults; custom lets the user choose.
-	preparePlugin := p.Prepare
-	if preparePlugin == "" {
-		preparePlugin = r.FormValue("preparePlugin")
-	}
-	gatePlugin := p.Gate
-	if gatePlugin == "" {
-		gatePlugin = r.FormValue("gatePlugin")
-	}
-	deployPlugin := p.Deploy
-	if deployPlugin == "" {
-		deployPlugin = r.FormValue("deployPlugin")
+	g := gateByID(gateID)
+	if g == nil {
+		g = &gateCatalog[0] // fallback to first gate
 	}
 
-	if preparePlugin == "" || gatePlugin == "" || deployPlugin == "" {
-		s.renderError(w, r, "Prepare, gate, and deploy plugins are all required")
+	// The gate determines the workflow structure.
+	preparePlugin := g.PreparePlugin
+	gatePlugin := g.Name
+	deployPlugin := g.DeployPlugin
+
+	if preparePlugin == "" || deployPlugin == "" {
+		s.renderError(w, r, "Gate "+gateID+" does not have a complete structure")
 		return
 	}
 
@@ -202,12 +206,12 @@ func (s *Server) handleWorkflowCreate(w http.ResponseWriter, r *http.Request) {
 			},
 			Agent: v1alpha1.AgentSpec{
 				Model: model,
-				Skill: p.Skill,
+				Skill: g.SkillPath,
 				Tools: []string{"read", "bash", "edit", "grep"},
 				TaskTemplate: v1alpha1.TaskTemplate{
-					Name:      p.TaskName,
+					Name:      g.TaskName,
 					ConfigMap: "harmostes-tasks",
-					Key:       p.TaskName + ".txt",
+					Key:       g.TaskName + ".txt",
 				},
 				Gate: v1alpha1.GateRef{
 					Plugin: v1alpha1.PluginRef{Name: gatePlugin},
@@ -246,7 +250,7 @@ func (s *Server) handleWorkflowCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.logger.Info("workflow created", "owner", owner, "name", name, "preset", presetID)
+	s.logger.Info("workflow created", "owner", owner, "name", name, "gate", gateID)
 	http.Redirect(w, r, "/workflows/"+name, http.StatusSeeOther)
 }
 

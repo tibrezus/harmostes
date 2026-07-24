@@ -287,3 +287,112 @@ code, pre {
 .log-line--warn {
 	color: var(--color-warning, #c90);
 }
+
+/* ===== Gate-centric workflow grouping ===== */
+
+.gate-group {
+	margin-bottom: 2rem;
+}
+
+.gate-group-header {
+	display: flex;
+	align-items: baseline;
+	gap: 0.75rem;
+	margin-bottom: 0.75rem;
+	padding-bottom: 0.5rem;
+	border-bottom: 1px solid var(--border, #e2e8f0);
+}
+
+.gate-group-label {
+	font-size: 1.05rem;
+	font-weight: 600;
+	color: var(--fg, #1e293b);
+}
+
+.gate-group-count {
+	font-size: 0.8rem;
+	color: var(--fg-muted, #64748b);
+}
+
+/* ===== Gate selector (workflow creation form) ===== */
+
+.gate-selector {
+	display: flex;
+	flex-direction: column;
+	gap: 0.75rem;
+}
+
+.gate-option {
+	display: block;
+	padding: 1rem;
+	border: 2px solid var(--border, #e2e8f0);
+	border-radius: 8px;
+	cursor: pointer;
+	transition: border-color 0.15s, background 0.15s;
+}
+
+.gate-option:hover {
+	border-color: var(--accent, #6366f1);
+}
+
+.gate-option--active {
+	border-color: var(--accent, #6366f1);
+	background: var(--accent-bg, rgba(99, 102, 241, 0.05));
+}
+
+.gate-option input[type="radio"] {
+	position: absolute;
+	opacity: 0;
+}
+
+.gate-option-body {
+	display: flex;
+	flex-direction: column;
+	gap: 0.25rem;
+}
+
+.gate-option-label {
+	font-weight: 600;
+	font-size: 1rem;
+	color: var(--fg, #1e293b);
+}
+
+.gate-option-name {
+	font-family: var(--font-mono, monospace);
+	font-size: 0.8rem;
+	color: var(--fg-muted, #64748b);
+}
+
+.gate-option-desc {
+	font-size: 0.85rem;
+	color: var(--fg-muted, #64748b);
+	line-height: 1.4;
+}
+
+.gate-option-structure {
+	display: flex;
+	align-items: center;
+	gap: 0.4rem;
+	margin-top: 0.5rem;
+	flex-wrap: wrap;
+}
+
+.gate-struct-node {
+	font-family: var(--font-mono, monospace);
+	font-size: 0.8rem;
+	padding: 0.15rem 0.5rem;
+	border-radius: 4px;
+	background: var(--bg-muted, #f1f5f9);
+	color: var(--fg, #1e293b);
+}
+
+.gate-struct-node--gate {
+	background: var(--accent-bg, rgba(99, 102, 241, 0.1));
+	color: var(--accent, #6366f1);
+	font-weight: 600;
+}
+
+.gate-struct-arrow {
+	color: var(--fg-muted, #94a3b8);
+	font-size: 0.8rem;
+}

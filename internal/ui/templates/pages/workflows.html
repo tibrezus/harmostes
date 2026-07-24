@@ -13,35 +13,39 @@
 	<p class="ds-empty-text">You have no workflows. Create one to start automating with harmostes.</p>
 </div>
 {{- else}}
-<div class="wf-grid">
-	{{range .Workflows}}
-	<a href="/workflows/{{.Name}}" class="wf-card" style="text-decoration: none; color: inherit;">
-		<div class="wf-card-header">
-			<span class="wf-card-name">{{.Name}}</span>
-			{{if .Spec.Disabled}}
-			<span class="status-badge status-badge--muted">Disabled</span>
-			{{else if eq .Status.GateStatus "green"}}
-			<span class="status-badge status-badge--green">Green</span>
-			{{else if eq .Status.GateStatus "failed"}}
-			<span class="status-badge status-badge--red">Failed</span>
-			{{else}}
-			<span class="status-badge status-badge--muted">Unknown</span>
+{{range .GateGroups}}
+<div class="gate-group">
+	<div class="gate-group-header">
+		<span class="gate-group-label">{{$gg := .}}{{.Label}}</span>
+		<span class="gate-group-count">{{.Count}} workflow{{if gt .Count 1}}s{{end}}</span>
+	</div>
+	<div class="wf-grid">
+		{{range .Items}}
+		<a href="/workflows/{{.Name}}" class="wf-card" style="text-decoration: none; color: inherit;">
+			<div class="wf-card-header">
+				<span class="wf-card-name">{{.Name}}</span>
+				{{if .Spec.Disabled}}
+				<span class="status-badge status-badge--muted">Disabled</span>
+				{{else if eq .Status.GateStatus "green"}}
+				<span class="status-badge status-badge--green">Green</span>
+				{{else if eq .Status.GateStatus "failed"}}
+				<span class="status-badge status-badge--red">Failed</span>
+				{{else}}
+				<span class="status-badge status-badge--muted">Unknown</span>
+				{{end}}
+			</div>
+			<div class="wf-card-row">
+				{{if .Spec.Source.Repo}}<span class="wf-card-meta">{{truncate .Spec.Source.Repo 40}}</span>{{else}}<span>Source: {{.Spec.Source.Kind}}</span>{{end}}
+			</div>
+			{{if not .Status.LastRunAt.IsZero}}
+			<div class="wf-card-row">
+				<span>Last run: {{.Status.LastRunAt.Format "2006-01-02 15:04 MST"}}</span>
+			</div>
 			{{end}}
-		</div>
-		<div class="wf-card-row">
-			<span>Source: {{.Spec.Source.Kind}}</span>
-			{{if .Spec.Source.Repo}}<span class="wf-card-meta">{{truncate .Spec.Source.Repo 30}}</span>{{end}}
-		</div>
-		<div class="wf-card-row">
-			<span>Gate: {{.Spec.Agent.Gate.Plugin.Name}}</span>
-		</div>
-		{{if not .Status.LastRunAt.IsZero}}
-		<div class="wf-card-row">
-			<span>Last run: {{.Status.LastRunAt.Format "2006-01-02 15:04 MST"}}</span>
-		</div>
+		</a>
 		{{end}}
-	</a>
-	{{end}}
+	</div>
 </div>
+{{end}}
 {{- end}}
 {{end}}

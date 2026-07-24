@@ -117,6 +117,9 @@ func (s *Server) Routes() http.Handler {
 	pages.HandleFunc("PUT /api/workflows/{name}/graph", s.handleWorkflowGraphPut)
 	pages.HandleFunc("POST /api/workflows/{name}/convert", s.handleWorkflowGraphConvert)
 
+	// Gate catalog API
+	pages.HandleFunc("GET /api/gates", s.handleGateAPIList)
+
 	// Pipeline JSON API (called by the React SPA)
 	pages.HandleFunc("GET /api/pipelines", s.handlePipelineAPIList)
 	pages.HandleFunc("GET /api/pipelines/{name}", s.handlePipelineAPIGet)

@@ -2,6 +2,7 @@ package ui
 
 import (
 	"net/http"
+	"sort"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -18,7 +19,8 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/workflows", http.StatusSeeOther)
 }
 
-// handleWorkflowList renders all workflows owned by the current user.
+// handleWorkflowList renders all workflows owned by the current user,
+// grouped by gate archetype.
 func (s *Server) handleWorkflowList(w http.ResponseWriter, r *http.Request) {
 	owner := identityFromContext(r.Context()).Username
 	workflows, err := s.listWorkflows(r, owner)
@@ -27,8 +29,56 @@ func (s *Server) handleWorkflowList(w http.ResponseWriter, r *http.Request) {
 		s.renderError(w, r, "Failed to load workflows: "+err.Error())
 		return
 	}
+
+	// Group workflows by gate (derived from spec.agent.gate.plugin.name).
+	type gateGroup struct {
+		Gate     string // gate plugin name
+		Label    string // category label with icon
+		Category string
+		Count    int
+		Items    []v1alpha1.Workflow
+	}
+	groups := []gateGroup{}
+	groupMap := map[string]*gateGroup{}
+	for i := range workflows {
+		wf := &workflows[i]
+		gateName := workflowGate(wf.Spec.Agent.Gate.Plugin.Name)
+		g, ok := groupMap[gateName]
+		if !ok {
+			cat := "other"
+			label := gateName
+			if arch := gateByName(gateName); arch != nil {
+				cat = arch.Category
+				label = arch.Label
+			}
+			g = &gateGroup{
+				Gate:     gateName,
+				Label:    gateCategoryLabel(cat) + " — " + label,
+				Category: cat,
+			}
+			groupMap[gateName] = g
+			groups = append(groups, gateGroup{}) // placeholder; updated below
+		}
+		g.Items = append(g.Items, *wf)
+		g.Count++
+	}
+
+	// Copy back from map (map pointers were updated in-place).
+	for i := range groups {
+		g := groupMap[groups[i].Gate]
+		if g != nil {
+			groups[i] = *g
+		}
+	}
+
+	// Sort groups by category for stable display.
+	sort.Slice(groups, func(i, j int) bool {
+		return groups[i].Category < groups[j].Category
+	})
+
 	s.render(w, r, "pages/workflows.html", map[string]any{
-		"Workflows": workflows,
+		"Workflows":  workflows,
+		"GateGroups": groups,
 	})
 }
 

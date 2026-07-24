@@ -43,14 +43,14 @@ func workflowTestServer(existing ...client.Object) *Server {
 	}
 }
 
-func TestHandleWorkflowCreate_LLMPreset(t *testing.T) {
+func TestHandleWorkflowCreate_GateWikiLint(t *testing.T) {
 	s := workflowTestServer()
 
 	form := url.Values{}
 	form.Set("name", "my-wiki")
 	form.Set("repoUrl", "git@github.com:rezuscloud/llm-wiki.git")
 	form.Set("branch", "main")
-	form.Set("preset", "llm-wiki")
+	form.Set("gate", "wiki-lint")
 	form.Set("model", "litellm/zai/glm-5.2")
 	form.Set("schedule", "*/30 * * * *")
 
@@ -75,7 +75,7 @@ func TestHandleWorkflowCreate_LLMPreset(t *testing.T) {
 		t.Errorf("owner = %q, want alice", wf.Labels[v1alpha1.OwnerLabel])
 	}
 
-	// Verify preset plugins
+	// Verify gate-derived structure
 	if wf.Spec.Prepare.Plugin.Name != "rig-emit" {
 		t.Errorf("prepare plugin = %q, want rig-emit", wf.Spec.Prepare.Plugin.Name)
 	}
@@ -95,16 +95,13 @@ func TestHandleWorkflowCreate_LLMPreset(t *testing.T) {
 	}
 }
 
-func TestHandleWorkflowCreate_CustomPreset(t *testing.T) {
+func TestHandleWorkflowCreate_GateForkResolved(t *testing.T) {
 	s := workflowTestServer()
 
 	form := url.Values{}
 	form.Set("name", "custom-wf")
 	form.Set("repoUrl", "git@github.com:rezuscloud/repo.git")
-	form.Set("preset", "custom")
-	form.Set("preparePlugin", "raw-copy")
-	form.Set("gatePlugin", "wiki-lint")
-	form.Set("deployPlugin", "git-push")
+	form.Set("gate", "fork-resolved")
 	form.Set("model", "litellm/zai/glm-4.7")
 
 	req := httptest.NewRequest(http.MethodPost, "/workflows", strings.NewReader(form.Encode()))
@@ -121,8 +118,14 @@ func TestHandleWorkflowCreate_CustomPreset(t *testing.T) {
 	var wf v1alpha1.Workflow
 	_ = s.k8sClient.Get(req.Context(), types.NamespacedName{Namespace: "harmostes", Name: "custom-wf"}, &wf)
 
-	if wf.Spec.Prepare.Plugin.Name != "raw-copy" {
-		t.Errorf("prepare = %q, want raw-copy", wf.Spec.Prepare.Plugin.Name)
+	if wf.Spec.Prepare.Plugin.Name != "cherry-pick-sync" {
+		t.Errorf("prepare = %q, want cherry-pick-sync", wf.Spec.Prepare.Plugin.Name)
+	}
+	if wf.Spec.Agent.Gate.Plugin.Name != "fork-resolved" {
+		t.Errorf("gate = %q, want fork-resolved", wf.Spec.Agent.Gate.Plugin.Name)
+	}
+	if wf.Spec.Deploy.Plugin.Name != "fork-replace-deploy" {
+		t.Errorf("deploy = %q, want fork-replace-deploy", wf.Spec.Deploy.Plugin.Name)
 	}
 	if wf.Spec.Agent.Model != "litellm/zai/glm-4.7" {
 		t.Errorf("model = %q, want glm-4.7", wf.Spec.Agent.Model)
@@ -148,7 +151,7 @@ func TestHandleWorkflowCreate_WithTokenRef(t *testing.T) {
 	form := url.Values{}
 	form.Set("name", "tokenized-wf")
 	form.Set("repoUrl", "git@github.com:rezuscloud/repo.git")
-	form.Set("preset", "llm-wiki")
+	form.Set("gate", "wiki-lint")
 	form.Set("tokenSecret", "alice-github-abcd1234")
 
 	req := httptest.NewRequest(http.MethodPost, "/workflows", strings.NewReader(form.Encode()))
@@ -199,7 +202,7 @@ func TestHandleWorkflowCreate_RejectsInvalidName(t *testing.T) {
 		form := url.Values{}
 		form.Set("name", badName)
 		form.Set("repoUrl", "git@github.com:rezuscloud/repo.git")
-		form.Set("preset", "llm-wiki")
+		form.Set("gate", "wiki-lint")
 
 		req := httptest.NewRequest(http.MethodPost, "/workflows", strings.NewReader(form.Encode()))
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -228,7 +231,7 @@ func TestHandleWorkflowCreate_DuplicateName(t *testing.T) {
 	form := url.Values{}
 	form.Set("name", "existing-wf")
 	form.Set("repoUrl", "git@github.com:rezuscloud/repo.git")
-	form.Set("preset", "llm-wiki")
+	form.Set("gate", "wiki-lint")
 
 	req := httptest.NewRequest(http.MethodPost, "/workflows", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -252,7 +255,7 @@ func TestHandleWorkflowCreate_OwnerNeverSpoofed(t *testing.T) {
 	form := url.Values{}
 	form.Set("name", "spoof-test")
 	form.Set("repoUrl", "git@github.com:rezuscloud/repo.git")
-	form.Set("preset", "llm-wiki")
+	form.Set("gate", "wiki-lint")
 
 	req := httptest.NewRequest(http.MethodPost, "/workflows", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")

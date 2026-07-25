@@ -3,9 +3,14 @@
 # Today this is a fork YAML consumed by sync-fork.sh (CronJob) + an always-on
 # conflict-subscriber that spawns resolve-conflict.sh (→ harmostes → gate-
 # resolved → host_pr_merge + tag). Under Harmostes it is one Workflow CR; the
-# bespoke scripts become plugins (cherry-pick-sync, fork-resolved, fork-
-# replace-deploy) and the bespoke loop + per-platform subscriber become the
-# framework.
+# bespoke scripts become plugins (merge-sync, fork-resolved, fork-merge-deploy)
+# and the bespoke loop + per-platform subscriber become the framework.
+#
+# Sync model: MERGE (Codeberg-style). The engine merges the upstream release
+# branch into the fork's release branch (off a sync branch → PR). Customizations
+# are immutable commits on the release branch, so history is append-only and
+# conflicts are localized 3-way regions — the ideal substrate for the LLM agent
+# below. See skills/fork-maintenance/references/architecture.md "Sync model".
 apiVersion: harmostes.dev/v1alpha1
 kind: Workflow
 metadata:
@@ -21,9 +26,9 @@ spec:
       branch: rezus/main
   prepare:
     plugin:
-      name: cherry-pick-sync         # → sync-fork.sh: fresh upstream + replay customizations
-    output: rezus/sync-<date>        # the sync branch produced
-    detect: conflict                 # proceed to the agent ONLY when the cherry-pick conflicts
+      name: merge-sync               # → sync-fork.sh: merge upstream release branch into the release line
+    output: rezus/sync-<date>        # the sync branch produced (release + upstream merge)
+    detect: conflict                 # proceed to the agent ONLY when the merge conflicts
   agent:
     model: litellm/zai/glm-4.7
     skill: /skills/fork-maintenance/SKILL.md
@@ -31,7 +36,7 @@ spec:
     taskTemplate:
       name: resolve-conflict
       configMap: harmostes-tasks
-      key: resolve-conflict.txt      # drive cherry-pick to completion + push; uses wiki intent
+      key: resolve-conflict.txt      # drive merge resolution to completion + push; uses wiki intent
     gate:
       plugin:
         name: fork-resolved          # → gate-resolved.sh: markers + validate-fork.sh + signatures
@@ -39,7 +44,7 @@ spec:
     timeout: 1800
   deploy:
     plugin:
-      name: fork-replace-deploy      # → replace release branch (force) + tag v…-rezus.N
+      name: fork-merge-deploy        # → host_pr_merge (sync→release, append) + tag v…-rezus.N
   events:
     onPrepare: fork.conflict.needs-resolution
     onResolved: fork.sync.deployed
@@ -51,7 +56,8 @@ spec:
     kind: keda-scaledjob
     schedule: "0 * * * *"
 ---
-# A fast-path note: when prepare reports detect: conflict == false (the cherry-
-# pick was clean), the framework deploys directly with NO agent step. That is
-# the deterministic fast-path sync-fork.sh already implements today; Harmostes
-# makes it the framework's "agent skipped" branch.
+# A fast-path note: when prepare reports detect: conflict == false (the merge
+# was clean), the framework deploys directly with NO agent step. That is the
+# deterministic fast-path sync-fork.sh already implements today; Harmostes
+# makes it the framework's "agent skipped" branch. Release-branch tracking
+# makes this the common case (small, stable deltas → clean merges).

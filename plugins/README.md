@@ -8,11 +8,11 @@ See [`docs/plugin-interface.md`](../docs/plugin-interface.md) for the contract.
 |---|---|---|---|
 | `rig-emit` | prepare | llm-wiki (lc4) | `emit-rig.py` (universal multi-language RIG generator) |
 | `raw-copy` | prepare | llm-wiki (generic) | `rsync` of source into `raw/<project>/` |
-| `cherry-pick-sync` | prepare | fork-maintenance | `sync-fork.sh` (fresh upstream + replay customizations) |
+| `merge-sync` | prepare | fork-maintenance | `sync-fork.sh` (merge upstream release branch into the release line) |
 | `wiki-lint` | gate | llm-wiki | `gate-lint.sh` → full `ci-lint.sh` (markdownlint, mdlint, remark, mermaid, likec4, health, RIG compliance) |
 | `fork-resolved` | gate | fork-maintenance | `gate-resolved.sh` (markers + `validate-fork.sh` + patch signatures) |
 | `git-push` | deploy | llm-wiki | rebase onto FETCH_HEAD + union-merge changelog + `git push HEAD:main` |
-| `fork-replace-deploy` | deploy | fork-maintenance | replace release branch (force) + tag `v…-rezus.N` |
+| `fork-merge-deploy` | deploy | fork-maintenance | PR-merge sync branch into release (append-only) + tag `v…-rezus.N` |
 
 ## Adding a plugin
 

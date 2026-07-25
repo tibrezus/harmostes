@@ -41,7 +41,7 @@
 #       Exit 0 = intact (GREEN); 1 = divergence lost (stderr feedback, blocks
 #       auto-merge & release). Last stdout line = JSON report.
 #
-# Why tree diffs, not commit topology: a cherry-pick-sync that squash-merges its
+# Why tree diffs, not commit topology: a merge-sync that squash-merges its
 # PRs produces a release branch whose commit graph no longer shares recent
 # upstream ancestors, so `git merge-base` drifts and `merge-base..release`
 # becomes polluted with upstream commits. `git diff <upstream-tree>..<fork-tree>`

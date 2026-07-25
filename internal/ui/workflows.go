@@ -54,10 +54,10 @@ var presets = []preset{
 	{
 		ID:          "fork-maintenance",
 		Name:        "Fork Maintenance (upstream sync)",
-		Description: "Upstream → cherry-pick replay → agent resolves conflicts → push + tag",
-		Prepare:     "cherry-pick-sync",
+		Description: "Upstream → merge → agent resolves 3-way conflicts → PR-merge + tag",
+		Prepare:     "merge-sync",
 		Gate:        "fork-resolved",
-		Deploy:      "fork-replace-deploy",
+		Deploy:      "fork-merge-deploy",
 		Skill:       "/skills/fork-maintenance/SKILL.md",
 		TaskName:    "resolve-conflict",
 	},
@@ -76,9 +76,9 @@ var presets = []preset{
 // knownPlugins is the allowlist of plugin names for the custom preset dropdowns.
 // These are the built-in + deployed plugins the worker can resolve.
 var knownPlugins = map[string][]string{
-	"prepare": {"rig-emit", "raw-copy", "cherry-pick-sync"},
+	"prepare": {"rig-emit", "raw-copy", "merge-sync"},
 	"gate":    {"wiki-lint", "fork-resolved"},
-	"deploy":  {"git-push", "fork-replace-deploy"},
+	"deploy":  {"git-push", "fork-merge-deploy"},
 }
 
 // handleWorkflowNew renders the create form. It loads the user's tokens (for

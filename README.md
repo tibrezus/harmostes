@@ -49,7 +49,7 @@ config/crd/workflows.harmostes.dev.yaml   # the Workflow CRD
 examples/workflow-llm-wiki.yaml       # llm-wiki as a Workflow (lc4 + generic)
 examples/workflow-fork-maintenance.yaml   # fork-maintenance as a Workflow
 docs/plugin-interface.md              # the plugin contract (env, stdout JSON, exit codes)
-plugins/README.md                     # reference plugins (rig-emit, cherry-pick-sync, …)
+plugins/README.md                     # reference plugins (rig-emit, merge-sync, …)
 controller/                           # the k8s operator (planned — see ARCHITECTURE §migration)
 chart/                                # the Helm chart (planned)
 ```

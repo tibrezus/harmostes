@@ -153,11 +153,11 @@ Reference plugins shipped in this repo (see `plugins/`):
 |---|---|---|---|
 | `rig-emit` | prepare | llm-wiki (lc4) | `emit-rig.py` |
 | `raw-copy` | prepare | llm-wiki (generic) | `rsync` in reconcile.sh |
-| `cherry-pick-sync` | prepare | fork-maintenance | `sync-fork.sh` |
+| `merge-sync` | prepare | fork-maintenance | `sync-fork.sh` |
 | `wiki-lint` | gate | llm-wiki | `gate-lint.sh` (ci-lint.sh) |
 | `fork-resolved` | gate | fork-maintenance | `gate-resolved.sh` |
 | `git-push` | deploy | llm-wiki | `git push` in agent-sync.sh |
-| `fork-replace-deploy` | deploy | fork-maintenance | `host_pr_merge` + tag |
+| `fork-merge-deploy` | deploy | fork-maintenance | `host_pr_merge` + tag |
 
 New workflows = new plugins (or reuse existing ones) + a Workflow CR. No
 framework code changes.
@@ -225,13 +225,13 @@ the framework fits both.
 |---|---|---|---|
 | source | WikiMap source repo (Flux artifact) | upstream repo + fork | `source.git` |
 | monitor | `reconcile.sh` loop (KEDA ScaledJob, cron) | `sync-fork.sh` (CronJob) | monitor controller |
-| prepare | `emit-rig.py` (source→RIG) + copy raw/ | cherry-pick customizations | `rig-emit` / `cherry-pick-sync` |
+| prepare | `emit-rig.py` (source→RIG) + copy raw/ | merge upstream release branch | `rig-emit` / `merge-sync` |
 | detect | Dapr revision-hash skip | cherry-pick clean vs conflict | prepare `changed` / `conflict` |
 | event | `wiki.docs.updated` | `fork.conflict.needs-resolution` | `work.needs-agent` |
 | subscriber | `event-subscriber.py` (always-on) | `conflict-subscriber.py` (always-on) | **one** generic subscriber |
 | agent | `agent-sync.sh` → harmostes (arch-sync) | `resolve-conflict.sh` → harmostes | harmostes RPC + `taskTemplate` |
 | gate | `gate-lint.sh` | `gate-resolved.sh` | gate plugin |
-| deploy | `git push` to wiki main | replace release branch + tag | `git-push` / `fork-replace-deploy` |
+| deploy | `git push` to wiki main | PR-merge into release + tag | `git-push` / `fork-merge-deploy` |
 | state | Dapr (revision, commit, ci) | Dapr (revision) | Dapr state |
 | scale | KEDA ScaledJob | CronJob + always-on resolver | KEDA per worker type |
 
@@ -275,8 +275,8 @@ The live system stays green throughout. No big-bang.
 2. **Port llm-wiki first** (smaller blast radius, we just hardened it). Wrap
    `emit-rig` / `gate-lint` / `git-push` as plugins; express the 5 WikiMaps as
    `Workflow` CRs. Run parallel to the old controller; diff the outputs.
-3. **Port fork-maintenance.** `cherry-pick-sync` / `fork-resolved` / `fork-
-   replace-deploy` as plugins; forks as `Workflow` CRs. Run parallel; trigger a
+3. **Port fork-maintenance.** `merge-sync` / `fork-resolved` / `fork-
+   merge-deploy` as plugins; forks as `Workflow` CRs. Run parallel; trigger a
    real conflict to compare against the proven resolver.
 4. **Cut over.** Flip the WikiMap/Fork CRs to point at harmostes; retire the
    bespoke controllers + per-platform subscribers. The Dapr fabric + Valkey +

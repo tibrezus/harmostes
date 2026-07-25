@@ -95,7 +95,7 @@ spec:
                       type: object
                       required: [name]
                       properties:
-                        name: { type: string }                 # rig-emit | raw-copy | cherry-pick-sync | <custom>
+                        name: { type: string }                 # rig-emit | raw-copy | merge-sync | <custom>
                         image: { type: string }                # optional: plugin as its own image
                         configMap: { type: string }            # optional: plugin script from a ConfigMap
                         args: { type: array, items: { type: string } }
@@ -141,7 +141,7 @@ spec:
                       type: object
                       required: [name]
                       properties:
-                        name: { type: string }                 # git-push | fork-replace-deploy | noop
+                        name: { type: string }                 # git-push | fork-merge-deploy | noop
                         image: { type: string }
                         configMap: { type: string }
                         args: { type: array, items: { type: string } }

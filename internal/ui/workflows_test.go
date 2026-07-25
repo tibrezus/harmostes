@@ -118,14 +118,14 @@ func TestHandleWorkflowCreate_GateForkResolved(t *testing.T) {
 	var wf v1alpha1.Workflow
 	_ = s.k8sClient.Get(req.Context(), types.NamespacedName{Namespace: "harmostes", Name: "custom-wf"}, &wf)
 
-	if wf.Spec.Prepare.Plugin.Name != "cherry-pick-sync" {
-		t.Errorf("prepare = %q, want cherry-pick-sync", wf.Spec.Prepare.Plugin.Name)
+	if wf.Spec.Prepare.Plugin.Name != "merge-sync" {
+		t.Errorf("prepare = %q, want merge-sync", wf.Spec.Prepare.Plugin.Name)
 	}
 	if wf.Spec.Agent.Gate.Plugin.Name != "fork-resolved" {
 		t.Errorf("gate = %q, want fork-resolved", wf.Spec.Agent.Gate.Plugin.Name)
 	}
-	if wf.Spec.Deploy.Plugin.Name != "fork-replace-deploy" {
-		t.Errorf("deploy = %q, want fork-replace-deploy", wf.Spec.Deploy.Plugin.Name)
+	if wf.Spec.Deploy.Plugin.Name != "fork-merge-deploy" {
+		t.Errorf("deploy = %q, want fork-merge-deploy", wf.Spec.Deploy.Plugin.Name)
 	}
 	if wf.Spec.Agent.Model != "litellm/zai/glm-4.7" {
 		t.Errorf("model = %q, want glm-4.7", wf.Spec.Agent.Model)

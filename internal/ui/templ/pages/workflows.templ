@@ -1,0 +1,75 @@
+package pages
+
+// WorkflowsPage — displays all workflows grouped by gate.
+// Data: { User string, GateGroups []GateGroup }
+type GateGroup struct {
+	Gate  string
+	Label string
+	Count int
+}
+
+templ WorkflowsPage(user string, gateGroups []GateGroup) {
+	<!DOCTYPE html>
+	<html lang="en">
+	<head>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, initial-scale=1">
+		<title>harmostes — Workflows</title>
+		<link rel="stylesheet" href="/static/css/rezus.css">
+		<link rel="stylesheet" href="/static/css/app.css">
+		<script defer src="/static/js/alpine.min.js"></script>
+	</head>
+	<body>
+		<div class="app-layout">
+			<!-- Sidebar -->
+			<aside class="ds-sidebar">
+				<div class="ds-sidebar-header">
+					<div class="ds-sidebar-logo">
+						<span class="ds-sidebar-logo-text">harmostes</span>
+					</div>
+				</div>
+				<nav class="ds-sidebar-nav" aria-label="Main navigation">
+					<a href="/workflows" class="ds-sidebar-link ds-sidebar-link--active">Workflows</a>
+					<a href="/pipelines" class="ds-sidebar-link">Pipelines</a>
+					<a href="/tokens" class="ds-sidebar-link">Tokens</a>
+				</nav>
+				<div class="ds-sidebar-footer">
+					<span class="ds-sidebar-version">v0.24.0-dev</span>
+				</div>
+			</aside>
+
+			<!-- Main content -->
+			<main class="ds-main">
+				<header class="ds-header">
+					<div class="ds-header-title">
+						<h1>Workflows</h1>
+					</div>
+					<div class="ds-header-user">
+						<span class="ds-user-badge">{ user }</span>
+						<a href="/workflows/new" class="ds-button ds-button--primary">New Workflow</a>
+					</div>
+				</header>
+				<div class="ds-content">
+					for _, group := range gateGroups {
+						<section class="wf-group">
+							<h2 class="wf-group-title">{ group.Label }</h2>
+							<div class="wf-grid">
+								<!-- Workflow cards will be injected here -->
+								<div class="wf-card-placeholder">
+									<span class="wf-card-placeholder-text">{ group.Count } workflows</span>
+								</div>
+							</div>
+						</section>
+					}
+					if len(gateGroups) == 0 {
+						<div class="ds-empty-state">
+							<p class="ds-empty-state-text">No workflows found.</p>
+							<a href="/workflows/new" class="ds-button ds-button--primary">Create your first workflow</a>
+						</div>
+					}
+				</div>
+			</main>
+		</div>
+	</body>
+	</html>
+}

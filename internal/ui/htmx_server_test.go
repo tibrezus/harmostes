@@ -131,11 +131,11 @@ func TestHTMXServer_Routes_workflowDetail(t *testing.T) {
 
 func TestExtractIdentityFromHeaders(t *testing.T) {
 	tests := []struct {
-		name           string
-		headers        map[string]string
-		wantUsername   string
-		wantGroups     []string
-		wantNil        bool
+		name         string
+		headers      map[string]string
+		wantUsername string
+		wantGroups   []string
+		wantNil      bool
 	}{
 		{
 			name: "X-Authentik headers",
@@ -152,7 +152,7 @@ func TestExtractIdentityFromHeaders(t *testing.T) {
 			headers: map[string]string{
 				"X-Forwarded-Preferred-Username": "bob",
 				"X-Forwarded-Email":              "bob@example.com",
-				"X-Forwarded-Groups":              "users",
+				"X-Forwarded-Groups":             "users",
 			},
 			wantUsername: "bob",
 			wantGroups:   []string{"users"},
@@ -228,10 +228,10 @@ func TestExtractIdentityFromHeaders(t *testing.T) {
 
 func TestIdentityFromContext(t *testing.T) {
 	tests := []struct {
-		name     string
-		ctx      context.Context
-		want     string
-		wantNil  bool
+		name    string
+		ctx     context.Context
+		want    string
+		wantNil bool
 	}{
 		{
 			name: "identity in context",

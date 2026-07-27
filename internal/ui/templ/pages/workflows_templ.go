@@ -8,11 +8,24 @@ package pages
 import "github.com/a-h/templ"
 import templruntime "github.com/a-h/templ/runtime"
 
+import (
+	"github.com/tibrezus/harmostes/internal/ui/templ/components"
+)
+
 // GateGroup represents a group of workflows sharing the same gate archetype.
 type GateGroup struct {
-	Gate  string
-	Label string
-	Count int
+	Gate      string
+	Label     string
+	Count     int
+	Workflows []WorkflowCardData
+}
+
+// WorkflowCardData holds data for rendering a workflow card.
+type WorkflowCardData struct {
+	Name      string
+	Gate      string
+	Disabled  bool
+	LastRunAt string
 }
 
 // WorkflowsPage — displays all workflows grouped by gate.
@@ -45,7 +58,7 @@ func WorkflowsPage(user string, gateGroups []GateGroup) templ.Component {
 		var templ_7745c5c3_Var2 string
 		templ_7745c5c3_Var2, templ_7745c5c3_Err = templ.JoinStringErrs(user)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/ui/templ/pages/workflows.templ`, Line: 75, Col: 40}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/ui/templ/pages/workflows.templ`, Line: 88, Col: 40}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var2))
 		if templ_7745c5c3_Err != nil {
@@ -69,26 +82,23 @@ func WorkflowsPage(user string, gateGroups []GateGroup) templ.Component {
 				var templ_7745c5c3_Var3 string
 				templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.JoinStringErrs(group.Label)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/ui/templ/pages/workflows.templ`, Line: 88, Col: 48}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/ui/templ/pages/workflows.templ`, Line: 101, Col: 48}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var3))
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 5, "</h2><div class=\"wf-grid\"><!-- Workflow count placeholder — cards will be added in Phase 7 --><div class=\"wf-card-placeholder\"><span class=\"wf-card-placeholder-text\">")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 5, "</h2><div class=\"wf-grid\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				var templ_7745c5c3_Var4 string
-				templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinStringErrs(group.Count)
-				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/ui/templ/pages/workflows.templ`, Line: 92, Col: 62}
+				for _, wf := range group.Workflows {
+					templ_7745c5c3_Err = components.WorkflowCard(wf.Name, wf.Gate, wf.Disabled, wf.LastRunAt).Render(ctx, templ_7745c5c3_Buffer)
+					if templ_7745c5c3_Err != nil {
+						return templ_7745c5c3_Err
+					}
 				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 6, " workflows</span></div></div></section>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 6, "</div></section>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}

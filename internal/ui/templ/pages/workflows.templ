@@ -1,13 +1,14 @@
 package pages
 
-// WorkflowsPage — displays all workflows grouped by gate.
-// Data: { User string, GateGroups []GateGroup }
+// GateGroup represents a group of workflows sharing the same gate archetype.
 type GateGroup struct {
 	Gate  string
 	Label string
 	Count int
 }
 
+// WorkflowsPage — displays all workflows grouped by gate.
+// Data: { User string, GateGroups []GateGroup }
 templ WorkflowsPage(user string, gateGroups []GateGroup) {
 	<!DOCTYPE html>
 	<html lang="en">
@@ -17,7 +18,15 @@ templ WorkflowsPage(user string, gateGroups []GateGroup) {
 		<title>harmostes — Workflows</title>
 		<link rel="stylesheet" href="/static/css/rezus.css">
 		<link rel="stylesheet" href="/static/css/app.css">
+		<script defer src="/static/js/htmx.min.js"></script>
 		<script defer src="/static/js/alpine.min.js"></script>
+		<script>
+			// Apply theme before paint to avoid flash.
+			(function() {
+				var t = localStorage.getItem('harmostes-theme') || 'light';
+				if (t === 'dark') document.documentElement.classList.add('dark');
+			})();
+		</script>
 	</head>
 	<body>
 		<div class="app-layout">
@@ -29,9 +38,27 @@ templ WorkflowsPage(user string, gateGroups []GateGroup) {
 					</div>
 				</div>
 				<nav class="ds-sidebar-nav" aria-label="Main navigation">
-					<a href="/workflows" class="ds-sidebar-link ds-sidebar-link--active">Workflows</a>
-					<a href="/pipelines" class="ds-sidebar-link">Pipelines</a>
-					<a href="/tokens" class="ds-sidebar-link">Tokens</a>
+					<a href="/workflows" class="ds-sidebar-link ds-sidebar-link--active">
+						<svg class="ds-sidebar-icon" viewBox="0 0 16 16" fill="currentColor">
+							<path d="M1 3h14v2H1V3zm0 4h14v2H1V7zm0 4h14v2H1v-2z"></path>
+						</svg>
+						Workflows
+					</a>
+					<a href="/pipelines" class="ds-sidebar-link">
+						<svg class="ds-sidebar-icon" viewBox="0 0 16 16" fill="currentColor">
+							<circle cx="4" cy="4" r="2"></circle>
+							<circle cx="12" cy="4" r="2"></circle>
+							<circle cx="8" cy="12" r="2"></circle>
+							<path d="M5.5 5.5L7 10M10.5 5.5L9 10" stroke="currentColor" fill="none"></path>
+						</svg>
+						Pipelines
+					</a>
+					<a href="/tokens" class="ds-sidebar-link">
+						<svg class="ds-sidebar-icon" viewBox="0 0 16 16" fill="currentColor">
+							<path d="M8 1a3 3 0 00-3 3v2H4a1 1 0 00-1 1v6a1 1 0 001 1h8a1 1 0 001-1V7a1 1 0 00-1-1h-1V4a3 3 0 00-3-3zm-1 3a1 1 0 112 0v2H7V4z"></path>
+						</svg>
+						Tokens
+					</a>
 				</nav>
 				<div class="ds-sidebar-footer">
 					<span class="ds-sidebar-version">v0.24.0-dev</span>
@@ -50,22 +77,23 @@ templ WorkflowsPage(user string, gateGroups []GateGroup) {
 					</div>
 				</header>
 				<div class="ds-content">
-					for _, group := range gateGroups {
-						<section class="wf-group">
-							<h2 class="wf-group-title">{ group.Label }</h2>
-							<div class="wf-grid">
-								<!-- Workflow cards will be injected here -->
-								<div class="wf-card-placeholder">
-									<span class="wf-card-placeholder-text">{ group.Count } workflows</span>
-								</div>
-							</div>
-						</section>
-					}
 					if len(gateGroups) == 0 {
 						<div class="ds-empty-state">
 							<p class="ds-empty-state-text">No workflows found.</p>
 							<a href="/workflows/new" class="ds-button ds-button--primary">Create your first workflow</a>
 						</div>
+					} else {
+						for _, group := range gateGroups {
+							<section class="wf-group">
+								<h2 class="wf-group-title">{ group.Label }</h2>
+								<div class="wf-grid">
+									<!-- Workflow count placeholder — cards will be added in Phase 7 -->
+									<div class="wf-card-placeholder">
+										<span class="wf-card-placeholder-text">{ group.Count } workflows</span>
+									</div>
+								</div>
+							</section>
+						}
 					}
 				</div>
 			</main>

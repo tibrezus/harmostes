@@ -8,14 +8,15 @@ package pages
 import "github.com/a-h/templ"
 import templruntime "github.com/a-h/templ/runtime"
 
-// WorkflowsPage — displays all workflows grouped by gate.
-// Data: { User string, GateGroups []GateGroup }
+// GateGroup represents a group of workflows sharing the same gate archetype.
 type GateGroup struct {
 	Gate  string
 	Label string
 	Count int
 }
 
+// WorkflowsPage — displays all workflows grouped by gate.
+// Data: { User string, GateGroups []GateGroup }
 func WorkflowsPage(user string, gateGroups []GateGroup) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -37,14 +38,14 @@ func WorkflowsPage(user string, gateGroups []GateGroup) templ.Component {
 			templ_7745c5c3_Var1 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>harmostes — Workflows</title><link rel=\"stylesheet\" href=\"/static/css/rezus.css\"><link rel=\"stylesheet\" href=\"/static/css/app.css\"><script defer src=\"/static/js/alpine.min.js\"></script></head><body><div class=\"app-layout\"><!-- Sidebar --><aside class=\"ds-sidebar\"><div class=\"ds-sidebar-header\"><div class=\"ds-sidebar-logo\"><span class=\"ds-sidebar-logo-text\">harmostes</span></div></div><nav class=\"ds-sidebar-nav\" aria-label=\"Main navigation\"><a href=\"/workflows\" class=\"ds-sidebar-link ds-sidebar-link--active\">Workflows</a> <a href=\"/pipelines\" class=\"ds-sidebar-link\">Pipelines</a> <a href=\"/tokens\" class=\"ds-sidebar-link\">Tokens</a></nav><div class=\"ds-sidebar-footer\"><span class=\"ds-sidebar-version\">v0.24.0-dev</span></div></aside><!-- Main content --><main class=\"ds-main\"><header class=\"ds-header\"><div class=\"ds-header-title\"><h1>Workflows</h1></div><div class=\"ds-header-user\"><span class=\"ds-user-badge\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>harmostes — Workflows</title><link rel=\"stylesheet\" href=\"/static/css/rezus.css\"><link rel=\"stylesheet\" href=\"/static/css/app.css\"><script defer src=\"/static/js/htmx.min.js\"></script><script defer src=\"/static/js/alpine.min.js\"></script><script>\n\t\t\t// Apply theme before paint to avoid flash.\n\t\t\t(function() {\n\t\t\t\tvar t = localStorage.getItem('harmostes-theme') || 'light';\n\t\t\t\tif (t === 'dark') document.documentElement.classList.add('dark');\n\t\t\t})();\n\t\t</script></head><body><div class=\"app-layout\"><!-- Sidebar --><aside class=\"ds-sidebar\"><div class=\"ds-sidebar-header\"><div class=\"ds-sidebar-logo\"><span class=\"ds-sidebar-logo-text\">harmostes</span></div></div><nav class=\"ds-sidebar-nav\" aria-label=\"Main navigation\"><a href=\"/workflows\" class=\"ds-sidebar-link ds-sidebar-link--active\"><svg class=\"ds-sidebar-icon\" viewBox=\"0 0 16 16\" fill=\"currentColor\"><path d=\"M1 3h14v2H1V3zm0 4h14v2H1V7zm0 4h14v2H1v-2z\"></path></svg> Workflows</a> <a href=\"/pipelines\" class=\"ds-sidebar-link\"><svg class=\"ds-sidebar-icon\" viewBox=\"0 0 16 16\" fill=\"currentColor\"><circle cx=\"4\" cy=\"4\" r=\"2\"></circle> <circle cx=\"12\" cy=\"4\" r=\"2\"></circle> <circle cx=\"8\" cy=\"12\" r=\"2\"></circle> <path d=\"M5.5 5.5L7 10M10.5 5.5L9 10\" stroke=\"currentColor\" fill=\"none\"></path></svg> Pipelines</a> <a href=\"/tokens\" class=\"ds-sidebar-link\"><svg class=\"ds-sidebar-icon\" viewBox=\"0 0 16 16\" fill=\"currentColor\"><path d=\"M8 1a3 3 0 00-3 3v2H4a1 1 0 00-1 1v6a1 1 0 001 1h8a1 1 0 001-1V7a1 1 0 00-1-1h-1V4a3 3 0 00-3-3zm-1 3a1 1 0 112 0v2H7V4z\"></path></svg> Tokens</a></nav><div class=\"ds-sidebar-footer\"><span class=\"ds-sidebar-version\">v0.24.0-dev</span></div></aside><!-- Main content --><main class=\"ds-main\"><header class=\"ds-header\"><div class=\"ds-header-title\"><h1>Workflows</h1></div><div class=\"ds-header-user\"><span class=\"ds-user-badge\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var2 string
 		templ_7745c5c3_Var2, templ_7745c5c3_Err = templ.JoinStringErrs(user)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/ui/templ/pages/workflows.templ`, Line: 48, Col: 40}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/ui/templ/pages/workflows.templ`, Line: 75, Col: 40}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var2))
 		if templ_7745c5c3_Err != nil {
@@ -54,42 +55,43 @@ func WorkflowsPage(user string, gateGroups []GateGroup) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		for _, group := range gateGroups {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "<section class=\"wf-group\"><h2 class=\"wf-group-title\">")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			var templ_7745c5c3_Var3 string
-			templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.JoinStringErrs(group.Label)
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/ui/templ/pages/workflows.templ`, Line: 55, Col: 47}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var3))
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "</h2><div class=\"wf-grid\"><!-- Workflow cards will be injected here --><div class=\"wf-card-placeholder\"><span class=\"wf-card-placeholder-text\">")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			var templ_7745c5c3_Var4 string
-			templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinStringErrs(group.Count)
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/ui/templ/pages/workflows.templ`, Line: 59, Col: 61}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 5, " workflows</span></div></div></section>")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-		}
 		if len(gateGroups) == 0 {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 6, "<div class=\"ds-empty-state\"><p class=\"ds-empty-state-text\">No workflows found.</p><a href=\"/workflows/new\" class=\"ds-button ds-button--primary\">Create your first workflow</a></div>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "<div class=\"ds-empty-state\"><p class=\"ds-empty-state-text\">No workflows found.</p><a href=\"/workflows/new\" class=\"ds-button ds-button--primary\">Create your first workflow</a></div>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
+			}
+		} else {
+			for _, group := range gateGroups {
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "<section class=\"wf-group\"><h2 class=\"wf-group-title\">")
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				var templ_7745c5c3_Var3 string
+				templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.JoinStringErrs(group.Label)
+				if templ_7745c5c3_Err != nil {
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/ui/templ/pages/workflows.templ`, Line: 88, Col: 48}
+				}
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var3))
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 5, "</h2><div class=\"wf-grid\"><!-- Workflow count placeholder — cards will be added in Phase 7 --><div class=\"wf-card-placeholder\"><span class=\"wf-card-placeholder-text\">")
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				var templ_7745c5c3_Var4 string
+				templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinStringErrs(group.Count)
+				if templ_7745c5c3_Err != nil {
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/ui/templ/pages/workflows.templ`, Line: 92, Col: 62}
+				}
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 6, " workflows</span></div></div></section>")
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
 			}
 		}
 		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 7, "</div></main></div></body></html>")

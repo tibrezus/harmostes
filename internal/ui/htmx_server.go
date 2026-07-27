@@ -141,10 +141,22 @@ func (s *HTMXServer) groupWorkflowsByGate(workflows []v1alpha1.Workflow) []pages
 	// Convert to sorted slice
 	groups := make([]pages.GateGroup, 0, len(groupMap))
 	for _, g := range groupMap {
+		// Convert workflow card data to pages format
+		wfs := make([]pages.WorkflowCardData, len(g.workflows))
+		for i, w := range g.workflows {
+			wfs[i] = pages.WorkflowCardData{
+				Name:      w.Name,
+				Gate:      w.Gate,
+				Disabled:  w.Disabled,
+				LastRunAt: w.LastRunAt,
+			}
+		}
+
 		gg := pages.GateGroup{
-			Gate:  g.gate,
-			Label: g.label,
-			Count: len(g.workflows),
+			Gate:      g.gate,
+			Label:     g.label,
+			Count:     len(g.workflows),
+			Workflows: wfs,
 		}
 		groups = append(groups, gg)
 	}

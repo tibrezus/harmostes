@@ -1,10 +1,23 @@
 package pages
 
+import (
+	"github.com/tibrezus/harmostes/internal/ui/templ/components"
+)
+
 // GateGroup represents a group of workflows sharing the same gate archetype.
 type GateGroup struct {
-	Gate  string
-	Label string
-	Count int
+	Gate     string
+	Label    string
+	Count    int
+	Workflows []WorkflowCardData
+}
+
+// WorkflowCardData holds data for rendering a workflow card.
+type WorkflowCardData struct {
+	Name      string
+	Gate      string
+	Disabled  bool
+	LastRunAt string
 }
 
 // WorkflowsPage — displays all workflows grouped by gate.
@@ -87,10 +100,9 @@ templ WorkflowsPage(user string, gateGroups []GateGroup) {
 							<section class="wf-group">
 								<h2 class="wf-group-title">{ group.Label }</h2>
 								<div class="wf-grid">
-									<!-- Workflow count placeholder — cards will be added in Phase 7 -->
-									<div class="wf-card-placeholder">
-										<span class="wf-card-placeholder-text">{ group.Count } workflows</span>
-									</div>
+									for _, wf := range group.Workflows {
+										@components.WorkflowCard(wf.Name, wf.Gate, wf.Disabled, wf.LastRunAt)
+									}
 								</div>
 							</section>
 						}

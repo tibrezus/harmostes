@@ -171,10 +171,126 @@ func (s *HTMXServer) groupWorkflowsByGate(workflows []v1alpha1.Workflow) []pages
 
 // handleWorkflowDetail renders a single workflow with its run history.
 func (s *HTMXServer) handleWorkflowDetail(w http.ResponseWriter, r *http.Request) {
-	name := r.PathValue("name")
-	owner := identityFromContext(r.Context()).Username
+	ctx := r.Context()
+	owner := identityFromContext(ctx).Username
+	if owner == "" {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
 
-	w.Write([]byte(fmt.Sprintf("Workflow detail: %s (owner: %s) - Phase 6", name, owner)))
+	name := r.PathValue("name")
+	if name == "" {
+		http.NotFound(w, r)
+		return
+	}
+
+	// Get the workflow
+	wf, err := s.k8sClient.GetWorkflow(ctx, name)
+	if err != nil {
+		s.logger.Error("get workflow", "name", name, "err", err)
+		http.Error(w, "Workflow not found", http.StatusNotFound)
+		return
+	}
+
+	// Enforce owner isolation
+	if wf.Labels[v1alpha1.OwnerLabel] != owner {
+		http.NotFound(w, r)
+		return
+	}
+
+	// Get run history
+	jobs, err := s.k8sClient.ListJobs(ctx, name)
+	if err != nil {
+		s.logger.Error("list jobs", "workflow", name, "err", err)
+		jobs = nil // non-fatal — show workflow without run history
+	}
+
+	// Convert workflow data
+	workflowData := pages.WorkflowData{
+		Name:          wf.Name,
+		GateStatus:    wf.Status.GateStatus,
+		Disabled:      wf.Spec.Disabled,
+		GatePlugin:    wf.Spec.Agent.Gate.Plugin.Name,
+		PreparePlugin: wf.Spec.Prepare.Plugin.Name,
+		DeployPlugin:  wf.Spec.Deploy.Plugin.Name,
+		Model:         wf.Spec.Agent.Model,
+		MaxFixes:      wf.Spec.Agent.MaxFixes,
+		SourceKind:    wf.Spec.Source.Kind,
+		SourceRepo:    wf.Spec.Source.Repo,
+		SourceBranch:  wf.Spec.Source.Branch,
+		LastRunAt:     formatLastRun(wf.Status.LastRunAt),
+	}
+
+	if wf.Spec.WorkspaceRepo != nil {
+		workflowData.WorkspaceURL = wf.Spec.WorkspaceRepo.URL
+		workflowData.WorkspaceBranch = wf.Spec.WorkspaceRepo.Branch
+	}
+
+	if len(wf.Status.LastAgentCommit) > 12 {
+		workflowData.LastCommit = wf.Status.LastAgentCommit[:12]
+	} else {
+		workflowData.LastCommit = wf.Status.LastAgentCommit
+	}
+
+	// Computed display values
+	if workflowData.Disabled {
+		workflowData.ToggleText = "Enable"
+	} else {
+		workflowData.ToggleText = "Disable"
+	}
+	workflowData.TriggerDisabled = workflowData.Disabled
+
+	// Convert job data
+	jobDataList := make([]pages.JobData, len(jobs))
+	for i, job := range jobs {
+		jobDataList[i] = pages.JobData{
+			Name: job.Name,
+		}
+
+		switch {
+		case job.Status.Succeeded > 0:
+			jobDataList[i].Status = "succeeded"
+		case job.Status.Failed > 0:
+			jobDataList[i].Status = "failed"
+		case job.Status.Active > 0:
+			jobDataList[i].Status = "running"
+		default:
+			jobDataList[i].Status = "pending"
+		}
+
+		if !job.Status.CompletionTime.IsZero() {
+			jobDataList[i].CompletionTime = job.Status.CompletionTime.Format("15:04:05")
+		}
+
+		if !job.Status.StartTime.IsZero() && !job.Status.CompletionTime.IsZero() {
+			duration := job.Status.CompletionTime.Sub(job.Status.StartTime.Time)
+			jobDataList[i].Duration = formatDuration(duration)
+		}
+	}
+
+	// Render the page
+	pageData := pages.WorkflowDetailData{
+		User:     owner,
+		Workflow: workflowData,
+		Jobs:     jobDataList,
+	}
+
+	err = pages.WorkflowDetailPage(pageData).Render(ctx, w)
+	if err != nil {
+		s.logger.Error("render workflow detail page", "name", name, "err", err)
+		http.Error(w, "Failed to render page", http.StatusInternalServerError)
+	}
+}
+
+// formatDuration formats a time.Duration as a string.
+func formatDuration(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%.1fs", d.Seconds())
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%.1fm", d.Minutes())
+	}
+	return fmt.Sprintf("%.1fh", d.Hours())
 }
 
 // workflowCardData holds the data needed for a workflow card component.

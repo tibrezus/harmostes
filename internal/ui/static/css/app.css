@@ -396,3 +396,123 @@ code, pre {
 	color: var(--fg-muted, #94a3b8);
 	font-size: 0.8rem;
 }
+
+/* ===== Workflow detail page ===== */
+.wf-detail-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	margin-bottom: 1.5rem;
+	flex-wrap: wrap;
+	gap: 1rem;
+}
+
+.wf-detail-status {
+	display: flex;
+	gap: 0.5rem;
+}
+
+.wf-detail-actions {
+	display: flex;
+	gap: 0.5rem;
+	flex-wrap: wrap;
+}
+
+.wf-detail-section {
+	background: var(--bg-alt, #f8fafc);
+	padding: 1.5rem;
+	border-radius: 8px;
+	margin-bottom: 1.5rem;
+}
+
+.wf-detail-section h2 {
+	font-size: 1.125rem;
+	font-weight: 600;
+	margin-bottom: 1rem;
+	color: var(--fg, #1e293b);
+}
+
+.wf-detail-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(12rem, 1fr));
+	gap: 1rem;
+}
+
+.wf-detail-item {
+	display: flex;
+	flex-direction: column;
+	gap: 0.25rem;
+}
+
+.wf-detail-label {
+	font-size: 0.75rem;
+	font-weight: 600;
+	text-transform: uppercase;
+	color: var(--fg-muted, #64748b);
+}
+
+.wf-detail-value {
+	font-family: var(--font-mono, monospace);
+	font-size: 0.875rem;
+	color: var(--fg, #1e293b);
+}
+
+.wf-empty-runs {
+	color: var(--fg-muted, #64748b);
+	font-size: 0.875rem;
+	font-style: italic;
+}
+
+.wf-run-list {
+	list-style: none;
+}
+
+.wf-run-item {
+	display: grid;
+	grid-template-columns: auto 1fr auto;
+	gap: 1rem;
+	align-items: center;
+	padding: 0.75rem 0;
+	border-bottom: 1px solid var(--border, #e2e8f0);
+}
+
+.wf-run-item:last-child {
+	border-bottom: none;
+}
+
+.wf-run-dot {
+	width: 0.5rem;
+	height: 0.5rem;
+	flex-shrink: 0;
+	border-radius: 50%;
+}
+
+.wf-run-dot--ok {
+	background: var(--color-positive, #10b981);
+}
+
+.wf-run-dot--fail {
+	background: var(--color-negative, #ef4444);
+	animation: ds-status-blink 2s step-end infinite;
+}
+
+.wf-run-dot--skip {
+	background: var(--border, #e2e8f0);
+}
+
+.wf-run-info {
+	font-family: var(--font-body, sans-serif);
+	font-size: 0.875rem;
+	color: var(--fg, #1e293b);
+	text-decoration: none;
+}
+
+.wf-run-info:hover {
+	color: var(--accent, #6366f1);
+}
+
+.wf-run-time {
+	font-family: var(--font-mono, monospace);
+	font-size: 0.75rem;
+	color: var(--fg-muted, #64748b);
+}

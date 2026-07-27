@@ -9,10 +9,10 @@ import (
 
 // mockDaprClient is a test double for dapr.Client that allows overriding behavior
 type mockDaprClient struct {
-	getStateFunc  func(context.Context, string, string) (string, error)
-	saveStateFunc func(context.Context, string, string, string) error
+	getStateFunc    func(context.Context, string, string) (string, error)
+	saveStateFunc   func(context.Context, string, string, string) error
 	deleteStateFunc func(context.Context, string, string) error
-	publishFunc   func(context.Context, string, string, string) error
+	publishFunc     func(context.Context, string, string, string) error
 }
 
 func (m *mockDaprClient) GetState(ctx context.Context, store, key string) (string, error) {
@@ -144,24 +144,24 @@ func TestDaprClient_GetState(t *testing.T) {
 		wantOK   bool
 	}{
 		{
-			name:  "get string - found",
-			key:   "test:key",
-			value: new(string),
-			data:  `"test-value"`,
+			name:   "get string - found",
+			key:    "test:key",
+			value:  new(string),
+			data:   `"test-value"`,
 			wantOK: true,
 		},
 		{
-			name:  "get struct - found",
-			key:   "test:struct",
-			value: &struct{ Name string }{},
-			data:  `{"Name":"test"}`,
+			name:   "get struct - found",
+			key:    "test:struct",
+			value:  &struct{ Name string }{},
+			data:   `{"Name":"test"}`,
 			wantOK: true,
 		},
 		{
-			name:  "get - not found",
-			key:   "test:missing",
-			value: new(string),
-			data:  "", // Dapr returns "" for missing keys
+			name:   "get - not found",
+			key:    "test:missing",
+			value:  new(string),
+			data:   "", // Dapr returns "" for missing keys
 			wantOK: false,
 		},
 		{

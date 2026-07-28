@@ -106,7 +106,11 @@ func main() {
 	// ready daprd. Mirrors the proven llm-wiki / fork-maintenance pattern.
 	waitForDapr(os.Getenv("DAPR_HTTP_ENDPOINT"))
 
-	logfFn := func(format string, a ...any) { logger.Info(fmt.Sprintf(format, a...)) }
+	// Single logging source of truth: logf (package-level) already redacts
+	// credentials. Aliasing it here prevents the two-logger drift that let the
+	// pipeline-internal "FAILED" line leak a token while the worker's own line
+	// was redacted (#115).
+	logfFn := logf
 
 	deps := worker.Deps{
 		Plugins: worker.BuiltinResolver{

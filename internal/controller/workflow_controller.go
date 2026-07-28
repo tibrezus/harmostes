@@ -314,6 +314,15 @@ func (r WorkflowReconciler) workerEnv(wf *v1alpha1.Workflow) []corev1.EnvVar {
 	return []corev1.EnvVar{
 		{Name: "HARMOSTES_WORKFLOW", Value: wf.Name},
 		{Name: "HARMOSTES_NAMESPACE", Value: wf.Namespace},
+		// Run identity (ADR-0005): the worker's owning Job name, resolved via the
+		// downward API from the pod's job-name label. The controller records the
+		// run START keyed by this same job name (RecordRunStarted), so the worker
+		// must use the identical name when recording the OUTCOME — otherwise the
+		// two never merge and the Attempt history accumulates orphaned 'running'
+		// entries. Falls back to the workflow name for non-Job execution contexts.
+		{Name: "HARMOSTES_RUN_NAME", ValueFrom: &corev1.EnvVarSource{
+			FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.labels['job-name']"},
+		}},
 		{Name: "HARMOSTES_WORKDIR", Value: "/workspace"},
 		{Name: "HARMOSTES_SOURCE", Value: wf.Spec.Source.Revision},
 		{Name: "DAPR_HTTP_ENDPOINT", Value: "http://127.0.0.1:3500"},

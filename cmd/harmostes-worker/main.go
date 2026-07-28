@@ -220,7 +220,7 @@ func recordAttemptOutcome(ctx context.Context, c client.Client, phase string, en
 		return
 	}
 	err := attempt.RecordRunOutcome(ctx, c, os.Getenv("HARMOSTES_NAMESPACE"), attemptName, attempt.RunOutcome{
-		RunName:   envOr("POD_NAME", os.Getenv("HARMOSTES_WORKFLOW")),
+		RunName:   runName(),
 		Phase:     phase,
 		Envelopes: envelopes,
 		Message:   message,
@@ -228,6 +228,18 @@ func recordAttemptOutcome(ctx context.Context, c client.Client, phase string, en
 	if err != nil {
 		logf("warn: record attempt outcome %s: %v", attemptName, err)
 	}
+}
+
+// runName returns the canonical Run identity (ADR-0005): the owning Job name,
+// stamped by the controller via the downward API (HARMOSTES_RUN_NAME). This
+// matches the name the controller used in RecordRunStarted, so the outcome
+// upserts the same RunRecord (no orphaned 'running' entries). Falls back to
+// POD_NAME then the workflow name for non-Job execution contexts.
+func runName() string {
+	if n := os.Getenv("HARMOSTES_RUN_NAME"); n != "" {
+		return n
+	}
+	return envOr("POD_NAME", os.Getenv("HARMOSTES_WORKFLOW"))
 }
 
 // envelopesFor converts the graph executor's per-node envelope map into the

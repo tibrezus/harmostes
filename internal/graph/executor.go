@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
@@ -53,6 +54,12 @@ type LifecycleEvent struct {
 	DurationMs int64       `json:"durationMs,omitempty"` // execution duration in milliseconds (completed/failed events)
 	Timestamp  time.Time   `json:"timestamp"`            // event creation time (UTC)
 
+	// Envelope carries the synthesized Node Result Envelope (ADR-0004) on
+	// node.completed / node.failed events, giving the UI real-time visibility
+	// into reference-backed claims, artifacts, and evidence. Nil on
+	// pipeline-level and node.started events.
+	Envelope *v1alpha1.NodeResultEnvelope `json:"envelope,omitempty"`
+
 	// Provenance (G8): who/what triggered this pipeline run.
 	TriggeredBy   string `json:"triggeredBy,omitempty"`   // username or "system"
 	TriggerSource string `json:"triggerSource,omitempty"` // webhook | schedule | manual | controller
@@ -78,6 +85,11 @@ type ExecutionResult struct {
 	Status NodeStatus
 	// NodeResults maps node ID → latest result (overwritten on re-execution).
 	NodeResults map[string]NodeResult
+	// NodeEnvelopes maps node ID → its synthesized Node Result Envelope
+	// (ADR-0004). Populated for every finalized node (executed, denied, or
+	// registry-error) so the caller (worker) can persist the canonical history
+	// into an Attempt (ADR-0005, slice 3).
+	NodeEnvelopes map[string]v1alpha1.NodeResultEnvelope
 	// Message is a human-readable summary.
 	Message string
 }
@@ -101,6 +113,11 @@ type GraphExecutor struct {
 	// Workflow bindings were provided (Pipeline CRs / legacy callers) — nodes
 	// without Requires authorize trivially in that case.
 	bindings []v1alpha1.ExternalSystemBinding
+
+	// runID identifies the Workflow Run (Job) this execution belongs to. Stamped
+	// on every synthesized Node Result Envelope so history (ADR-0005) can link
+	// envelopes back to the run that produced them.
+	runID string
 }
 
 // GraphExecutorOption configures a GraphExecutor.
@@ -140,6 +157,14 @@ func WithBindings(bindings []v1alpha1.ExternalSystemBinding) GraphExecutorOption
 	return func(e *GraphExecutor) { e.bindings = bindings }
 }
 
+// WithRunID sets the Workflow Run (Job) identifier stamped on every Node Result
+// Envelope (ADR-0004), so orchestration history (ADR-0005) can link envelopes
+// to the run that produced them. Empty by default (envelopes are still
+// recorded, just without run linkage).
+func WithRunID(runID string) GraphExecutorOption {
+	return func(e *GraphExecutor) { e.runID = runID }
+}
+
 // NewGraphExecutor creates a graph executor with the given registry and optional
 // Dapr client. The Dapr client is used for state checkpointing and lifecycle
 // event publishing. If nil, checkpointing/events are silently skipped (useful
@@ -176,8 +201,9 @@ func (e *GraphExecutor) Execute(ctx context.Context, graph v1alpha1.GraphSpec, p
 	defer rootSpan.End()
 
 	result := ExecutionResult{
-		Status:      StatusGreen,
-		NodeResults: make(map[string]NodeResult),
+		Status:        StatusGreen,
+		NodeResults:   make(map[string]NodeResult),
+		NodeEnvelopes: make(map[string]v1alpha1.NodeResultEnvelope),
 	}
 	defer func() {
 		rootSpan.SetAttributes(attribute.String("harmostes.pipeline.status", string(result.Status)))
@@ -264,6 +290,8 @@ func (e *GraphExecutor) Execute(ctx context.Context, graph v1alpha1.GraphSpec, p
 			startTime := time.Now()
 			denied := NodeResult{Status: StatusFailed, Feedback: feedback}
 			result.NodeResults[nodeID] = denied
+			deniedEnv := e.synthesizeEnvelope(nodeID, node.Type, denied)
+			result.NodeEnvelopes[nodeID] = deniedEnv
 			e.checkpoint(ctx, pipelineName, nodeID, denied)
 			e.publishLifecycle(ctx, LifecycleEvent{
 				Event:      "node.failed",
@@ -273,6 +301,7 @@ func (e *GraphExecutor) Execute(ctx context.Context, graph v1alpha1.GraphSpec, p
 				Status:     string(StatusFailed),
 				Feedback:   feedback,
 				DurationMs: time.Since(startTime).Milliseconds(),
+				Envelope:   &deniedEnv,
 			})
 			// Reuse the standard failure routing: follow when:failed edges; if
 			// none handle it, the pipeline fails.
@@ -313,7 +342,10 @@ func (e *GraphExecutor) Execute(ctx context.Context, graph v1alpha1.GraphSpec, p
 		if err != nil {
 			result.Status = StatusFailed
 			result.Message = fmt.Sprintf("node %s: %v", nodeID, err)
-			result.NodeResults[nodeID] = NodeResult{Status: StatusFailed, Feedback: err.Error()}
+			errResult := NodeResult{Status: StatusFailed, Feedback: err.Error()}
+			result.NodeResults[nodeID] = errResult
+			result.NodeEnvelopes[nodeID] = e.synthesizeEnvelope(nodeID, node.Type, errResult)
+			errEnv := result.NodeEnvelopes[nodeID]
 			e.publishLifecycle(ctx, LifecycleEvent{
 				Event:      "node.failed",
 				Pipeline:   pipelineName,
@@ -322,6 +354,7 @@ func (e *GraphExecutor) Execute(ctx context.Context, graph v1alpha1.GraphSpec, p
 				Status:     string(StatusFailed),
 				Feedback:   err.Error(),
 				DurationMs: time.Since(startTime).Milliseconds(),
+				Envelope:   &errEnv,
 			})
 			break
 		}
@@ -360,6 +393,8 @@ func (e *GraphExecutor) Execute(ctx context.Context, graph v1alpha1.GraphSpec, p
 		}
 
 		result.NodeResults[nodeID] = nodeResult
+		completedEnv := e.synthesizeEnvelope(nodeID, node.Type, nodeResult)
+		result.NodeEnvelopes[nodeID] = completedEnv
 		e.checkpoint(ctx, pipelineName, nodeID, nodeResult)
 		completedEvent := LifecycleEvent{
 			Event:      "node.completed",
@@ -369,6 +404,7 @@ func (e *GraphExecutor) Execute(ctx context.Context, graph v1alpha1.GraphSpec, p
 			Status:     string(nodeResult.Status),
 			Feedback:   nodeResult.Feedback,
 			DurationMs: durationMs,
+			Envelope:   &completedEnv,
 		}
 		if nodeResult.Status == StatusFailed {
 			completedEvent.Event = "node.failed"
@@ -539,6 +575,58 @@ func getBoolOutput(outputs NodeOutputs, key string) bool {
 	default:
 		return false
 	}
+}
+
+// envelopeStatus maps the internal NodeStatus to the canonical Node Result
+// status string (ADR-0004). The kernel owns the final outcome — an exec error,
+// timeout, or capability denial adjusts NodeResult.Status before this runs — so
+// the envelope's status always reflects the true result.
+func envelopeStatus(s NodeStatus) string {
+	switch s {
+	case StatusGreen:
+		return v1alpha1.NodeResultStatusOK
+	case StatusSkipped:
+		return v1alpha1.NodeResultStatusSkipped
+	default:
+		return v1alpha1.NodeResultStatusFailed
+	}
+}
+
+// synthesizeEnvelope builds the universal Node Result Envelope (ADR-0004) for a
+// finalized node. Kernel-authoritative fields (NodeID, RunID, Status,
+// Provenance, ProducedAt) are always stamped; executor-provided enrichment
+// (Summary, Claims, Artifacts, References, Payload) is merged on top when the
+// executor returned a non-nil NodeResult.Envelope. When the executor provided
+// no Summary, Feedback is used so every envelope carries a human note.
+//
+// This is called for every finalized node — executed, capability-denied, or
+// registry-error — so the caller always receives a complete, uniform record per
+// node for orchestration history (ADR-0005).
+func (e *GraphExecutor) synthesizeEnvelope(nodeID, nodeType string, nr NodeResult) v1alpha1.NodeResultEnvelope {
+	now := metav1.Now()
+	env := v1alpha1.NodeResultEnvelope{
+		NodeID: nodeID,
+		RunID:  e.runID,
+		Status: envelopeStatus(nr.Status),
+		Provenance: v1alpha1.Provenance{
+			TriggeredBy:   e.triggeredBy,
+			TriggerSource: e.triggerSource,
+			ProducedAt:    now,
+		},
+		ProducedAt: now,
+	}
+	if nr.Envelope != nil {
+		// Executor-provided enrichment wins for these fields.
+		env.Summary = nr.Envelope.Summary
+		env.Artifacts = nr.Envelope.Artifacts
+		env.Claims = nr.Envelope.Claims
+		env.Payload = nr.Envelope.Payload
+		env.References = nr.Envelope.References
+	}
+	if env.Summary == "" {
+		env.Summary = nr.Feedback
+	}
+	return env
 }
 
 // ExecuteGraph is a convenience function: create a default-registry executor and

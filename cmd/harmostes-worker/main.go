@@ -170,16 +170,17 @@ func main() {
 				os.Getenv("HARMOSTES_TRIGGER_SOURCE"),
 			),
 			graph.WithBindings(wf.Spec.Bindings),
+			graph.WithRunID(envOr("POD_NAME", workflow)),
 		)
 		flushTelemetry()
 		if err != nil {
 			fatal("graph pipeline error: %v", err)
 		}
 		if result.Status == graph.StatusGreen {
-			logf("graph complete: %s", result.Message)
+			logf("graph complete: %s (%d node envelopes recorded)", result.Message, len(result.NodeEnvelopes))
 			finish(0)
 		}
-		logf("graph complete: %s (%s)", result.Status, result.Message)
+		logf("graph complete: %s (%s) — %d node envelopes recorded", result.Status, result.Message, len(result.NodeEnvelopes))
 		finish(1)
 	}
 

@@ -59,6 +59,14 @@ type NodeResult struct {
 	Status   NodeStatus  // green | failed | skipped
 	Outputs  NodeOutputs // this node's outputs (available to downstream nodes)
 	Feedback string      // human-readable feedback (gate stderr, error msg, etc.)
+
+	// Envelope is the executor-provided enrichment of the universal Node
+	// Result Envelope (ADR-0004): reference-backed claims, artifacts, evidence
+	// references, node-specific payload, and a summary. Optional — the kernel
+	// synthesizes a baseline envelope for every node regardless; when present,
+	// these fields are merged on top of the kernel-stamped authoritative fields
+	// (NodeID, RunID, Status, Provenance, ProducedAt).
+	Envelope *v1alpha1.NodeResultEnvelope
 }
 
 // NodeExecutor executes a single node in the pipeline graph. Each node type

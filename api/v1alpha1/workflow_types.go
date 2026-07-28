@@ -32,6 +32,8 @@ func Resource(resource string) schema.GroupResource {
 func addKnownTypes(scheme *runtime.Scheme) error {
 	scheme.AddKnownTypes(SchemeGroupVersion, &Workflow{}, &WorkflowList{})
 	scheme.AddKnownTypes(SchemeGroupVersion, &Pipeline{}, &PipelineList{})
+	scheme.AddKnownTypes(SchemeGroupVersion, &Attempt{}, &AttemptList{})
+	scheme.AddKnownTypes(SchemeGroupVersion, &ConnectionProfile{}, &ConnectionProfileList{})
 	metav1.AddToGroupVersion(scheme, SchemeGroupVersion)
 	return nil
 }
@@ -84,16 +86,17 @@ type WorkflowList struct {
 // Prepare/Agent/Deploy fields. The Source field is always used (for trigger
 // configuration: git, schedule, webhook).
 type WorkflowSpec struct {
-	Source        SourceSpec         `json:"source"`
-	WorkspaceRepo *WorkspaceRepoSpec `json:"workspaceRepo,omitempty"` // the repo the pipeline operates on (prepare populates, agent edits, deploy pushes)
-	Prepare       PrepareSpec        `json:"prepare,omitempty"`
-	Agent         AgentSpec          `json:"agent,omitempty"`
-	Deploy        DeploySpec         `json:"deploy,omitempty"`
-	Graph         *GraphSpec         `json:"graph,omitempty"` // graph-native mode: explicit nodes + edges (overrides Prepare/Agent/Deploy)
-	Events        *EventsSpec        `json:"events,omitempty"`
-	Cache         *CacheSpec         `json:"cache,omitempty"`
-	Scaling       *ScalingSpec       `json:"scaling,omitempty"`
-	Disabled      bool               `json:"disabled,omitempty"`
+	Source        SourceSpec              `json:"source"`
+	WorkspaceRepo *WorkspaceRepoSpec      `json:"workspaceRepo,omitempty"` // the repo the pipeline operates on (prepare populates, agent edits, deploy pushes)
+	Prepare       PrepareSpec             `json:"prepare,omitempty"`
+	Agent         AgentSpec               `json:"agent,omitempty"`
+	Deploy        DeploySpec              `json:"deploy,omitempty"`
+	Graph         *GraphSpec              `json:"graph,omitempty"`    // graph-native mode: explicit nodes + edges (overrides Prepare/Agent/Deploy)
+	Bindings      []ExternalSystemBinding `json:"bindings,omitempty"` // ADR-0003: external system authority boundary (static; runtime may not expand)
+	Events        *EventsSpec             `json:"events,omitempty"`
+	Cache         *CacheSpec              `json:"cache,omitempty"`
+	Scaling       *ScalingSpec            `json:"scaling,omitempty"`
+	Disabled      bool                    `json:"disabled,omitempty"`
 }
 
 // WorkspaceRepoSpec is the repo a pipeline operates on. The worker fetches it

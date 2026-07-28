@@ -178,6 +178,45 @@ spec:
                     schedule: { type: string }
                 disabled: { type: boolean }   # suspend scheduling (defined but not run)
 
+                # External System Bindings (ADR-0003). Optional — legacy
+                # Workflows without bindings still validate. When present, this
+                # is the Binding Authority Boundary; runtime may create objects
+                # within a binding but never new bindings. Nodes declare their
+                # required capabilities via spec.graph.nodes[].requires.
+                bindings:
+                  type: array
+                  items:
+                    type: object
+                    required: [name, bindingRole, surfaceKind, connectionProfile, target]
+                    properties:
+                      name:              { type: string }
+                      bindingRole:
+                        type: string
+                        enum: [sourceRepo, workspaceRepo, issueTracker, wiki, review, releaseTarget, webhookOrigin]
+                      surfaceKind:
+                        type: string
+                        enum: [repository, issue-tracker, wiki, review, release, webhook-origin]
+                      connectionProfile: { type: string }      # ConnectionProfile name (trusted host mechanics)
+                      target:
+                        type: object
+                        required: [host, object]
+                        properties:
+                          host:   { type: string }
+                          object: { type: string }
+                          branch: { type: string }
+                          extra:
+                            type: object
+                            x-kubernetes-preserve-unknown-fields: true
+                      granted:
+                        type: array                          # Surface Capability tokens this binding grants
+                        items: { type: string }
+                      authRef:
+                        type: object
+                        required: [name, key]
+                        properties:
+                          name: { type: string }
+                          key:  { type: string }
+
                 # Graph-native mode: explicit directed graph of nodes + edges.
                 # If present, the worker uses the graph executor and ignores
                 # prepare/agent/deploy. This allows arbitrary pipeline shapes.
@@ -199,6 +238,14 @@ spec:
                           outputs: { type: array, items: { type: string } }
                           when: { type: string }
                           timeout: { type: string }
+                          requires:                                  # ADR-0003: Surface Capabilities this node needs
+                            type: array
+                            items:
+                              type: object
+                              required: [binding, capability]
+                              properties:
+                                binding:    { type: string }      # ExternalSystemBinding.Name
+                                capability: { type: string }      # repository.read | issue-tracker.comment.write | ...
                     edges:
                       type: array
                       items:

@@ -169,6 +169,7 @@ func main() {
 				os.Getenv("HARMOSTES_TRIGGERED_BY"),
 				os.Getenv("HARMOSTES_TRIGGER_SOURCE"),
 			),
+			graph.WithBindings(wf.Spec.Bindings),
 		)
 		flushTelemetry()
 		if err != nil {

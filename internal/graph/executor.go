@@ -16,6 +16,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
+	"github.com/tibrezus/harmostes/internal/capability"
 	"github.com/tibrezus/harmostes/internal/dapr"
 	"github.com/tibrezus/harmostes/internal/observability"
 )
@@ -94,6 +95,12 @@ type GraphExecutor struct {
 	// Provenance (G8): stamped on all lifecycle events.
 	triggeredBy   string
 	triggerSource string
+
+	// bindings is the Workflow's declared External System Bindings (ADR-0003),
+	// used to enforce Capability Policy before node execution. Empty when no
+	// Workflow bindings were provided (Pipeline CRs / legacy callers) — nodes
+	// without Requires authorize trivially in that case.
+	bindings []v1alpha1.ExternalSystemBinding
 }
 
 // GraphExecutorOption configures a GraphExecutor.
@@ -121,6 +128,16 @@ func WithProvenance(triggeredBy, triggerSource string) GraphExecutorOption {
 		e.triggeredBy = triggeredBy
 		e.triggerSource = triggerSource
 	}
+}
+
+// WithBindings sets the Workflow's declared External System Bindings (ADR-0003)
+// so the kernel can enforce Capability Policy before executing each node. A
+// node whose Requires are not satisfied by these bindings is refused and
+// marked failed without being executed. Nodes without Requires authorize
+// trivially, so omitting this option (or passing nil) preserves the current
+// behavior for graphs whose nodes request nothing.
+func WithBindings(bindings []v1alpha1.ExternalSystemBinding) GraphExecutorOption {
+	return func(e *GraphExecutor) { e.bindings = bindings }
 }
 
 // NewGraphExecutor creates a graph executor with the given registry and optional
@@ -234,6 +251,53 @@ func (e *GraphExecutor) Execute(ctx context.Context, graph v1alpha1.GraphSpec, p
 
 		// Resolve inputs: snapshot of all completed node outputs.
 		env := NodeEnv{Inputs: snapshotOutputs(result.NodeResults)}
+
+		// Capability Policy enforcement (ADR-0003, ADR-0001): the deterministic
+		// kernel refuses to execute a node whose Surface Capability requirements
+		// are not satisfied by the Workflow's declared bindings. The node is
+		// marked failed without being executed, then routed through the normal
+		// failure path (when:failed edges, else pipeline failure). Nodes without
+		// Requires authorize trivially — backward compatible with existing graphs.
+		if violations := capability.AuthorizeNode(e.bindings, node); len(violations) > 0 {
+			feedback := capability.FormatViolations(violations)
+			e.log("node %s: denied by capability policy — %s", nodeID, feedback)
+			startTime := time.Now()
+			denied := NodeResult{Status: StatusFailed, Feedback: feedback}
+			result.NodeResults[nodeID] = denied
+			e.checkpoint(ctx, pipelineName, nodeID, denied)
+			e.publishLifecycle(ctx, LifecycleEvent{
+				Event:      "node.failed",
+				Pipeline:   pipelineName,
+				Node:       nodeID,
+				NodeType:   node.Type,
+				Status:     string(StatusFailed),
+				Feedback:   feedback,
+				DurationMs: time.Since(startTime).Milliseconds(),
+			})
+			// Reuse the standard failure routing: follow when:failed edges; if
+			// none handle it, the pipeline fails.
+			handled := false
+			for _, edge := range outEdges[nodeID] {
+				if e.shouldTraverse(edge, denied, result.NodeResults) {
+					if e.enqueueEdge(&queue, edge, edgeCount) {
+						handled = true
+					}
+				}
+			}
+			if !handled {
+				result.Status = StatusFailed
+				result.Message = fmt.Sprintf("node %s denied by capability policy: %s", nodeID, feedback)
+				e.publishLifecycle(ctx, LifecycleEvent{
+					Event:    "pipeline.failed",
+					Pipeline: pipelineName,
+					Status:   string(StatusFailed),
+					Feedback: result.Message,
+				})
+				e.publishDeadLetter(ctx, pipelineName, nodeID, result.Message, result.NodeResults)
+				return result, nil
+			}
+			continue
+		}
 
 		e.log("node %s: type=%s executing", nodeID, node.Type)
 		startTime := time.Now()

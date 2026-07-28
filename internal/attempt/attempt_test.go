@@ -176,6 +176,37 @@ func TestDeriveObjective_ForkSync(t *testing.T) {
 	}
 }
 
+func TestRecordRunOutcome_ValidatedPhase(t *testing.T) {
+	ctx := context.Background()
+	c := newFakeClient(t)
+	wf := wikiWorkflow()
+	obj := DeriveObjective(wf, TriggerContext{Revision: "abc"})
+	opts := ResolveOptions{Namespace: "harmostes", Owner: wf, Scheme: wfScheme(t)}
+	a, _, _ := ResolveOrCreate(ctx, c, obj, opts)
+	_ = RecordRunStarted(ctx, c, "harmostes", a.Name, "run-1")
+
+	// A succeeded run carrying a deterministically-validated claim (ADR-0004
+	// promotion) → AttemptPhaseValidated: the targeted state was confirmed by
+	// a validator, completing the objective's reconciliation.
+	env := v1alpha1.NodeResultEnvelope{
+		NodeID: "gate-wiki", Status: v1alpha1.NodeResultStatusOK,
+		Claims: []v1alpha1.Claim{{
+			Type: "wiki.page.updated", Binding: "wiki", ExternalID: "Home",
+			TrustClass: v1alpha1.ClaimTrustValidated, ValidatedBy: "gate-wiki",
+		}},
+	}
+	_ = RecordRunOutcome(ctx, c, "harmostes", a.Name, RunOutcome{
+		RunName: "run-1", Phase: "succeeded", Envelopes: []v1alpha1.NodeResultEnvelope{env},
+	})
+	got := getAttempt(t, ctx, c, a)
+	if got.Status.Phase != v1alpha1.AttemptPhaseValidated {
+		t.Errorf("succeeded + validated claim: phase = %q, want validated", got.Status.Phase)
+	}
+	if len(got.Status.NodeResults) != 1 || len(got.Status.NodeResults[0].Claims) != 1 {
+		t.Errorf("validated claim envelope not recorded: %+v", got.Status.NodeResults)
+	}
+}
+
 func TestRepoID(t *testing.T) {
 	cases := map[string]string{
 		"git@github.com:rezuscloud/signoz.git": "rezuscloud/signoz",

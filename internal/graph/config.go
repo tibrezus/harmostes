@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
+	"github.com/tibrezus/harmostes/internal/claim"
 )
 
 // PluginNodeConfig is the config for a "plugin" node. It maps to the existing
@@ -25,9 +26,12 @@ func (c PluginNodeConfig) ToPluginRef() v1alpha1.PluginRef {
 }
 
 // GateNodeConfig is the config for a "gate" node. The gate wraps a plugin:
-// exit 0 = green, stderr = feedback.
+// exit 0 = green, stderr = feedback. An optional Validates declares the claim
+// scope this gate deterministically confirms; on green, the kernel promotes
+// matching observed claims from the run to validated (ADR-0004 promotion).
 type GateNodeConfig struct {
-	Plugin PluginNodeConfig `json:"plugin"`
+	Plugin    PluginNodeConfig        `json:"plugin"`
+	Validates []claim.ValidationScope `json:"validates,omitempty"`
 }
 
 // AgentNodeConfig is the config for an "agent" node (non-deterministic).

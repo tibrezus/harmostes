@@ -18,6 +18,7 @@ import (
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
 	"github.com/tibrezus/harmostes/internal/capability"
+	"github.com/tibrezus/harmostes/internal/claim"
 	"github.com/tibrezus/harmostes/internal/dapr"
 	"github.com/tibrezus/harmostes/internal/observability"
 )
@@ -394,6 +395,12 @@ func (e *GraphExecutor) Execute(ctx context.Context, graph v1alpha1.GraphSpec, p
 
 		result.NodeResults[nodeID] = nodeResult
 		completedEnv := e.synthesizeEnvelope(nodeID, node.Type, nodeResult)
+		// Trust enforcement (ADR-0004): a non-deterministic node cannot
+		// self-validate its own claims — demote any self-asserted validated
+		// claims to observed before the envelope is recorded.
+		if demoted := claim.Enforce(exec.Deterministic(), &completedEnv); demoted > 0 {
+			e.log("node %s: demoted %d self-validated claim(s) (non-deterministic node)", nodeID, demoted)
+		}
 		result.NodeEnvelopes[nodeID] = completedEnv
 		e.checkpoint(ctx, pipelineName, nodeID, nodeResult)
 		completedEvent := LifecycleEvent{
@@ -437,6 +444,13 @@ func (e *GraphExecutor) Execute(ctx context.Context, graph v1alpha1.GraphSpec, p
 				return result, nil
 			}
 			continue
+		}
+
+		// Node succeeded: a deterministic node (gate) that declares a validation
+		// scope promotes matching observed claims from the run to validated
+		// (ADR-0004 promotion). No-op when the node declares no scope.
+		if nodeResult.Status == StatusGreen && exec.Deterministic() {
+			e.applyPromotions(ctx, pipelineName, nodeID, node, &result)
 		}
 
 		// Node succeeded: traverse outgoing edges.
@@ -627,6 +641,52 @@ func (e *GraphExecutor) synthesizeEnvelope(nodeID, nodeType string, nr NodeResul
 		env.Summary = nr.Feedback
 	}
 	return env
+}
+
+// applyPromotions runs ADR-0004 claim promotion for a deterministic node that
+// just succeeded. The node's ValidationScope(s) (parsed from its config)
+// declare which claim types/bindings it deterministically confirmed; matching
+// observed claims across the run's accumulated envelopes are promoted to
+// validated, stamped with ValidatedBy. Promoted envelopes are re-published as
+// lifecycle events so the UI sees the trust-class change in real time. No-op
+// when the node declares no scope (backward compatible).
+func (e *GraphExecutor) applyPromotions(ctx context.Context, pipelineName, nodeID string, node v1alpha1.NodeSpec, result *ExecutionResult) {
+	scopes := nodeValidationScopes(node)
+	if len(scopes) == 0 {
+		return
+	}
+	for _, scope := range scopes {
+		promotions := claim.Promote(result.NodeEnvelopes, nodeID, scope)
+		for _, p := range promotions {
+			e.log("node %s: promoted claim %s.%s (%s) → validated by %s",
+				nodeID, p.FromNodeID, p.Claim.Type, p.Claim.Binding, nodeID)
+			// Re-publish the promoted envelope so the UI reflects the new trust class.
+			if env, ok := result.NodeEnvelopes[p.FromNodeID]; ok {
+				e.publishLifecycle(ctx, LifecycleEvent{
+					Event:    "claim.validated",
+					Pipeline: pipelineName,
+					Node:     p.FromNodeID,
+					Envelope: &env,
+					Feedback: "validated by " + nodeID,
+				})
+			}
+		}
+	}
+}
+
+// nodeValidationScopes extracts the ValidationScope(s) a node declares, for the
+// node types that can act as deterministic validators. Today only gate nodes
+// declare a scope (GateNodeConfig.Validates). Returns nil for any other node
+// type or a gate with no scope.
+func nodeValidationScopes(node v1alpha1.NodeSpec) []claim.ValidationScope {
+	if node.Type != "gate" {
+		return nil
+	}
+	cfg, err := parseConfig[GateNodeConfig](node.Config)
+	if err != nil {
+		return nil
+	}
+	return cfg.Validates
 }
 
 // ExecuteGraph is a convenience function: create a default-registry executor and

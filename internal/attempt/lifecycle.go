@@ -11,6 +11,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
+	"github.com/tibrezus/harmostes/internal/claim"
 )
 
 // ResolveOptions parameterize ResolveOrCreate.
@@ -104,9 +105,11 @@ type RunOutcome struct {
 
 // RecordRunOutcome upserts the run's terminal phase, appends its Node Result
 // Envelopes + Evidence, sets LastRunAt, and maps the run outcome to the Attempt
-// phase (ADR-0005): a failed run → AttemptPhaseFailed; a succeeded run →
-// AttemptPhaseReconciling (validation that would promote to `validated` is
-// slice 4). Best-effort caller: errors are returned but must not abort the run.
+// phase (ADR-0005 + ADR-0004 promotion): a failed run → AttemptPhaseFailed; a
+// succeeded run that produced at least one deterministically-validated claim →
+// AttemptPhaseValidated; otherwise a succeeded run → AttemptPhaseReconciling
+// (nothing was deterministically confirmed). Best-effort caller: errors are
+// returned but must not abort the run.
 func RecordRunOutcome(ctx context.Context, c client.Client, namespace, attemptName string, outcome RunOutcome) error {
 	now := metav1.Now()
 	return mutateStatus(ctx, c, namespace, attemptName, func(a *v1alpha1.Attempt) {
@@ -122,10 +125,17 @@ func RecordRunOutcome(ctx context.Context, c client.Client, namespace, attemptNa
 		case "failed":
 			a.Status.Phase = v1alpha1.AttemptPhaseFailed
 		default:
-			// A succeeded run is not yet VALIDATED (that requires a deterministic
-			// validator — slice 4). It moves the attempt back to reconciling,
-			// allowing a failed attempt to recover on a later successful run.
-			a.Status.Phase = v1alpha1.AttemptPhaseReconciling
+			// ADR-0004 promotion: a successful run that produced a
+			// deterministically-validated claim completes the objective's
+			// reconciliation — the targeted state was confirmed by a validator.
+			// Without a validated claim, success alone does not validate
+			// (nothing was deterministically confirmed); the attempt keeps
+			// reconciling, allowing a failed attempt to recover on a later run.
+			if claim.HasValidated(outcome.Envelopes) {
+				a.Status.Phase = v1alpha1.AttemptPhaseValidated
+			} else {
+				a.Status.Phase = v1alpha1.AttemptPhaseReconciling
+			}
 		}
 		if outcome.Message != "" {
 			a.Status.Message = outcome.Message

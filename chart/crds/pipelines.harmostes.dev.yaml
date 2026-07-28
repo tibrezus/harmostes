@@ -85,6 +85,14 @@ spec:
                           timeout:
                             type: string
                             description: "Maximum execution duration (Go duration string: 30s, 5m). Empty = no limit."
+                          requires:                                  # ADR-0003: Surface Capabilities this node needs
+                            type: array
+                            items:
+                              type: object
+                              required: [binding, capability]
+                              properties:
+                                binding:    { type: string }
+                                capability: { type: string }
                     edges:
                       type: array
                       items:

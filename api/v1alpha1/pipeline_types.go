@@ -118,6 +118,13 @@ type NodeSpec struct {
 	// "timed out after {duration}".
 	//+optional
 	Timeout string `json:"timeout,omitempty"`
+
+	// Requires declares the Surface Capabilities this node needs against
+	// declared External System Bindings (ADR-0003). The kernel enforces, before
+	// execution, that each named binding exists and grants the requested
+	// capability. Binding presence != blanket access.
+	//+optional
+	Requires []CapabilityRequirement `json:"requires,omitempty"`
 }
 
 // EdgeSpec defines a directed edge between two nodes.

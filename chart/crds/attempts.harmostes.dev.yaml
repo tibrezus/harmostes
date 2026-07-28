@@ -1,0 +1,211 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: attempts.harmostes.dev
+  annotations:
+    harmostes.dev/framework-version: v0.1
+    harmostes.dev/adr: "ADR-0005"
+spec:
+  group: harmostes.dev
+  names:
+    kind: Attempt
+    listKind: AttemptList
+    singular: attempt
+    plural: attempts
+    shortNames: [attempt]
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Objective
+          type: string
+          jsonPath: .spec.objective.kind
+        - name: Subject
+          type: string
+          jsonPath: .spec.objective.primarySubject.object
+        - name: Target
+          type: string
+          jsonPath: .spec.objective.targetedState
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: [spec]
+          properties:
+            spec:
+              type: object
+              required: [objective, workflowRef]
+              description: |
+                An Attempt is the canonical unit of orchestration history
+                (ADR-0005): NOT a Workflow Run. A run is one execution episode
+                inside an attempt. An attempt is a Reconciliation Goal toward a
+                Targeted State; new triggers CONTINUE the same attempt while the
+                Objective Identity (kind + primary subject + targeted state)
+                remains the same.
+              properties:
+                objective:
+                  type: object
+                  required: [kind, primarySubject, desiredOutcome, targetedState]
+                  properties:
+                    kind:
+                      type: string
+                      enum: [documentation-sync, pr-review, fork-sync, deployment-change]
+                    primarySubject:
+                      type: object
+                      required: [binding, object]
+                      properties:
+                        binding: { type: string }   # ExternalSystemBinding.Name
+                        object:  { type: string }   # identifier within that binding
+                    relatedSubjects:
+                      type: array
+                      items:
+                        type: object
+                        required: [binding, object]
+                        properties:
+                          binding: { type: string }
+                          object:  { type: string }
+                    desiredOutcome: { type: string }
+                    targetedState:  { type: string } # revision / SHA / release / spec hash — completes Objective Identity
+                workflowRef: { type: string }       # namespace/name of the driving Workflow
+                owner:       { type: string }       # mirrors harmostes.dev/owner label (UI isolation)
+                bindings:                                  # snapshot of the Workflow's External System Bindings (static authority)
+                  type: array
+                  items:
+                    type: object
+                    required: [name, bindingRole, surfaceKind, connectionProfile, target]
+                    properties:
+                      name:              { type: string }
+                      bindingRole:
+                        type: string
+                        enum: [sourceRepo, workspaceRepo, issueTracker, wiki, review, releaseTarget, webhookOrigin]
+                      surfaceKind:
+                        type: string
+                        enum: [repository, issue-tracker, wiki, review, release, webhook-origin]
+                      connectionProfile: { type: string }  # ConnectionProfile name
+                      target:
+                        type: object
+                        required: [host, object]
+                        properties:
+                          host:   { type: string }
+                          object: { type: string }
+                          branch: { type: string }
+                          extra:
+                            type: object
+                            x-kubernetes-preserve-unknown-fields: true
+                      granted:
+                        type: array                       # Surface Capability tokens (authority scope)
+                        items: { type: string }
+                      authRef:
+                        type: object
+                        required: [name, key]
+                        properties:
+                          name: { type: string }
+                          key:  { type: string }
+            status:
+              type: object
+              properties:
+                observedGeneration: { type: integer }
+                phase:
+                  type: string
+                  enum: [reconciling, validated, superseded, failed]
+                lastRunAt: { type: string }
+                message:   { type: string }
+                runs:
+                  type: array
+                  x-kubernetes-list-type: atomic
+                  items:
+                    type: object
+                    required: [name]
+                    properties:
+                      name:      { type: string }
+                      startedAt: { type: string }
+                      endedAt:   { type: string }
+                      phase:     { type: string }
+                nodeResults:
+                  type: array
+                  x-kubernetes-list-type: atomic
+                  description: Universal Node Result Envelopes (ADR-0004).
+                  items:
+                    type: object
+                    required: [nodeID, status]
+                    properties:
+                      nodeID:     { type: string }
+                      runID:      { type: string }
+                      status:     { type: string }
+                      summary:    { type: string }
+                      payload:                                    # node-type-specific Node Payload (opaque to the kernel)
+                        type: object
+                        x-kubernetes-preserve-unknown-fields: true
+                      producedAt: { type: string }
+                      artifacts:
+                        type: array
+                        items:
+                          type: object
+                          required: [name, path]
+                          properties:
+                            name: { type: string }
+                            path: { type: string }
+                            hash: { type: string }
+                      claims:                                     # reference-backed facts (ADR-0004)
+                        type: array
+                        items:
+                          type: object
+                          required: [type, binding, externalID, trustClass]
+                          properties:
+                            type:        { type: string }        # repository.commit.created | issue-tracker.comment.created | ...
+                            binding:     { type: string }        # ExternalSystemBinding.Name
+                            externalID:  { type: string }        # commit SHA / issue number / page path / ...
+                            url:         { type: string }
+                            trustClass:
+                              type: string
+                              enum: [observed, validated]
+                            validatedBy: { type: string }        # node ID that promoted to validated
+                      references:                                 # evidence links (ADR-0005)
+                        type: array
+                        items:
+                          type: object
+                          required: [binding, kind, identifier]
+                          properties:
+                            binding:    { type: string }
+                            kind:       { type: string }        # commit | issue-comment | wiki-page | ...
+                            identifier: { type: string }
+                            url:        { type: string }
+                      provenance:
+                        type: object
+                        properties:
+                          triggeredBy:    { type: string }
+                          triggerSource:  { type: string }      # webhook | schedule | controller | manual
+                          producedAt:     { type: string }
+                evidence:
+                  type: array
+                  x-kubernetes-list-type: atomic
+                  items:
+                    type: object
+                    required: [binding, kind, identifier]
+                    properties:
+                      binding:    { type: string }
+                      kind:       { type: string }
+                      identifier: { type: string }
+                      url:        { type: string }
+                conditions:
+                  type: array
+                  x-kubernetes-list-type: map
+                  x-kubernetes-list-map-keys: [type]
+                  items:
+                    type: object
+                    required: [type]
+                    properties:
+                      type:               { type: string }
+                      status:             { type: string, enum: ["True", "False", "Unknown"] }
+                      reason:             { type: string }
+                      message:            { type: string }
+                      lastTransitionTime: { type: string }

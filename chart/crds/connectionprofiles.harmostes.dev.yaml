@@ -1,0 +1,83 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: connectionprofiles.harmostes.dev
+  annotations:
+    harmostes.dev/framework-version: v0.1
+    harmostes.dev/adr: "ADR-0003"
+spec:
+  group: harmostes.dev
+  names:
+    kind: ConnectionProfile
+    listKind: ConnectionProfileList
+    singular: connectionprofile
+    plural: connectionprofiles
+    shortNames: [cprofile]
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Host-family
+          type: string
+          jsonPath: .spec.hostFamily
+        - name: API
+          type: string
+          jsonPath: .spec.apiBaseURL
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: [spec]
+          properties:
+            spec:
+              type: object
+              required: [hostFamily, apiBaseURL, authTransport]
+              description: |
+                Trusted internal config defining HOW Harmostes speaks to a host
+                family (ADR-0003). Workflows reference a profile by name; they
+                never inline host mechanics. Changed only through development
+                or trusted internal config — not by nodes at runtime.
+              properties:
+                hostFamily:
+                  type: string
+                  enum: [github, gitlab, forgejo, codeberg, generic-http]
+                apiBaseURL:    { type: string }   # base URL for API calls (no trailing slash)
+                webBaseURL:    { type: string }   # base URL for web/permalinks (optional)
+                authTransport:
+                  type: string
+                  enum: [bearer-header, secret-header, basic]
+                authHeaderName: { type: string }  # header name when authTransport == secret-header
+                webhookVerify:
+                  type: string
+                  enum: [hmac-sha256-header, secret-token-header]
+                webhookSecretRef:                 # Secret (key "secret") for inbound signature verification
+                  type: object
+                  required: [name, key]
+                  properties:
+                    name: { type: string }
+                    key:  { type: string }
+            status:
+              type: object
+              properties:
+                observedGeneration: { type: integer }
+                ready:              { type: boolean }
+                message:            { type: string }
+                conditions:
+                  type: array
+                  x-kubernetes-list-type: map
+                  x-kubernetes-list-map-keys: [type]
+                  items:
+                    type: object
+                    required: [type]
+                    properties:
+                      type:               { type: string }
+                      status:             { type: string, enum: ["True", "False", "Unknown"] }
+                      reason:             { type: string }
+                      message:            { type: string }
+                      lastTransitionTime: { type: string }

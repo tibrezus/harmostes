@@ -23,6 +23,13 @@ rules:
   - apiGroups: ["harmostes.dev"]
     resources: ["pipelines", "pipelines/status", "pipelines/finalizers"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Attempt CRs (Canonical Orchestration History — ADR-0005). Controller
+  # resolves-or-creates Attempts when scheduling a worker + records the run
+  # start; worker records the run outcome + Node Result Envelopes. Both use
+  # status; Attempts are GC'd via owner refs (no delete needed).
+  - apiGroups: ["harmostes.dev"]
+    resources: ["attempts", "attempts/status", "attempts/finalizers"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
   - apiGroups: ["batch"]
     resources: ["jobs"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]

@@ -23,6 +23,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
+	"github.com/tibrezus/harmostes/internal/attempt"
 	"github.com/tibrezus/harmostes/internal/observability"
 )
 
@@ -110,6 +111,9 @@ func labelsFor(wf *v1alpha1.Workflow) map[string]string {
 // +kubebuilder:rbac:groups=harmostes.dev,resources=workflows,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=harmostes.dev,resources=workflows/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=harmostes.dev,resources=workflows/finalizers,verbs=update
+// +kubebuilder:rbac:groups=harmostes.dev,resources=attempts,verbs=get;list;watch;create;update;patch
+// +kubebuilder:rbac:groups=harmostes.dev,resources=attempts/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=harmostes.dev,resources=attempts/finalizers,verbs=update
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
 
 func (r *WorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -149,17 +153,28 @@ func (r *WorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 
 	logger.Info("scheduling worker", "workflow", wf.Name, "reason", dueReason(&wf))
+	// Canonical Orchestration History (ADR-0005): resolve or create the Attempt
+	// this run belongs to, so its history is recorded. Best-effort — an empty
+	// attemptName means the worker records nothing (CRD absent / error).
+	attemptName := r.resolveAttempt(ctx, &wf)
 	// Trace handoff: stamp the reconcile span's W3C context onto the worker Job
 	// so its root harmostes.worker.run span is a child of this reconcile span —
 	// one trace from "controller noticed a change" through "worker ran".
 	tp := observability.TraceparentFromContext(ctx)
-	if err := r.createWorkerJob(ctx, &wf, tp); err != nil {
+	jobName, err := r.createWorkerJob(ctx, &wf, tp, attemptName)
+	if err != nil {
 		logger.Error(err, "create worker job")
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return ctrl.Result{RequeueAfter: time.Minute}, err
 	}
 	recordWorkflowRunScheduled(ctx, wf.Name)
+	// Record the run start in the Attempt (best-effort).
+	if attemptName != "" {
+		if err := attempt.RecordRunStarted(ctx, r.Client, wf.Namespace, attemptName, jobName); err != nil {
+			logger.Error(err, "record attempt run start")
+		}
+	}
 
 	// If this run was triggered by a webhook, clear the trigger annotation now
 	// that a worker has been scheduled. Without this, the status patch from
@@ -328,12 +343,7 @@ func (r WorkflowReconciler) workerEnvWithTraceparent(wf *v1alpha1.Workflow, trac
 	if triggeredBy == "" {
 		triggeredBy = "system"
 	}
-	triggerSource := "controller" // default: periodic poll
-	if wf.Annotations["harmostes.dev/trigger-revision"] != "" {
-		triggerSource = "webhook"
-	} else if wf.Spec.Source.Schedule != "" {
-		triggerSource = "schedule"
-	}
+	triggerSource := triggerSourceOf(wf)
 	env = append(env,
 		corev1.EnvVar{Name: "HARMOSTES_TRIGGERED_BY", Value: triggeredBy},
 		corev1.EnvVar{Name: "HARMOSTES_TRIGGER_SOURCE", Value: triggerSource},
@@ -344,7 +354,10 @@ func (r WorkflowReconciler) workerEnvWithTraceparent(wf *v1alpha1.Workflow, trac
 // createWorkerJob builds + creates the worker Job for one pipeline run. The
 // traceparent (the W3C context of the reconcile span) is stamped on the worker
 // container's env so the worker's root run-span is a child of the reconcile span.
-func (r *WorkflowReconciler) createWorkerJob(ctx context.Context, wf *v1alpha1.Workflow, traceparent string) error {
+// attemptName (when non-empty) is stamped as HARMOSTES_ATTEMPT so the worker can
+// record its outcome into the canonical history (ADR-0005). Returns the created
+// Job's name.
+func (r *WorkflowReconciler) createWorkerJob(ctx context.Context, wf *v1alpha1.Workflow, traceparent, attemptName string) (string, error) {
 	ctx, span := observability.Tracer().Start(ctx, "controller.create_worker_job",
 		trace.WithAttributes(attribute.String("harmostes.workflow", wf.Name)))
 	defer span.End()
@@ -390,7 +403,7 @@ func (r *WorkflowReconciler) createWorkerJob(ctx context.Context, wf *v1alpha1.W
 						Name:            "worker",
 						Image:           r.WorkerImage,
 						ImagePullPolicy: pullPolicy,
-						Env:             r.workerEnvWithTraceparent(wf, traceparent),
+						Env:             r.workerEnvForRun(wf, traceparent, attemptName),
 						VolumeMounts:    append([]corev1.VolumeMount{{Name: "skills", MountPath: "/skills"}}, configMapVolumeMounts(wf)...),
 					}},
 					Volumes: append([]corev1.Volume{{
@@ -408,14 +421,27 @@ func (r *WorkflowReconciler) createWorkerJob(ctx context.Context, wf *v1alpha1.W
 	if err := ctrl.SetControllerReference(wf, job, r.Scheme); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return err
+		return "", err
 	}
 	if err := r.Create(ctx, job); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return err
+		return "", err
 	}
-	return nil
+	return job.Name, nil
+}
+
+// workerEnvForRun returns the worker env for a run: identity, tokens, OTel
+// config, trace handoff, provenance (G8), and the Attempt name (ADR-0005) so the
+// worker can record its outcome into the canonical history. An empty
+// attemptName (CRD absent / resolution failed) omits the var — the worker then
+// records nothing.
+func (r WorkflowReconciler) workerEnvForRun(wf *v1alpha1.Workflow, traceparent, attemptName string) []corev1.EnvVar {
+	env := r.workerEnvWithTraceparent(wf, traceparent)
+	if attemptName != "" {
+		env = append(env, corev1.EnvVar{Name: "HARMOSTES_ATTEMPT", Value: attemptName})
+	}
+	return env
 }
 
 // SetupWithManager registers the reconciler + its watches.
@@ -427,7 +453,41 @@ func (r *WorkflowReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-// setCondition upserts a condition into the slice (by Type).
+// triggerSourceOf derives the trigger channel (webhook | schedule | controller)
+// from a Workflow. Shared by the Attempt objective derivation and the worker
+// provenance env so the two agree on provenance.
+func triggerSourceOf(wf *v1alpha1.Workflow) string {
+	if wf.Annotations["harmostes.dev/trigger-revision"] != "" {
+		return "webhook"
+	}
+	if wf.Spec.Source.Schedule != "" {
+		return "schedule"
+	}
+	return "controller"
+}
+
+// resolveAttempt derives the Implementation Objective (ADR-0005) for this run,
+// resolves or creates the Attempt realizing it, and returns its name. Best-
+// effort: a failure (e.g. the Attempt CRD not yet installed in the cluster)
+// returns an empty name — scheduling proceeds without canonical history rather
+// than blocking the run.
+func (r *WorkflowReconciler) resolveAttempt(ctx context.Context, wf *v1alpha1.Workflow) string {
+	obj := attempt.DeriveObjective(wf, attempt.TriggerContext{
+		Revision: wf.Annotations["harmostes.dev/trigger-revision"],
+		Source:   triggerSourceOf(wf),
+	})
+	att, _, err := attempt.ResolveOrCreate(ctx, r.Client, obj, attempt.ResolveOptions{
+		Namespace:   wf.Namespace,
+		WorkflowRef: wf.Namespace + "/" + wf.Name,
+		Owner:       wf,
+		Scheme:      r.Scheme,
+	})
+	if err != nil {
+		log.FromContext(ctx).Error(err, "resolve attempt (canonical history disabled for this run)")
+		return ""
+	}
+	return att.Name
+}
 func setCondition(conds []metav1.Condition, c metav1.Condition) []metav1.Condition {
 	c.LastTransitionTime = metav1.Now()
 	for i, existing := range conds {

@@ -118,6 +118,7 @@ spec:
                   type: object
                   required: [model, taskTemplate, gate]
                   properties:
+                    enabled: { type: boolean }                  # nil/true = run, false = skip (deterministic-only)
                     model: { type: string }                    # zai/glm-5.2
                     skill: { type: string }                    # /skills/…/SKILL.md
                     tools: { type: array, items: { type: string } }

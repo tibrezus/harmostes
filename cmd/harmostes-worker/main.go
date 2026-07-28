@@ -32,6 +32,7 @@ import (
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
 	"github.com/tibrezus/harmostes/internal/agent"
+	"github.com/tibrezus/harmostes/internal/attempt"
 	"github.com/tibrezus/harmostes/internal/dapr"
 	"github.com/tibrezus/harmostes/internal/graph"
 	"github.com/tibrezus/harmostes/internal/k8s"
@@ -174,12 +175,15 @@ func main() {
 		)
 		flushTelemetry()
 		if err != nil {
+			recordAttemptOutcome(ctx, cl, "failed", nil, fmt.Sprintf("graph pipeline error: %v", err))
 			fatal("graph pipeline error: %v", err)
 		}
 		if result.Status == graph.StatusGreen {
+			recordAttemptOutcome(ctx, cl, "succeeded", envelopesFor(result.NodeEnvelopes), result.Message)
 			logf("graph complete: %s (%d node envelopes recorded)", result.Message, len(result.NodeEnvelopes))
 			finish(0)
 		}
+		recordAttemptOutcome(ctx, cl, "failed", envelopesFor(result.NodeEnvelopes), result.Message)
 		logf("graph complete: %s (%s) — %d node envelopes recorded", result.Status, result.Message, len(result.NodeEnvelopes))
 		finish(1)
 	}
@@ -191,16 +195,52 @@ func main() {
 		Workflow: &wf, Workdir: workdir, Source: source, ExtraEnv: os.Environ(),
 	})
 	if err != nil {
+		recordAttemptOutcome(ctx, cl, "failed", nil, fmt.Sprintf("pipeline error: %v", err))
 		fatal("pipeline error: %v", err)
 	}
 	switch res.Outcome {
 	case worker.OutcomeGreen, worker.OutcomeSkipped:
+		recordAttemptOutcome(ctx, cl, "succeeded", nil, res.Message)
 		logf("complete: %s (%s)", res.Outcome, res.Message)
 		finish(0)
 	default:
+		recordAttemptOutcome(ctx, cl, "failed", nil, res.Message)
 		logf("complete: %s (%s)", res.Outcome, res.Message)
 		finish(1)
 	}
+}
+
+// recordAttemptOutcome records this run's terminal outcome into the canonical
+// orchestration history (ADR-0005). Best-effort: an empty HARMOSTES_ATTEMPT
+// (CRD absent / controller resolution failed) is a no-op; a status-patch error
+// is logged but never aborts the run.
+func recordAttemptOutcome(ctx context.Context, c client.Client, phase string, envelopes []v1alpha1.NodeResultEnvelope, message string) {
+	attemptName := os.Getenv("HARMOSTES_ATTEMPT")
+	if attemptName == "" {
+		return
+	}
+	err := attempt.RecordRunOutcome(ctx, c, os.Getenv("HARMOSTES_NAMESPACE"), attemptName, attempt.RunOutcome{
+		RunName:   envOr("POD_NAME", os.Getenv("HARMOSTES_WORKFLOW")),
+		Phase:     phase,
+		Envelopes: envelopes,
+		Message:   message,
+	})
+	if err != nil {
+		logf("warn: record attempt outcome %s: %v", attemptName, err)
+	}
+}
+
+// envelopesFor converts the graph executor's per-node envelope map into the
+// slice the Attempt status stores.
+func envelopesFor(m map[string]v1alpha1.NodeResultEnvelope) []v1alpha1.NodeResultEnvelope {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make([]v1alpha1.NodeResultEnvelope, 0, len(m))
+	for _, env := range m {
+		out = append(out, env)
+	}
+	return out
 }
 
 func runTimeout(wf *v1alpha1.Workflow) time.Duration {

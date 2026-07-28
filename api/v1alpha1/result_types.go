@@ -27,6 +27,16 @@ const (
 	ClaimTrustValidated = "validated" // promoted by deterministic validation; authoritative
 )
 
+// Node Result status values — the execution outcome recorded in a
+// NodeResultEnvelope (ADR-0004). These are the canonical envelope strings,
+// distinct from the graph package's internal NodeStatus (green/failed/skipped):
+// the kernel maps internal status to these when synthesizing an envelope.
+const (
+	NodeResultStatusOK      = "ok"
+	NodeResultStatusSkipped = "skipped"
+	NodeResultStatusFailed  = "failed"
+)
+
 // NodeResultEnvelope is the universal structured result of a single Node
 // execution. It is a runtime/status concept — recorded into Attempt status —
 // not part of a Workflow spec.

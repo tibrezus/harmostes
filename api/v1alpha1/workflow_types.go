@@ -46,9 +46,9 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 // +kubebuilder:printcolumn:name=Gate-status,type=string,JSONPath=.status.gateStatus
 // +kubebuilder:printcolumn:name=Age,type=date,JSONPath=.metadata.creationTimestamp
 
-// Workflow is a declarative LLM-automation pipeline: monitor a source → prepare
-// (deterministic) → agent (LLM + gate, warm-session feedback loop) → deploy
-// (deterministic) → state. See ARCHITECTURE.md.
+// Workflow is a graph-native orchestration definition (see CONTEXT.md and the
+// ADRs in the wiki). The declarative prepare→agent→deploy form is one possible
+// graph shape produced by a gate template; spec.graph is the explicit graph form.
 type Workflow struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

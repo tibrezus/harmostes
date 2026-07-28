@@ -2,7 +2,7 @@
 
 Reference plugins shipped with the framework. Each is the deterministic logic
 extracted from a real workflow; new workflows reuse these or add their own.
-See [`docs/plugin-interface.md`](../docs/plugin-interface.md) for the contract.
+See the [Plugin Interface](https://github.com/tibrezus/harmostes/wiki/Plugin-Interface--legacy) page on the wiki for the contract.
 
 | Plugin | role | Used by | Provenance (today's script) |
 |---|---|---|---|
@@ -16,7 +16,7 @@ See [`docs/plugin-interface.md`](../docs/plugin-interface.md) for the contract.
 
 ## Adding a plugin
 
-1. Write a command that follows the [contract](../docs/plugin-interface.md)
+1. Write a command that follows the [contract](https://github.com/tibrezus/harmostes/wiki/Plugin-Interface--legacy)
    (env in, JSON-on-stdout out, exit codes).
 2. Ship it as an **image** (`FROM` a base with your toolchain, `ENTRYPOINT`
    your command) **or** a **ConfigMap script** (if the worker image already has

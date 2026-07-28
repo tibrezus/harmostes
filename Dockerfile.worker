@@ -6,7 +6,7 @@
 #
 # The worker runs the prepare / agent / deploy phases for any Workflow CR:
 #   - prepare/deploy: invoke the phase's plugin (image or ConfigMap script) with
-#     the HARMOSTES_* contract (see docs/plugin-interface.md).
+#     the HARMOSTES_* contract (see the wiki Plugin Interface page).
 #   - agent: run the Go harmostes primitive (internal/agent) — spawn pi --mode rpc,
 #     task → gate → feedback-as-warm-session-continuation.
 #

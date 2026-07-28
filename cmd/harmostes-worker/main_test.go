@@ -43,3 +43,53 @@ func TestShutdownTimeoutBounded(t *testing.T) {
 		t.Fatalf("ShutdownTimeout=%v is not a sane flush bound", observability.ShutdownTimeout)
 	}
 }
+
+// TestRedactStripsCredentialsFromCleanURL: a standalone basic-auth URL is fully
+// redacted — the user:token@ segment is removed, the rest preserved.
+func TestRedactStripsCredentialsFromCleanURL(t *testing.T) {
+	in := "https://tibrez:d0a0352e7384a7ebb812196f88749fa2efe63a78@git.rezus.cloud/tibrez/rhesadox.git"
+	want := "https://git.rezus.cloud/tibrez/rhesadox.git"
+	if got := redact(in); got != want {
+		t.Errorf("redact clean URL:\n got %q\nwant %q", got, want)
+	}
+}
+
+// TestRedactStripsEmbeddedCredentialsInPluginOutput: the credential leak this
+// fix targets — the token is buried in a multi-line error string (rig-emit
+// plugin output captured into a pipeline result message).
+func TestRedactStripsEmbeddedCredentialsInPluginOutput(t *testing.T) {
+	in := "[rig-emit] cloning source https://tibrez:d0a0352e7384a7ebb812196f88749fa2efe63a78@git.rezus.cloud/tibrez/rhesadox.git (main) …\n" +
+		"fatal: Authentication failed for 'https://git.rezus.cloud/tibrez/rhesadox.git/'"
+	want := "[rig-emit] cloning source https://git.rezus.cloud/tibrez/rhesadox.git (main) …\n" +
+		"fatal: Authentication failed for 'https://git.rezus.cloud/tibrez/rhesadox.git/'"
+	if got := redact(in); got != want {
+		t.Errorf("redact embedded URL:\n got %q\nwant %q", got, want)
+	}
+}
+
+// TestRedactPreservesURLWithoutCredentials: a normal URL (no basic-auth) and
+// arbitrary text are returned unchanged.
+func TestRedactPreservesURLWithoutCredentials(t *testing.T) {
+	cases := map[string]string{
+		"https://git.rezus.cloud/tibrez/rhesadox.git":     "https://git.rezus.cloud/tibrez/rhesadox.git",
+		"https://git.rezus.cloud:443/tibrez/rhesadox.git": "https://git.rezus.cloud:443/tibrez/rhesadox.git", // port, no creds
+		"user@host: no scheme here":                       "user@host: no scheme here",
+		"not a url at all":                                "not a url at all",
+		"":                                                "",
+	}
+	for in, want := range cases {
+		if got := redact(in); got != want {
+			t.Errorf("redact(%q):\n got %q\nwant %q", in, got, want)
+		}
+	}
+}
+
+// TestRedactStripsMultipleCredentials: a string with several credentialed URLs
+// (e.g. source + fork) is fully cleaned.
+func TestRedactStripsMultipleCredentials(t *testing.T) {
+	in := "src https://u:p@git.rezus.cloud/a.git fork https://x:y@github.com/b.git"
+	want := "src https://git.rezus.cloud/a.git fork https://github.com/b.git"
+	if got := redact(in); got != want {
+		t.Errorf("redact multiple:\n got %q\nwant %q", got, want)
+	}
+}

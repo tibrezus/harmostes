@@ -23,6 +23,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -219,6 +220,7 @@ func recordAttemptOutcome(ctx context.Context, c client.Client, phase string, en
 	if attemptName == "" {
 		return
 	}
+	message = redact(message) // defense-in-depth: no token reaches Attempt status
 	err := attempt.RecordRunOutcome(ctx, c, os.Getenv("HARMOSTES_NAMESPACE"), attemptName, attempt.RunOutcome{
 		RunName:   runName(),
 		Phase:     phase,
@@ -301,7 +303,7 @@ func envOr(key, def string) string {
 	return def
 }
 
-func logf(format string, a ...any) { logger.Info(fmt.Sprintf(format, a...)) }
+func logf(format string, a ...any) { logger.Info(redact(fmt.Sprintf(format, a...))) }
 
 // finish is the single exit path for the worker: it flushes telemetry, then
 // drains the Dapr sidecar, then exits. Every outcome (green/skipped, failed,
@@ -326,7 +328,7 @@ func flushTelemetry() {
 }
 
 func fatal(format string, a ...any) {
-	logger.Error(fmt.Sprintf(format, a...))
+	logger.Error(redact(fmt.Sprintf(format, a...)))
 	finish(2)
 }
 
@@ -384,16 +386,19 @@ func tokenizeGitURL(url, token string) string {
 	return strings.Replace(url, "https://", "https://x-access-token:"+token+"@", 1)
 }
 
-// redact strips credentials from a URL for logging.
-func redact(url string) string {
-	if i := strings.Index(url, "://"); i >= 0 {
-		scheme := url[:i+3]
-		rest := url[i+3:]
-		if at := strings.Index(rest, "@"); at >= 0 {
-			return scheme + rest[at+1:]
-		}
-	}
-	return url
+// credURLRe matches HTTP basic-auth credentials (user:token@) embedded anywhere
+// in a string — a clean URL or buried in plugin output / an error message.
+// Plugins like rig-emit embed the git token in clone URLs; without redaction it
+// leaks to structured logs (→ SigNoz) and into Attempt status. Ports
+// (host:443) and username-only URLs (user@host) do not match.
+var credURLRe = regexp.MustCompile(`(https?://)[^\s/@:]+:[^\s/@]+@`)
+
+// redact strips embedded HTTP basic-auth credentials from a URL or arbitrary
+// string (plugin output, error messages, pipeline results) before it is logged
+// or recorded in Attempt status. Applied at the logf / fatal /
+// recordAttemptOutcome choke points so no token can reach logs or history.
+func redact(s string) string {
+	return credURLRe.ReplaceAllString(s, "${1}")
 }
 
 // waitForDapr polls the sidecar healthz up to ~15s; proceeds regardless (Dapr is

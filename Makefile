@@ -1,6 +1,6 @@
 # harmostes — build, test, and image targets.
 #
-# Stack decision (see ARCHITECTURE.md): the controller + worker runtime are Go
+# Stack decision (see the wiki ADRs): the controller + worker runtime are Go
 # (controller-runtime). Python/bash survive only as plugin scripts.
 
 MODULE        := github.com/tibrezus/harmostes

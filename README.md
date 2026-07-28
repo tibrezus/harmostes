@@ -1,60 +1,57 @@
 # harmostes
 
-A **Kubernetes framework for LLM-driven automation**: pipelines that are
-*mostly deterministic* and *validated by an LLM in a loop*. You declare a
-pipeline as a `Workflow` custom resource; the framework monitors a source, runs
-**deterministic pluggable components** to do everything that can be done without
-intelligence, and — only where interpretation is needed — drives an **LLM agent**
-that must pass a **deterministic gate** before its work is published. **Dapr is
-the event + state fabric** connecting every stage.
+> ἁρμοστής — *one who fits things together.*
 
-> ἁρμοστής — *one who fits things together.* Deterministic parts and LLM parts,
-> fitted into one reconciling loop.
+A **Kubernetes-native orchestration platform** for workflows that combine
+deterministic operations with explicitly non-deterministic operations such as
+agentic reasoning. Its core is a **graph-native workflow kernel**: a
+deterministic orchestrator schedules typed nodes and advances state from their
+recorded outputs, while all interpretation happens behind explicit node
+boundaries and must be deterministically validated before it becomes
+authoritative.
 
-**Status:** shaping. The core primitive (`harmostes.py`, the task→gate→feedback
-RPC loop) is proven in production by
-[`tibrezus/llm-wiki`](https://github.com/tibrezus/llm-wiki) and the
-fork-maintenance platform. The framework (operator + CRD + plugin model) is the
-generalization of what those two already share. See
-[**ARCHITECTURE.md**](ARCHITECTURE.md).
+## Where the documentation lives
 
----
+Detailed documentation is **not** in this repository — only this index and the
+canonical glossary. The rest lives in the places below.
 
-## The loop
+| For | Go to |
+|---|---|
+| Canonical glossary (domain language) | [`CONTEXT.md`](./CONTEXT.md) (this repo) |
+| Architecture decisions (ADRs) | [GitHub wiki → ADRs](https://github.com/tibrezus/harmostes/wiki) |
+| Legacy phase-loop architecture (design history) | [wiki → Legacy Architecture](https://github.com/tibrezus/harmostes/wiki/Legacy-Architecture--Phase-Loop) |
+| Plugin contract (legacy executor) | [wiki → Plugin Interface](https://github.com/tibrezus/harmostes/wiki/Plugin-Interface--legacy) |
+| Webhook triggers (design note) | [wiki → Event-Driven Triggers](https://github.com/tibrezus/harmostes/wiki/Design-Note--Event-Driven-Triggers) |
 
-```
-  monitor ──▶ prepare ──▶ (changed?) ──▶ agent ──▶ gate ──▶ deploy ──▶ state
-  (source)   deterministic  no: skip     LLM +     fail:     deterministic
-             plugin                      feedback  feed back  plugin
-                                         loop      to agent
-```
+The ADRs are the source of truth for *why* the architecture is shaped this way.
+If something here and an ADR disagree, the ADR wins.
 
-- **monitor** watches a source (git revision, schedule, upstream fork, event).
-- **prepare** is a deterministic plugin (emit a RIG, cherry-pick a sync branch).
-- **agent** is the framework core — the harmostes RPC primitive: the agent does
-  the interpretive work, commits.
-- **gate** is a deterministic plugin (lint, build, signatures). On failure its
-  stderr is fed back to the **same warm agent session**, up to `maxFixes`.
-- **deploy** is a deterministic plugin (push to a wiki, replace a release
-  branch). **state** (Dapr) lets the next monitor skip.
+## The model in one paragraph
 
-The LLM is never the first resort and never the last word.
+A **Workflow** is a graph of typed **Nodes**. The kernel is deterministic: it
+may schedule nodes, record their inputs/outputs, evaluate rules, and advance
+state — never interpret. Non-determinism (agents, approvals, external judgment)
+lives only inside explicit nodes and must emit a **Node Result Envelope**; claims
+from non-deterministic nodes are **not authoritative until deterministic
+validation** promotes them. Harmostes is the **canonical orchestration
+historian**, tracking **Implementation Attempts** reconciling toward **Targeted
+States** across bounded external system surfaces. See `CONTEXT.md` and the ADRs
+for the precise terms.
 
-## What's here
+## Repository layout
 
 ```
-harmostes.py                          # the RPC primitive: task → gate → feedback (proven)
-ARCHITECTURE.md                       # the framework design (read this first)
-config/crd/workflows.harmostes.dev.yaml   # the Workflow CRD
-examples/workflow-llm-wiki.yaml       # llm-wiki as a Workflow (lc4 + generic)
-examples/workflow-fork-maintenance.yaml   # fork-maintenance as a Workflow
-docs/plugin-interface.md              # the plugin contract (env, stdout JSON, exit codes)
-plugins/README.md                     # reference plugins (rig-emit, merge-sync, …)
-controller/                           # the k8s operator (planned — see ARCHITECTURE §migration)
-chart/                                # the Helm chart (planned)
+harmostes.py            # the RPC primitive: task → gate → feedback (proven, standalone)
+CONTEXT.md              # canonical glossary — read first
+api/v1alpha1/           # Workflow + Pipeline CRD Go types
+chart/                  # the Helm chart (controller, worker, ui)
+cmd/                    # harmostes-{controller,worker,agent,ui} entrypoints
+internal/               # controller, worker, agent, graph executor, ui, webhook, dapr, observability
+plugins/                # reference plugins (rig-emit, merge-sync, …) + their README
+examples/               # example Workflow CRs
 ```
 
-## The primitive (today, standalone)
+## The primitive (standalone)
 
 `harmostes.py` is usable on its own — the task→gate→feedback loop over a
 `pi --mode rpc` subprocess:
@@ -69,26 +66,11 @@ harmostes task \
 
 Exit `0` gate green · `1` failed after `--max-fixes` · `2` pi error. The agent's
 API key (`LITELLM_API_KEY`) is passed through. It speaks pi's
-[RPC JSONL protocol](https://pi.dev/docs/latest/rpc), reusing pi's own
-`--skill/--model/--tools` handling (provider auth, skill loading, **tool
-allowlist**). pi has **no per-tool approval and no sandbox** — the tool allowlist
-+ external sandboxing are the safety levers; see
-[security](https://pi.dev/docs/latest/security).
+[RPC JSONL protocol](https://pi.dev/docs/latest/rpc). pi has **no per-tool
+approval and no sandbox** — the tool allowlist + external sandboxing are the
+safety levers (see [security](https://pi.dev/docs/latest/security)).
 
-This primitive is what the framework's **agent worker** runs internally, driven
-from a Workflow CR's `spec.agent` instead of CLI flags.
-
-## Why a framework (not a script)
-
-llm-wiki and fork-maintenance turned out to be ~90% the same system — the same
-CR → deterministic-prepare → Dapr event → always-on subscriber → agent → gate →
-deploy → Dapr state/scale skeleton — with only the *plugin contents* differing
-(RIG-emit vs cherry-pick; wiki-lint vs fork-resolved; git-push vs
-replace-deploy). harmostes absorbs the skeleton (run once) and leaves the
-plugins per workflow. The mapping is in [ARCHITECTURE.md](ARCHITECTURE.md#the-two-workflows-mapped).
-
-The next workflows (anything "watch a thing, mostly do it deterministically,
-have an agent finish + validate it") become a Workflow CR + a plugin, not a new
-bespoke controller.
+This primitive is what the agent worker runs internally, driven from a Workflow
+CR instead of CLI flags.
 
 <!-- test trigger for adversarial pr-review 1784298180 -->

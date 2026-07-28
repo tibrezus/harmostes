@@ -2,7 +2,7 @@
 // Dapr events at each boundary and reconciling the Workflow status.
 //
 // The deterministic phases (prepare, deploy, gate) invoke PLUGINS — scripts or
-// images — under a fixed contract (see docs/plugin-interface.md). The agent
+// images — under a fixed contract (see the wiki Plugin Interface page). The agent
 // phase is framework-native: it runs internal/agent (the Go harmostes primitive)
 // with the Workflow's spec.agent.
 package worker

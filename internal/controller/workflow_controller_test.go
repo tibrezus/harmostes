@@ -372,6 +372,44 @@ func TestIsDue_WebhookTrigger(t *testing.T) {
 	}
 }
 
+// TestObserveGenerationSetsLastRunAt: the controller stamps LastRunAt at
+// SCHEDULE time (not just on worker completion), so a worker that never runs
+// (init-container crash, DNS failure, image-pull error) cannot cause an
+// infinite re-schedule loop (#118). isDue's schedule cooldown relies on
+// LastRunAt being recent; without this, a failed worker leaves LastRunAt frozen
+// and the controller re-schedules every reconcile cycle (~1 Job / 10s).
+func TestObserveGenerationSetsLastRunAt(t *testing.T) {
+	wf := &v1alpha1.Workflow{}
+	wf.Name = "test-wf"
+	wf.Namespace = "harmostes"
+	wf.Generation = 1
+	wf.Status.ObservedGeneration = 0 // never observed
+
+	cl := fake.NewClientBuilder().
+		WithScheme(k8s.Scheme()).
+		WithStatusSubresource(&v1alpha1.Workflow{}).
+		WithObjects(wf).
+		Build()
+
+	r := &WorkflowReconciler{Client: cl, Scheme: k8s.Scheme(), PollInterval: 5 * time.Minute}
+	if err := r.observeGeneration(context.Background(), wf); err != nil {
+		t.Fatalf("observeGeneration: %v", err)
+	}
+
+	var got v1alpha1.Workflow
+	if err := cl.Get(context.Background(), types.NamespacedName{Name: "test-wf", Namespace: "harmostes"}, &got); err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Status.LastRunAt.IsZero() {
+		t.Error("LastRunAt not set after observeGeneration — isDue cooldown would fail, causing rapid-fire scheduling")
+	}
+	// isDue must return false within PollInterval (the cooldown works).
+	r2 := &WorkflowReconciler{PollInterval: 5 * time.Minute}
+	if due, _ := r2.isDue(&got); due {
+		t.Error("isDue returned true within PollInterval of observeGeneration — cooldown broken")
+	}
+}
+
 // TestLabelsFor locks the Phase B tenant-model contract: labelsFor produces the
 // standard managed-by + workflow labels, and propagates the harmostes.dev/owner
 // label from the Workflow to the Job when present. A Workflow without an owner

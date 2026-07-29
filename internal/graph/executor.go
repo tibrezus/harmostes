@@ -490,9 +490,9 @@ func (e *GraphExecutor) enqueueEdge(queue *[]string, edge v1alpha1.EdgeSpec, edg
 // branch output, or a Go text/template expression.
 func (e *GraphExecutor) shouldTraverse(edge v1alpha1.EdgeSpec, sourceResult NodeResult, allResults map[string]NodeResult) bool {
 	switch edge.When {
-	case "", "always":
+	case "always":
 		return true
-	case "green":
+	case "", "green":
 		return sourceResult.Status == StatusGreen
 	case "failed":
 		return sourceResult.Status == StatusFailed

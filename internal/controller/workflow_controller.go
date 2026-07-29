@@ -257,6 +257,14 @@ func dueReason(wf *v1alpha1.Workflow) string {
 func (r *WorkflowReconciler) observeGeneration(ctx context.Context, wf *v1alpha1.Workflow) error {
 	base := wf.DeepCopy()
 	wf.Status.ObservedGeneration = wf.Generation
+	// Cooldown anchor: stamp LastRunAt at SCHEDULE time (not just on worker
+	// completion). isDue guards re-scheduling with time.Since(LastRunAt) <
+	// PollInterval. LastRunAt was only ever set by the worker; a worker that
+	// never runs (init-container crash, DNS failure, image pull error) left it
+	// frozen, so isDue returned true every reconcile → ~1 Job per 10s per
+	// workflow (#118). The worker overwrites this with the actual completion
+	// time when it runs.
+	wf.Status.LastRunAt = metav1.Now()
 	wf.Status.Conditions = setCondition(wf.Status.Conditions, metav1.Condition{
 		Type: "Scheduled", Status: metav1.ConditionTrue, Reason: "WorkerScheduled",
 		Message: "monitor controller scheduled a worker Job", ObservedGeneration: wf.Generation,

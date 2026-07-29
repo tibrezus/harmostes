@@ -507,6 +507,56 @@ func TestExecuteNodeFailureDefaultEdgeStops(t *testing.T) {
 	}
 }
 
+func TestExecuteWorkflowContextInjectsSourceURL(t *testing.T) {
+	// Capture the NodeEnv that the executor passes to each node.
+	var capturedEnv NodeEnv
+	capturingExec := &envCapturingExecutor{onExecute: func(env NodeEnv) { capturedEnv = env }}
+	registry := registryWith(map[string]NodeExecutor{"plugin": capturingExec})
+
+	graph := v1alpha1.GraphSpec{
+		Nodes: []v1alpha1.NodeSpec{
+			{ID: "prepare", Type: "plugin", Config: json.RawMessage(`{"name":"rig-emit"}`)},
+		},
+	}
+
+	ge := NewGraphExecutor(registry, nil, WithWorkflowContext(WorkflowContext{
+		Name:         "harmostes",
+		Namespace:    "harmostes",
+		Workdir:      "/workspace",
+		Source:       "abc123",
+		SourceURL:    "https://git.rezus.cloud/tibrez/rhesadox.git",
+		SourceBranch: "main",
+	}))
+	ge.Execute(context.Background(), graph, "test")
+
+	if capturedEnv.SourceURL != "https://git.rezus.cloud/tibrez/rhesadox.git" {
+		t.Errorf("SourceURL = %q, want the URL from WorkflowContext", capturedEnv.SourceURL)
+	}
+	if capturedEnv.Workflow != "harmostes" {
+		t.Errorf("Workflow = %q, want harmostes", capturedEnv.Workflow)
+	}
+	if capturedEnv.Workdir != "/workspace" {
+		t.Errorf("Workdir = %q, want /workspace", capturedEnv.Workdir)
+	}
+	if capturedEnv.SourceBranch != "main" {
+		t.Errorf("SourceBranch = %q, want main", capturedEnv.SourceBranch)
+	}
+}
+
+// envCapturingExecutor is a test executor that records the NodeEnv it receives.
+type envCapturingExecutor struct {
+	onExecute func(env NodeEnv)
+}
+
+func (e *envCapturingExecutor) Type() string        { return "plugin" }
+func (e *envCapturingExecutor) Deterministic() bool { return true }
+func (e *envCapturingExecutor) Execute(_ context.Context, _ v1alpha1.NodeSpec, env NodeEnv) (NodeResult, error) {
+	if e.onExecute != nil {
+		e.onExecute(env)
+	}
+	return NodeResult{Status: StatusGreen}, nil
+}
+
 // ===========================================================================
 // Checkpointing + lifecycle events (with fake Dapr client)
 // ===========================================================================

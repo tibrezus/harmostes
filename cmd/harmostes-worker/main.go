@@ -177,6 +177,14 @@ func main() {
 			),
 			graph.WithBindings(wf.Spec.Bindings),
 			graph.WithRunID(envOr("POD_NAME", workflow)),
+			graph.WithWorkflowContext(graph.WorkflowContext{
+				Name:         wf.Name,
+				Namespace:    namespace,
+				Workdir:      workdir,
+				Source:       source,
+				SourceURL:    wf.Spec.Source.Repo,
+				SourceBranch: wf.Spec.Source.Branch,
+			}),
 		)
 		flushTelemetry()
 		if err != nil {

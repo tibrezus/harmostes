@@ -119,6 +119,25 @@ type GraphExecutor struct {
 	// on every synthesized Node Result Envelope so history (ADR-0005) can link
 	// envelopes back to the run that produced them.
 	runID string
+
+	// wfCtx carries the Workflow context (source URL, namespace, workdir, etc.)
+	// into every node's NodeEnv. Without this, graph-native plugin nodes don't
+	// receive HARMOSTES_SOURCE_URL and other env vars that the declarative
+	// worker injects automatically. Set via WithWorkflowContext.
+	wfCtx WorkflowContext
+}
+
+// WorkflowContext carries Workflow-level context into graph node execution.
+// It populates the NodeEnv fields that graph-native plugin/agent nodes need to
+// resolve HARMOSTES_SOURCE_URL, HARMOSTES_WORKDIR, etc. — the same env vars
+// that the declarative worker.Run() injects automatically.
+type WorkflowContext struct {
+	Name         string // workflow / pipeline name
+	Namespace    string // k8s namespace
+	Workdir      string // shared working directory
+	Source       string // resolved source ref/revision
+	SourceURL    string // upstream source repo URL
+	SourceBranch string // upstream source branch
 }
 
 // GraphExecutorOption configures a GraphExecutor.
@@ -164,6 +183,14 @@ func WithBindings(bindings []v1alpha1.ExternalSystemBinding) GraphExecutorOption
 // recorded, just without run linkage).
 func WithRunID(runID string) GraphExecutorOption {
 	return func(e *GraphExecutor) { e.runID = runID }
+}
+
+// WithWorkflowContext carries the Workflow-level context (source URL,
+// namespace, workdir, etc.) into every node's NodeEnv. Graph-native plugin
+// nodes need this to resolve HARMOSTES_SOURCE_URL and related env vars that
+// the declarative worker.Run() injects automatically.
+func WithWorkflowContext(ctx WorkflowContext) GraphExecutorOption {
+	return func(e *GraphExecutor) { e.wfCtx = ctx }
 }
 
 // NewGraphExecutor creates a graph executor with the given registry and optional
@@ -277,7 +304,15 @@ func (e *GraphExecutor) Execute(ctx context.Context, graph v1alpha1.GraphSpec, p
 		}
 
 		// Resolve inputs: snapshot of all completed node outputs.
-		env := NodeEnv{Inputs: snapshotOutputs(result.NodeResults)}
+		env := NodeEnv{
+			Inputs:       snapshotOutputs(result.NodeResults),
+			Workflow:     e.wfCtx.Name,
+			Namespace:    e.wfCtx.Namespace,
+			Workdir:      e.wfCtx.Workdir,
+			Source:       e.wfCtx.Source,
+			SourceURL:    e.wfCtx.SourceURL,
+			SourceBranch: e.wfCtx.SourceBranch,
+		}
 
 		// Capability Policy enforcement (ADR-0003, ADR-0001): the deterministic
 		// kernel refuses to execute a node whose Surface Capability requirements

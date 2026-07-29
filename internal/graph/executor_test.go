@@ -477,6 +477,36 @@ func TestExecuteNodeFailureNoHandler(t *testing.T) {
 	}
 }
 
+func TestExecuteNodeFailureDefaultEdgeStops(t *testing.T) {
+	failExec := newRecording("plugin", NodeResult{Status: StatusFailed, Feedback: "crashed"})
+	registry := registryWith(map[string]NodeExecutor{"plugin": failExec})
+
+	// Edges with NO When field (default) should behave as "green": the
+	// downstream node must NOT execute when the source fails.
+	graph := v1alpha1.GraphSpec{
+		Nodes: []v1alpha1.NodeSpec{
+			{ID: "prepare", Type: "plugin"},
+			{ID: "agent", Type: "plugin"},
+			{ID: "deploy", Type: "plugin"},
+		},
+		Edges: []v1alpha1.EdgeSpec{
+			{From: "prepare", To: "agent"}, // no When → default green
+			{From: "agent", To: "deploy"},  // no When → default green
+		},
+	}
+
+	ge := NewGraphExecutor(registry, nil)
+	result, _ := ge.Execute(context.Background(), graph, "test")
+	if result.Status != StatusFailed {
+		t.Errorf("status = %q, want failed", result.Status)
+	}
+	// Only prepare should have been visited (it fails); agent and deploy must
+	// NOT execute.
+	if failExec.visitCount() != 1 {
+		t.Errorf("visited %d nodes, want 1 (prepare only — agent+deploy skipped on failure)", failExec.visitCount())
+	}
+}
+
 // ===========================================================================
 // Checkpointing + lifecycle events (with fake Dapr client)
 // ===========================================================================

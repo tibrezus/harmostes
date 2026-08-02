@@ -14,6 +14,8 @@
 // restart.
 package pijsonl
 
+import "encoding/json"
+
 // Command "type" values (outgoing).
 const (
 	CmdPrompt = "prompt"
@@ -50,4 +52,8 @@ type Event struct {
 	Args     map[string]any `json:"args,omitempty"`
 	Message  string         `json:"message,omitempty"`
 	Success  *bool          `json:"success,omitempty"`
+
+	// Raw is the original JSON line from pi, preserved for extracting fields
+	// not parsed above (e.g. message_end usage data). Not JSON-serialized.
+	Raw json.RawMessage `json:"-"`
 }

@@ -2,6 +2,7 @@ package graph
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -9,6 +10,7 @@ import (
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
 	"github.com/tibrezus/harmostes/internal/agent"
+	"github.com/tibrezus/harmostes/internal/dapr"
 	"github.com/tibrezus/harmostes/internal/observability"
 	"github.com/tibrezus/harmostes/internal/worker"
 )
@@ -22,16 +24,18 @@ import (
 // maxFixes). If no gate is configured, it runs a single prompt and always
 // returns green.
 type AgentExecutor struct {
-	runner   AgentRunner
-	tasks    TaskResolver
-	resolver worker.PluginResolver // for inline gate resolution
+	runner     AgentRunner
+	tasks      TaskResolver
+	resolver   worker.PluginResolver // for inline gate resolution
+	dapr       dapr.Client           // optional: persists usage to state store
+	stateStore string                // Dapr state store component name
 }
 
 // NewAgentExecutor creates an agent node executor. The resolver is used to
 // resolve inline gate plugins; it may be nil if gates are always separate
-// nodes.
-func NewAgentExecutor(runner AgentRunner, tasks TaskResolver, resolver worker.PluginResolver) *AgentExecutor {
-	return &AgentExecutor{runner: runner, tasks: tasks, resolver: resolver}
+// nodes. dapr + stateStore enable usage persistence (nil-safe).
+func NewAgentExecutor(runner AgentRunner, tasks TaskResolver, resolver worker.PluginResolver, daprClient dapr.Client, stateStore string) *AgentExecutor {
+	return &AgentExecutor{runner: runner, tasks: tasks, resolver: resolver, dapr: daprClient, stateStore: stateStore}
 }
 
 func (e *AgentExecutor) Type() string        { return "agent" }
@@ -105,15 +109,35 @@ func (e *AgentExecutor) Execute(ctx context.Context, node v1alpha1.NodeSpec, env
 	span.SetAttributes(
 		attribute.String("harmostes.agent.status", string(status)),
 		attribute.Int("harmostes.agent.attempts", result.Attempts),
+		attribute.Int("harmostes.tokens.input", result.Usage.Input),
+		attribute.Int("harmostes.tokens.output", result.Usage.Output),
+		attribute.Float64("harmostes.tokens.cost", result.Usage.Cost),
 	)
+
+	// Persist usage to Dapr state so the UI/API can query per-run token costs.
+	if e.dapr != nil && result.Usage.Total() > 0 {
+		usageJSON, _ := json.Marshal(map[string]any{
+			"workflow":  env.Workflow,
+			"input":     result.Usage.Input,
+			"output":    result.Usage.Output,
+			"cacheRead": result.Usage.CacheRead,
+			"cost":      result.Usage.Cost,
+			"green":     result.Green,
+			"attempts":  result.Attempts,
+		})
+		if err := e.dapr.SaveState(ctx, e.stateStore, fmt.Sprintf("%s:usage:last", env.Workflow), string(usageJSON)); err != nil {
+			// best-effort — don't fail the node over usage persistence
+		}
+	}
 
 	return NodeResult{
 		Status: status,
 		Outputs: NodeOutputs{
 			"green":    result.Green,
 			"attempts": result.Attempts,
+			"usage":    result.Usage,
 		},
-		Feedback: fmt.Sprintf("agent %s after %d attempt(s)", status, result.Attempts),
+		Feedback: fmt.Sprintf("agent %s after %d attempt(s), %s", status, result.Attempts, result.Usage.String()),
 	}, nil
 }
 

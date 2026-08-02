@@ -111,7 +111,7 @@ func TestRPCEndToEnd(t *testing.T) {
 	defer rpc.Abort(context.Background())
 
 	// turn 1
-	ev, tools, err := rpc.Prompt(ctx, "do the task", "initial task")
+	ev, tools, _, err := rpc.Prompt(ctx, "do the task", "initial task")
 	if err != nil {
 		t.Fatalf("prompt 1: %v", err)
 	}
@@ -122,7 +122,7 @@ func TestRPCEndToEnd(t *testing.T) {
 		t.Fatalf("prompt 1: expected 3 tool calls, got %d", tools)
 	}
 	// turn 2 — same process (warm session)
-	ev, tools, err = rpc.Prompt(ctx, "now fix it", "feedback #1")
+	ev, tools, _, err = rpc.Prompt(ctx, "now fix it", "feedback #1")
 	if err != nil {
 		t.Fatalf("prompt 2: %v", err)
 	}

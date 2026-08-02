@@ -134,6 +134,7 @@ type Dependencies struct {
 	AgentRunner    AgentRunner           // runs the agent task→gate loop
 	TaskResolver   TaskResolver          // resolves task templates (ConfigMap keys, etc.)
 	DaprClient     dapr.Client           // Dapr sidecar client (state + pub/sub). Optional — nil-safe.
+	StateStore     string                // Dapr state store component name (for agent usage persistence).
 	KubeClient     KubeClient            // k8s API client for deployment nodes (vela-app, flux-reconcile). Optional — nil-safe.
 }
 
@@ -158,7 +159,7 @@ func NewDefaultRegistry(deps Dependencies) *Registry {
 	r := NewRegistry()
 	r.Register(NewPluginExecutor(deps.PluginResolver))
 	r.Register(NewGateExecutor(deps.PluginResolver))
-	r.Register(NewAgentExecutor(deps.AgentRunner, deps.TaskResolver, deps.PluginResolver))
+	r.Register(NewAgentExecutor(deps.AgentRunner, deps.TaskResolver, deps.PluginResolver, deps.DaprClient, deps.StateStore))
 	r.Register(NewBranchExecutor())
 	// Dapr node types (G3) — nil-safe: return error if executed without a client.
 	r.Register(NewStateGetExecutor(deps.DaprClient))

@@ -102,14 +102,15 @@ func (r *RPC) readLoop() {
 // Prompt sends a prompt and blocks until agent_end (or the stream closes / the
 // context is cancelled). Returns the number of tool_execution_start events seen
 // during this turn.
-func (r *RPC) Prompt(ctx context.Context, message, label string) (Event, int, error) {
+func (r *RPC) Prompt(ctx context.Context, message, label string) (Event, int, Usage, error) {
 	logf(r.log, Event{Type: "prompt", Message: label})
 	if err := r.send(pijsonl.Prompt{Type: pijsonl.CmdPrompt, Message: message}); err != nil {
-		return Event{}, 0, err
+		return Event{}, 0, Usage{}, err
 	}
 	tracer := observability.Tracer()
 	wf := observability.WorkflowFrom(ctx)
 	var tools int
+	var usage Usage
 	var last Event
 	var toolSpan trace.Span // open tool span (pi runs tools sequentially per turn)
 	endTool := func() {
@@ -122,16 +123,20 @@ func (r *RPC) Prompt(ctx context.Context, message, label string) (Event, int, er
 		select {
 		case <-ctx.Done():
 			endTool()
-			return last, tools, ctx.Err()
+			return last, tools, usage, ctx.Err()
 		case ev, ok := <-r.events:
 			if !ok {
 				// stream closed before agent_end
 				endTool()
-				return last, tools, nil
+				return last, tools, usage, nil
 			}
 			last = ev
 			logf(r.log, ev)
 			switch ev.Type {
+			case "message_end":
+				if u, ok := messageEndUsage(ev.Raw); ok {
+					usage.add(u)
+				}
 			case pijsonl.EvToolStart:
 				tools++
 				endTool() // close any prior (defensive; tools are sequential)
@@ -148,7 +153,7 @@ func (r *RPC) Prompt(ctx context.Context, message, label string) (Event, int, er
 				endTool()
 			case pijsonl.EvAgentEnd:
 				endTool()
-				return ev, tools, nil
+				return ev, tools, usage, nil
 			}
 		}
 	}
@@ -219,6 +224,7 @@ func parseEvent(line []byte) (Event, error) {
 	if ev.Type == "" {
 		return Event{}, errNoType
 	}
+	ev.Raw = json.RawMessage(line)
 	return ev, nil
 }
 

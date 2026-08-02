@@ -217,6 +217,25 @@ func Run(ctx context.Context, deps Deps, opts Options) (res Result, err error) {
 			return failPhase(actx, agentSpan, deps, name, "agent run: "+aerr.Error(), aerr)
 		}
 		agentSpan.SetAttributes(attribute.Int("harmostes.gate.attempts", agentRes.Attempts))
+		if agentRes.Usage.Total() > 0 {
+			logf("agent: tokens %s", agentRes.Usage.String())
+			agentSpan.SetAttributes(
+				attribute.Int("harmostes.tokens.input", agentRes.Usage.Input),
+				attribute.Int("harmostes.tokens.output", agentRes.Usage.Output),
+				attribute.Float64("harmostes.tokens.cost", agentRes.Usage.Cost),
+			)
+			// Persist usage to Dapr state so the UI/API can query per-run token costs.
+			usageJSON, _ := json.Marshal(map[string]any{
+				"workflow":  wf.Name,
+				"input":     agentRes.Usage.Input,
+				"output":    agentRes.Usage.Output,
+				"cacheRead": agentRes.Usage.CacheRead,
+				"cost":      agentRes.Usage.Cost,
+				"green":     agentRes.Green,
+				"attempts":  agentRes.Attempts,
+			})
+			deps.Dapr.SaveState(actx, deps.DaprStateStore, wf.Name+":usage:last", string(usageJSON))
+		}
 		if !agentRes.Green {
 			msg := fmt.Sprintf("gate failed after %d evaluation(s)", agentRes.Attempts)
 			publish(actx, deps, wf, "onFailed", PluginResult{Status: "failed"})

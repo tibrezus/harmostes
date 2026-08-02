@@ -114,7 +114,7 @@ func TestDeterministicFlags(t *testing.T) {
 		{NewPluginExecutor(&fakeResolver{}), true, "plugin"},
 		{NewGateExecutor(&fakeResolver{}), true, "gate"},
 		{NewBranchExecutor(), true, "branch"},
-		{NewAgentExecutor(&fakeAgentRunner{}, nil, nil), false, "agent"},
+		{NewAgentExecutor(&fakeAgentRunner{}, nil, nil, nil, ""), false, "agent"},
 		{NewVelaAppExecutor(nil), true, "vela-app"},
 		{NewFluxReconcileExecutor(nil), true, "flux-reconcile"},
 	}
@@ -138,7 +138,7 @@ func TestTypeMethods(t *testing.T) {
 		{NewPluginExecutor(&fakeResolver{}), "plugin"},
 		{NewGateExecutor(&fakeResolver{}), "gate"},
 		{NewBranchExecutor(), "branch"},
-		{NewAgentExecutor(&fakeAgentRunner{}, nil, nil), "agent"},
+		{NewAgentExecutor(&fakeAgentRunner{}, nil, nil, nil, ""), "agent"},
 		{NewVelaAppExecutor(nil), "vela-app"},
 		{NewFluxReconcileExecutor(nil), "flux-reconcile"},
 	}

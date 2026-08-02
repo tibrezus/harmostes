@@ -14,14 +14,14 @@ type fakeSession struct {
 	idx       int
 }
 
-func (f *fakeSession) Prompt(_ context.Context, message, _ string) (Event, int, error) {
+func (f *fakeSession) Prompt(_ context.Context, message, _ string) (Event, int, Usage, error) {
 	f.prompts = append(f.prompts, message)
 	tools := 0
 	if f.idx < len(f.toolCalls) {
 		tools = f.toolCalls[f.idx]
 	}
 	f.idx++
-	return Event{Type: "agent_end"}, tools, nil
+	return Event{Type: "agent_end"}, tools, Usage{}, nil
 }
 
 func (f *fakeSession) Abort(_ context.Context) error { f.aborted = true; return nil }

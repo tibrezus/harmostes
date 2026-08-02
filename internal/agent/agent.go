@@ -37,9 +37,9 @@ type Logger func(Event)
 // of prompts. The loop depends on this interface so tests can inject a fake.
 type PiSession interface {
 	// Prompt sends a message and blocks until the agent finishes the resulting
-	// turn (agent_end). Returns the agent_end event and the number of tool calls
-	// observed during this turn.
-	Prompt(ctx context.Context, message, label string) (agentEnd Event, toolCalls int, err error)
+	// turn (agent_end). Returns the agent_end event, the number of tool calls,
+	// and the token usage observed during this turn.
+	Prompt(ctx context.Context, message, label string) (agentEnd Event, toolCalls int, usage Usage, err error)
 	// Abort terminates the session and releases the subprocess.
 	Abort(ctx context.Context) error
 }
@@ -73,8 +73,9 @@ func (g CmdGate) Run(ctx context.Context) (bool, string, error) {
 
 // Result is the outcome of a Task run.
 type Result struct {
-	Green    bool // true iff the gate passed
-	Attempts int  // number of gate evaluations performed
+	Green    bool  `json:"green"`    // true iff the gate passed
+	Attempts int   `json:"attempts"` // number of gate evaluations performed
+	Usage    Usage `json:"usage"`    // token counts + cost for the session
 }
 
 // Task runs the agent loop and returns whether the gate ever went green.
@@ -98,6 +99,8 @@ func Task(ctx context.Context, sess PiSession, gate Gate, task string, maxFixes 
 	tracer := observability.Tracer()
 	wf := observability.WorkflowFrom(ctx)
 
+	var usage Usage
+
 	// promptTurn sends one prompt wrapped in a turn span (agent.task for turn 1,
 	// agent.feedback#N for feedback). The turn span is the parent of the tool
 	// spans emitted inside RPC.Prompt, so the trace reads turn → tools. The span
@@ -109,7 +112,8 @@ func Task(ctx context.Context, sess PiSession, gate Gate, task string, maxFixes 
 			attribute.String("harmostes.turn", label),
 			attribute.Int("harmostes.message_chars", len(message)),
 		)
-		_, _, err := sess.Prompt(tctx, message, label)
+		_, _, turnUsage, err := sess.Prompt(tctx, message, label)
+		usage.add(turnUsage)
 		span.End()
 		recordAgentSeconds(ctx, wf, time.Since(start))
 		recordTurn(ctx, wf)
@@ -118,7 +122,7 @@ func Task(ctx context.Context, sess PiSession, gate Gate, task string, maxFixes 
 
 	// turn 1 — the task itself
 	if err := promptTurn("initial task", "agent.task", task); err != nil {
-		return Result{}, err
+		return Result{Usage: usage}, err
 	}
 	attempts := 0
 	for attempt := 1; attempt <= maxFixes; attempt++ {
@@ -126,11 +130,12 @@ func Task(ctx context.Context, sess PiSession, gate Gate, task string, maxFixes 
 		green, out, err := evalGate(ctx, tracer, gate, attempt)
 		if err != nil {
 			recordGateAttempts(ctx, wf, attempts)
-			return Result{Attempts: attempts}, err
+			return Result{Attempts: attempts, Usage: usage}, err
 		}
 		if green {
 			recordGateAttempts(ctx, wf, attempts)
-			return Result{Green: true, Attempts: attempts}, nil
+			recordTokens(ctx, wf, usage)
+			return Result{Green: true, Attempts: attempts, Usage: usage}, nil
 		}
 		logf(log, Event{Type: "gate_failed", Message: fmt.Sprintf("pass %d/%d", attempt, maxFixes)})
 		if attempt >= maxFixes {
@@ -138,7 +143,7 @@ func Task(ctx context.Context, sess PiSession, gate Gate, task string, maxFixes 
 		}
 		fb := buildFeedback(out, attempt)
 		if err := promptTurn(fmt.Sprintf("feedback #%d", attempt), fmt.Sprintf("agent.feedback#%d", attempt), fb); err != nil {
-			return Result{Attempts: attempts}, err
+			return Result{Attempts: attempts, Usage: usage}, err
 		}
 	}
 	// final gate after the last fix
@@ -146,10 +151,11 @@ func Task(ctx context.Context, sess PiSession, gate Gate, task string, maxFixes 
 	green, _, err := evalGate(ctx, tracer, gate, attempts)
 	if err != nil {
 		recordGateAttempts(ctx, wf, attempts)
-		return Result{Attempts: attempts}, err
+		return Result{Attempts: attempts, Usage: usage}, err
 	}
 	recordGateAttempts(ctx, wf, attempts)
-	return Result{Green: green, Attempts: attempts}, nil
+	recordTokens(ctx, wf, usage)
+	return Result{Green: green, Attempts: attempts, Usage: usage}, nil
 }
 
 // evalGate runs the gate under a gate.evaluate span carrying attempt, green, and

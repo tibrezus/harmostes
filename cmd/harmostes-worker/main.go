@@ -165,6 +165,7 @@ func main() {
 			AgentRunner:    deps.Agent,
 			TaskResolver:   taskResolverAdapter{inner: deps.Tasks},
 			DaprClient:     deps.Dapr,
+			StateStore:     deps.DaprStateStore,
 			KubeClient:     graph.NewKubeClient(cl),
 		}
 		result, err := graph.ExecuteGraph(graphCtx, execGraph, execName, graphDeps,

@@ -12,7 +12,7 @@ import (
 
 func TestAgentExecutorGreenNoGate(t *testing.T) {
 	runner := &fakeAgentRunner{result: agent.Result{Green: true, Attempts: 1}}
-	exec := NewAgentExecutor(runner, nil, nil)
+	exec := NewAgentExecutor(runner, nil, nil, nil, "")
 
 	node := v1alpha1.NodeSpec{
 		ID:   "writer",
@@ -35,7 +35,7 @@ func TestAgentExecutorGreenNoGate(t *testing.T) {
 
 func TestAgentExecutorFailed(t *testing.T) {
 	runner := &fakeAgentRunner{result: agent.Result{Green: false, Attempts: 3}}
-	exec := NewAgentExecutor(runner, nil, nil)
+	exec := NewAgentExecutor(runner, nil, nil, nil, "")
 
 	node := v1alpha1.NodeSpec{
 		ID:   "writer",
@@ -62,7 +62,7 @@ func TestAgentExecutorFailed(t *testing.T) {
 
 func TestAgentExecutorRunnerError(t *testing.T) {
 	runner := &fakeAgentRunner{err: errors.New("pi session failed to start")}
-	exec := NewAgentExecutor(runner, nil, nil)
+	exec := NewAgentExecutor(runner, nil, nil, nil, "")
 
 	node := v1alpha1.NodeSpec{
 		ID:   "writer",
@@ -81,7 +81,7 @@ func TestAgentExecutorRunnerError(t *testing.T) {
 func TestAgentExecutorTaskRef(t *testing.T) {
 	runner := &fakeAgentRunner{result: agent.Result{Green: true, Attempts: 1}}
 	tasks := &fakeTaskResolver{text: "resolved task content"}
-	exec := NewAgentExecutor(runner, tasks, nil)
+	exec := NewAgentExecutor(runner, tasks, nil, nil, "")
 
 	node := v1alpha1.NodeSpec{
 		ID:   "writer",
@@ -100,7 +100,7 @@ func TestAgentExecutorTaskRef(t *testing.T) {
 func TestAgentExecutorTaskRefError(t *testing.T) {
 	runner := &fakeAgentRunner{}
 	tasks := &fakeTaskResolver{err: errors.New("configmap not found")}
-	exec := NewAgentExecutor(runner, tasks, nil)
+	exec := NewAgentExecutor(runner, tasks, nil, nil, "")
 
 	node := v1alpha1.NodeSpec{
 		ID:   "writer",
@@ -118,7 +118,7 @@ func TestAgentExecutorTaskRefError(t *testing.T) {
 
 func TestAgentExecutorInlineGateNoResolver(t *testing.T) {
 	runner := &fakeAgentRunner{}
-	exec := NewAgentExecutor(runner, nil, nil) // no resolver
+	exec := NewAgentExecutor(runner, nil, nil, nil, "") // no resolver
 
 	node := v1alpha1.NodeSpec{
 		ID:   "writer",
@@ -138,7 +138,7 @@ func TestAgentExecutorInlineGateNoResolver(t *testing.T) {
 }
 
 func TestAgentExecutorBadConfig(t *testing.T) {
-	exec := NewAgentExecutor(&fakeAgentRunner{}, nil, nil)
+	exec := NewAgentExecutor(&fakeAgentRunner{}, nil, nil, nil, "")
 
 	node := v1alpha1.NodeSpec{
 		ID:     "bad",
@@ -154,7 +154,7 @@ func TestAgentExecutorBadConfig(t *testing.T) {
 
 func TestAgentExecutorMaxFixesDefault(t *testing.T) {
 	runner := &fakeAgentRunner{result: agent.Result{Green: true, Attempts: 1}}
-	exec := NewAgentExecutor(runner, nil, nil)
+	exec := NewAgentExecutor(runner, nil, nil, nil, "")
 
 	// No maxFixes in config → should default to 1
 	node := v1alpha1.NodeSpec{

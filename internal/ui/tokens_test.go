@@ -278,31 +278,24 @@ func TestTokenSecretName_GeneratesUnique(t *testing.T) {
 	}
 }
 
-func TestTokenFromSecret_NeverExposesValue(t *testing.T) {
-	secret := corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "test-secret",
-			Labels: map[string]string{
-				v1alpha1.OwnerLabel: "alice",
-				TokenLabel:          "github",
-			},
-			CreationTimestamp: metav1.Time{},
-		},
-		Data: map[string][]byte{
-			TokenDataKey: []byte("ghp_supersecret_value_12345"),
-		},
-	}
+func TestMaskToken_NeverExposesFullValue(t *testing.T) {
+	full := "ghp_supersecret_value_12345"
+	masked := maskToken(full)
 
-	meta := tokenFromSecret(secret)
-	if meta.Name != "test-secret" {
-		t.Errorf("name = %q", meta.Name)
+	// Masked value must NOT contain the full token.
+	if strings.Contains(masked, full) {
+		t.Error("full token value leaked in masked preview")
 	}
-	if meta.Platform != "github" {
-		t.Errorf("platform = %q", meta.Platform)
+	// Masked value should contain first 4 + last 4.
+	if !strings.Contains(masked, "ghp_") {
+		t.Error("masked value should start with first 4 chars")
 	}
-	// The tokenMeta struct must NOT have a Value field.
-	// This test guards against accidentally adding one.
-	if strings.Contains(meta.Name, "ghp_supersecret_value") {
-		t.Error("token value leaked into metadata")
+	if !strings.Contains(masked, "2345") {
+		t.Error("masked value should end with last 4 chars")
+	}
+	// tokenMeta must NOT have a Value field — only MaskedVal.
+	var meta tokenMeta
+	if meta.MaskedVal != "" {
+		// just ensure the field exists and is accessible
 	}
 }

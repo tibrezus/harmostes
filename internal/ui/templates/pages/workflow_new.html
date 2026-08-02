@@ -67,7 +67,7 @@
 				<select class="ds-form-select" id="tokenSecret" name="tokenSecret">
 					<option value="">— Use shared cluster token —</option>
 					{{range .Tokens}}
-					<option value="{{.Name}}">{{.Name}} ({{.Platform}})</option>
+					<option value="{{.Name}}">{{.Platform}} — {{.MaskedVal}}</option>
 					{{end}}
 				</select>
 				<p class="ds-form-help">Select a per-user token from your <a href="/tokens">Tokens</a>, or use the shared cluster credential.</p>

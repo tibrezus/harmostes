@@ -133,6 +133,7 @@ func (s *Server) Routes() http.Handler {
 
 	// Token management (Phase C)
 	pages.HandleFunc("GET /tokens", s.handleTokenList)
+	pages.HandleFunc("GET /api/tokens", s.handleTokenAPIList)
 	pages.HandleFunc("POST /tokens", s.handleTokenCreate)
 	pages.HandleFunc("POST /tokens/{name}/delete", s.handleTokenDelete)
 

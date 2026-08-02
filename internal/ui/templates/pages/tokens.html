@@ -3,7 +3,7 @@
 	<div class="ds-section-header">
 		<span class="ds-section-title">Git Tokens</span>
 	</div>
-	<p class="ds-section-desc">Manage per-user git platform tokens. These are stored as Kubernetes Secrets and referenced by your workflows via <code>workspaceRepo.tokenRef</code>. Token values are write-only — they are never displayed.</p>
+	<p class="ds-section-desc">Per-user git platform credentials stored as Kubernetes Secrets. Each workflow authenticates with your repositories using the token you select in <code>workspaceRepo.tokenRef</code>. Token values are write-only and never displayed in full.</p>
 </div>
 
 <div class="ds-card" style="margin-bottom: 1.5rem;">
@@ -12,63 +12,81 @@
 	</div>
 	<div class="ds-card-body">
 		<form action="/tokens" method="POST" class="ds-form">
-			<div class="ds-form-row">
-				<label class="ds-form-label" for="platform">Platform</label>
-				<select class="ds-form-select" id="platform" name="platform" required>
-					<option value="github">GitHub</option>
-					<option value="gitlab">GitLab</option>
-					<option value="forgejo">Forgejo</option>
-					<option value="codeberg">Codeberg</option>
-				</select>
-			</div>
-			<div class="ds-form-row">
-				<label class="ds-form-label" for="token">Token</label>
-				<input class="ds-form-input" type="password" id="token" name="token" placeholder="ghp_… / glpat-… / forgejo-…" required autocomplete="off">
-			</div>
-			<div class="ds-form-actions">
-				<button type="submit" class="ds-btn ds-btn--primary">Create Token</button>
+			<div class="ds-form-row" style="display: flex; gap: 1rem; flex-wrap: wrap;">
+				<div style="flex: 0 0 160px;">
+					<label class="ds-form-label" for="platform">Platform</label>
+					<select class="ds-form-select" id="platform" name="platform" required>
+						{{range .Platforms}}
+						<option value="{{.Platform.ID}}">{{.Platform.Label}}</option>
+						{{end}}
+					</select>
+				</div>
+				<div style="flex: 1; min-width: 250px;">
+					<label class="ds-form-label" for="token">Token Value</label>
+					<input class="ds-form-input" type="password" id="token" name="token" placeholder="ghp_… / glpat-… / forgejo-…" required autocomplete="off">
+				</div>
+				<div style="flex: 0 0 auto; align-self: flex-end;">
+					<button type="submit" class="ds-btn ds-btn--primary">Create Token</button>
+				</div>
 			</div>
 		</form>
 	</div>
 </div>
 
-{{- if not .Tokens}}
-<div class="ds-empty">
-	<div class="ds-empty-icon">
-		<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-			<path stroke-linecap="round" stroke-linejoin="round" d="M15.75 5.25a3 3 0 013 3m3 0a6 6 0 01-7.029 5.912c-.563-.097-1.159.026-1.563.43L10.5 17.25H7.5v3H4.5v-3H7.5l1.5-1.5c.404-.404.527-1 .43-1.563A6 6 0 1121.75 8.25z"></path>
-		</svg>
+{{range .Platforms}}
+<div class="ds-card" style="margin-bottom: 1rem;">
+	<div class="ds-card-header" style="display: flex; align-items: center; justify-content: space-between;">
+		<span class="ds-card-title" style="display: flex; align-items: center; gap: 0.5rem;">
+			<span style="display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: {{.Platform.Color}};"></span>
+			{{.Platform.Label}}
+		</span>
+		{{if .HasToken}}
+			<span class="status-badge status-badge--success">✓ Configured</span>
+		{{else}}
+			<span class="status-badge status-badge--muted">Not set</span>
+		{{end}}
 	</div>
-	<span class="ds-empty-title">No Tokens Yet</span>
-	<p class="ds-empty-text">Add a git token above so your workflows can authenticate with your repositories.</p>
+	<div class="ds-card-body">
+		{{if not .Tokens}}
+		<p style="color: var(--ds-text-muted, #6b7280); margin: 0;">No token configured for {{.Platform.Label}}. Workflows targeting {{.Platform.Label}} repositories will use the shared cluster credential unless a personal token is set.</p>
+		{{else}}
+		<div class="ds-table-wrap">
+			<table class="ds-table">
+				<thead>
+					<tr>
+						<th>Secret Name</th>
+						<th>Preview</th>
+						<th>Created</th>
+						<th>Used By</th>
+						<th></th>
+					</tr>
+				</thead>
+				<tbody>
+					{{range .Tokens}}
+					<tr>
+						<td class="ds-table-mono">{{.Name}}</td>
+						<td class="ds-table-mono" style="color: var(--ds-text-muted, #6b7280);">{{.MaskedVal}}</td>
+						<td>{{.CreatedAt}}</td>
+						<td>
+							{{if .Workflows}}
+								{{range .Workflows}}<span class="status-badge status-badge--info">{{.}}</span> {{end}}
+							{{else}}
+								<span style="color: var(--ds-text-muted, #6b7280);">—</span>
+							{{end}}
+						</td>
+						<td>
+							<form action="/tokens/{{.Name}}/delete" method="POST" style="display: inline;"
+								onsubmit="return confirm('Delete token {{.MaskedVal}}?\n\n{{if .Workflows}}⚠ {{len .Workflows}} workflow(s) use this token: {{range .Workflows}}{{.}} {{end}}\nThey will fail until a new token is set.{{else}}No workflows currently use this token.{{end}}')">
+								<button type="submit" class="ds-btn ds-btn--danger ds-btn--sm">Delete</button>
+							</form>
+						</td>
+					</tr>
+					{{end}}
+				</tbody>
+			</table>
+		</div>
+		{{end}}
+	</div>
 </div>
-{{- else}}
-<div class="ds-table-wrap">
-	<table class="ds-table">
-		<thead>
-			<tr>
-				<th>Name</th>
-				<th>Platform</th>
-				<th>Created</th>
-				<th></th>
-			</tr>
-		</thead>
-		<tbody>
-			{{range .Tokens}}
-			<tr>
-				<td class="ds-table-mono">{{.Name}}</td>
-				<td><span class="status-badge status-badge--muted">{{.Platform}}</span></td>
-				<td>{{.CreatedAt}}</td>
-				<td>
-					<form action="/tokens/{{.Name}}/delete" method="POST" style="display: inline;"
-						onsubmit="return confirm('Delete token {{.Name}}? Workflows using it will fail until a new token is set.')">
-						<button type="submit" class="ds-btn ds-btn--danger ds-btn--sm">Delete</button>
-					</form>
-				</td>
-			</tr>
-			{{end}}
-		</tbody>
-	</table>
-</div>
-{{- end}}
+{{end}}
 {{end}}

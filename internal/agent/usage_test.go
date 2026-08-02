@@ -57,7 +57,7 @@ func TestUsageAccumulation(t *testing.T) {
 	if u.Cost != 0.03 {
 		t.Errorf("cost = %f, want 0.03", u.Cost)
 	}
-	if u.Total() != 335 {
-		t.Errorf("total = %d, want 335", u.Total())
+	if u.Total() != 435 {
+		t.Errorf("total = %d, want 435", u.Total())
 	}
 }

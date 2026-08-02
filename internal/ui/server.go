@@ -99,6 +99,7 @@ func (s *Server) Routes() http.Handler {
 	pages.HandleFunc("GET /", s.handleIndex)
 	pages.HandleFunc("GET /workflows", s.handleWorkflowList)
 	pages.HandleFunc("GET /workflows/new", s.handleWorkflowNew)
+	pages.HandleFunc("GET /workflows/new/canvas", s.handleSPA)    // workflow canvas editor (graph-native creation)
 	pages.HandleFunc("GET /workflows/{name}/canvas", s.handleSPA) // workflow canvas (read-only compiled graph)
 	pages.HandleFunc("GET /workflows/{name}", s.handleWorkflowDetail)
 	pages.HandleFunc("GET /workflows/{name}/runs/{job}", s.handleRunDetail)
@@ -113,6 +114,7 @@ func (s *Server) Routes() http.Handler {
 	pages.HandleFunc("GET /pipelines/{name}", s.handleSPA)
 
 	// Workflow graph API (compiles a Workflow CR spec → GraphSpec for the canvas)
+	pages.HandleFunc("POST /api/workflows", s.handleWorkflowGraphCreate)
 	pages.HandleFunc("GET /api/workflows/{name}/graph", s.handleWorkflowGraphAPI)
 	pages.HandleFunc("PUT /api/workflows/{name}/graph", s.handleWorkflowGraphPut)
 	pages.HandleFunc("POST /api/workflows/{name}/convert", s.handleWorkflowGraphConvert)

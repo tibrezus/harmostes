@@ -1,6 +1,7 @@
 {{define "pages/workflows.html"}}
-<div style="margin-bottom: 1rem;">
+<div style="margin-bottom: 1rem; display: flex; gap: 0.5rem;">
 	<a href="/workflows/new" class="ds-btn ds-btn--primary ds-btn--sm">+ New Workflow</a>
+	<a href="/workflows/new/canvas" class="ds-btn ds-btn--secondary ds-btn--sm">⊞ Canvas Editor</a>
 </div>
 {{- if not .Workflows}}
 <div class="ds-empty">

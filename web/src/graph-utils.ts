@@ -91,6 +91,51 @@ export function edgeLabel(e: EdgeSpec): string | undefined {
   return e.when;
 }
 
+// Serialize React Flow state back to GraphSpec.
+export function rfToGraph(nodes: Node<RFNodeData>[], edges: Edge[]): GraphSpec {
+  return {
+    nodes: nodes.map((n) => n.data.spec),
+    edges: edges.map((e) => ({
+      from: e.source,
+      to: e.target,
+      when: (e.data as { when?: string })?.when || "",
+      maxRetries: (e.data as { maxRetries?: number })?.maxRetries || 0,
+    })),
+  };
+}
+
+// Auto-incrementing node ID generator.
+let _nodeCounter = 0;
+export function generateNodeId(): string {
+  _nodeCounter++;
+  return `node-${Date.now().toString(36)}-${_nodeCounter}`;
+}
+
+// setNestedValue sets a.b.c = value in an object (used by config panel).
+export function setNestedValue(obj: Record<string, unknown>, path: string, value: string) {
+  const keys = path.split(".");
+  let cur = obj;
+  for (let i = 0; i < keys.length - 1; i++) {
+    const k = keys[i];
+    if (cur[k] === undefined || typeof cur[k] !== "object") {
+      cur[k] = {};
+    }
+    cur = cur[k] as Record<string, unknown>;
+  }
+  const lastKey = keys[keys.length - 1];
+  if (value === "") {
+    delete cur[lastKey];
+  } else {
+    const num = Number(value);
+    if (!isNaN(num) && value.trim() !== "") {
+      cur[lastKey] = num;
+    } else if (value === "true" || value === "false") {
+      cur[lastKey] = value === "true";
+    } else {
+      cur[lastKey] = value;
+    }
+  }
+}
 // Derive execution states from a stream of lifecycle events.
 // Used by both the pipeline editor and workflow canvas for live overlays.
 export function deriveExecStates(

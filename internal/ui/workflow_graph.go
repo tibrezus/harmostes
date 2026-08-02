@@ -3,6 +3,7 @@ package ui
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -210,5 +211,99 @@ func (s *Server) handleWorkflowGraphConvert(w http.ResponseWriter, r *http.Reque
 		Source:      wf.Spec.Source,
 		Trigger:     wf.Spec.Source.Kind,
 		Graph:       gs,
+	})
+}
+
+// workflowCreateRequest is the JSON body for POST /api/workflows (canvas creation).
+type workflowCreateRequest struct {
+	Name   string              `json:"name"`
+	Source v1alpha1.SourceSpec `json:"source"`
+	Graph  v1alpha1.GraphSpec  `json:"graph"`
+}
+
+// handleWorkflowGraphCreate creates a new graph-native Workflow CR from the
+// canvas. The caller draws nodes + edges, provides a source spec, and the
+// handler creates the Workflow with spec.graph + the owner label.
+//
+// Route: POST /api/workflows
+func (s *Server) handleWorkflowGraphCreate(w http.ResponseWriter, r *http.Request) {
+	owner := identityFromContext(r.Context())
+	ownerName := ""
+	if owner != nil {
+		ownerName = owner.Username
+	}
+
+	var req workflowCreateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeAPIError(w, http.StatusBadRequest, "invalid JSON body: %v", err)
+		return
+	}
+
+	name := strings.TrimSpace(req.Name)
+	if name == "" || !workflowNameRe.MatchString(name) || len(name) > maxWorkflowNameLen {
+		s.writeAPIError(w, http.StatusBadRequest, "invalid workflow name: must be lowercase alphanumeric with hyphens, max 63 chars")
+		return
+	}
+
+	if len(req.Graph.Nodes) == 0 {
+		s.writeAPIError(w, http.StatusBadRequest, "graph must have at least one node")
+		return
+	}
+
+	if req.Source.Repo == "" {
+		req.Source.Kind = "git"
+		req.Source.Repo = ""
+	}
+	if req.Source.Kind == "" {
+		req.Source.Kind = "git"
+	}
+	if req.Source.Branch == "" {
+		req.Source.Branch = "main"
+	}
+
+	// Check it doesn't already exist.
+	var existing v1alpha1.Workflow
+	if err := s.k8sClient.Get(r.Context(), client.ObjectKey{Namespace: s.namespace, Name: name}, &existing); err == nil {
+		s.writeAPIError(w, http.StatusConflict, "workflow %q already exists", name)
+		return
+	}
+
+	labels := map[string]string{
+		v1alpha1.OwnerLabel: ownerName,
+	}
+	wf := v1alpha1.Workflow{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "harmostes.dev/v1alpha1",
+			Kind:       "Workflow",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: s.namespace,
+			Labels:    labels,
+			Annotations: map[string]string{
+				"harmostes.dev/graph-native":     "true",
+				"harmostes.dev/last-modified-by": ownerName,
+				"harmostes.dev/last-modified-at": time.Now().UTC().Format(time.RFC3339),
+			},
+		},
+		Spec: v1alpha1.WorkflowSpec{
+			Source: req.Source,
+			Graph:  &req.Graph,
+		},
+	}
+
+	if err := s.k8sClient.Create(r.Context(), &wf); err != nil {
+		s.writeAPIError(w, http.StatusInternalServerError, "create workflow: %v", err)
+		return
+	}
+
+	s.auditLog("workflow.graph_create", name, ownerName, "nodes", len(req.Graph.Nodes))
+	s.writeJSON(w, http.StatusCreated, workflowGraphResponse{
+		Workflow:    name,
+		Disabled:    false,
+		GraphNative: true,
+		Source:      req.Source,
+		Trigger:     req.Source.Kind,
+		Graph:       req.Graph,
 	})
 }

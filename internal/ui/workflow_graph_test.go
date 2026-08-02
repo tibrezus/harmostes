@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -8,6 +9,7 @@ import (
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
 )
@@ -294,5 +296,77 @@ func TestHandleWorkflowGraphConvert_AlreadyGraphNative(t *testing.T) {
 
 	if rr.Code != http.StatusConflict {
 		t.Errorf("expected 409, got %d", rr.Code)
+	}
+}
+
+// TestHandleWorkflowGraphCreate verifies that POST /api/workflows creates a
+// new graph-native Workflow CR from a canvas graph.
+func TestHandleWorkflowGraphCreate(t *testing.T) {
+	s := workflowTestServer() // no pre-existing objects
+
+	body := `{"name":"canvas-wf","source":{"kind":"git","repo":"https://github.com/org/repo.git","branch":"main","language":"go"},"graph":{"nodes":[{"id":"prepare","type":"plugin","config":{"name":"rig-emit"}}],"edges":[]}}`
+	req := httptest.NewRequest(http.MethodPost, "/api/workflows", strings.NewReader(body))
+	req = req.WithContext(withIdentity(req.Context(), &Identity{Username: "alice"}))
+
+	rr := httptest.NewRecorder()
+	s.handleWorkflowGraphCreate(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// Verify the workflow was actually created.
+	var created v1alpha1.Workflow
+	if err := s.k8sClient.Get(context.Background(), client.ObjectKey{Namespace: "harmostes", Name: "canvas-wf"}, &created); err != nil {
+		t.Fatalf("workflow not created: %v", err)
+	}
+	if created.Labels[v1alpha1.OwnerLabel] != "alice" {
+		t.Errorf("owner label = %q, want alice", created.Labels[v1alpha1.OwnerLabel])
+	}
+	if created.Spec.Graph == nil || len(created.Spec.Graph.Nodes) != 1 {
+		t.Errorf("graph not set on created workflow")
+	}
+	if created.Spec.Source.Repo != "https://github.com/org/repo.git" {
+		t.Errorf("source repo = %q", created.Spec.Source.Repo)
+	}
+}
+
+// TestHandleWorkflowGraphCreate_Conflict verifies that creating a workflow
+// that already exists returns 409.
+func TestHandleWorkflowGraphCreate_Conflict(t *testing.T) {
+	existing := &v1alpha1.Workflow{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "exists", Namespace: "harmostes",
+			Labels: map[string]string{v1alpha1.OwnerLabel: "alice"},
+		},
+	}
+	s := workflowTestServer(existing)
+
+	body := `{"name":"exists","source":{"kind":"git","repo":"x"},"graph":{"nodes":[{"id":"n","type":"plugin"}]}}`
+	req := httptest.NewRequest(http.MethodPost, "/api/workflows", strings.NewReader(body))
+	req = req.WithContext(withIdentity(req.Context(), &Identity{Username: "alice"}))
+
+	rr := httptest.NewRecorder()
+	s.handleWorkflowGraphCreate(rr, req)
+
+	if rr.Code != http.StatusConflict {
+		t.Errorf("expected 409, got %d", rr.Code)
+	}
+}
+
+// TestHandleWorkflowGraphCreate_EmptyGraph verifies that a graph with zero
+// nodes is rejected.
+func TestHandleWorkflowGraphCreate_EmptyGraph(t *testing.T) {
+	s := workflowTestServer()
+
+	body := `{"name":"empty","source":{"kind":"git","repo":"x"},"graph":{"nodes":[],"edges":[]}}`
+	req := httptest.NewRequest(http.MethodPost, "/api/workflows", strings.NewReader(body))
+	req = req.WithContext(withIdentity(req.Context(), &Identity{Username: "alice"}))
+
+	rr := httptest.NewRecorder()
+	s.handleWorkflowGraphCreate(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", rr.Code)
 	}
 }

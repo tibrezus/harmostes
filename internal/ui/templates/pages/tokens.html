@@ -13,13 +13,19 @@
 	<div class="ds-card-body">
 		<form action="/tokens" method="POST" class="ds-form">
 			<div class="ds-form-row" style="display: flex; gap: 1rem; flex-wrap: wrap;">
-				<div style="flex: 0 0 160px;">
+				<div style="flex: 0 0 220px;">
 					<label class="ds-form-label" for="platform">Platform</label>
-					<select class="ds-form-select" id="platform" name="platform" required>
+					<input class="ds-form-input" list="known-platforms" id="platform" name="platform" required
+						placeholder="github, gitlab, or any name…"
+						pattern="[a-z0-9]([a-z0-9-]*[a-z0-9])?"
+						title="Lowercase alphanumeric with hyphens, max 63 chars"
+						style="text-transform: lowercase;">
+					<datalist id="known-platforms">
 						{{range .Platforms}}
 						<option value="{{.ID}}">{{.Label}}</option>
 						{{end}}
-					</select>
+					</datalist>
+					<p class="ds-form-help" style="margin-top: 4px;">Type any platform name or pick from suggestions.</p>
 				</div>
 				<div style="flex: 1; min-width: 250px;">
 					<label class="ds-form-label" for="token">Token Value</label>

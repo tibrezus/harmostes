@@ -37,6 +37,23 @@ spec:
     - name: consumerID
       value: harmostes
 ---
+# Dapr secret store — wraps the cluster's k8s Secret backend so all apps (UI,
+# worker) read secrets through the Dapr abstraction. Swappable to Vault or
+# Bitwarden-backed stores by changing this Component only.
+apiVersion: dapr.io/v1alpha1
+kind: Component
+metadata:
+  name: {{ .Values.dapr.secretStore }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: harmostes
+spec:
+  type: secretstores.kubernetes
+  version: v1
+  metadata:
+    - name: namespace
+      value: {{ .Values.namespace }}
+---
 # Dapr Configuration referenced by worker pods via dapr.io/config. The sentry
 # rejects a daprd whose referenced config does not exist, so this MUST be present
 # before enabling sidecar injection. Mirrors llm-wiki-config.

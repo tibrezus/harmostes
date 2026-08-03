@@ -23,6 +23,7 @@ dapr:
   # fork-maintenance (DB 2).
   stateStore: statestore
   pubSub: pubsub
+  secretStore: harmostes-secret-store   # Dapr secret store component (type: secretstores.kubernetes)
   valkeyHost: valkey.llm-wiki.svc.cluster.local:6379
   valkeyDB: "3"
   injectWorker: true    # Dapr sidecar injected into worker Jobs (events/state + clean shutdown)

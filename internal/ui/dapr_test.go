@@ -43,6 +43,10 @@ func (m *mockDaprClient) Publish(ctx context.Context, pubsub, topic, jsonPayload
 	return nil
 }
 
+func (m *mockDaprClient) GetSecret(_ context.Context, _, _ string) (map[string]string, error) {
+	return nil, nil
+}
+
 func TestNewDaprClient(t *testing.T) {
 	mock := &mockDaprClient{}
 	client := NewDaprClient(mock)

@@ -35,6 +35,10 @@ type Client interface {
 	// Publish sends a JSON payload on a pub/sub topic (best-effort; returns nil on
 	// 200/204).
 	Publish(ctx context.Context, pubsub, topic, jsonPayload string) error
+	// GetSecret reads a secret from a Dapr secret store. Returns the secret's
+	// key-value pairs (usually one key: "token" → value). A missing secret is
+	// an error (Dapr returns 403/500 for missing secrets).
+	GetSecret(ctx context.Context, store, key string) (map[string]string, error)
 }
 
 // HTTPClient talks to a Dapr sidecar over HTTP.
@@ -160,8 +164,33 @@ func (c *HTTPClient) Publish(ctx context.Context, pubsub, topic, jsonPayload str
 	return nil
 }
 
-// Tracing returns a Client decorator that emits a client span for every
-// building-block call, so harmostes's side of the Dapr boundary is observable
+// GetSecret reads a secret from a Dapr secret store via the sidecar's
+// secret API: GET /v1.0/secrets/{store}/{key}. Returns the key-value pairs
+// in the secret (typically {"token": "<value>"}).
+func (c *HTTPClient) GetSecret(ctx context.Context, store, key string) (map[string]string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		fmt.Sprintf("%s/v1.0/secrets/%s/%s", c.BaseURL, store, key), nil)
+	if err != nil {
+		return nil, err
+	}
+	inject(ctx, req)
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("dapr getsecret %s/%s: %s", store, key, resp.Status)
+	}
+	var result map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("dapr getsecret %s/%s: decode: %w", store, key, err)
+	}
+	return result, nil
+}
+
+// Tracing returns a Client decorator
+// that emits a client span for every, so harmostes's side of the Dapr boundary is observable
 // and interlocks with daprd's now-native OTel. daprd emits the matching runtime
 // span as a CHILD of this span: the inner HTTP client injects this span's W3C
 // traceparent, yielding a continuous
@@ -236,6 +265,21 @@ func (t *tracingClient) Publish(ctx context.Context, pubsub, topic, jsonPayload 
 		attribute.String("dapr.pubsub", pubsub),
 		attribute.String("dapr.topic", topic),
 	)
+}
+
+func (t *tracingClient) GetSecret(ctx context.Context, store, key string) (map[string]string, error) {
+	var result map[string]string
+	err := t.run(ctx, "secret", func(ctx context.Context) error {
+		r, e := t.inner.GetSecret(ctx, store, key)
+		result = r
+		return e
+	},
+		attribute.String("rpc.system", "dapr"),
+		attribute.String("rpc.method", "secret"),
+		attribute.String("dapr.secretstore", store),
+		attribute.String("dapr.secretkey", key),
+	)
+	return result, err
 }
 
 // run executes fn under a dapr.<op> client span, recording the error/status on

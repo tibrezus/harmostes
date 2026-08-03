@@ -48,6 +48,9 @@ type fakeDapr struct{ published []string }
 func (f *fakeDapr) GetState(_ context.Context, _, _ string) (string, error) { return "", nil }
 func (f *fakeDapr) SaveState(_ context.Context, _, _, _ string) error       { return nil }
 func (f *fakeDapr) DeleteState(_ context.Context, _, _ string) error        { return nil }
+func (f *fakeDapr) GetSecret(_ context.Context, _, _ string) (map[string]string, error) {
+	return nil, nil
+}
 func (f *fakeDapr) Publish(_ context.Context, _, topic, _ string) error {
 	f.published = append(f.published, topic)
 	return nil

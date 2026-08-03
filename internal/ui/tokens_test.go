@@ -294,8 +294,8 @@ func TestMaskToken_NeverExposesFullValue(t *testing.T) {
 	if !strings.Contains(masked, "2345") {
 		t.Error("masked value should end with last 4 chars")
 	}
-	// tokenMeta must NOT have a Value field — only MaskedVal.
-	var meta tokenMeta
+	// credentialMeta must NOT have a Value field — only MaskedVal.
+	var meta credentialMeta
 	if meta.MaskedVal != "" {
 		// just ensure the field exists and is accessible
 	}

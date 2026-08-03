@@ -52,6 +52,10 @@ func (f *fakeDaprClient) DeleteState(_ context.Context, store, key string) error
 	return nil
 }
 
+func (f *fakeDaprClient) GetSecret(_ context.Context, _, _ string) (map[string]string, error) {
+	return nil, nil
+}
+
 func (f *fakeDaprClient) Publish(_ context.Context, pubsub, topic, payload string) error {
 	if f.pubErr != nil {
 		return f.pubErr

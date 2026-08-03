@@ -289,11 +289,9 @@ func (s *Server) listExternalSecrets(ctx context.Context, owner string) ([]crede
 	list.SetGroupVersionKind(schema.GroupVersionKind{
 		Group: "external-secrets.io", Version: "v1", Kind: "ExternalSecretList",
 	})
-	opts := []client.ListOption{
-		client.InNamespace(s.namespace),
-		client.MatchingLabels{v1alpha1.OwnerLabel: owner},
-	}
-	if err := s.k8sClient.List(ctx, &list, opts...); err != nil {
+	// List ALL ExternalSecrets in the namespace — shared (cluster-managed) ones
+	// don't carry the owner label but should still be visible.
+	if err := s.k8sClient.List(ctx, &list, client.InNamespace(s.namespace)); err != nil {
 		return nil, err
 	}
 
@@ -302,7 +300,18 @@ func (s *Server) listExternalSecrets(ctx context.Context, owner string) ([]crede
 		labels := es.GetLabels()
 		platform := labels[TokenLabel]
 		if platform == "" {
-			continue
+			// No platform label — try to infer from the secret name pattern:
+			// harmostes-{platform}-token → platform
+			name := es.GetName()
+			if strings.Contains(name, "-") {
+				parts := strings.Split(name, "-")
+				if len(parts) >= 3 && parts[len(parts)-1] == "token" {
+					platform = strings.Join(parts[1:len(parts)-1], "-")
+				}
+			}
+			if platform == "" {
+				continue
+			}
 		}
 		syncStatus := "Pending"
 		if conditions, found, _ := unstructured.NestedSlice(es.Object, "status", "conditions"); found {

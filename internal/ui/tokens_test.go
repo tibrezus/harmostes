@@ -159,8 +159,9 @@ func TestHandleTokenCreate_RejectsEmptyToken(t *testing.T) {
 func TestHandleTokenCreate_RejectsInvalidPlatform(t *testing.T) {
 	s := tokenTestServer()
 
+	// Uppercase and spaces are not valid platform IDs (must be DNS-safe lowercase).
 	form := url.Values{}
-	form.Set("platform", "evilcorp")
+	form.Set("platform", "Evil Corp!")
 	form.Set("token", "some-token")
 	req := httptest.NewRequest(http.MethodPost, "/tokens", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -170,7 +171,7 @@ func TestHandleTokenCreate_RejectsInvalidPlatform(t *testing.T) {
 	s.handleTokenCreate(rec, req)
 
 	if !strings.Contains(rec.Body.String(), "Invalid platform") {
-		t.Error("expected 'Invalid platform' error")
+		t.Error("expected 'Invalid platform' error for non-DNS-safe platform name")
 	}
 }
 

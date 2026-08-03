@@ -40,13 +40,15 @@ import (
 
 func main() {
 	var (
-		addr       string
-		namespace  string
-		rbacPolicy string
+		addr            string
+		namespace       string
+		rbacPolicy      string
+		platformsConfig string
 	)
 	flag.StringVar(&addr, "addr", envOr("HARMOSTES_UI_ADDR", ":8083"), "HTTP listen address")
 	flag.StringVar(&namespace, "namespace", envOr("HARMOSTES_NAMESPACE", "harmostes"), "k8s namespace to query")
 	flag.StringVar(&rbacPolicy, "rbac-policy", envOr("HARMOSTES_RBAC_POLICY_FILE", ""), "path to JSON node-type RBAC policy file")
+	flag.StringVar(&platformsConfig, "platforms-config", envOr("HARMOSTES_PLATFORMS_CONFIG_FILE", ""), "path to JSON platform display config file")
 	flag.Parse()
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
@@ -68,6 +70,11 @@ func main() {
 		logger.Info("RBAC policy empty — all node types unrestricted")
 	}
 
+	// Load platform display configs (plug-and-play: any platform string is
+	// accepted for tokens; this only enriches display metadata for known ones).
+	platformConfigs := ui.LoadPlatformConfigs(platformsConfig)
+	logger.Info("platform configs loaded", "count", len(platformConfigs))
+
 	// k8s client — same scheme as controller/worker (v1alpha1 + core + batch).
 	// Use a direct (non-cached) client: the UI is read-heavy but low-traffic.
 	// A direct client avoids informer cache sync issues (the same lesson as
@@ -85,7 +92,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	server, err := ui.New(k8sClient, namespace, logger, kubeClient, nodePolicy)
+	server, err := ui.New(k8sClient, namespace, logger, kubeClient, nodePolicy, platformConfigs)
 	if err != nil {
 		logger.Error("create ui server", "err", err)
 		os.Exit(1)

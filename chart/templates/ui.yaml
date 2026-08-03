@@ -52,6 +52,7 @@ spec:
             {{- if .Values.ui.rbac }}
             - --rbac-policy=/etc/harmostes-rbac/policy.json
             {{- end }}
+            - --platforms-config=/etc/harmostes-platforms/platforms.json
           env:
             - name: HARMOSTES_NAMESPACE
               value: {{ .Values.namespace }}
@@ -79,12 +80,18 @@ spec:
               mountPath: /etc/harmostes-rbac
               readOnly: true
           {{- end }}
-      {{- if .Values.ui.rbac }}
+            - name: platforms-config
+              mountPath: /etc/harmostes-platforms
+              readOnly: true
       volumes:
+        {{- if .Values.ui.rbac }}
         - name: rbac-policy
           configMap:
             name: harmostes-ui-rbac
-      {{- end }}
+        {{- end }}
+        - name: platforms-config
+          configMap:
+            name: harmostes-ui-platforms
 ---
 apiVersion: v1
 kind: Service

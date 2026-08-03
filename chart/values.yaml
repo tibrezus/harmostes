@@ -51,6 +51,22 @@ ui:
     nodeTypePolicy:
       vela-app: ["ops", "admin"]
       flux-reconcile: ["ops", "admin"]
+  # Platform display configs (plug-and-play). Any platform string is accepted
+  # for token creation — this only provides display metadata (label, color).
+  # Add new platforms here (GitOps); no code change needed.
+  platforms:
+    - id: github
+      label: GitHub
+      color: "#24292e"
+    - id: gitlab
+      label: GitLab
+      color: "#fc6d26"
+    - id: forgejo
+      label: Forgejo
+      color: "#fb8c00"
+    - id: codeberg
+      label: Codeberg
+      color: "#2185d0"
 
 # Observability via the rezuscloud/dapr fork: push traces+metrics+logs over OTLP
 # to SigNoz through a unified spec.observability.otel block, deployed per-pod via

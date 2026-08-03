@@ -17,7 +17,7 @@
 					<label class="ds-form-label" for="platform">Platform</label>
 					<select class="ds-form-select" id="platform" name="platform" required>
 						{{range .Platforms}}
-						<option value="{{.Platform.ID}}">{{.Platform.Label}}</option>
+						<option value="{{.ID}}">{{.Label}}</option>
 						{{end}}
 					</select>
 				</div>
@@ -37,8 +37,8 @@
 <div class="ds-card" style="margin-bottom: 1rem;">
 	<div class="ds-card-header" style="display: flex; align-items: center; justify-content: space-between;">
 		<span class="ds-card-title" style="display: flex; align-items: center; gap: 0.5rem;">
-			<span style="display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: {{.Platform.Color}};"></span>
-			{{.Platform.Label}}
+			<span style="display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: {{.Color}};"></span>
+			{{.Label}}
 		</span>
 		{{if .HasToken}}
 			<span class="status-badge status-badge--success">✓ Configured</span>
@@ -48,7 +48,7 @@
 	</div>
 	<div class="ds-card-body">
 		{{if not .Tokens}}
-		<p style="color: var(--ds-text-muted, #6b7280); margin: 0;">No token configured for {{.Platform.Label}}. Workflows targeting {{.Platform.Label}} repositories will use the shared cluster credential unless a personal token is set.</p>
+		<p style="color: var(--ds-text-muted, #6b7280); margin: 0;">No token configured for {{.Label}}. Workflows targeting {{.Label}} repositories will use the shared cluster credential unless a personal token is set.</p>
 		{{else}}
 		<div class="ds-table-wrap">
 			<table class="ds-table">

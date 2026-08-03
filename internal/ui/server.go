@@ -40,19 +40,20 @@ type logFetchFunc func(ctx context.Context, namespace, podName, container string
 // Server is the harmostes-ui HTTP server.
 type Server struct {
 	k8sClient  client.Client
-	logFetch   logFetchFunc // pod log viewer (Phase E); nil = logs unavailable
+	logFetch   logFetchFunc
 	namespace  string
 	logger     *slog.Logger
 	templates  *template.Template
-	hub        *EventHub       // pipeline lifecycle event fan-out (G7 live execution)
-	nodePolicy rbac.NodePolicy // node-type RBAC (G8 enterprise); nil = unrestricted
+	hub        *EventHub
+	nodePolicy rbac.NodePolicy
+	platforms  *platformRegistry // display config for git platforms (plug-and-play)
 }
 
 // New creates a Server with parsed templates and the given k8s client.
 // If kubeClient is non-nil, the run-detail log viewer is enabled.
 // nodePolicy restricts which node types a user can include in pipelines;
 // pass nil for unrestricted access.
-func New(k8sClient client.Client, namespace string, logger *slog.Logger, kubeClient kubernetes.Interface, nodePolicy rbac.NodePolicy) (*Server, error) {
+func New(k8sClient client.Client, namespace string, logger *slog.Logger, kubeClient kubernetes.Interface, nodePolicy rbac.NodePolicy, platformConfigs []PlatformConfig) (*Server, error) {
 	tmpl, err := parseTemplates()
 	if err != nil {
 		return nil, fmt.Errorf("parse templates: %w", err)
@@ -65,6 +66,7 @@ func New(k8sClient client.Client, namespace string, logger *slog.Logger, kubeCli
 		templates:  tmpl,
 		hub:        NewEventHub(),
 		nodePolicy: nodePolicy,
+		platforms:  newPlatformRegistry(platformConfigs),
 	}
 
 	if kubeClient != nil {

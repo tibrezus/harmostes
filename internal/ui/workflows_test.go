@@ -40,6 +40,7 @@ func workflowTestServer(existing ...client.Object) *Server {
 		templates:  tmpl,
 		hub:        NewEventHub(),
 		nodePolicy: nil,
+		platforms:  newPlatformRegistry(DefaultPlatformConfigs()),
 	}
 }
 

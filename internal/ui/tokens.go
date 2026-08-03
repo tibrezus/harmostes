@@ -25,22 +25,7 @@ const TokenLabel = "harmostes.dev/token"
 // TokenDataKey is the Secret data key that holds the actual token value.
 const TokenDataKey = "token"
 
-// validTokenName restricts secret names to safe DNS-compatible identifiers.
 var validTokenName = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
-
-// All supported platforms, in display order.
-var allPlatforms = []platformInfo{
-	{"github", "GitHub", "#24292e"},
-	{"gitlab", "GitLab", "#fc6d26"},
-	{"forgejo", "Forgejo", "#ff6600"},
-	{"codeberg", "Codeberg", "#2185d0"},
-}
-
-type platformInfo struct {
-	ID    string `json:"id"`
-	Label string `json:"label"`
-	Color string `json:"color"`
-}
 
 // tokenSecretName generates a collision-resistant name: <owner>-<platform>-<rand>.
 func tokenSecretName(owner, platform string) string {
@@ -49,9 +34,7 @@ func tokenSecretName(owner, platform string) string {
 	return fmt.Sprintf("%s-%s-%s", owner, platform, hex.EncodeToString(b))
 }
 
-// maskToken produces a safe preview of the token value: first 4 + … + last 4.
-// This lets users identify which token is which without revealing the full value.
-// Tokens shorter than 12 chars are fully masked.
+// maskToken produces a safe preview: first 4 + … + last 4 chars.
 func maskToken(value string) string {
 	if len(value) <= 12 {
 		return strings.Repeat("•", len(value))
@@ -59,8 +42,8 @@ func maskToken(value string) string {
 	return value[:4] + "…" + value[len(value)-4:]
 }
 
-// tokenMeta is the display metadata for a token. The actual VALUE is never
-// returned to the browser — only a masked preview.
+// tokenMeta is the display metadata for a token. The VALUE is never returned
+// in full — only a masked preview.
 type tokenMeta struct {
 	Name      string   `json:"name"`
 	Platform  string   `json:"platform"`
@@ -69,14 +52,16 @@ type tokenMeta struct {
 	Workflows []string `json:"workflows,omitempty"`
 }
 
-// platformStatus represents the state of a platform's tokens for the UI.
+// platformStatus represents one platform's token state for the UI.
 type platformStatus struct {
-	Platform platformInfo `json:"platform"`
-	Tokens   []tokenMeta  `json:"tokens"`
-	HasToken bool         `json:"hasToken"`
+	ID       string      `json:"id"`
+	Label    string      `json:"label"`
+	Color    string      `json:"color"`
+	Icon     string      `json:"icon,omitempty"`
+	HasToken bool        `json:"hasToken"`
+	Tokens   []tokenMeta `json:"tokens,omitempty"`
 }
 
-// handleTokenList renders the user's git tokens page.
 func (s *Server) handleTokenList(w http.ResponseWriter, r *http.Request) {
 	owner := identityFromContext(r.Context()).Username
 	platforms, err := s.buildTokenStatus(r, owner)
@@ -90,7 +75,7 @@ func (s *Server) handleTokenList(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleTokenAPIList returns the user's token metadata as JSON (no raw values).
+// handleTokenAPIList returns token metadata as JSON (no raw values).
 // Route: GET /api/tokens
 func (s *Server) handleTokenAPIList(w http.ResponseWriter, r *http.Request) {
 	owner := identityFromContext(r.Context()).Username
@@ -104,8 +89,9 @@ func (s *Server) handleTokenAPIList(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// buildTokenStatus builds the full platform-grouped view: for each supported
-// platform, lists the user's tokens (with masked previews + workflow linkage).
+// buildTokenStatus builds the platform-grouped view: all known platforms
+// (from config) + any platforms discovered from existing tokens, each with
+// its tokens (masked previews + workflow linkage).
 func (s *Server) buildTokenStatus(r *http.Request, owner string) ([]platformStatus, error) {
 	tokens, err := s.listTokens(r, owner)
 	if err != nil {
@@ -118,22 +104,31 @@ func (s *Server) buildTokenStatus(r *http.Request, owner string) ([]platformStat
 		byPlatform[t.Platform] = append(byPlatform[t.Platform], t)
 	}
 
-	// Build the platform list in display order (all platforms, even those
-	// without tokens, so the UI can show "Not configured" states).
-	result := make([]platformStatus, 0, len(allPlatforms))
-	for _, p := range allPlatforms {
-		toks := byPlatform[p.ID]
+	// Discover platform IDs from existing tokens (for platforms not in config).
+	discovered := make([]string, 0, len(byPlatform))
+	for id := range byPlatform {
+		discovered = append(discovered, id)
+	}
+
+	// Merge known config + discovered platforms.
+	catalog := s.platforms.mergeDiscovered(discovered)
+
+	result := make([]platformStatus, 0, len(catalog))
+	for _, pc := range catalog {
+		toks := byPlatform[pc.ID]
 		sort.Slice(toks, func(i, j int) bool { return toks[i].CreatedAt > toks[j].CreatedAt })
 		result = append(result, platformStatus{
-			Platform: p,
-			Tokens:   toks,
+			ID:       pc.ID,
+			Label:    pc.Label,
+			Color:    pc.Color,
+			Icon:     pc.Icon,
 			HasToken: len(toks) > 0,
+			Tokens:   toks,
 		})
 	}
 	return result, nil
 }
 
-// handleTokenCreate creates a new per-user git token Secret.
 func (s *Server) handleTokenCreate(w http.ResponseWriter, r *http.Request) {
 	owner := identityFromContext(r.Context()).Username
 
@@ -149,8 +144,9 @@ func (s *Server) handleTokenCreate(w http.ResponseWriter, r *http.Request) {
 		s.renderError(w, r, "Token value is required")
 		return
 	}
-	if !isValidPlatform(platform) {
-		s.renderError(w, r, "Invalid platform: "+platform)
+	// Any DNS-safe lowercase string is a valid platform — NOT a fixed enum.
+	if !isValidPlatformID(platform) {
+		s.renderError(w, r, "Invalid platform name: must be lowercase alphanumeric with hyphens, max 63 characters")
 		return
 	}
 
@@ -180,7 +176,6 @@ func (s *Server) handleTokenCreate(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/tokens", http.StatusSeeOther)
 }
 
-// handleTokenDelete removes a per-user git token Secret.
 func (s *Server) handleTokenDelete(w http.ResponseWriter, r *http.Request) {
 	owner := identityFromContext(r.Context()).Username
 	name := r.PathValue("name")
@@ -214,8 +209,8 @@ func (s *Server) handleTokenDelete(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/tokens", http.StatusSeeOther)
 }
 
-// listTokens returns all token Secrets owned by the given user, enriched with
-// masked previews and workflow linkage. Token VALUES are never returned in full.
+// listTokens returns all token Secrets owned by the user, enriched with masked
+// previews and workflow linkage. Token VALUES are never returned in full.
 func (s *Server) listTokens(r *http.Request, owner string) ([]tokenMeta, error) {
 	var secrets corev1.SecretList
 	opts := []client.ListOption{
@@ -227,10 +222,9 @@ func (s *Server) listTokens(r *http.Request, owner string) ([]tokenMeta, error) 
 		return nil, fmt.Errorf("list token secrets: %w", err)
 	}
 
-	// Build a map of secret-name → workflows that reference it.
 	tokenRefs, err := s.tokenWorkflowRefs(r.Context(), owner)
 	if err != nil {
-		tokenRefs = map[string][]string{} // best-effort
+		tokenRefs = map[string][]string{}
 	}
 
 	result := make([]tokenMeta, 0, len(secrets.Items))
@@ -251,9 +245,7 @@ func (s *Server) listTokens(r *http.Request, owner string) ([]tokenMeta, error) 
 	return result, nil
 }
 
-// tokenWorkflowRefs scans the user's workflows and builds a map of
-// secret-name → workflow names that reference that token via
-// workspaceRepo.tokenRef.name.
+// tokenWorkflowRefs scans workflows for tokenRef.name references.
 func (s *Server) tokenWorkflowRefs(ctx context.Context, owner string) (map[string][]string, error) {
 	var wfs v1alpha1.WorkflowList
 	opts := []client.ListOption{
@@ -271,14 +263,4 @@ func (s *Server) tokenWorkflowRefs(ctx context.Context, owner string) (map[strin
 		}
 	}
 	return refs, nil
-}
-
-// isValidPlatform checks whether a platform identifier is in the allowed set.
-func isValidPlatform(p string) bool {
-	for _, pl := range allPlatforms {
-		if pl.ID == p {
-			return true
-		}
-	}
-	return false
 }

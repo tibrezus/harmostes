@@ -1,0 +1,18 @@
+{{- if .Values.ui.enabled }}
+# Platform display configs (plug-and-play). This ConfigMap provides display
+# metadata (label, color, icon) for known git platforms. Any platform string
+# is accepted for token creation — this only enriches the UI. To add a new
+# platform, add an entry here (GitOps), no code change needed.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: harmostes-ui-platforms
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: harmostes
+    app.kubernetes.io/component: ui
+data:
+  platforms.json: |-
+{{ .Values.ui.platforms | mustToJson | indent 4 }}
+{{- end }}

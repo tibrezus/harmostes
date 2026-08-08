@@ -350,6 +350,16 @@ func statusText(status string) string {
 // pageTitle maps a template path to a human-readable page title.
 func pageTitle(page string) string {
 	switch page {
+	case "pages/map.html":
+		return "Map"
+	case "pages/flows.html":
+		return "Flows"
+	case "pages/metrics.html":
+		return "Metrics"
+	case "pages/sessions.html":
+		return "Sessions"
+	case "pages/live.html":
+		return "Live"
 	case "pages/attempts.html":
 		return "Attempts"
 	case "pages/attempt_detail.html":

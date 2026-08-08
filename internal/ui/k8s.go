@@ -25,6 +25,10 @@ type K8sClient interface {
 	UpdateWorkflow(ctx context.Context, wf *v1alpha1.Workflow) error
 	DeleteWorkflow(ctx context.Context, name string) error
 
+	// Attempt queries (observability-first UI)
+	GetAttempt(ctx context.Context, name string) (*v1alpha1.Attempt, error)
+	ListAttempts(ctx context.Context, owner string) ([]v1alpha1.Attempt, error)
+
 	// Pipeline CRUD
 	GetPipeline(ctx context.Context, name string) (*v1alpha1.Pipeline, error)
 	ListPipelines(ctx context.Context, owner string) ([]v1alpha1.Pipeline, error)
@@ -71,6 +75,24 @@ func (k *k8sClient) ListWorkflows(ctx context.Context, owner string) ([]v1alpha1
 	var list v1alpha1.WorkflowList
 	if err := k.client.List(ctx, &list, client.MatchingLabels{v1alpha1.OwnerLabel: owner}); err != nil {
 		return nil, fmt.Errorf("list workflows: %w", err)
+	}
+	return list.Items, nil
+}
+
+// GetAttempt retrieves a single Attempt by name.
+func (k *k8sClient) GetAttempt(ctx context.Context, name string) (*v1alpha1.Attempt, error) {
+	att := &v1alpha1.Attempt{}
+	if err := k.client.Get(ctx, client.ObjectKey{Namespace: k.namespace, Name: name}, att); err != nil {
+		return nil, fmt.Errorf("get attempt %s: %w", name, err)
+	}
+	return att, nil
+}
+
+// ListAttempts lists all Attempts for a given owner.
+func (k *k8sClient) ListAttempts(ctx context.Context, owner string) ([]v1alpha1.Attempt, error) {
+	var list v1alpha1.AttemptList
+	if err := k.client.List(ctx, &list, client.MatchingLabels{v1alpha1.OwnerLabel: owner}); err != nil {
+		return nil, fmt.Errorf("list attempts: %w", err)
 	}
 	return list.Items, nil
 }

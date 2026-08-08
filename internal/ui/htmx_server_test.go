@@ -321,6 +321,12 @@ func (m *mockK8sClient) GetWorkflow(ctx context.Context, name string) (*v1alpha1
 func (m *mockK8sClient) ListWorkflows(ctx context.Context, owner string) ([]v1alpha1.Workflow, error) {
 	return nil, nil
 }
+func (m *mockK8sClient) GetAttempt(ctx context.Context, name string) (*v1alpha1.Attempt, error) {
+	return nil, fmt.Errorf("not found")
+}
+func (m *mockK8sClient) ListAttempts(ctx context.Context, owner string) ([]v1alpha1.Attempt, error) {
+	return nil, nil
+}
 func (m *mockK8sClient) CreateWorkflow(ctx context.Context, wf *v1alpha1.Workflow) error {
 	return nil
 }

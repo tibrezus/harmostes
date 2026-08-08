@@ -19,11 +19,15 @@ metadata:
   name: harmostes-ui
   namespace: {{ .Values.namespace }}
 rules:
-  # Read + create/update/delete workflows (filtered by owner label in Go code).
-  # Phase D: CRUD operations from the self-service UI.
+  # Read workflows (read-only catalog — config is GitOps YAML). Keep update/patch
+  # for trigger/toggle operational actions.
   - apiGroups: ["harmostes.dev"]
     resources: ["workflows"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  # Read attempts (observability-first primary view — Attempt timeline).
+  - apiGroups: ["harmostes.dev"]
+    resources: ["attempts"]
+    verbs: ["get", "list", "watch"]
   # Pipeline CRUD (Phase G5: canvas UI). Same owner-label isolation as workflows.
   - apiGroups: ["harmostes.dev"]
     resources: ["pipelines"]

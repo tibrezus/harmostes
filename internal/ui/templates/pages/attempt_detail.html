@@ -1,0 +1,105 @@
+{{define "pages/attempt_detail.html"}}
+{{- /* attempt_detail.html — single Attempt: objective, runs, node results, evidence. */ -}}
+<div class="page-content">
+	<!-- Header -->
+	<div class="ds-section">
+		<div class="ds-section-header">
+			<div>
+				<h2 class="ds-section-title">{{.PrimarySubject}}</h2>
+				<span class="ds-card-meta">{{.ObjectiveKind}} · <a href="/workflows/{{.WorkflowRef}}" class="ds-link">{{.WorkflowRef}}</a></span>
+			</div>
+			{{if eq .Phase "validated"}}<span class="ds-status-badge ds-status-badge--positive">✓ Validated</span>
+			{{else if eq .Phase "reconciling"}}<span class="ds-status-badge ds-status-badge--warning">↻ Reconciling</span>
+			{{else if eq .Phase "failed"}}<span class="ds-status-badge ds-status-badge--negative">✗ Failed</span>
+			{{else if eq .Phase "superseded"}}<span class="ds-status-badge ds-status-badge--neutral">↪ Superseded</span>
+			{{else}}<span class="ds-status-badge ds-status-badge--neutral">{{.Phase}}</span>
+			{{end}}
+		</div>
+	</div>
+
+	{{if .Message}}
+	<div class="ds-section">
+		<div class="ds-callout ds-callout--info">{{.Message}}</div>
+	</div>
+	{{end}}
+
+	<!-- Objective -->
+	<div class="ds-section">
+		<h3 class="ds-section-heading">Implementation Objective</h3>
+		<dl class="ds-definition-list">
+			<dt>Desired Outcome</dt>
+			<dd>{{.DesiredOutcome}}</dd>
+			<dt>Targeted State</dt>
+			<dd><code>{{.TargetedState}}</code></dd>
+		</dl>
+	</div>
+
+	<!-- Runs timeline -->
+	<div class="ds-section">
+		<h3 class="ds-section-heading">Runs ({{len .Runs}})</h3>
+		{{if .Runs}}
+		<div class="ds-timeline">
+			{{range .Runs}}
+			<div class="ds-timeline-item">
+				<div class="ds-timeline-marker ds-timeline-marker--{{if eq .Phase "succeeded"}}positive{{else if eq .Phase "failed"}}negative{{else}}warning{{end}}"></div>
+				<div class="ds-timeline-content">
+					<a href="/workflows/{{$.WorkflowRef}}/runs/{{.Name}}" class="ds-link"><code>{{.Name}}</code></a>
+					{{if eq .Phase "succeeded"}}<span class="ds-status-badge ds-status-badge--positive">✓</span>
+					{{else if eq .Phase "failed"}}<span class="ds-status-badge ds-status-badge--negative">✗</span>
+					{{else}}<span class="ds-status-badge ds-status-badge--warning">↻ {{.Phase}}</span>
+					{{end}}
+					<br>
+					<span class="ds-card-meta">{{.StartedAt}}{{if .EndedAt}} → {{.EndedAt}}{{end}}</span>
+				</div>
+			</div>
+			{{end}}
+		</div>
+		{{else}}
+		<p class="ds-empty-text">No runs recorded yet.</p>
+		{{end}}
+	</div>
+
+	<!-- Node Result Envelopes -->
+	{{if .NodeResults}}
+	<div class="ds-section">
+		<h3 class="ds-section-heading">Node Results ({{len .NodeResults}})</h3>
+		<div class="ds-card-list">
+			{{range .NodeResults}}
+			<div class="ds-card">
+				<div class="ds-card-header">
+					<span class="ds-card-title">{{.NodeID}}</span>
+					{{if eq (printf "%s" .Status) "green"}}<span class="ds-status-badge ds-status-badge--positive">✓ Green</span>
+					{{else}}<span class="ds-status-badge ds-status-badge--negative">✗ {{.Status}}</span>
+					{{end}}
+				</div>
+				{{if .Summary}}
+				<div class="ds-card-body">{{.Summary}}</div>
+				{{end}}
+			</div>
+			{{end}}
+		</div>
+	</div>
+	{{end}}
+
+	<!-- Evidence -->
+	{{if .Evidence}}
+	<div class="ds-section">
+		<h3 class="ds-section-heading">Evidence ({{len .Evidence}})</h3>
+		<div class="ds-card-list">
+			{{range .Evidence}}
+			<div class="ds-card">
+				<div class="ds-card-header">
+					<span class="ds-card-title">{{.Kind}}</span>
+					<span class="ds-card-meta">{{.Surface}}</span>
+				</div>
+				<div class="ds-card-body">
+					{{if .URL}}<a href="{{.URL}}" class="ds-link" target="_blank">{{.Ref}}</a>{{else}}<code>{{.Ref}}</code>{{end}}
+				</div>
+			</div>
+			{{end}}
+		</div>
+	</div>
+	{{end}}
+</div>
+
+{{end}}

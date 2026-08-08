@@ -1,0 +1,36 @@
+{{define "pages/attempts.html"}}
+{{- /* attempts.html — primary observability view (Attempt timeline). */ -}}
+{{- $owner := .Owner -}}
+<div class="page-content">
+	<div class="ds-card-list">
+		{{range .Attempts}}
+		<a href="/attempts/{{.Name}}" class="ds-card ds-card--link">
+			<div class="ds-card-header">
+				<span class="ds-card-title">{{.PrimarySubject}}</span>
+				{{if eq .Phase "validated"}}<span class="ds-status-badge ds-status-badge--positive">✓ Validated</span>
+				{{else if eq .Phase "reconciling"}}<span class="ds-status-badge ds-status-badge--warning">↻ Reconciling</span>
+				{{else if eq .Phase "failed"}}<span class="ds-status-badge ds-status-badge--negative">✗ Failed</span>
+				{{else if eq .Phase "superseded"}}<span class="ds-status-badge ds-status-badge--neutral">↪ Superseded</span>
+				{{else}}<span class="ds-status-badge ds-status-badge--neutral">{{.Phase}}</span>
+				{{end}}
+			</div>
+			<div class="ds-card-body">
+				<span class="ds-card-meta">{{.ObjectiveKind}}</span>
+				<span class="ds-card-meta">·</span>
+				<span class="ds-card-meta">{{.RunCount}} run{{if ne .RunCount 1}}s{{end}}</span>
+				{{if .LastRunAt}}
+				<span class="ds-card-meta">·</span>
+				<span class="ds-card-meta">{{.LastRunAt}}</span>
+				{{end}}
+			</div>
+		</a>
+		{{else}}
+		<div class="ds-empty-state">
+			<p>No attempts yet. Attempts are created when a workflow runs.</p>
+			<p><a href="/workflows" class="ds-link">View workflows →</a></p>
+		</div>
+		{{end}}
+	</div>
+</div>
+
+{{end}}

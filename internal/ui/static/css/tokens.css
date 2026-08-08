@@ -17,6 +17,8 @@
 	/* Accent */
 	--color-accent-gold: oklch(78% 0.16 75);
 	--color-accent-gold-dark: oklch(65% 0.14 75);
+	--color-warning: oklch(75% 0.15 65);
+	--color-warning-next: oklch(80% 0.13 65);
 
 	/* NeXT palette (used by components in both modes) */
 	--color-next-black: oklch(6% 0.005 270);
@@ -45,11 +47,20 @@
 	--bg: var(--color-paper);
 	--bg-alt: var(--color-surface);
 	--bg-strong: var(--color-surface-strong);
+	--bg-elevated: var(--color-surface);
+	--bg-muted: var(--color-surface-strong);
+	--bg-secondary: var(--color-surface);
+	--bg-tertiary: var(--color-surface-strong);
 	--fg: var(--color-ink);
 	--fg-muted: var(--color-ink-muted);
 	--border: var(--color-rule);
+	--border-color: var(--color-rule);
 	--accent: var(--color-accent-gold);
 	--accent-dark: var(--color-accent-gold-dark);
+	--accent-bg: oklch(92% 0.03 75);
+	--success: var(--color-positive);
+	--warning: var(--color-warning);
+	--ds-red: var(--color-negative);
 }
 
 /* ===== NeXT mode (dark) ===== */
@@ -57,9 +68,18 @@
 	--bg: var(--color-next-black);
 	--bg-alt: var(--color-next-dark);
 	--bg-strong: var(--color-next-mid);
+	--bg-elevated: var(--color-next-dark);
+	--bg-muted: var(--color-next-mid);
+	--bg-secondary: var(--color-next-dark);
+	--bg-tertiary: var(--color-next-mid);
 	--fg: var(--color-next-white);
 	--fg-muted: var(--color-next-light);
 	--border: var(--color-next-mid);
+	--border-color: var(--color-next-light);
 	--accent: var(--color-next-teal);
 	--accent-dark: var(--color-next-teal-hi);
+	--accent-bg: oklch(25% 0.04 170);
+	--success: var(--color-positive-next);
+	--warning: var(--color-warning-next);
+	--ds-red: var(--color-negative-next);
 }

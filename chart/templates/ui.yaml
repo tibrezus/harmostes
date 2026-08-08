@@ -56,6 +56,17 @@ spec:
           env:
             - name: HARMOSTES_NAMESPACE
               value: {{ .Values.namespace }}
+            {{- if .Values.ui.signoz }}
+            - name: SIGNOZ_URL
+              value: {{ .Values.ui.signoz.url | quote }}
+            {{- if .Values.ui.signoz.apiKeySecret }}
+            - name: SIGNOZ_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.ui.signoz.apiKeySecret }}
+                  key: SIGNOZ_API_KEY
+            {{- end }}
+            {{- end }}
           ports:
             - name: http
               containerPort: 8083

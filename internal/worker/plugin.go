@@ -213,21 +213,33 @@ func lastJSONLine(combined string) PluginResult {
 // AgentRunner runs the agent loop (the harmostes primitive). Real impl wraps
 // agent.NewRPC + agent.Task over one warm pi session; tests inject a fake.
 type AgentRunner interface {
-	Run(ctx context.Context, task string, gate agent.Gate, maxFixes int, log agent.Logger) (agent.Result, error)
+	Run(ctx context.Context, task string, gate agent.Gate, maxFixes int, log agent.Logger, opts ...agent.TaskOption) (agent.Result, error)
 }
 
 // RPCAgentRunner is the production AgentRunner.
 type RPCAgentRunner struct {
-	Opts agent.RPCOptions
+	Opts          agent.RPCOptions
+	SessionWriter agent.SessionWriter // optional: persists session to Dapr state
+	ToolPublisher agent.ToolPublisher // optional: publishes per-tool pub/sub events
+	SessionMeta   agent.SessionMeta   // identity metadata for the session record
 }
 
-func (r RPCAgentRunner) Run(ctx context.Context, task string, gate agent.Gate, maxFixes int, log agent.Logger) (agent.Result, error) {
+func (r RPCAgentRunner) Run(ctx context.Context, task string, gate agent.Gate, maxFixes int, log agent.Logger, opts ...agent.TaskOption) (agent.Result, error) {
 	rpc, err := agent.NewRPC(ctx, r.Opts)
 	if err != nil {
 		return agent.Result{}, err
 	}
 	defer rpc.Abort(ctx)
-	return agent.Task(ctx, rpc, gate, task, maxFixes, log)
+	// Merge runner-level session config with caller-provided options.
+	allOpts := []agent.TaskOption{agent.WithSessionMeta(r.SessionMeta)}
+	if r.SessionWriter != nil {
+		allOpts = append(allOpts, agent.WithSessionWriter(r.SessionWriter))
+	}
+	if r.ToolPublisher != nil {
+		allOpts = append(allOpts, agent.WithToolPublisher(r.ToolPublisher))
+	}
+	allOpts = append(allOpts, opts...)
+	return agent.Task(ctx, rpc, gate, task, maxFixes, log, allOpts...)
 }
 
 // PiArgs builds the pi --mode rpc extra args from a Workflow's agent spec.

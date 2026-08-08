@@ -41,6 +41,7 @@ const (
 // enough state for executors to do their work without a direct k8s dependency.
 type NodeEnv struct {
 	Workflow     string                 // pipeline/workflow name
+	RunID        string                 // workflow run/job name (for session keys)
 	Namespace    string                 // k8s namespace
 	Workdir      string                 // shared working directory
 	Source       string                 // resolved source ref/revision
@@ -136,6 +137,13 @@ type Dependencies struct {
 	DaprClient     dapr.Client           // Dapr sidecar client (state + pub/sub). Optional — nil-safe.
 	StateStore     string                // Dapr state store component name (for agent usage persistence).
 	KubeClient     KubeClient            // k8s API client for deployment nodes (vela-app, flux-reconcile). Optional — nil-safe.
+
+	// Session capture (Phase 1): when non-nil, the agent executor injects these
+	// into agent.Task so the session transcript (prompts, tools, responses,
+	// gate outcomes) is written to Dapr state + published via pub/sub.
+	SessionWriter agent.SessionWriter // optional
+	ToolPublisher agent.ToolPublisher // optional
+	SessionMeta   agent.SessionMeta   // identity metadata
 }
 
 // AgentRunner runs the agent task→gate→feedback loop. This mirrors
@@ -143,7 +151,7 @@ type Dependencies struct {
 // implementation without importing it directly (avoids a worker→graph cycle
 // when the worker later compiles graphs).
 type AgentRunner interface {
-	Run(ctx context.Context, task string, gate agent.Gate, maxFixes int, log agent.Logger) (agent.Result, error)
+	Run(ctx context.Context, task string, gate agent.Gate, maxFixes int, log agent.Logger, opts ...agent.TaskOption) (agent.Result, error)
 }
 
 // TaskResolver yields the agent's task text from a template reference.
@@ -159,7 +167,11 @@ func NewDefaultRegistry(deps Dependencies) *Registry {
 	r := NewRegistry()
 	r.Register(NewPluginExecutor(deps.PluginResolver))
 	r.Register(NewGateExecutor(deps.PluginResolver))
-	r.Register(NewAgentExecutor(deps.AgentRunner, deps.TaskResolver, deps.PluginResolver, deps.DaprClient, deps.StateStore))
+	agentExec := NewAgentExecutor(deps.AgentRunner, deps.TaskResolver, deps.PluginResolver, deps.DaprClient, deps.StateStore)
+	agentExec.sessionWr = deps.SessionWriter
+	agentExec.toolPub = deps.ToolPublisher
+	agentExec.sessionMeta = deps.SessionMeta
+	r.Register(agentExec)
 	r.Register(NewBranchExecutor())
 	// Dapr node types (G3) — nil-safe: return error if executed without a client.
 	r.Register(NewStateGetExecutor(deps.DaprClient))

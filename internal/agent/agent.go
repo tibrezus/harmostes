@@ -38,8 +38,9 @@ type Logger func(Event)
 type PiSession interface {
 	// Prompt sends a message and blocks until the agent finishes the resulting
 	// turn (agent_end). Returns the agent_end event, the number of tool calls,
-	// and the token usage observed during this turn.
-	Prompt(ctx context.Context, message, label string) (agentEnd Event, toolCalls int, usage Usage, err error)
+	// the token usage, and a TurnCapture with the full response text + tool
+	// calls (args + complete results).
+	Prompt(ctx context.Context, message, label string) (agentEnd Event, toolCalls int, usage Usage, capture TurnCapture, err error)
 	// Abort terminates the session and releases the subprocess.
 	Abort(ctx context.Context) error
 }
@@ -73,9 +74,37 @@ func (g CmdGate) Run(ctx context.Context) (bool, string, error) {
 
 // Result is the outcome of a Task run.
 type Result struct {
-	Green    bool  `json:"green"`    // true iff the gate passed
-	Attempts int   `json:"attempts"` // number of gate evaluations performed
-	Usage    Usage `json:"usage"`    // token counts + cost for the session
+	Green    bool          `json:"green"`    // true iff the gate passed
+	Attempts int           `json:"attempts"` // number of gate evaluations performed
+	Usage    Usage         `json:"usage"`    // token counts + cost for the session
+	Session  SessionRecord `json:"session"`  // full transcript (prompts, tools, responses, gates)
+}
+
+// TaskOption configures optional session-capture behaviour on Task.
+type TaskOption func(*taskConfig)
+
+type taskConfig struct {
+	sessionWriter SessionWriter
+	toolPublisher ToolPublisher
+	sessionMeta   SessionMeta
+}
+
+// WithSessionWriter injects a callback that writes the SessionRecord to a
+// durable store (Dapr state) after each turn. Best-effort.
+func WithSessionWriter(w SessionWriter) TaskOption {
+	return func(c *taskConfig) { c.sessionWriter = w }
+}
+
+// WithToolPublisher injects a callback that publishes per-tool pub/sub events
+// for real-time UI updates.
+func WithToolPublisher(p ToolPublisher) TaskOption {
+	return func(c *taskConfig) { c.toolPublisher = p }
+}
+
+// WithSessionMeta sets the identity metadata (workflow, run, model, skill)
+// on the SessionRecord.
+func WithSessionMeta(meta SessionMeta) TaskOption {
+	return func(c *taskConfig) { c.sessionMeta = meta }
 }
 
 // Task runs the agent loop and returns whether the gate ever went green.
@@ -92,70 +121,130 @@ type Result struct {
 //
 // So with maxFixes=N and persistent failure there are N+1 gate evaluations and
 // N prompts total (1 task + N-1 feedbacks).
-func Task(ctx context.Context, sess PiSession, gate Gate, task string, maxFixes int, log Logger) (Result, error) {
+func Task(ctx context.Context, sess PiSession, gate Gate, task string, maxFixes int, log Logger, opts ...TaskOption) (Result, error) {
 	if maxFixes < 1 {
 		maxFixes = 1
+	}
+	cfg := &taskConfig{}
+	for _, o := range opts {
+		o(cfg)
 	}
 	tracer := observability.Tracer()
 	wf := observability.WorkflowFrom(ctx)
 
 	var usage Usage
+	session := SessionRecord{
+		Workflow:  cfg.sessionMeta.Workflow,
+		RunID:     cfg.sessionMeta.RunID,
+		Model:     cfg.sessionMeta.Model,
+		Skill:     cfg.sessionMeta.Skill,
+		StartedAt: time.Now().UTC(),
+	}
+
+	// writeSession persists the current session state to Dapr state (if a
+	// writer is configured). Called after each turn + after each gate eval.
+	writeSession := func() {
+		if cfg.sessionWriter == nil {
+			return
+		}
+		session.TotalUsage = usage
+		if err := cfg.sessionWriter(ctx, session); err != nil {
+			logf(log, Event{Type: "session_write_error", Message: err.Error()})
+		}
+	}
 
 	// promptTurn sends one prompt wrapped in a turn span (agent.task for turn 1,
 	// agent.feedback#N for feedback). The turn span is the parent of the tool
 	// spans emitted inside RPC.Prompt, so the trace reads turn → tools. The span
 	// records the message SIZE only — never the body (decision #4).
-	promptTurn := func(label, spanName, message string) error {
+	promptTurn := func(label, spanName, message string) (TurnCapture, error) {
 		tctx, span := tracer.Start(ctx, spanName)
 		start := time.Now()
 		span.SetAttributes(
 			attribute.String("harmostes.turn", label),
 			attribute.Int("harmostes.message_chars", len(message)),
 		)
-		_, _, turnUsage, err := sess.Prompt(tctx, message, label)
+		_, _, turnUsage, capture, err := sess.Prompt(tctx, message, label)
 		usage.add(turnUsage)
 		span.End()
 		recordAgentSeconds(ctx, wf, time.Since(start))
 		recordTurn(ctx, wf)
-		return err
+
+		// Publish per-tool events for live UI updates (per-tool pub/sub, Option C).
+		if cfg.toolPublisher != nil {
+			for _, tool := range capture.Tools {
+				cfg.toolPublisher(ctx, session.Workflow, session.RunID, tool)
+			}
+		}
+
+		return capture, err
 	}
 
 	// turn 1 — the task itself
-	if err := promptTurn("initial task", "agent.task", task); err != nil {
-		return Result{Usage: usage}, err
+	capture, err := promptTurn("initial task", "agent.task", task)
+	if err != nil {
+		return Result{Usage: usage, Session: finalizeSession(session, usage, false)}, err
 	}
+	currentTurn := TurnRecord{
+		Label:    "initial task",
+		Prompt:   task,
+		Response: capture.Response,
+		Tools:    capture.Tools,
+	}
+	session.Turns = append(session.Turns, currentTurn)
 	attempts := 0
 	for attempt := 1; attempt <= maxFixes; attempt++ {
 		attempts = attempt
 		green, out, err := evalGate(ctx, tracer, gate, attempt)
 		if err != nil {
 			recordGateAttempts(ctx, wf, attempts)
-			return Result{Attempts: attempts, Usage: usage}, err
+			return Result{Attempts: attempts, Usage: usage, Session: finalizeSession(session, usage, false)}, err
 		}
+		// Attach gate result to the current turn.
+		session.Turns[len(session.Turns)-1].Gate = &GateResult{Green: green, Output: out}
+		writeSession()
 		if green {
 			recordGateAttempts(ctx, wf, attempts)
 			recordTokens(ctx, wf, usage)
-			return Result{Green: true, Attempts: attempts, Usage: usage}, nil
+			return Result{Green: true, Attempts: attempts, Usage: usage, Session: finalizeSession(session, usage, true)}, nil
 		}
 		logf(log, Event{Type: "gate_failed", Message: fmt.Sprintf("pass %d/%d", attempt, maxFixes)})
 		if attempt >= maxFixes {
 			break
 		}
 		fb := buildFeedback(out, attempt)
-		if err := promptTurn(fmt.Sprintf("feedback #%d", attempt), fmt.Sprintf("agent.feedback#%d", attempt), fb); err != nil {
-			return Result{Attempts: attempts, Usage: usage}, err
+		capture, err := promptTurn(fmt.Sprintf("feedback #%d", attempt), fmt.Sprintf("agent.feedback#%d", attempt), fb)
+		if err != nil {
+			return Result{Attempts: attempts, Usage: usage, Session: finalizeSession(session, usage, false)}, err
 		}
+		session.Turns = append(session.Turns, TurnRecord{
+			Label:    fmt.Sprintf("feedback #%d", attempt),
+			Prompt:   fb,
+			Response: capture.Response,
+			Tools:    capture.Tools,
+		})
 	}
 	// final gate after the last fix
 	attempts++
-	green, _, err := evalGate(ctx, tracer, gate, attempts)
+	green, out, err := evalGate(ctx, tracer, gate, attempts)
 	if err != nil {
 		recordGateAttempts(ctx, wf, attempts)
-		return Result{Attempts: attempts, Usage: usage}, err
+		return Result{Attempts: attempts, Usage: usage, Session: finalizeSession(session, usage, false)}, err
 	}
+	session.Turns[len(session.Turns)-1].Gate = &GateResult{Green: green, Output: out}
 	recordGateAttempts(ctx, wf, attempts)
 	recordTokens(ctx, wf, usage)
-	return Result{Green: green, Attempts: attempts, Usage: usage}, nil
+	writeSession()
+	return Result{Green: green, Attempts: attempts, Usage: usage, Session: finalizeSession(session, usage, green)}, nil
+}
+
+// finalizeSession sets the end timestamp + total usage and returns the
+// completed SessionRecord for inclusion in Result.
+func finalizeSession(session SessionRecord, usage Usage, green bool) SessionRecord {
+	session.EndedAt = time.Now().UTC()
+	session.TotalUsage = usage
+	session.Green = green
+	return session
 }
 
 // evalGate runs the gate under a gate.evaluate span carrying attempt, green, and

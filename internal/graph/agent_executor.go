@@ -24,11 +24,14 @@ import (
 // maxFixes). If no gate is configured, it runs a single prompt and always
 // returns green.
 type AgentExecutor struct {
-	runner     AgentRunner
-	tasks      TaskResolver
-	resolver   worker.PluginResolver // for inline gate resolution
-	dapr       dapr.Client           // optional: persists usage to state store
-	stateStore string                // Dapr state store component name
+	runner      AgentRunner
+	tasks       TaskResolver
+	resolver    worker.PluginResolver // for inline gate resolution
+	dapr        dapr.Client           // optional: persists usage to state store
+	stateStore  string                // Dapr state store component name
+	sessionWr   agent.SessionWriter   // optional: persists session transcript
+	toolPub     agent.ToolPublisher   // optional: publishes per-tool pub/sub events
+	sessionMeta agent.SessionMeta     // identity metadata for the session record
 }
 
 // NewAgentExecutor creates an agent node executor. The resolver is used to
@@ -95,7 +98,22 @@ func (e *AgentExecutor) Execute(ctx context.Context, node v1alpha1.NodeSpec, env
 	if maxFixes < 1 {
 		maxFixes = 1
 	}
-	result, err := e.runner.Run(ctx, task, gate, maxFixes, nil)
+	// Build session-capture options from executor config.
+	var agentOpts []agent.TaskOption
+	meta := e.sessionMeta
+	if meta.Workflow == "" {
+		meta.Workflow = env.Workflow
+	}
+	meta.RunID = env.RunID
+	agentOpts = append(agentOpts, agent.WithSessionMeta(meta))
+	if e.sessionWr != nil {
+		agentOpts = append(agentOpts, agent.WithSessionWriter(e.sessionWr))
+	}
+	if e.toolPub != nil {
+		agentOpts = append(agentOpts, agent.WithToolPublisher(e.toolPub))
+	}
+
+	result, err := e.runner.Run(ctx, task, gate, maxFixes, nil, agentOpts...)
 	if err != nil {
 		span.SetStatus(codes.Error, err.Error())
 		return NodeResult{Status: StatusFailed, Feedback: err.Error()}, err
@@ -114,19 +132,16 @@ func (e *AgentExecutor) Execute(ctx context.Context, node v1alpha1.NodeSpec, env
 		attribute.Float64("harmostes.tokens.cost", result.Usage.Cost),
 	)
 
-	// Persist usage to Dapr state so the UI/API can query per-run token costs.
-	if e.dapr != nil && result.Usage.Total() > 0 {
-		usageJSON, _ := json.Marshal(map[string]any{
-			"workflow":  env.Workflow,
-			"input":     result.Usage.Input,
-			"output":    result.Usage.Output,
-			"cacheRead": result.Usage.CacheRead,
-			"cost":      result.Usage.Cost,
-			"green":     result.Green,
-			"attempts":  result.Attempts,
-		})
-		if err := e.dapr.SaveState(ctx, e.stateStore, fmt.Sprintf("%s:usage:last", env.Workflow), string(usageJSON)); err != nil {
-			// best-effort — don't fail the node over usage persistence
+	// Persist the full session transcript to Dapr state for the UI viewer.
+	if e.dapr != nil && e.stateStore != "" && len(result.Session.Turns) > 0 {
+		runID := env.RunID
+		if runID == "" {
+			runID = env.Workflow
+		}
+		key := fmt.Sprintf("%s:%s:session", env.Workflow, runID)
+		sessionJSON, _ := json.Marshal(result.Session)
+		if err := e.dapr.SaveState(ctx, e.stateStore, key, string(sessionJSON)); err != nil {
+			// best-effort — don't fail the node over session persistence
 		}
 	}
 

@@ -15,6 +15,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -123,14 +124,59 @@ func main() {
 		DaprStateStore: envOr("HARMOSTES_STATE_STORE", "statestore"),
 		DaprPubSub:     envOr("HARMOSTES_PUBSUB", "pubsub"),
 		Log:            logfFn,
-		Agent: worker.RPCAgentRunner{Opts: agent.RPCOptions{
+	}
+
+	// Session capture (Phase 1): wire Dapr state writer + pub/sub publisher so
+	// the agent transcript (prompts, tools, responses, gates) is persisted for
+	// the UI session viewer.
+	runID := runName()
+	sessionMeta := agent.SessionMeta{
+		Workflow: workflow,
+		RunID:    runID,
+		Model:    wf.Spec.Agent.Model,
+		Skill:    wf.Spec.Agent.Skill,
+	}
+	sessionWriter := func(sctx context.Context, session agent.SessionRecord) error {
+		if deps.Dapr == nil {
+			return nil
+		}
+		key := fmt.Sprintf("%s:%s:session", workflow, runID)
+		b, err := json.Marshal(session)
+		if err != nil {
+			return err
+		}
+		return deps.Dapr.SaveState(sctx, deps.DaprStateStore, key, string(b))
+	}
+	toolPublisher := func(pctx context.Context, wfName, rid string, tool agent.ToolCall) {
+		if deps.Dapr == nil {
+			return
+		}
+		ev := map[string]any{
+			"event":    "tool.call",
+			"workflow": wfName,
+			"runId":    rid,
+			"tool":     tool.Name,
+			"success":  tool.Success,
+			"args":     tool.Args,
+			"result":   tool.Result,
+		}
+		b, _ := json.Marshal(ev)
+		_ = deps.Dapr.Publish(pctx, deps.DaprPubSub, "harmostes-events", string(b))
+	}
+
+	// Inject session callbacks into the agent runner.
+	deps.Agent = worker.RPCAgentRunner{
+		Opts: agent.RPCOptions{
 			Args:    worker.PiArgs(wf.Spec.Agent),
 			Workdir: workdir,
 			Env:     os.Environ(),
 			Log: func(ev agent.Event) {
 				logfFn("agent: %s %s", ev.Type, ev.ToolName)
 			},
-		}},
+		},
+		SessionWriter: sessionWriter,
+		ToolPublisher: toolPublisher,
+		SessionMeta:   sessionMeta,
 	}
 
 	// Graph-native mode: dispatch to the graph executor if the Workflow CR
@@ -167,6 +213,9 @@ func main() {
 			DaprClient:     deps.Dapr,
 			StateStore:     deps.DaprStateStore,
 			KubeClient:     graph.NewKubeClient(cl),
+			SessionWriter:  sessionWriter,
+			ToolPublisher:  toolPublisher,
+			SessionMeta:    sessionMeta,
 		}
 		result, err := graph.ExecuteGraph(graphCtx, execGraph, execName, graphDeps,
 			graph.WithStateStore(deps.DaprStateStore),

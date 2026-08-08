@@ -937,3 +937,65 @@ code, pre {
 .ds-status-dot--warning {
 	background: var(--warning);
 }
+
+/* ===== Metrics view ===== */
+.metrics-view {
+	padding: 0;
+}
+
+.metrics-section {
+	margin-bottom: 2rem;
+}
+
+.metrics-section-title {
+	font-family: var(--font-display);
+	font-size: 1rem;
+	color: var(--fg);
+	margin-bottom: 0.25rem;
+}
+
+.metrics-section-desc {
+	font-family: var(--font-mono);
+	font-size: 0.75rem;
+	color: var(--fg-muted);
+	margin-bottom: 1rem;
+}
+
+.metrics-histogram {
+	width: 100%;
+	overflow-x: auto;
+}
+
+.metrics-svg {
+	width: 100%;
+	max-width: 800px;
+	height: auto;
+}
+
+.metrics-legend {
+	display: flex;
+	gap: 1rem;
+	margin-bottom: 0.5rem;
+}
+
+.metrics-legend-item {
+	display: flex;
+	align-items: center;
+	gap: 0.375rem;
+	font-family: var(--font-display);
+	font-size: 0.6875rem;
+	color: var(--fg-muted);
+}
+
+.metrics-legend-dot {
+	width: 0.625rem;
+	height: 0.625rem;
+	flex-shrink: 0;
+}
+
+.metrics-loading {
+	font-family: var(--font-mono);
+	font-size: 0.875rem;
+	color: var(--fg-muted);
+	padding: 2rem;
+}

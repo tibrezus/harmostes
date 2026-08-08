@@ -131,6 +131,9 @@
 <script src="/static/cytoscape.min.js"></script>
 <script src="/static/js/map.js"></script>
 {{- end}}
+{{- if eq .PageKey "metrics"}}
+<script src="/static/js/metrics.js"></script>
+{{- end}}
 <script>
 function topbarFilters() {
 	return {

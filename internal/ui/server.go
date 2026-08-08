@@ -49,6 +49,7 @@ type Server struct {
 	nodePolicy rbac.NodePolicy
 	platforms  *platformRegistry // display config for git platforms (plug-and-play)
 	dapr       DaprClient        // optional: reads session transcripts from worker state store
+	signoz     *SignozClient     // optional: queries SigNoz API for metrics
 }
 
 // New creates a Server with parsed templates and the given k8s client.
@@ -83,6 +84,12 @@ func New(k8sClient client.Client, namespace string, logger *slog.Logger, kubeCli
 // "not available" when nil.
 func (s *Server) SetDaprClient(d DaprClient) {
 	s.dapr = d
+}
+
+// SetSignozClient injects a SigNoz API client for querying metrics.
+// Optional — the metrics view shows "not configured" when nil.
+func (s *Server) SetSignozClient(c *SignozClient) {
+	s.signoz = c
 }
 
 // Routes returns the HTTP handler with all routes registered.
@@ -141,6 +148,9 @@ func (s *Server) Routes() http.Handler {
 
 	// Flows view: global SSE stream (all workflows or filtered by ?workflow=)
 	pages.HandleFunc("GET /api/flows/events", s.handleFlowsSSE)
+
+	// Metrics view: token usage from SigNoz API
+	pages.HandleFunc("GET /api/metrics", s.handleMetricsAPI)
 
 	mux.Handle("/", s.authMiddleware(pages))
 

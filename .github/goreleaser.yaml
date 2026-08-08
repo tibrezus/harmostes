@@ -2,14 +2,10 @@ version: 2
 
 project_name: harmostes
 
-# Build the React SPA before compiling Go binaries. The SPA output lands in
-# internal/ui/static/spa/ where cmd/harmostes-ui embeds it via go:embed.
-# Controller/worker/agent binaries don't import internal/ui, so they're
-# unaffected by the SPA build.
+# Build hooks: just tidy go.mod (no SPA build step — the UI is server-rendered).
 before:
   hooks:
     - go mod tidy
-    - bash -c "cd web && npm ci && npm run build && rm -rf ../internal/ui/static/spa/assets && mkdir -p ../internal/ui/static/spa/assets && cp -r dist/* ../internal/ui/static/spa/"
 
 # All binaries are linux/amd64-only:
 #   - controller/worker run as k8s Deployments/Jobs on amd64 nodes

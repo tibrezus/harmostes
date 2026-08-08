@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
 	"net/http"
 	"sort"
 	"strings"
@@ -255,23 +254,6 @@ func (s *Server) handlePipelineAPIDelete(w http.ResponseWriter, r *http.Request)
 	}
 	s.auditLog("pipeline.delete", name, ownerName)
 	s.writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
-}
-
-// ---------------------------------------------------------------------------
-// SPA serving
-// ---------------------------------------------------------------------------
-
-// handleSPA serves the React SPA's index.html. The SPA handles client-side
-// routing for /pipelines and /pipelines/{name}. This handler is a catch-all
-// for the SPA routes.
-func (s *Server) handleSPA(w http.ResponseWriter, r *http.Request) {
-	data, err := fs.ReadFile(staticFS, "static/spa/index.html")
-	if err != nil {
-		http.Error(w, "SPA not built (run npm run build in web/)", http.StatusServiceUnavailable)
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Write(data)
 }
 
 // isValidPipelineName checks that a name is a valid k8s resource name

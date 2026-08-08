@@ -47,6 +47,7 @@ type Server struct {
 	hub        *EventHub
 	nodePolicy rbac.NodePolicy
 	platforms  *platformRegistry // display config for git platforms (plug-and-play)
+	dapr       DaprClient        // optional: reads session transcripts from worker state store
 }
 
 // New creates a Server with parsed templates and the given k8s client.
@@ -76,6 +77,13 @@ func New(k8sClient client.Client, namespace string, logger *slog.Logger, kubeCli
 	return s, nil
 }
 
+// SetDaprClient injects a Dapr client for reading session transcripts
+// from the worker's state store. Optional — the session viewer shows
+// "not available" when nil.
+func (s *Server) SetDaprClient(d DaprClient) {
+	s.dapr = d
+}
+
 // Routes returns the HTTP handler with all routes registered.
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
@@ -103,6 +111,7 @@ func (s *Server) Routes() http.Handler {
 	// Observability-first: Attempts are the primary view
 	pages.HandleFunc("GET /attempts", s.handleAttemptList)
 	pages.HandleFunc("GET /attempts/{name}", s.handleAttemptDetail)
+	pages.HandleFunc("GET /attempts/{name}/runs/{job}/session", s.handleAttemptSession)
 
 	// Workflows — read-only reference catalog (config is GitOps YAML)
 	pages.HandleFunc("GET /workflows", s.handleWorkflowList)
@@ -295,6 +304,8 @@ func pageTitle(page string) string {
 		return "Attempts"
 	case "pages/attempt_detail.html":
 		return "Attempt Detail"
+	case "pages/session.html":
+		return "Agent Session"
 	case "pages/workflows.html":
 		return "Workflows"
 	case "pages/detail.html":

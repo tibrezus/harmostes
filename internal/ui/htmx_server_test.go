@@ -375,6 +375,9 @@ func (m *mockUIDaprClient) SaveState(ctx context.Context, key string, value any)
 func (m *mockUIDaprClient) GetState(ctx context.Context, key string, value any) (bool, error) {
 	return false, nil
 }
+func (m *mockUIDaprClient) GetStateFromStore(ctx context.Context, store, key string, value any) (bool, error) {
+	return false, nil
+}
 func (m *mockUIDaprClient) DeleteState(ctx context.Context, key string) error {
 	return nil
 }

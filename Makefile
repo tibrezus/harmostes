@@ -13,7 +13,7 @@ DS_SRC        ?= ../rezuscloud/design-system
 BIN_DIR       := bin
 GO            := go
 
-.PHONY: all build test vet tidy generate manifests controller-worker docker docker-push docker-ui web-build web-dev ui-css-sync clean
+.PHONY: all build test vet tidy generate manifests controller-worker docker docker-push docker-ui ui-css-sync clean
 
 all: test build
 

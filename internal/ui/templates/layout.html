@@ -134,6 +134,9 @@
 {{- if eq .PageKey "metrics"}}
 <script src="/static/js/metrics.js"></script>
 {{- end}}
+{{- if eq .PageKey "live"}}
+<script src="/static/js/live.js"></script>
+{{- end}}
 <script>
 function topbarFilters() {
 	return {

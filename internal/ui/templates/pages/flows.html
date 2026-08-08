@@ -1,0 +1,14 @@
+<div class="view-placeholder">
+	<div class="ds-empty-state">
+		<div class="ds-empty-text">
+			<p class="ds-empty-title">Flows</p>
+			<p>Real-time SSE event table with filters.</p>
+			<p class="view-placeholder-phase">Full implementation: Phase 4 (#138)</p>
+		</div>
+	</div>
+	{{- if .WorkflowName}}
+	<p class="view-placeholder-wf">Selected workflow: <code>{{.WorkflowName}}</code></p>
+	{{- else}}
+	<p class="view-placeholder-wf">No workflow selected. Pick one from the top bar.</p>
+	{{- end}}
+</div>

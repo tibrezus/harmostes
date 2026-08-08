@@ -1,5 +1,5 @@
 {{- /* layout.html — base layout for harmostes-ui.
-     Data: { Page: string, Content: any, User: *Identity }
+     Data: { Page: string, PageKey: string, Content: any, User: *Identity, NavWorkflows: []Workflow, Query: url.Values }
      The page template is selected by the "Page" field and executed with "Content".
 */ -}}
 <!DOCTYPE html>
@@ -29,10 +29,28 @@
 			</div>
 		</div>
 		<nav class="ds-sidebar-nav" aria-label="Main navigation">
-			<a href="/attempts" class="ds-sidebar-link {{if eq .PageKey "attempts"}}ds-sidebar-link--active{{end}}">
-				<svg class="ds-sidebar-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0a8 8 0 100 16A8 8 0 008 0zm3.5 8.5H8.5v3h-1v-3h-3v-1h3v-3h1v3h3v1z"></path></svg>
-				Attempts
+			<a href="/map" class="ds-sidebar-link {{if eq .PageKey "map"}}ds-sidebar-link--active{{end}}">
+				<svg class="ds-sidebar-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0a8 8 0 100 16A8 8 0 008 0zM7 14.93A6 6 0 011.07 9H4a4 4 0 003 3.87v2.06zM7 7H1.07A6 6 0 017 1.07V4a4 4 0 00-3 3h3v0zm2-5.93A6 6 0 0114.93 7H12a4 4 0 00-3-3.87V1.07zM9 9h5.93A6 6 0 019 14.93V12a4 4 0 003-3H9z"></path></svg>
+				Map
 			</a>
+			<a href="/flows" class="ds-sidebar-link {{if eq .PageKey "flows"}}ds-sidebar-link--active{{end}}">
+				<svg class="ds-sidebar-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M0 2h16v2H0V2zm0 5h16v2H0V7zm0 5h16v2H0v-2z"></path></svg>
+				Flows
+			</a>
+			<a href="/metrics" class="ds-sidebar-link {{if eq .PageKey "metrics"}}ds-sidebar-link--active{{end}}">
+				<svg class="ds-sidebar-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M1 12h2v2H1v-2zm4-4h2v6H5V8zm4-4h2v10H9V4zm4-2h2v12h-2V2z"></path></svg>
+				Metrics
+			</a>
+			<div class="ds-sidebar-divider"></div>
+			<a href="/sessions" class="ds-sidebar-link {{if eq .PageKey "sessions"}}ds-sidebar-link--active{{end}}">
+				<svg class="ds-sidebar-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M2 2h12v10H4l-2 2V2zm2 2v6h8V4H4z"></path></svg>
+				Sessions
+			</a>
+			<a href="/live" class="ds-sidebar-link {{if eq .PageKey "live"}}ds-sidebar-link--active{{end}}">
+				<svg class="ds-sidebar-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M2 1h12v14H2V1zm2 2v10h8V3H4zm1 2h6v1H5V5zm0 3h6v1H5V8zm0 3h4v1H5v-1z"></path></svg>
+				Live
+			</a>
+			<div class="ds-sidebar-divider"></div>
 			<a href="/workflows" class="ds-sidebar-link {{if eq .PageKey "workflows"}}ds-sidebar-link--active{{end}}">
 				<svg class="ds-sidebar-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M1 3h14v2H1V3zm0 4h14v2H1V7zm0 4h14v2H1v-2z"></path></svg>
 				Workflows
@@ -40,6 +58,10 @@
 			<a href="/templates" class="ds-sidebar-link {{if eq .PageKey "templates"}}ds-sidebar-link--active{{end}}">
 				<svg class="ds-sidebar-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M2 2h5v5H2V2zm7 0h5v5H9V2zM2 9h5v5H2V9zm7 0h5v5H9V9z"></path></svg>
 				Templates
+			</a>
+			<a href="/attempts" class="ds-sidebar-link {{if eq .PageKey "attempts"}}ds-sidebar-link--active{{end}}">
+				<svg class="ds-sidebar-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0a8 8 0 100 16A8 8 0 008 0zm.5 3v5.3l3.5 2-.8 1.4L7 9V3h1.5z"></path></svg>
+				Attempts
 			</a>
 		</nav>
 		<div class="ds-sidebar-footer">
@@ -49,24 +71,92 @@
 
 	<!-- Main content -->
 	<main class="app-main">
-		<div class="page-header">
-			<span class="page-title">{{.Page}}</span>
-			<div style="display: flex; align-items: center; gap: 1rem;">
-				{{- if .User}}
-				<span class="user-badge">
-					<span class="ds-status-dot ds-status-dot--positive"></span>
-					<span class="user-badge-name">{{.User.Username}}</span>
-				</span>
-				{{- end}}
-				<button class="theme-toggle" onclick="document.documentElement.classList.toggle('dark'); localStorage.setItem('harmostes-theme', document.documentElement.classList.contains('dark') ? 'dark' : 'light');">
-					<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1a7 7 0 100 14A7 7 0 008 1zm0 2a5 5 0 110 10V3z"></path></svg>
-				</button>
+		<!-- Top bar: global filters -->
+		<div class="ds-topbar" x-data="topbarFilters()">
+			<div class="ds-topbar-group">
+				<label class="ds-topbar-label" for="wf-select">Workflow</label>
+				<select id="wf-select" class="ds-topbar-select" @change="navigate($event)">
+					<option value="">— all —</option>
+					{{- range .NavWorkflows}}
+					<option value="{{.Name}}" {{if eq (queryGet $.Query "workflow") .Name}}selected{{end}}>{{.Name}}</option>
+					{{- end}}
+				</select>
 			</div>
+			<div class="ds-topbar-group">
+				<label class="ds-topbar-label">Status</label>
+				<div class="ds-topbar-checkboxes">
+					<label class="ds-topbar-check"><input type="checkbox" value="green" {{if not (queryHas $.Query "status")}}checked{{end}} @change="toggleStatus('green', $event)"> <span>Green</span></label>
+					<label class="ds-topbar-check"><input type="checkbox" value="failed" {{if not (queryHas $.Query "status")}}checked{{end}} @change="toggleStatus('failed', $event)"> <span>Failed</span></label>
+					<label class="ds-topbar-check"><input type="checkbox" value="running" {{if not (queryHas $.Query "status")}}checked{{end}} @change="toggleStatus('running', $event)"> <span>Running</span></label>
+				</div>
+			</div>
+			<div class="ds-topbar-group">
+				<label class="ds-topbar-label" for="range-select">Time</label>
+				<select id="range-select" class="ds-topbar-select" @change="navigate($event, 'range')">
+					<option value="15m" {{if eq (queryGet $.Query "range") "15m"}}selected{{end}}>15m</option>
+					<option value="1h" {{if or (not (queryHas $.Query "range")) (eq (queryGet $.Query "range") "1h")}}selected{{end}}>1h</option>
+					<option value="6h" {{if eq (queryGet $.Query "range") "6h"}}selected{{end}}>6h</option>
+					<option value="24h" {{if eq (queryGet $.Query "range") "24h"}}selected{{end}}>24h</option>
+				</select>
+			</div>
+			{{- if eq .PageKey "map"}}
+			<div class="ds-topbar-group">
+				<label class="ds-topbar-check"><input type="checkbox" {{if eq (queryGet $.Query "templates") "1"}}checked{{end}} @change="toggleParam('templates', $event.checked)"> <span class="ds-topbar-label">Templates</span></label>
+			</div>
+			{{- end}}
+			<div class="ds-topbar-spacer"></div>
+			{{- if .User}}
+			<span class="user-badge">
+				<span class="ds-status-dot ds-status-dot--positive"></span>
+				<span class="user-badge-name">{{.User.Username}}</span>
+			</span>
+			{{- end}}
+			<button class="theme-toggle" onclick="document.documentElement.classList.toggle('dark'); localStorage.setItem('harmostes-theme', document.documentElement.classList.contains('dark') ? 'dark' : 'light');">
+				<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1a7 7 0 100 14A7 7 0 008 1zm0 2a5 5 0 110 10V3z"></path></svg>
+			</button>
 		</div>
 
-		{{.Content}}
+		<!-- Page content -->
+		<div class="ds-page-content">
+			<div class="page-header">
+				<span class="page-title">{{.Page}}</span>
+			</div>
+			{{.Content}}
+		</div>
 	</main>
 </div>
 <script src="/static/htmx.min.js"></script>
+<script src="/static/alpine.min.js" defer></script>
+<script>
+function topbarFilters() {
+	return {
+		navigate(ev, key) {
+			const url = new URL(window.location);
+			if (key === 'range') {
+				url.searchParams.set('range', ev.target.value);
+			} else {
+				if (ev.target.value) {
+					url.searchParams.set('workflow', ev.target.value);
+				} else {
+					url.searchParams.delete('workflow');
+				}
+			}
+			window.location = url;
+		},
+		toggleStatus(val, ev) {
+			// Status filter is visual only (Phase 4 will wire it to SSE filtering)
+		},
+		toggleParam(key, checked) {
+			const url = new URL(window.location);
+			if (checked) {
+				url.searchParams.set(key, '1');
+			} else {
+				url.searchParams.delete(key);
+			}
+			window.location = url;
+		}
+	};
+}
+</script>
 </body>
 </html>

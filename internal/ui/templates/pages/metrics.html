@@ -1,0 +1,14 @@
+<div class="view-placeholder">
+	<div class="ds-empty-state">
+		<div class="ds-empty-text">
+			<p class="ds-empty-title">Metrics</p>
+			<p>Token histograms and dashboards from SigNoz API.</p>
+			<p class="view-placeholder-phase">Full implementation: Phase 5 (#139)</p>
+		</div>
+	</div>
+	{{- if .WorkflowName}}
+	<p class="view-placeholder-wf">Selected workflow: <code>{{.WorkflowName}}</code></p>
+	{{- else}}
+	<p class="view-placeholder-wf">No workflow selected. Pick one from the top bar.</p>
+	{{- end}}
+</div>

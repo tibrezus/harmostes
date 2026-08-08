@@ -84,7 +84,7 @@ func (s *Server) handleMetricsAPI(w http.ResponseWriter, r *http.Request) {
 	response.Range = timeRange
 
 	for _, m := range metrics {
-		query := fmt.Sprintf("sum(value:metric:%s{%s})", m.name, workflowAttr(workflow))
+		query := fmt.Sprintf("sum(%s{%s})", m.name, workflowAttr(workflow))
 		series, err := s.signoz.QueryRange(ctx, query, start, now, step)
 		if err != nil {
 			s.logger.Warn("signoz query failed", "metric", m.name, "err", err)

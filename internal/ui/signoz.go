@@ -58,20 +58,20 @@ type MetricPoint struct {
 	Value     float64   `json:"value"`
 }
 
-// QueryRange runs a PromQL/ClickHouse query over a time range with the given
-// step interval.
+// QueryRange runs a PromQL query over a time range with the given
+// step interval. Uses the Prometheus-compatible /api/v1/query_range endpoint.
 func (c *SignozClient) QueryRange(ctx context.Context, query string, start, end time.Time, step time.Duration) ([]MetricSeries, error) {
 	if c == nil {
 		return nil, fmt.Errorf("signoz client not configured")
 	}
 
 	params := url.Values{}
-	params.Set("start", strconv.FormatInt(start.UnixNano(), 10))
-	params.Set("end", strconv.FormatInt(end.UnixNano(), 10))
+	params.Set("start", strconv.FormatInt(start.Unix(), 10))
+	params.Set("end", strconv.FormatInt(end.Unix(), 10))
 	params.Set("step", fmt.Sprintf("%.0fs", step.Seconds()))
-	params.Set("q", query)
+	params.Set("query", query)
 
-	reqURL := c.baseURL + "/api/v4/query_range?" + params.Encode()
+	reqURL := c.baseURL + "/api/v1/query_range?" + params.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("build request: %w", err)

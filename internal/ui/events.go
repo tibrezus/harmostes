@@ -101,9 +101,17 @@ func (h *EventHub) Publish(ev Event) {
 	// the lock. This avoids a race between Publish (iterating the map) and
 	// cancel (deleting from the map).
 	h.mu.RLock()
+	// Collect per-pipeline subscribers
 	subs := make([]*subscriber, 0, len(h.subs[ev.Pipeline]))
 	for sub := range h.subs[ev.Pipeline] {
 		subs = append(subs, sub)
+	}
+	// Also collect global subscribers (pipeline == "" receives ALL events).
+	// This is used by the Flows view to stream events across all workflows.
+	if ev.Pipeline != "" {
+		for sub := range h.subs[""] {
+			subs = append(subs, sub)
+		}
 	}
 	h.mu.RUnlock()
 

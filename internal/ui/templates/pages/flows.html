@@ -1,14 +1,59 @@
-<div class="view-placeholder">
-	<div class="ds-empty-state">
-		<div class="ds-empty-text">
-			<p class="ds-empty-title">Flows</p>
-			<p>Real-time SSE event table with filters.</p>
-			<p class="view-placeholder-phase">Full implementation: Phase 4 (#138)</p>
-		</div>
+{{- $wf := .WorkflowName -}}
+<div class="flows-view">
+	<div class="flows-table-container">
+		<table class="ds-table flows-table" id="flows-table">
+			<thead>
+				<tr>
+					<th class="ds-table-th">Timestamp</th>
+					<th class="ds-table-th">Workflow</th>
+					<th class="ds-table-th">Node</th>
+					<th class="ds-table-th">Event</th>
+					<th class="ds-table-th">Status</th>
+					<th class="ds-table-th">Duration</th>
+				</tr>
+			</thead>
+			<tbody id="flows-body">
+				{{- range .Historical}}
+				<tr class="flows-row" data-workflow="{{.Workflow}}" data-status="{{.Status}}">
+					<td class="ds-table-td flows-ts">{{.Timestamp.Format "15:04:05"}}</td>
+					<td class="ds-table-td flows-wf">{{.Workflow}}</td>
+					<td class="ds-table-td flows-node">{{.Node}}</td>
+					<td class="ds-table-td flows-event">{{.Event}}</td>
+					<td class="ds-table-td flows-status">
+						{{if eq .Status "succeeded" "ok" "green"}}<span class="ds-status-dot ds-status-dot--positive"></span>{{else if eq .Status "failed"}}<span class="ds-status-dot ds-status-dot--negative"></span>{{else if eq .Status "running" "started"}}<span class="ds-status-dot ds-status-dot--warning"></span>{{else}}<span class="ds-status-dot"></span>{{end}}
+						<span class="flows-status-text">{{.Status}}</span>
+					</td>
+					<td class="ds-table-td flows-dur">{{.Duration}}</td>
+				</tr>
+				{{- end}}
+				{{- if not .Historical}}
+				<tr class="flows-empty">
+					<td colspan="6">
+						<div class="ds-empty-state">
+							<div class="ds-empty-text">
+								<p class="ds-empty-title">No flows yet</p>
+								{{- if $wf}}
+								<p>No historical events for workflow <code>{{$wf}}</code>.</p>
+								{{- else}}
+								<p>No events recorded. Events appear as workflows run.</p>
+								{{- end}}
+							</div>
+						</div>
+					</td>
+				</tr>
+				{{- end}}
+			</tbody>
+		</table>
 	</div>
-	{{- if .WorkflowName}}
-	<p class="view-placeholder-wf">Selected workflow: <code>{{.WorkflowName}}</code></p>
-	{{- else}}
-	<p class="view-placeholder-wf">No workflow selected. Pick one from the top bar.</p>
-	{{- end}}
 </div>
+<script src="/static/js/flows.js"></script>
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+	{{- if $wf}}
+	var sseUrl = '/api/flows/events?workflow={{$wf}}';
+	{{- else}}
+	var sseUrl = '/api/flows/events';
+	{{- end}}
+	window.initFlows(sseUrl);
+});
+</script>

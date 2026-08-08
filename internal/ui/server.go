@@ -139,6 +139,9 @@ func (s *Server) Routes() http.Handler {
 	// Pipeline lifecycle SSE stream (kept for live event streaming)
 	pages.HandleFunc("GET /api/pipelines/{name}/events", s.handlePipelineSSE)
 
+	// Flows view: global SSE stream (all workflows or filtered by ?workflow=)
+	pages.HandleFunc("GET /api/flows/events", s.handleFlowsSSE)
+
 	mux.Handle("/", s.authMiddleware(pages))
 
 	return mux

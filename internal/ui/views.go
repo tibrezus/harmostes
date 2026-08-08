@@ -14,15 +14,7 @@ func (s *Server) handleMapView(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleFlowsView is the real-time event table — workflow events streamed via
-// SSE as they happen. Full implementation in Phase 4 (#138).
-func (s *Server) handleFlowsView(w http.ResponseWriter, r *http.Request) {
-	workflowName := r.URL.Query().Get("workflow")
-	s.render(w, r, "pages/flows.html", map[string]any{
-		"WorkflowName": workflowName,
-	})
-}
-
+// handleFlowsView is implemented in flows.go
 // handleMetricsView shows per-workflow agent metrics (token histograms,
 // gate pass rates, durations) sourced from the SigNoz API.
 // Full implementation in Phase 5 (#139).

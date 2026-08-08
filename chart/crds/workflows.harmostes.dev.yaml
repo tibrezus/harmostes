@@ -53,6 +53,7 @@ spec:
               type: object
               required: [source]
               properties:
+                templateRef: { type: string, description: "Optional: inherits prepare/agent/deploy defaults from a WorkflowTemplate CR" }
                 source:
                   type: object
                   required: [kind]

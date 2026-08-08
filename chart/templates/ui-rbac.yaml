@@ -28,6 +28,10 @@ rules:
   - apiGroups: ["harmostes.dev"]
     resources: ["attempts"]
     verbs: ["get", "list", "watch"]
+  # Read workflow templates (read-only catalog — config is GitOps YAML).
+  - apiGroups: ["harmostes.dev"]
+    resources: ["workflowtemplates"]
+    verbs: ["get", "list", "watch"]
   # Pipeline CRUD (Phase G5: canvas UI). Same owner-label isolation as workflows.
   - apiGroups: ["harmostes.dev"]
     resources: ["pipelines"]

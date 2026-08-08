@@ -115,6 +115,10 @@ func (s *Server) Routes() http.Handler {
 
 	// Workflows — read-only reference catalog (config is GitOps YAML)
 	pages.HandleFunc("GET /workflows", s.handleWorkflowList)
+
+	// Templates — read-only catalog (WorkflowTemplate CRs discovered from the cluster)
+	pages.HandleFunc("GET /templates", s.handleTemplateList)
+	pages.HandleFunc("GET /templates/{name}", s.handleTemplateDetail)
 	pages.HandleFunc("GET /workflows/{name}", s.handleWorkflowDetail)
 	pages.HandleFunc("GET /workflows/{name}/runs/{job}", s.handleRunDetail)
 	pages.HandleFunc("POST /workflows/{name}/trigger", s.handleWorkflowTrigger)
@@ -306,6 +310,10 @@ func pageTitle(page string) string {
 		return "Attempt Detail"
 	case "pages/session.html":
 		return "Agent Session"
+	case "pages/templates.html":
+		return "Templates"
+	case "pages/template_detail.html":
+		return "Template Detail"
 	case "pages/workflows.html":
 		return "Workflows"
 	case "pages/detail.html":
@@ -330,6 +338,12 @@ func pageKey(page string) string {
 		return "attempts"
 	case strings.HasPrefix(page, "pages/attempt_detail"):
 		return "attempts"
+	case strings.HasPrefix(page, "pages/session"):
+		return "attempts"
+	case strings.HasPrefix(page, "pages/templates"):
+		return "templates"
+	case strings.HasPrefix(page, "pages/template_detail"):
+		return "templates"
 	case strings.HasPrefix(page, "pages/workflows"):
 		return "workflows"
 	case strings.HasPrefix(page, "pages/detail"):

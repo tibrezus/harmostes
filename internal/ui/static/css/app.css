@@ -593,3 +593,43 @@ code, pre {
 	font-size: 0.6875rem;
 	padding: 0.125rem 0.5rem;
 }
+
+/* Template structure graph */
+.ds-pipeline-graph {
+	display: flex;
+	align-items: center;
+	gap: 1rem;
+	flex-wrap: wrap;
+	padding: 1rem 0;
+}
+.ds-pipeline-node {
+	border: 2px solid var(--border-color, #e2e8f0);
+	border-radius: 8px;
+	padding: 0.75rem 1.25rem;
+	min-width: 140px;
+	text-align: center;
+}
+.ds-pipeline-node--agent {
+	border-color: var(--accent, #3b82f6);
+	background: var(--bg-secondary, #f8fafc);
+}
+.ds-pipeline-node-type {
+	font-size: 0.6875rem;
+	font-weight: 700;
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+	color: var(--fg-muted, #64748b);
+	margin-bottom: 0.25rem;
+}
+.ds-pipeline-node-name { font-size: 0.8125rem; }
+.ds-pipeline-node-meta { font-size: 0.6875rem; color: var(--fg-muted, #64748b); margin-top: 0.125rem; }
+.ds-pipeline-node-gate {
+	font-size: 0.6875rem;
+	margin-top: 0.5rem;
+	padding-top: 0.5rem;
+	border-top: 1px dashed var(--border-color, #e2e8f0);
+}
+.ds-pipeline-arrow {
+	font-size: 1.5rem;
+	color: var(--fg-muted, #64748b);
+}

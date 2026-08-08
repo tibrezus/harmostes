@@ -25,11 +25,4 @@ func (s *Server) handleSessionsView(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleLiveView is the embedded retro terminal streaming the agent working in
-// real time. Full implementation in Phase 6 (#140).
-func (s *Server) handleLiveView(w http.ResponseWriter, r *http.Request) {
-	workflowName := r.URL.Query().Get("workflow")
-	s.render(w, r, "pages/live.html", map[string]any{
-		"WorkflowName": workflowName,
-	})
-}
+// handleLiveView is implemented in live.go

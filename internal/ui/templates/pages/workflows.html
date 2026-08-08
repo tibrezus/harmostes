@@ -1,7 +1,6 @@
 {{define "pages/workflows.html"}}
-<div style="margin-bottom: 1rem; display: flex; gap: 0.5rem;">
-	<a href="/workflows/new" class="ds-btn ds-btn--primary ds-btn--sm">+ New Workflow</a>
-	<a href="/workflows/new/canvas" class="ds-btn ds-btn--secondary ds-btn--sm">⊞ Canvas Editor</a>
+<div class="ds-section">
+	<p class="ds-empty-text">Workflows are declared as YAML and managed via GitOps. This view is read-only.</p>
 </div>
 {{- if not .Workflows}}
 <div class="ds-empty">

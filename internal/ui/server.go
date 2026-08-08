@@ -99,45 +99,24 @@ func (s *Server) Routes() http.Handler {
 	// Pages — all wrapped in auth middleware
 	pages := http.NewServeMux()
 	pages.HandleFunc("GET /", s.handleIndex)
+
+	// Observability-first: Attempts are the primary view
+	pages.HandleFunc("GET /attempts", s.handleAttemptList)
+	pages.HandleFunc("GET /attempts/{name}", s.handleAttemptDetail)
+
+	// Workflows — read-only reference catalog (config is GitOps YAML)
 	pages.HandleFunc("GET /workflows", s.handleWorkflowList)
-	pages.HandleFunc("GET /workflows/new", s.handleWorkflowNew)
-	pages.HandleFunc("GET /workflows/new/canvas", s.handleSPA)    // workflow canvas editor (graph-native creation)
-	pages.HandleFunc("GET /workflows/{name}/canvas", s.handleSPA) // workflow canvas (read-only compiled graph)
 	pages.HandleFunc("GET /workflows/{name}", s.handleWorkflowDetail)
 	pages.HandleFunc("GET /workflows/{name}/runs/{job}", s.handleRunDetail)
-	pages.HandleFunc("POST /workflows", s.handleWorkflowCreate)
-	pages.HandleFunc("POST /workflows/{name}/delete", s.handleWorkflowDelete)
 	pages.HandleFunc("POST /workflows/{name}/trigger", s.handleWorkflowTrigger)
 	pages.HandleFunc("POST /workflows/{name}/toggle", s.handleWorkflowToggle)
 
-	// Pipeline management (Phase G5 — canvas UI)
-	pages.HandleFunc("GET /pipelines", s.handleSPA)
-	pages.HandleFunc("GET /pipelines/new", s.handleSPA)
-	pages.HandleFunc("GET /pipelines/{name}", s.handleSPA)
-
-	// Workflow graph API (compiles a Workflow CR spec → GraphSpec for the canvas)
-	pages.HandleFunc("POST /api/workflows", s.handleWorkflowGraphCreate)
+	// Read-only graph API (auto-generated from Workflow spec — no editing)
 	pages.HandleFunc("GET /api/workflows/{name}/graph", s.handleWorkflowGraphAPI)
-	pages.HandleFunc("PUT /api/workflows/{name}/graph", s.handleWorkflowGraphPut)
-	pages.HandleFunc("POST /api/workflows/{name}/convert", s.handleWorkflowGraphConvert)
-
-	// Gate catalog API
 	pages.HandleFunc("GET /api/gates", s.handleGateAPIList)
 
-	// Pipeline JSON API (called by the React SPA)
-	pages.HandleFunc("GET /api/pipelines", s.handlePipelineAPIList)
-	pages.HandleFunc("GET /api/pipelines/{name}", s.handlePipelineAPIGet)
-	pages.HandleFunc("PUT /api/pipelines/{name}", s.handlePipelineAPIPut)
-	pages.HandleFunc("DELETE /api/pipelines/{name}", s.handlePipelineAPIDelete)
-
-	// Pipeline lifecycle SSE stream (G7 live execution)
+	// Pipeline lifecycle SSE stream (kept for live event streaming)
 	pages.HandleFunc("GET /api/pipelines/{name}/events", s.handlePipelineSSE)
-
-	// Token management (Phase C)
-	pages.HandleFunc("GET /tokens", s.handleTokenList)
-	pages.HandleFunc("GET /api/tokens", s.handleTokenAPIList)
-	pages.HandleFunc("POST /tokens", s.handleTokenCreate)
-	pages.HandleFunc("POST /tokens/{name}/delete", s.handleTokenDelete)
 
 	mux.Handle("/", s.authMiddleware(pages))
 
@@ -312,6 +291,10 @@ func statusText(status string) string {
 // pageTitle maps a template path to a human-readable page title.
 func pageTitle(page string) string {
 	switch page {
+	case "pages/attempts.html":
+		return "Attempts"
+	case "pages/attempt_detail.html":
+		return "Attempt Detail"
 	case "pages/workflows.html":
 		return "Workflows"
 	case "pages/detail.html":
@@ -332,7 +315,13 @@ func pageTitle(page string) string {
 // pageKey returns a lowercase key for nav active-state matching in the layout.
 func pageKey(page string) string {
 	switch {
+	case strings.HasPrefix(page, "pages/attempts"):
+		return "attempts"
+	case strings.HasPrefix(page, "pages/attempt_detail"):
+		return "attempts"
 	case strings.HasPrefix(page, "pages/workflows"):
+		return "workflows"
+	case strings.HasPrefix(page, "pages/detail"):
 		return "workflows"
 	case strings.HasPrefix(page, "pages/tokens"):
 		return "tokens"

@@ -88,7 +88,7 @@ type WorkflowList struct {
 // configuration: git, schedule, webhook).
 type WorkflowSpec struct {
 	Source        SourceSpec              `json:"source"`
-	TemplateRef   string                  `json:"templateRef,omitempty"` // optional: inherits prepare/agent/deploy defaults from a WorkflowTemplate CR
+	TemplateRef   string                  `json:"templateRef,omitempty"`   // optional: inherits prepare/agent/deploy defaults from a WorkflowTemplate CR
 	WorkspaceRepo *WorkspaceRepoSpec      `json:"workspaceRepo,omitempty"` // the repo the pipeline operates on (prepare populates, agent edits, deploy pushes)
 	Prepare       PrepareSpec             `json:"prepare,omitempty"`
 	Agent         AgentSpec               `json:"agent,omitempty"`

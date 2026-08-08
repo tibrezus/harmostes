@@ -106,6 +106,14 @@ func main() {
 		logger.Info("Dapr client wired for session viewer", "endpoint", endpoint)
 	}
 
+	// Wire the SigNoz client for querying agent metrics (token usage, durations,
+	// cost). Optional — the metrics view shows "not configured" when nil.
+	if signozURL := os.Getenv("SIGNOZ_URL"); signozURL != "" {
+		signozKey := os.Getenv("SIGNOZ_API_KEY")
+		server.SetSignozClient(ui.NewSignozClient(signozURL, signozKey))
+		logger.Info("SigNoz client wired for metrics view", "url", signozURL)
+	}
+
 	httpServer := &http.Server{
 		Addr:    addr,
 		Handler: server.Routes(),

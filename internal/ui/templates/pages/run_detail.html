@@ -54,7 +54,7 @@
 <div class="detail-section" style="margin-top: 1.5rem;">
 	<div class="detail-label">Worker Logs</div>
 	{{if .LogsError}}
-	<div style="color: var(--ds-red, #c00); margin-top: 0.5rem; font-size: 0.875rem;">{{.LogsError}}</div>
+	<div style="color: var(--ds-red); margin-top: 0.5rem; font-size: 0.875rem;">{{.LogsError}}</div>
 	{{else if not .HasLogs}}
 	<div style="color: var(--fg-muted); margin-top: 0.5rem; font-size: 0.875rem;">Log viewer not configured.</div>
 	{{else if .Logs}}

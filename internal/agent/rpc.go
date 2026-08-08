@@ -100,18 +100,21 @@ func (r *RPC) readLoop() {
 }
 
 // Prompt sends a prompt and blocks until agent_end (or the stream closes / the
-// context is cancelled). Returns the number of tool_execution_start events seen
-// during this turn.
-func (r *RPC) Prompt(ctx context.Context, message, label string) (Event, int, Usage, error) {
+// context is cancelled). Returns the agent_end event, the number of
+// tool_execution_start events seen during this turn, the token usage, and a
+// TurnCapture with the full assistant response text + tool calls (args +
+// complete results — Option A, no truncation).
+func (r *RPC) Prompt(ctx context.Context, message, label string) (Event, int, Usage, TurnCapture, error) {
 	logf(r.log, Event{Type: "prompt", Message: label})
 	if err := r.send(pijsonl.Prompt{Type: pijsonl.CmdPrompt, Message: message}); err != nil {
-		return Event{}, 0, Usage{}, err
+		return Event{}, 0, Usage{}, TurnCapture{}, err
 	}
 	tracer := observability.Tracer()
 	wf := observability.WorkflowFrom(ctx)
 	var tools int
 	var usage Usage
 	var last Event
+	var capture TurnCapture
 	var toolSpan trace.Span // open tool span (pi runs tools sequentially per turn)
 	endTool := func() {
 		if toolSpan != nil {
@@ -123,12 +126,12 @@ func (r *RPC) Prompt(ctx context.Context, message, label string) (Event, int, Us
 		select {
 		case <-ctx.Done():
 			endTool()
-			return last, tools, usage, ctx.Err()
+			return last, tools, usage, capture, ctx.Err()
 		case ev, ok := <-r.events:
 			if !ok {
 				// stream closed before agent_end
 				endTool()
-				return last, tools, usage, nil
+				return last, tools, usage, capture, nil
 			}
 			last = ev
 			logf(r.log, ev)
@@ -137,9 +140,18 @@ func (r *RPC) Prompt(ctx context.Context, message, label string) (Event, int, Us
 				if u, ok := messageEndUsage(ev.Raw); ok {
 					usage.add(u)
 				}
+				// Capture assistant response text (full content).
+				if text := messageEndContent(ev.Raw); text != "" {
+					capture.Response = text
+				}
 			case pijsonl.EvToolStart:
 				tools++
 				endTool() // close any prior (defensive; tools are sequential)
+				// Capture tool call start (name + args — full content, Option A).
+				capture.Tools = append(capture.Tools, ToolCall{
+					Name: ev.ToolName,
+					Args: ev.Args,
+				})
 				_, toolSpan = tracer.Start(ctx, ev.ToolName)
 				toolSpan.SetAttributes(
 					attribute.String("harmostes.tool", ev.ToolName),
@@ -147,13 +159,21 @@ func (r *RPC) Prompt(ctx context.Context, message, label string) (Event, int, Us
 				)
 				recordToolCall(ctx, wf, ev.ToolName)
 			case pijsonl.EvToolEnd:
-				if toolSpan != nil && ev.Success != nil {
-					toolSpan.SetAttributes(attribute.Bool("harmostes.success", *ev.Success))
+				// Capture tool result (full content, Option A) for the current tool.
+				if len(capture.Tools) > 0 {
+					idx := len(capture.Tools) - 1
+					result, isErr := toolEndResult(ev.Raw)
+					success := !isErr
+					capture.Tools[idx].Result = result
+					capture.Tools[idx].Success = &success
+					if toolSpan != nil {
+						toolSpan.SetAttributes(attribute.Bool("harmostes.success", success))
+					}
 				}
 				endTool()
 			case pijsonl.EvAgentEnd:
 				endTool()
-				return ev, tools, usage, nil
+				return ev, tools, usage, capture, nil
 			}
 		}
 	}

@@ -39,7 +39,7 @@ type fakeAgent struct {
 	attempts int
 }
 
-func (f fakeAgent) Run(_ context.Context, _ string, _ agent.Gate, _ int, _ agent.Logger) (agent.Result, error) {
+func (f fakeAgent) Run(_ context.Context, _ string, _ agent.Gate, _ int, _ agent.Logger, _ ...agent.TaskOption) (agent.Result, error) {
 	return agent.Result{Green: f.green, Attempts: f.attempts}, nil
 }
 
@@ -221,7 +221,7 @@ func TestPipelineAgentDisabled(t *testing.T) {
 // "agent must not be called" assertion).
 type fakeAgentRunnerFunc func() (green bool, attempts int)
 
-func (f fakeAgentRunnerFunc) Run(_ context.Context, _ string, _ agent.Gate, _ int, _ agent.Logger) (agent.Result, error) {
+func (f fakeAgentRunnerFunc) Run(_ context.Context, _ string, _ agent.Gate, _ int, _ agent.Logger, _ ...agent.TaskOption) (agent.Result, error) {
 	g, a := f()
 	return agent.Result{Green: g, Attempts: a}, nil
 }

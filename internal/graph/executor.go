@@ -307,6 +307,7 @@ func (e *GraphExecutor) Execute(ctx context.Context, graph v1alpha1.GraphSpec, p
 		env := NodeEnv{
 			Inputs:       snapshotOutputs(result.NodeResults),
 			Workflow:     e.wfCtx.Name,
+			RunID:        e.runID,
 			Namespace:    e.wfCtx.Namespace,
 			Workdir:      e.wfCtx.Workdir,
 			Source:       e.wfCtx.Source,

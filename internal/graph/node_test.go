@@ -186,7 +186,7 @@ type fakeAgentRunner struct {
 	err    error
 }
 
-func (f *fakeAgentRunner) Run(_ context.Context, _ string, _ agent.Gate, _ int, _ agent.Logger) (agent.Result, error) {
+func (f *fakeAgentRunner) Run(_ context.Context, _ string, _ agent.Gate, _ int, _ agent.Logger, _ ...agent.TaskOption) (agent.Result, error) {
 	return f.result, f.err
 }
 

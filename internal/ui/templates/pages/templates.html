@@ -1,0 +1,28 @@
+{{define "pages/templates.html"}}
+<div class="page-content">
+	<div class="ds-section">
+		<p class="ds-empty-text">Workflow templates define reusable structures. They are declared as YAML and managed via GitOps. This view is read-only.</p>
+	</div>
+	<div class="ds-card-list">
+		{{range .Templates}}
+		<a href="/templates/{{.Name}}" class="ds-card ds-card--link">
+			<div class="ds-card-header">
+				<span class="ds-card-title">{{.Name}}</span>
+			</div>
+			<div class="ds-card-body">
+				<span class="ds-card-meta">{{.Description}}</span>
+			</div>
+			<div class="ds-card-meta">
+				<span>Prepare: <code>{{.Prepare}}</code></span>
+				{{if .Gate}}<span> · Gate: <code>{{.Gate}}</code></span>{{end}}
+				<span> · Deploy: <code>{{.Deploy}}</code></span>
+			</div>
+		</a>
+		{{else}}
+		<div class="ds-empty-state">
+			<p>No templates found. Templates are WorkflowTemplate CRs applied via GitOps.</p>
+		</div>
+		{{end}}
+	</div>
+</div>
+{{end}}

@@ -34,6 +34,7 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 	scheme.AddKnownTypes(SchemeGroupVersion, &Pipeline{}, &PipelineList{})
 	scheme.AddKnownTypes(SchemeGroupVersion, &Attempt{}, &AttemptList{})
 	scheme.AddKnownTypes(SchemeGroupVersion, &ConnectionProfile{}, &ConnectionProfileList{})
+	scheme.AddKnownTypes(SchemeGroupVersion, &WorkflowTemplate{}, &WorkflowTemplateList{})
 	metav1.AddToGroupVersion(scheme, SchemeGroupVersion)
 	return nil
 }
@@ -87,6 +88,7 @@ type WorkflowList struct {
 // configuration: git, schedule, webhook).
 type WorkflowSpec struct {
 	Source        SourceSpec              `json:"source"`
+	TemplateRef   string                  `json:"templateRef,omitempty"`   // optional: inherits prepare/agent/deploy defaults from a WorkflowTemplate CR
 	WorkspaceRepo *WorkspaceRepoSpec      `json:"workspaceRepo,omitempty"` // the repo the pipeline operates on (prepare populates, agent edits, deploy pushes)
 	Prepare       PrepareSpec             `json:"prepare,omitempty"`
 	Agent         AgentSpec               `json:"agent,omitempty"`

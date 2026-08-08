@@ -1,0 +1,53 @@
+{{define "pages/template_detail.html"}}
+{{$t := .}}
+<div class="page-content">
+	<div class="ds-section">
+		<div class="ds-section-header">
+			<div>
+				<h2 class="ds-section-title">{{$t.Name}}</h2>
+				<span class="ds-card-meta">{{$t.Description}}</span>
+			</div>
+		</div>
+	</div>
+
+	<!-- Structure -->
+	<div class="ds-section">
+		<h3 class="ds-section-heading">Structure</h3>
+		<div class="ds-pipeline-graph">
+			<div class="ds-pipeline-node">
+				<div class="ds-pipeline-node-type">Prepare</div>
+				<div class="ds-pipeline-node-name"><code>{{$t.Prepare}}</code></div>
+			</div>
+			<div class="ds-pipeline-arrow">→</div>
+			<div class="ds-pipeline-node ds-pipeline-node--agent">
+				<div class="ds-pipeline-node-type">Agent</div>
+				{{if $t.Model}}<div class="ds-pipeline-node-name"><code>{{$t.Model}}</code></div>{{end}}
+				{{if $t.Skill}}<div class="ds-pipeline-node-meta">skill: {{$t.Skill}}</div>{{end}}
+				{{if gt $t.MaxFixes 0}}<div class="ds-pipeline-node-meta">maxFixes: {{$t.MaxFixes}}</div>{{end}}
+				{{if $t.Gate}}
+				<div class="ds-pipeline-node-gate">
+					Gate: <code>{{$t.Gate}}</code>
+				</div>
+				{{end}}
+			</div>
+			<div class="ds-pipeline-arrow">→</div>
+			<div class="ds-pipeline-node">
+				<div class="ds-pipeline-node-type">Deploy</div>
+				<div class="ds-pipeline-node-name"><code>{{$t.Deploy}}</code></div>
+			</div>
+		</div>
+	</div>
+
+	<!-- YAML reference -->
+	<div class="ds-section">
+		<h3 class="ds-section-heading">YAML Reference</h3>
+		<pre class="ds-tool-code">apiVersion: harmostes.dev/v1alpha1
+kind: Workflow
+spec:
+  templateRef: {{$t.Name}}
+  source:
+    repo: github.com/your-org/your-repo
+    branch: main</pre>
+	</div>
+</div>
+{{end}}

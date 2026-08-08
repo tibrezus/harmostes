@@ -127,6 +127,10 @@
 </div>
 <script src="/static/htmx.min.js"></script>
 <script src="/static/alpine.min.js" defer></script>
+{{- if eq .PageKey "map"}}
+<script src="/static/cytoscape.min.js"></script>
+<script src="/static/js/map.js"></script>
+{{- end}}
 <script>
 function topbarFilters() {
 	return {

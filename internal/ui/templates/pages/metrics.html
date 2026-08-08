@@ -1,14 +1,32 @@
-<div class="view-placeholder">
+{{- $wf := .WorkflowName -}}
+{{- $range := .TimeRange -}}
+<div class="metrics-view">
+	{{- if not .Configured}}
 	<div class="ds-empty-state">
 		<div class="ds-empty-text">
-			<p class="ds-empty-title">Metrics</p>
-			<p>Token histograms and dashboards from SigNoz API.</p>
-			<p class="view-placeholder-phase">Full implementation: Phase 5 (#139)</p>
+			<p class="ds-empty-title">Metrics not configured</p>
+			<p>Set <code>SIGNOZ_URL</code> and <code>SIGNOZ_API_KEY</code> on the UI server to enable metrics.</p>
 		</div>
 	</div>
-	{{- if .WorkflowName}}
-	<p class="view-placeholder-wf">Selected workflow: <code>{{.WorkflowName}}</code></p>
 	{{- else}}
-	<p class="view-placeholder-wf">No workflow selected. Pick one from the top bar.</p>
+	<div class="metrics-section">
+		<h2 class="metrics-section-title">Token Usage</h2>
+		<p class="metrics-section-desc">
+			{{- if $wf}}Workflow: <code>{{$wf}}</code> · {{end}}
+			Range: {{$range}}
+		</p>
+		<div id="metrics-histogram" class="metrics-histogram"></div>
+	</div>
 	{{- end}}
 </div>
+<script src="/static/js/metrics.js"></script>
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+	{{- if .Configured}}
+	var params = new URLSearchParams();
+	{{- if $wf}}params.set('workflow', '{{$wf}}');{{end}}
+	params.set('range', '{{$range}}');
+	window.initMetrics('/api/metrics?' + params.toString());
+	{{- end}}
+});
+</script>

@@ -15,16 +15,7 @@ func (s *Server) handleMapView(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleFlowsView is implemented in flows.go
-// handleMetricsView shows per-workflow agent metrics (token histograms,
-// gate pass rates, durations) sourced from the SigNoz API.
-// Full implementation in Phase 5 (#139).
-func (s *Server) handleMetricsView(w http.ResponseWriter, r *http.Request) {
-	workflowName := r.URL.Query().Get("workflow")
-	s.render(w, r, "pages/metrics.html", map[string]any{
-		"WorkflowName": workflowName,
-	})
-}
-
+// handleMetricsView is implemented in metrics.go
 // handleSessionsView lists all agent session transcripts (from Dapr state),
 // accessible per-workflow. Full implementation in Phase 7 (#141).
 func (s *Server) handleSessionsView(w http.ResponseWriter, r *http.Request) {

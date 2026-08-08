@@ -95,6 +95,11 @@ func recordTokens(ctx context.Context, workflow string, usage Usage) {
 			metric.WithDescription("Total output tokens produced by the agent (completions)."))
 		c.Add(ctx, int64(usage.Output), metric.WithAttributes(attribute.String("workflow", workflow)))
 	}
+	if usage.CacheRead > 0 {
+		c, _ := observability.Meter().Int64Counter("harmostes_agent_cache_read_tokens_total",
+			metric.WithDescription("Total cache-read tokens consumed by the agent (prompt cache hits)."))
+		c.Add(ctx, int64(usage.CacheRead), metric.WithAttributes(attribute.String("workflow", workflow)))
+	}
 	if usage.Cost > 0 {
 		c, _ := observability.Meter().Float64Counter("harmostes_agent_cost_total",
 			metric.WithDescription("Total estimated cost (USD) consumed by the agent."))

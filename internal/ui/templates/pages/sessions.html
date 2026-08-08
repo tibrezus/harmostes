@@ -1,14 +1,55 @@
-<div class="view-placeholder">
-	<div class="ds-empty-state">
-		<div class="ds-empty-text">
-			<p class="ds-empty-title">Sessions</p>
-			<p>Per-workflow agent session transcripts.</p>
-			<p class="view-placeholder-phase">Full implementation: Phase 7 (#141)</p>
-		</div>
+{{- $wf := .WorkflowName -}}
+<div class="sessions-view">
+	<div class="sessions-header">
+		{{- if $wf}}
+		<p class="sessions-filter">Workflow: <code>{{$wf}}</code></p>
+		{{- else}}
+		<p class="sessions-filter">All workflows</p>
+		{{- end}}
 	</div>
-	{{- if .WorkflowName}}
-	<p class="view-placeholder-wf">Selected workflow: <code>{{.WorkflowName}}</code></p>
-	{{- else}}
-	<p class="view-placeholder-wf">No workflow selected. Pick one from the top bar.</p>
-	{{- end}}
+	<table class="ds-table sessions-table">
+		<thead>
+			<tr>
+				<th class="ds-table-th">Workflow</th>
+				<th class="ds-table-th">Run</th>
+				<th class="ds-table-th">Status</th>
+				<th class="ds-table-th">Started</th>
+				<th class="ds-table-th"></th>
+			</tr>
+		</thead>
+		<tbody>
+			{{- range .Sessions}}
+			<tr class="sessions-row">
+				<td class="ds-table-td sessions-wf">{{.Workflow}}</td>
+				<td class="ds-table-td sessions-run">{{.Run}}</td>
+				<td class="ds-table-td sessions-status">
+					{{if eq .Phase "succeeded"}}<span class="ds-status-dot ds-status-dot--positive"></span> {{.Phase}}
+					{{else if eq .Phase "failed"}}<span class="ds-status-dot ds-status-dot--negative"></span> {{.Phase}}
+					{{else if eq .Phase "running"}}<span class="ds-status-dot ds-status-dot--warning"></span> {{.Phase}}
+					{{else}}<span class="ds-status-dot"></span> {{.Phase}}{{end}}
+				</td>
+				<td class="ds-table-td sessions-ts">{{if not .StartedAt.IsZero}}{{.StartedAt.Format "2006-01-02 15:04:05"}}{{else}}—{{end}}</td>
+				<td class="ds-table-td">
+					<a href="{{.SessionURL}}" class="ds-btn ds-btn--xs ds-btn--secondary">View Session</a>
+				</td>
+			</tr>
+			{{- end}}
+			{{- if not .Sessions}}
+			<tr class="sessions-empty">
+				<td colspan="5">
+					<div class="ds-empty-state">
+						<div class="ds-empty-text">
+							<p class="ds-empty-title">No sessions</p>
+							{{- if $wf}}
+							<p>No sessions recorded for workflow <code>{{$wf}}</code>.</p>
+							{{- else}}
+							<p>No agent sessions recorded yet. Sessions appear after workflows run.</p>
+							{{- end}}
+						</div>
+					</div>
+				</td>
+			</tr>
+			{{- end}}
+		</tbody>
+	</table>
 </div>

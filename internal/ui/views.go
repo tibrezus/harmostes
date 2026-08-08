@@ -16,13 +16,6 @@ func (s *Server) handleMapView(w http.ResponseWriter, r *http.Request) {
 
 // handleFlowsView is implemented in flows.go
 // handleMetricsView is implemented in metrics.go
-// handleSessionsView lists all agent session transcripts (from Dapr state),
-// accessible per-workflow. Full implementation in Phase 7 (#141).
-func (s *Server) handleSessionsView(w http.ResponseWriter, r *http.Request) {
-	workflowName := r.URL.Query().Get("workflow")
-	s.render(w, r, "pages/sessions.html", map[string]any{
-		"WorkflowName": workflowName,
-	})
-}
+// handleSessionsView is implemented in sessions.go
 
 // handleLiveView is implemented in live.go

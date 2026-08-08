@@ -14,6 +14,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -108,7 +109,14 @@ func (s *Server) Routes() http.Handler {
 	pages := http.NewServeMux()
 	pages.HandleFunc("GET /", s.handleIndex)
 
-	// Observability-first: Attempts are the primary view
+	// Hubble-style views (milestone #7)
+	pages.HandleFunc("GET /map", s.handleMapView)
+	pages.HandleFunc("GET /flows", s.handleFlowsView)
+	pages.HandleFunc("GET /metrics", s.handleMetricsView)
+	pages.HandleFunc("GET /sessions", s.handleSessionsView)
+	pages.HandleFunc("GET /live", s.handleLiveView)
+
+	// Observability-first: Attempts (execution history timeline)
 	pages.HandleFunc("GET /attempts", s.handleAttemptList)
 	pages.HandleFunc("GET /attempts/{name}", s.handleAttemptDetail)
 	pages.HandleFunc("GET /attempts/{name}/runs/{job}/session", s.handleAttemptSession)
@@ -154,6 +162,19 @@ func parseTemplates() (*template.Template, error) {
 			}
 			return s
 		},
+		// queryGet returns the first value of a URL query parameter, or "" if
+		// the parameter is absent. url.Values is map[string][]string, so
+		// template indexing returns a []string which can't be compared with eq.
+		"queryGet": func(q url.Values, key string) string {
+			if vals := q[key]; len(vals) > 0 {
+				return vals[0]
+			}
+			return ""
+		},
+		"queryHas": func(q url.Values, key string) bool {
+			_, ok := q[key]
+			return ok
+		},
 	})
 	for _, pattern := range []string{"templates/*.html", "templates/pages/*.html"} {
 		matches, err := fs.Glob(templateFS, pattern)
@@ -195,12 +216,24 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, page string, dat
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+
+	// Load workflow names for the top-bar selector (best-effort — errors are
+	// non-fatal; the dropdown just renders empty).
+	var navWorkflows []v1alpha1.Workflow
+	if owner := identityFromContext(r.Context()).Username; owner != "" {
+		if wfs, err := s.listWorkflows(r, owner); err == nil {
+			navWorkflows = wfs
+		}
+	}
+
 	layout := s.templates.Lookup("layout.html")
 	if err := layout.Execute(w, map[string]any{
-		"Page":    pageTitle(page),
-		"PageKey": pageKey(page),
-		"Content": template.HTML(buf.String()),
-		"User":    user,
+		"Page":         pageTitle(page),
+		"PageKey":      pageKey(page),
+		"Content":      template.HTML(buf.String()),
+		"User":         user,
+		"NavWorkflows": navWorkflows,
+		"Query":        r.URL.Query(),
 	}); err != nil {
 		s.logger.Error("render layout", "page", page, "err", err)
 	}
@@ -334,6 +367,16 @@ func pageTitle(page string) string {
 // pageKey returns a lowercase key for nav active-state matching in the layout.
 func pageKey(page string) string {
 	switch {
+	case strings.HasPrefix(page, "pages/map"):
+		return "map"
+	case strings.HasPrefix(page, "pages/flows"):
+		return "flows"
+	case strings.HasPrefix(page, "pages/metrics"):
+		return "metrics"
+	case strings.HasPrefix(page, "pages/sessions"):
+		return "sessions"
+	case strings.HasPrefix(page, "pages/live"):
+		return "live"
 	case strings.HasPrefix(page, "pages/attempts"):
 		return "attempts"
 	case strings.HasPrefix(page, "pages/attempt_detail"):

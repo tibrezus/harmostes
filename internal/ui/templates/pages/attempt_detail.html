@@ -44,6 +44,7 @@
 				<div class="ds-timeline-marker ds-timeline-marker--{{if eq .Phase "succeeded"}}positive{{else if eq .Phase "failed"}}negative{{else}}warning{{end}}"></div>
 				<div class="ds-timeline-content">
 					<a href="/workflows/{{$.WorkflowRef}}/runs/{{.Name}}" class="ds-link"><code>{{.Name}}</code></a>
+					<a href="/attempts/{{$.Name}}/runs/{{.Name}}/session" class="ds-btn ds-btn--secondary ds-btn--xs" title="View agent session transcript">📜 Session</a>
 					{{if eq .Phase "succeeded"}}<span class="ds-status-badge ds-status-badge--positive">✓</span>
 					{{else if eq .Phase "failed"}}<span class="ds-status-badge ds-status-badge--negative">✗</span>
 					{{else}}<span class="ds-status-badge ds-status-badge--warning">↻ {{.Phase}}</span>

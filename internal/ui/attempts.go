@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"sort"
@@ -161,4 +162,163 @@ func (s *Server) handleAttemptDetail(w http.ResponseWriter, r *http.Request) {
 		Owner:          att.Spec.Owner,
 	}
 	s.render(w, r, "pages/attempt_detail.html", data)
+}
+
+// attemptSessionData is the template data for the agent session viewer.
+type attemptSessionData struct {
+	AttemptName string
+	WorkflowRef string
+	RunName     string
+	Session     *agentSessionView
+}
+
+// agentSessionView is the session record adapted for template rendering.
+type agentSessionView struct {
+	Model     string
+	Skill     string
+	Green     bool
+	StartedAt string
+	EndedAt   string
+	Turns     []turnView
+	TotalIn   int
+	TotalOut  int
+	TotalCost float64
+}
+
+type turnView struct {
+	Label    string
+	Prompt   string
+	Response string
+	Tools    []toolView
+	Gate     *gateView
+	UsageIn  int
+	UsageOut int
+}
+
+type toolView struct {
+	Name    string
+	Args    string
+	Success bool
+	Result  string
+}
+
+type gateView struct {
+	Green  bool
+	Output string
+}
+
+// handleAttemptSession renders the full agent transcript (prompts, tool calls
+// with args+results, responses, gate feedback) from Dapr state.
+func (s *Server) handleAttemptSession(w http.ResponseWriter, r *http.Request) {
+	attName := r.PathValue("name")
+	jobName := r.PathValue("job")
+	if attName == "" || jobName == "" {
+		s.renderError(w, r, "attempt name and job name required")
+		return
+	}
+
+	// Resolve the workflow name from the attempt.
+	att, err := s.getAttempt(r, attName)
+	if err != nil {
+		s.renderError(w, r, "Failed to get attempt: "+err.Error())
+		return
+	}
+
+	identity := identityFromContext(r.Context())
+	if att.Labels[v1alpha1.OwnerLabel] != identity.Username {
+		s.renderError(w, r, "attempt not found")
+		return
+	}
+
+	wfName := att.Spec.WorkflowRef
+
+	// Read the session from the worker's Dapr state store.
+	// Key format: {workflow}:{runID}:session
+	sessionKey := fmt.Sprintf("%s:%s:session", wfName, jobName)
+
+	var raw struct {
+		Workflow  string `json:"workflow"`
+		RunID     string `json:"runId"`
+		Model     string `json:"model"`
+		Skill     string `json:"skill"`
+		StartedAt string `json:"startedAt"`
+		EndedAt   string `json:"endedAt"`
+		Green     bool   `json:"green"`
+		Turns     []struct {
+			Label    string `json:"label"`
+			Prompt   string `json:"prompt"`
+			Response string `json:"response"`
+			Tools    []struct {
+				Name    string         `json:"name"`
+				Args    map[string]any `json:"args"`
+				Success *bool          `json:"success"`
+				Result  string         `json:"result"`
+			} `json:"tools"`
+			Usage struct {
+				Input  int `json:"input_tokens"`
+				Output int `json:"output_tokens"`
+			} `json:"usage"`
+			Gate *struct {
+				Green  bool   `json:"green"`
+				Output string `json:"output"`
+			} `json:"gate"`
+		} `json:"turns"`
+		TotalUsage struct {
+			Input  int     `json:"input_tokens"`
+			Output int     `json:"output_tokens"`
+			Cost   float64 `json:"cost"`
+		} `json:"totalUsage"`
+	}
+
+	var sessionView *agentSessionView
+
+	if s.dapr != nil {
+		found, err := s.dapr.GetStateFromStore(r.Context(), "statestore", sessionKey, &raw)
+		if err != nil {
+			s.logger.Error("get session state", "key", sessionKey, "err", err)
+		}
+		if found {
+			sv := &agentSessionView{
+				Model:     raw.Model,
+				Skill:     raw.Skill,
+				Green:     raw.Green,
+				StartedAt: raw.StartedAt,
+				EndedAt:   raw.EndedAt,
+			}
+			for _, t := range raw.Turns {
+				tv := turnView{
+					Label:    t.Label,
+					Prompt:   t.Prompt,
+					Response: t.Response,
+					UsageIn:  t.Usage.Input,
+					UsageOut: t.Usage.Output,
+				}
+				for _, tool := range t.Tools {
+					argsBytes, _ := json.MarshalIndent(tool.Args, "", "  ")
+					tv.Tools = append(tv.Tools, toolView{
+						Name:    tool.Name,
+						Args:    string(argsBytes),
+						Success: tool.Success != nil && *tool.Success,
+						Result:  tool.Result,
+					})
+				}
+				if t.Gate != nil {
+					tv.Gate = &gateView{Green: t.Gate.Green, Output: t.Gate.Output}
+				}
+				sv.Turns = append(sv.Turns, tv)
+			}
+			sv.TotalIn = raw.TotalUsage.Input
+			sv.TotalOut = raw.TotalUsage.Output
+			sv.TotalCost = raw.TotalUsage.Cost
+			sessionView = sv
+		}
+	}
+
+	data := attemptSessionData{
+		AttemptName: attName,
+		WorkflowRef: wfName,
+		RunName:     jobName,
+		Session:     sessionView,
+	}
+	s.render(w, r, "pages/session.html", data)
 }

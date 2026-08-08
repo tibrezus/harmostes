@@ -18,6 +18,10 @@ type DaprClient interface {
 	GetState(ctx context.Context, key string, value any) (bool, error)
 	DeleteState(ctx context.Context, key string) error
 
+	// GetStateFromStore reads from a specific Dapr state store component
+	// (e.g. the worker's "statestore" for session transcripts).
+	GetStateFromStore(ctx context.Context, store, key string, value any) (bool, error)
+
 	// Secret operations (write-only via k8s Secrets API, read via Dapr)
 	GetSecret(ctx context.Context, secretName, key string) (string, error)
 
@@ -58,11 +62,15 @@ func (c *daprClient) SaveState(ctx context.Context, key string, value any) error
 // The value is JSON-decoded into the provided pointer.
 // Returns false if the key does not exist.
 func (c *daprClient) GetState(ctx context.Context, key string, value any) (bool, error) {
-	data, err := c.client.GetState(ctx, c.store, key)
+	return c.GetStateFromStore(ctx, c.store, key, value)
+}
+
+// GetStateFromStore reads from a specific Dapr state store component.
+func (c *daprClient) GetStateFromStore(ctx context.Context, store, key string, value any) (bool, error) {
+	data, err := c.client.GetState(ctx, store, key)
 	if err != nil {
-		return false, fmt.Errorf("get state %s: %w", key, err)
+		return false, fmt.Errorf("get state %s from %s: %w", key, store, err)
 	}
-	// Empty string means key not found (dapr.Client returns "" for missing keys)
 	if data == "" {
 		return false, nil
 	}

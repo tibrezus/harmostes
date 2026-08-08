@@ -516,3 +516,80 @@ code, pre {
 	font-size: 0.75rem;
 	color: var(--fg-muted, #64748b);
 }
+
+/* Agent session viewer */
+.ds-message {
+	border-left: 3px solid var(--border-color, #e2e8f0);
+	padding: 0.75rem 1rem;
+	margin: 0.5rem 0;
+	background: var(--bg-secondary, #f8fafc);
+	border-radius: 0 4px 4px 0;
+}
+.ds-message--user { border-left-color: var(--accent, #3b82f6); }
+.ds-message--assistant { border-left-color: var(--success, #22c55e); }
+.ds-message-label {
+	font-size: 0.75rem;
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+	color: var(--fg-muted, #64748b);
+	margin-bottom: 0.25rem;
+}
+.ds-message-content {
+	font-family: var(--font-mono, monospace);
+	font-size: 0.8125rem;
+	white-space: pre-wrap;
+	word-break: break-word;
+	margin: 0;
+	max-height: 400px;
+	overflow-y: auto;
+}
+.ds-tool-list { margin: 0.5rem 0; }
+.ds-tool-call {
+	border: 1px solid var(--border-color, #e2e8f0);
+	border-radius: 4px;
+	margin: 0.25rem 0;
+}
+.ds-tool-summary {
+	padding: 0.5rem 0.75rem;
+	cursor: pointer;
+	font-size: 0.8125rem;
+	display: flex;
+	align-items: center;
+	gap: 0.5rem;
+}
+.ds-tool-body { padding: 0 0.75rem 0.5rem; }
+.ds-tool-section { margin: 0.25rem 0; }
+.ds-tool-label {
+	font-size: 0.75rem;
+	font-weight: 600;
+	color: var(--fg-muted, #64748b);
+}
+.ds-tool-code {
+	font-family: var(--font-mono, monospace);
+	font-size: 0.75rem;
+	white-space: pre-wrap;
+	word-break: break-word;
+	background: var(--bg-tertiary, #f1f5f9);
+	padding: 0.5rem;
+	border-radius: 4px;
+	margin: 0.25rem 0;
+	max-height: 300px;
+	overflow-y: auto;
+}
+.ds-gate-result { margin: 0.5rem 0; padding-top: 0.5rem; border-top: 1px solid var(--border-color, #e2e8f0); }
+.ds-gate-output {
+	font-family: var(--font-mono, monospace);
+	font-size: 0.75rem;
+	white-space: pre-wrap;
+	background: var(--bg-tertiary, #f1f5f9);
+	padding: 0.5rem;
+	border-radius: 4px;
+	margin: 0.25rem 0;
+	max-height: 200px;
+	overflow-y: auto;
+}
+.ds-btn--xs {
+	font-size: 0.6875rem;
+	padding: 0.125rem 0.5rem;
+}

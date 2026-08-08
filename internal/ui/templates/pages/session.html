@@ -1,0 +1,105 @@
+{{define "pages/session.html"}}
+{{$s := .Session}}
+<div class="page-content">
+	{{if not $s}}
+	<div class="ds-section">
+		<div class="ds-empty-state">
+			<span class="ds-empty-title">Session transcript not available</span>
+			<p class="ds-empty-text">No session record found for run <code>{{.RunName}}</code>.</p>
+			<p class="ds-empty-text">This may happen if the run predates session capture (Phase 1), or the Dapr state store is not configured.</p>
+		</div>
+	</div>
+	{{else}}
+	<!-- Session header -->
+	<div class="ds-section">
+		<div class="ds-section-header">
+			<div>
+				<h2 class="ds-section-title">Agent Session</h2>
+				<span class="ds-card-meta">
+					<a href="/attempts/{{.AttemptName}}" class="ds-link">{{.AttemptName}}</a> ·
+					<a href="/workflows/{{.WorkflowRef}}/runs/{{.RunName}}" class="ds-link"><code>{{.RunName}}</code></a>
+				</span>
+			</div>
+			{{if $s.Green}}<span class="ds-status-badge ds-status-badge--positive">✓ Green</span>
+			{{else}}<span class="ds-status-badge ds-status-badge--negative">✗ Failed</span>
+			{{end}}
+		</div>
+		<div class="ds-card-meta">
+			{{if $s.Model}}<span>Model: <code>{{$s.Model}}</code></span>{{end}}
+			{{if $s.Skill}}<span> · Skill: <code>{{$s.Skill}}</code></span>{{end}}
+			{{if $s.StartedAt}}<span> · {{$s.StartedAt}}</span>{{end}}
+		</div>
+		<div class="ds-card-meta">
+			<span>Tokens: {{$s.TotalIn}} in / {{$s.TotalOut}} out{{if gt $s.TotalCost 0}} / ${{printf "%.4f" $s.TotalCost}}{{end}}</span>
+		</div>
+	</div>
+
+	<!-- Turns -->
+	{{range $i, $turn := $s.Turns}}
+	<div class="ds-section">
+		<div class="ds-section-header">
+			<h3 class="ds-section-heading">Turn {{$i}} — {{$turn.Label}}</h3>
+			{{if $turn.UsageIn}}<span class="ds-card-meta">{{$turn.UsageIn}} in / {{$turn.UsageOut}} out</span>{{end}}
+		</div>
+
+		<!-- Prompt -->
+		{{if $turn.Prompt}}
+		<div class="ds-message ds-message--user">
+			<div class="ds-message-label">Prompt</div>
+			<pre class="ds-message-content">{{$turn.Prompt}}</pre>
+		</div>
+		{{end}}
+
+		<!-- Response -->
+		{{if $turn.Response}}
+		<div class="ds-message ds-message--assistant">
+			<div class="ds-message-label">Response</div>
+			<pre class="ds-message-content">{{$turn.Response}}</pre>
+		</div>
+		{{end}}
+
+		<!-- Tool calls -->
+		{{if $turn.Tools}}
+		<div class="ds-tool-list">
+			<div class="ds-card-meta">Tool calls ({{len $turn.Tools}}):</div>
+			{{range $turn.Tools}}
+			<details class="ds-tool-call">
+				<summary class="ds-tool-summary">
+					{{if .Success}}<span class="ds-status-dot ds-status-dot--positive"></span>{{else}}<span class="ds-status-dot ds-status-dot--negative"></span>{{end}}
+					<code>{{.Name}}</code>
+					{{if not .Success}}<span class="ds-status-badge ds-status-badge--negative">error</span>{{end}}
+				</summary>
+				<div class="ds-tool-body">
+					{{if .Args}}
+					<div class="ds-tool-section">
+						<span class="ds-tool-label">Args:</span>
+						<pre class="ds-tool-code">{{.Args}}</pre>
+					</div>
+					{{end}}
+					{{if .Result}}
+					<div class="ds-tool-section">
+						<span class="ds-tool-label">Result:</span>
+						<pre class="ds-tool-code">{{.Result}}</pre>
+					</div>
+					{{end}}
+				</div>
+			</details>
+			{{end}}
+		</div>
+		{{end}}
+
+		<!-- Gate result -->
+		{{if $turn.Gate}}
+		<div class="ds-gate-result">
+			{{if $turn.Gate.Green}}<span class="ds-status-badge ds-status-badge--positive">✓ Gate: Green</span>
+			{{else}}<span class="ds-status-badge ds-status-badge--negative">✗ Gate: Failed</span>{{end}}
+			{{if $turn.Gate.Output}}
+			<pre class="ds-gate-output">{{$turn.Gate.Output}}</pre>
+			{{end}}
+		</div>
+		{{end}}
+	</div>
+	{{end}}
+	{{end}}
+</div>
+{{end}}

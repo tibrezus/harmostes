@@ -32,6 +32,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/tibrezus/harmostes/internal/dapr"
 	"github.com/tibrezus/harmostes/internal/k8s"
 	"github.com/tibrezus/harmostes/internal/rbac"
 	"github.com/tibrezus/harmostes/internal/ui"
@@ -96,6 +97,13 @@ func main() {
 	if err != nil {
 		logger.Error("create ui server", "err", err)
 		os.Exit(1)
+	}
+
+	// Wire the Dapr client for reading session transcripts from the worker's
+	// state store. Optional — the session viewer shows "not available" when nil.
+	if endpoint := os.Getenv("DAPR_HTTP_ENDPOINT"); endpoint != "" {
+		server.SetDaprClient(ui.NewDaprClient(dapr.New(endpoint)))
+		logger.Info("Dapr client wired for session viewer", "endpoint", endpoint)
 	}
 
 	httpServer := &http.Server{

@@ -52,6 +52,10 @@ spec:
             - --skills-repo={{ .Values.skills.repo }}
             - --service-account={{ .Values.controller.serviceAccount }}
             - --poll-interval={{ .Values.controller.pollInterval }}
+            {{- if .Values.workerPool.enabled }}
+            - --pubsub-triggers=true
+            - --trigger-topic={{ .Values.workerPool.topic | default "harmostes-triggers" }}
+            {{- end }}
             {{- if .Values.image.pullSecret }}
             - --worker-image-pull-secret={{ .Values.image.pullSecret }}
             {{- end }}

@@ -49,11 +49,25 @@ var (
 )
 
 func main() {
+	_ = flag.CommandLine.Parse(os.Args[1:])
+
+	// Consumer mode: if HARMOSTES_CONSUMER_MODE is set, start the pub/sub
+	// consumer instead of the one-shot Job mode. The consumer subscribes to
+	// the harmostes-triggers topic via daprd and processes trigger events by
+	// execing itself in one-shot mode (process isolation per run).
+	if os.Getenv("HARMOSTES_CONSUMER_MODE") != "" {
+		ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+		defer cancel()
+		if err := worker.RunConsumer(ctx); err != nil {
+			fatal("consumer: %v", err)
+		}
+		return
+	}
+
 	workflow := envReq("HARMOSTES_WORKFLOW")
 	namespace := envReq("HARMOSTES_NAMESPACE")
 	workdir := envOr("HARMOSTES_WORKDIR", "/workspace")
 	source := os.Getenv("HARMOSTES_SOURCE")
-	_ = flag.CommandLine.Parse(os.Args[1:])
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()

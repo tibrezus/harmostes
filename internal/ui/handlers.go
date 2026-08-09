@@ -32,11 +32,13 @@ func (s *Server) handleWorkflowList(w http.ResponseWriter, r *http.Request) {
 
 	// Group workflows by gate (derived from spec.agent.gate.plugin.name).
 	type gateGroup struct {
-		Gate     string // gate plugin name
-		Label    string // category label with icon
-		Category string
-		Count    int
-		Items    []v1alpha1.Workflow
+		Gate        string // gate plugin name
+		Label       string // archetype label (e.g. "Documentation Sync")
+		Category    string
+		CategoryUI  string // category label with icon (e.g. "📚 Documentation")
+		Description string // archetype description
+		Count       int
+		Items       []v1alpha1.Workflow
 	}
 	groupMap := map[string]*gateGroup{}
 	for i := range workflows {
@@ -46,15 +48,21 @@ func (s *Server) handleWorkflowList(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			cat := "other"
 			label := gateName
+			desc := ""
+			catUI := gateName
 			if arch := gateByName(gateName); arch != nil {
 				cat = arch.Category
 				label = arch.Label
+				desc = arch.Description
+				catUI = gateCategoryLabel(cat)
 			}
 			g = &gateGroup{
-				Gate:     gateName,
-				Label:    gateCategoryLabel(cat) + " — " + label,
-				Category: cat,
-				Items:    []v1alpha1.Workflow{},
+				Gate:        gateName,
+				Label:       label,
+				Category:    cat,
+				CategoryUI:  catUI,
+				Description: desc,
+				Items:       []v1alpha1.Workflow{},
 			}
 			groupMap[gateName] = g
 		}

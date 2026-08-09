@@ -14,16 +14,30 @@
 </div>
 {{- else}}
 {{range .GateGroups}}
-<div class="gate-group">
-	<div class="gate-group-header">
-		<span class="gate-group-label">{{$gg := .}}{{.Label}}</span>
-		<span class="gate-group-count">{{.Count}} workflow{{if gt .Count 1}}s{{end}}</span>
-	</div>
+<section class="gate-group-section">
+	<header class="gate-group-header">
+		<div class="gate-group-header-main">
+			<span class="gate-group-icon">{{gateIcon .Category}}</span>
+			<div class="gate-group-header-text">
+				<h2 class="gate-group-title">{{.Label}}</h2>
+				<span class="gate-group-gatename">{{.Gate}}</span>
+			</div>
+		</div>
+		<div class="gate-group-header-meta">
+			<span class="gate-group-count">{{.Count}} workflow{{if gt .Count 1}}s{{end}}</span>
+		</div>
+	</header>
+	{{- if .Description}}
+	<p class="gate-group-desc">{{.Description}}</p>
+	{{- end}}
 	<div class="wf-grid">
 		{{range .Items}}
 		<a href="/workflows/{{.Name}}" class="wf-card" style="text-decoration: none; color: inherit;">
 			<div class="wf-card-header">
-				<span class="wf-card-name">{{.Name}}</span>
+				<div class="wf-card-name-wrap">
+					<span class="wf-card-gate-badge">{{$gate := .Spec.Agent.Gate.Plugin.Name}}{{if eq $gate ""}}noop{{else}}{{$gate}}{{end}}</span>
+					<span class="wf-card-name">{{workflowTargetSlug .}}</span>
+				</div>
 				{{if .Spec.Disabled}}
 				<span class="status-badge status-badge--muted">Disabled</span>
 				{{else if eq .Status.GateStatus "green"}}
@@ -45,7 +59,7 @@
 		</a>
 		{{end}}
 	</div>
-</div>
+</section>
 {{end}}
 {{- end}}
 {{end}}

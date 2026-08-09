@@ -1,21 +1,26 @@
 {{define "pages/templates.html"}}
+{{- /* templates.html — template catalog with mini pipeline graphs. */ -}}
 <div class="page-content">
-	<div class="ds-section">
-		<p class="ds-empty-text">Workflow templates define reusable structures. They are declared as YAML and managed via GitOps. This view is read-only.</p>
-	</div>
-	<div class="ds-card-list">
+	<div class="tpl-list">
 		{{range .Templates}}
-		<a href="/templates/{{.Name}}" class="ds-card ds-card--link">
-			<div class="ds-card-header">
-				<span class="ds-card-title">{{.Name}}</span>
+		<a href="/templates/{{.Name}}" class="tpl-card">
+			<header class="tpl-card-header">
+				<span class="tpl-card-name">{{.Name}}</span>
+				{{if .GateName}}<span class="tpl-card-gate">{{.GateName}}</span>{{end}}
+			</header>
+			<p class="tpl-card-desc">{{.Description}}</p>
+			<!-- Mini pipeline graph -->
+			<div class="pg-mini">
+				{{range $i, $node := .Pipeline.Nodes}}
+				{{if gt $i 0}}<span class="pg-mini-arrow">▸</span>{{end}}
+				<span class="pg-mini-node pg-mini-node--{{$node.Type}}">{{$node.Label}}{{if $node.Sublabel}}<span class="pg-mini-sub">{{$node.Sublabel}}</span>{{end}}</span>
+				{{end}}
 			</div>
-			<div class="ds-card-body">
-				<span class="ds-card-meta">{{.Description}}</span>
-			</div>
-			<div class="ds-card-meta">
-				<span>Prepare: <code>{{.Prepare}}</code></span>
-				{{if .Gate}}<span> · Gate: <code>{{.Gate}}</code></span>{{end}}
-				<span> · Deploy: <code>{{.Deploy}}</code></span>
+			<!-- Feature chips row -->
+			<div class="tpl-card-features">
+				{{if .Skill}}<span class="tpl-chip">{{$skill := .Skill}}{{$skill | baseName}}</span>{{end}}
+				{{if gt .MaxFixes 0}}<span class="tpl-chip">maxFixes: {{.MaxFixes}}</span>{{end}}
+				{{range .Tools}}<span class="tpl-chip">{{.}}</span>{{end}}
 			</div>
 		</a>
 		{{else}}

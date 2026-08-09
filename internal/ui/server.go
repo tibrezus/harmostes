@@ -210,6 +210,16 @@ func parseTemplates() (*template.Template, error) {
 		"workflowTargetSlug": func(wf v1alpha1.Workflow) string {
 			return repoSlug(workflowTarget(wf.Spec))
 		},
+		// baseName extracts the last path component from a file path.
+		// Used to shorten skill paths (/skills/wiki/SKILL.md → SKILL.md).
+		"baseName": func(path string) string {
+			for i := len(path) - 1; i >= 0; i-- {
+				if path[i] == '/' {
+					return path[i+1:]
+				}
+			}
+			return path
+		},
 	})
 	for _, pattern := range []string{"templates/*.html", "templates/pages/*.html"} {
 		matches, err := fs.Glob(templateFS, pattern)

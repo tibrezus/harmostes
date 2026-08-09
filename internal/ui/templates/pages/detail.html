@@ -1,108 +1,120 @@
 {{define "pages/detail.html"}}
 {{$wf := .Workflow}}
-<div style="margin-bottom: 1.5rem; display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;">
-	<span style="font-family: var(--font-mono); font-size: 1.5rem; color: var(--fg);">{{$wf.Name}}</span>
-	{{if $wf.Spec.Disabled}}
-	<span class="status-badge status-badge--muted">Disabled</span>
-	{{else if eq $wf.Status.GateStatus "green"}}
-	<span class="status-badge status-badge--green">Green</span>
-	{{else if eq $wf.Status.GateStatus "failed"}}
-	<span class="status-badge status-badge--red">Failed</span>
-	{{else}}
-	<span class="status-badge status-badge--muted">Unknown</span>
-	{{end}}
-	<div style="margin-left: auto; display: flex; gap: 0.5rem;">
-		<form action="/workflows/{{$wf.Name}}/trigger" method="POST" style="display: inline;">
-			<button type="submit" class="ds-btn ds-btn--primary ds-btn--sm" {{if $wf.Spec.Disabled}}disabled{{end}}>Trigger Run</button>
-		</form>
-		<form action="/workflows/{{$wf.Name}}/toggle" method="POST" style="display: inline;">
-			<button type="submit" class="ds-btn ds-btn--secondary ds-btn--sm">{{if $wf.Spec.Disabled}}Enable{{else}}Disable{{end}}</button>
-		</form>
-	</div>
-</div>
-
-<div class="detail-grid">
-	<!-- Pipeline config -->
-	<div class="detail-section">
-		<div class="detail-label">Pipeline</div>
-		<div class="detail-value">prepare: {{$wf.Spec.Prepare.Plugin.Name}}</div>
-		<div class="detail-value">gate: {{$wf.Spec.Agent.Gate.Plugin.Name}}</div>
-		<div class="detail-value">deploy: {{$wf.Spec.Deploy.Plugin.Name}}</div>
-		{{if $wf.Spec.Agent.Model}}
-		<div class="detail-value">model: {{$wf.Spec.Agent.Model}}</div>
-		{{end}}
-		{{if $wf.Spec.Agent.MaxFixes}}
-		<div class="detail-value">maxFixes: {{$wf.Spec.Agent.MaxFixes}}</div>
-		{{end}}
-	</div>
-
-	<!-- Source -->
-	<div class="detail-section">
-		<div class="detail-label">Source</div>
-		<div class="detail-value">kind: {{$wf.Spec.Source.Kind}}</div>
-		{{if $wf.Spec.Source.Repo}}
-		<div class="detail-value">repo: {{$wf.Spec.Source.Repo}}</div>
-		{{end}}
-		{{if $wf.Spec.Source.Branch}}
-		<div class="detail-value">branch: {{$wf.Spec.Source.Branch}}</div>
-		{{end}}
-		{{if $wf.Spec.WorkspaceRepo}}
-		<div style="margin-top: 0.5rem;" class="detail-label">Workspace</div>
-		<div class="detail-value">{{$wf.Spec.WorkspaceRepo.URL}}</div>
-		<div class="detail-value">branch: {{$wf.Spec.WorkspaceRepo.Branch}}</div>
-		{{end}}
-	</div>
-</div>
-
-<!-- Status -->
-<div class="detail-section" style="margin-top: 1.5rem;">
-	<div class="detail-label">Status</div>
-	<div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin-top: 0.5rem;">
-		<div>
-			<div class="detail-label">Gate</div>
-			<div class="detail-value">{{$wf.Status.GateStatus | default "unknown"}}</div>
+<div class="page-content">
+	<!-- Header -->
+	<header class="tpl-detail-header">
+		<div class="tpl-detail-header-main">
+			<a href="/workflows" class="tpl-back">◂ Workflows</a>
+			<h2 class="tpl-detail-name">{{$wf.Name}}</h2>
 		</div>
-		<div>
-			<div class="detail-label">Last Run</div>
-			<div class="detail-value">{{if not $wf.Status.LastRunAt.Time.IsZero}}{{$wf.Status.LastRunAt.Format "2006-01-02 15:04:05 MST"}}{{else}}never{{end}}</div>
-		</div>
-		<div>
-			<div class="detail-label">Last Commit</div>
-			<div class="detail-value">{{if $wf.Status.LastAgentCommit}}{{truncate $wf.Status.LastAgentCommit 12}}{{else}}—{{end}}</div>
-		</div>
-	</div>
-</div>
-
-<!-- Run history -->
-<div class="detail-section" style="margin-top: 1.5rem;">
-	<div class="detail-label">Run History</div>
-	{{if not .Jobs}}
-	<p class="detail-value" style="color: var(--fg-muted); margin-top: 0.5rem;">No runs recorded.</p>
-	{{else}}
-	<ul class="run-timeline">
-		{{range .Jobs}}
-		<li class="run-item">
-			{{if .Status.Succeeded}}
-			<span class="run-dot run-dot--ok"></span>
-			{{else if .Status.Failed}}
-			<span class="run-dot run-dot--fail"></span>
+		<div class="tpl-detail-actions">
+			{{if $wf.Spec.Disabled}}
+			<span class="status-badge status-badge--muted">Disabled</span>
+			{{else if eq $wf.Status.GateStatus "green"}}
+			<span class="status-badge status-badge--green">Green</span>
+			{{else if eq $wf.Status.GateStatus "failed"}}
+			<span class="status-badge status-badge--red">Failed</span>
 			{{else}}
-			<span class="run-dot run-dot--skip"></span>
+			<span class="status-badge status-badge--muted">Unknown</span>
 			{{end}}
-			<a href="/workflows/{{$wf.Name}}/runs/{{.Name}}" class="run-info">
-				{{.Name}}
-				{{if .Status.CompletionTime}}
-				— {{.Status.CompletionTime.Format "15:04:05"}}
+			<form action="/workflows/{{$wf.Name}}/trigger" method="POST" style="display: inline;">
+				<button type="submit" class="ds-btn ds-btn--primary ds-btn--sm" {{if $wf.Spec.Disabled}}disabled{{end}}>Trigger Run</button>
+			</form>
+			<form action="/workflows/{{$wf.Name}}/toggle" method="POST" style="display: inline;">
+				<button type="submit" class="ds-btn ds-btn--secondary ds-btn--sm">{{if $wf.Spec.Disabled}}Enable{{else}}Disable{{end}}</button>
+			</form>
+		</div>
+	</header>
+
+	<!-- Pipeline graph (dynamic) -->
+	{{if .Pipeline}}
+	<section class="tpl-section">
+		<h3 class="tpl-section-heading">Pipeline</h3>
+		<div class="pg-graph">
+			{{range $i, $node := .Pipeline.Nodes}}
+			{{if gt $i 0}}
+			<div class="pg-connector"><span class="pg-connector-arrow">▶</span></div>
+			{{end}}
+			<div class="pg-node pg-node--{{$node.Type}}">
+				<span class="pg-node-label">{{$node.Label}}</span>
+				{{if $node.Sublabel}}<span class="pg-node-sublabel">{{$node.Sublabel}}</span>{{end}}
+				{{range $node.Meta}}
+				<span class="pg-node-meta"><span class="pg-node-meta-key">{{.Key}}</span> {{.Value}}</span>
 				{{end}}
-			</a>
-			<span class="run-time">
-				{{if and (not .Status.StartTime.IsZero) (not .Status.CompletionTime.IsZero)}}
-				{{.Status.CompletionTime.Sub .Status.StartTime.Time}}
-				{{end}}
-			</span>
-		</li>
-		{{end}}
-	</ul>
+			</div>
+			{{end}}
+		</div>
+	</section>
 	{{end}}
+
+	<!-- Feature panels -->
+	<div class="tpl-features-grid">
+		<!-- Source -->
+		<section class="tpl-feature-panel">
+			<h3 class="tpl-feature-heading">Source</h3>
+			<dl class="tpl-deflist">
+				<dt>Kind</dt><dd>{{$wf.Spec.Source.Kind}}</dd>
+				{{if $wf.Spec.Source.Repo}}<dt>Repo</dt><dd><code>{{$wf.Spec.Source.Repo}}</code></dd>{{end}}
+				{{if $wf.Spec.Source.Branch}}<dt>Branch</dt><dd>{{$wf.Spec.Source.Branch}}</dd>{{end}}
+				{{if $wf.Spec.WorkspaceRepo}}
+				<dt>Workspace</dt><dd><code>{{$wf.Spec.WorkspaceRepo.URL}}</code></dd>
+				{{if $wf.Spec.WorkspaceRepo.Branch}}<dt>WS Branch</dt><dd>{{$wf.Spec.WorkspaceRepo.Branch}}</dd>{{end}}
+				{{end}}
+			</dl>
+		</section>
+
+		<!-- Status -->
+		<section class="tpl-feature-panel">
+			<h3 class="tpl-feature-heading">Status</h3>
+			<dl class="tpl-deflist">
+				<dt>Gate</dt><dd>{{$wf.Status.GateStatus | default "unknown"}}</dd>
+				<dt>Last Run</dt><dd>{{if not $wf.Status.LastRunAt.Time.IsZero}}{{$wf.Status.LastRunAt.Format "2006-01-02 15:04 MST"}}{{else}}never{{end}}</dd>
+				<dt>Last Commit</dt><dd>{{if $wf.Status.LastAgentCommit}}{{truncate $wf.Status.LastAgentCommit 12}}{{else}}—{{end}}</dd>
+			</dl>
+		</section>
+
+		<!-- Plugins -->
+		<section class="tpl-feature-panel">
+			<h3 class="tpl-feature-heading">Plugins</h3>
+			<dl class="tpl-deflist">
+				<dt>Prepare</dt><dd><code>{{$wf.Spec.Prepare.Plugin.Name}}</code></dd>
+				<dt>Gate</dt><dd><code>{{$wf.Spec.Agent.Gate.Plugin.Name}}</code></dd>
+				<dt>Deploy</dt><dd><code>{{$wf.Spec.Deploy.Plugin.Name}}</code></dd>
+			</dl>
+		</section>
+
+		<!-- Agent -->
+		{{if or $wf.Spec.Agent.Model $wf.Spec.Agent.Skill (gt (len $wf.Spec.Agent.Tools) 0)}}
+		<section class="tpl-feature-panel">
+			<h3 class="tpl-feature-heading">Agent</h3>
+			<dl class="tpl-deflist">
+				{{if $wf.Spec.Agent.Model}}<dt>Model</dt><dd><code>{{$wf.Spec.Agent.Model}}</code></dd>{{end}}
+				{{if $wf.Spec.Agent.Skill}}<dt>Skill</dt><dd><code>{{$wf.Spec.Agent.Skill | baseName}}</code></dd>{{end}}
+				{{if gt (len $wf.Spec.Agent.Tools) 0}}<dt>Tools</dt><dd>{{range $wf.Spec.Agent.Tools}}<span class="tpl-chip">{{.}}</span>{{end}}</dd>{{end}}
+				{{if $wf.Spec.Agent.MaxFixes}}<dt>Max Fixes</dt><dd>{{$wf.Spec.Agent.MaxFixes}}</dd>{{end}}
+			</dl>
+		</section>
+		{{end}}
+	</div>
+
+	<!-- Run history -->
+	<section class="tpl-section">
+		<h3 class="tpl-section-heading">Run History</h3>
+		{{if not .Jobs}}
+		<p class="tpl-usage-empty">No runs recorded.</p>
+		{{else}}
+		<ul class="tpl-run-list">
+			{{range .Jobs}}
+			<li class="tpl-run-item">
+				{{if .Status.Succeeded}}<span class="tpl-run-dot tpl-run-dot--ok"></span>
+				{{else if .Status.Failed}}<span class="tpl-run-dot tpl-run-dot--fail"></span>
+				{{else}}<span class="tpl-run-dot"></span>{{end}}
+				<a href="/workflows/{{$wf.Name}}/runs/{{.Name}}" class="tpl-run-link">{{.Name}}</a>
+				{{if .Status.CompletionTime}}<span class="tpl-run-time">{{.Status.CompletionTime.Format "15:04:05"}}</span>{{end}}
+			</li>
+			{{end}}
+		</ul>
+		{{end}}
+	</section>
 </div>
 {{end}}

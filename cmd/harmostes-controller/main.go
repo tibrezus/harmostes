@@ -90,14 +90,19 @@ func main() {
 
 	// Dapr client for pub/sub trigger publishing. The controller's daprd
 	// sidecar (chart injects it) exposes the Dapr HTTP API on localhost:3500.
-	// When Dapr is not injected (local dev), this still works against any
-	// Dapr sidecar at DAPR_HTTP_ENDPOINT; nil-safe if the endpoint is unset.
+	// DAPR_HTTP_ENDPOINT is set by newer daprd versions; older ones default to
+	// http://localhost:3500. When pubsub-triggers is enabled, default to
+	// localhost:3500 so the client is always wired.
 	var daprClient dapr.Client
-	if daprEndpoint := envOr("DAPR_HTTP_ENDPOINT", ""); daprEndpoint != "" {
+	daprEndpoint := envOr("DAPR_HTTP_ENDPOINT", "")
+	if daprEndpoint == "" && pubsubTriggers {
+		daprEndpoint = "http://localhost:3500"
+	}
+	if daprEndpoint != "" {
 		daprClient = dapr.Tracing(dapr.New(daprEndpoint))
 		setupLogMsg("dapr client wired for trigger publishing at %s", daprEndpoint)
 	} else if pubsubTriggers {
-		setupLog("pubsub-triggers enabled but DAPR_HTTP_ENDPOINT unset — trigger publishing disabled", nil)
+		setupLog("pubsub-triggers enabled but Dapr not configured — trigger publishing disabled", nil)
 	}
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{

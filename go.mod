@@ -5,14 +5,14 @@ go 1.25.0
 require (
 	github.com/a-h/templ v0.3.1020
 	github.com/cloudevents/sdk-go/v2 v2.16.2
-	github.com/go-logr/logr v1.4.3
-	go.opentelemetry.io/otel v1.44.0
+	github.com/go-logr/logr v1.4.4
+	go.opentelemetry.io/otel v1.45.0
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc v1.44.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.27.0
-	go.opentelemetry.io/otel/metric v1.44.0
+	go.opentelemetry.io/otel/metric v1.45.0
 	go.opentelemetry.io/otel/sdk v1.44.0
 	go.opentelemetry.io/otel/sdk/metric v1.44.0
-	go.opentelemetry.io/otel/trace v1.44.0
+	go.opentelemetry.io/otel/trace v1.45.0
 	k8s.io/api v0.31.0
 	k8s.io/apimachinery v0.31.0
 	k8s.io/client-go v0.31.0

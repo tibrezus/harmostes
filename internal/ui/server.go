@@ -188,6 +188,28 @@ func parseTemplates() (*template.Template, error) {
 			_, ok := q[key]
 			return ok
 		},
+		// gateIcon returns a unicode glyph for a gate category.
+		"gateIcon": func(category string) string {
+			switch category {
+			case "documentation":
+				return "📚"
+			case "code-review":
+				return "🔍"
+			case "fork-maintenance":
+				return "🔀"
+			case "passthrough":
+				return "⚙️"
+			default:
+				return "📋"
+			}
+		},
+		// workflowTargetSlug extracts the target repo slug from a Workflow CR
+		// for display on the workflow card. The full CR name already encodes
+		// {gate}-{slug}; this helper extracts just the slug portion so the
+		// card can show the gate as a separate badge.
+		"workflowTargetSlug": func(wf v1alpha1.Workflow) string {
+			return repoSlug(workflowTarget(wf.Spec))
+		},
 	})
 	for _, pattern := range []string{"templates/*.html", "templates/pages/*.html"} {
 		matches, err := fs.Glob(templateFS, pattern)

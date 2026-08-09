@@ -9,17 +9,37 @@ import (
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
 )
 
-// templateListData is the template data for the template list page.
-type templateListData struct {
-	Templates []templateSummary
-}
-
-type templateSummary struct {
+// templateCardView is the display model for a template in the list page.
+// It includes a compact pipeline graph so the template's structure is visible
+// at a glance, not just as raw text.
+type templateCardView struct {
 	Name        string
 	Description string
-	Prepare     string
-	Gate        string
-	Deploy      string
+	Pipeline    PipelineView
+	Tools       []string
+	GateName    string
+	Skill       string
+	MaxFixes    int
+}
+
+// templateDetailView is the display model for the template detail page.
+type templateDetailView struct {
+	Name        string
+	Description string
+	Pipeline    PipelineView
+	// Feature breakdown
+	PreparePlugin string
+	GateName      string
+	DeployPlugin  string
+	AgentModel    string
+	AgentSkill    string
+	AgentTools    []string
+	AgentMaxFixes int
+	AgentTimeout  int
+	AgentScope    string
+	// Usage
+	WorkflowCount int
+	Workflows     []string
 }
 
 // listTemplates returns all WorkflowTemplate CRs in the namespace.
@@ -31,7 +51,7 @@ func (s *Server) listTemplates(r *http.Request) ([]v1alpha1.WorkflowTemplate, er
 	return list.Items, nil
 }
 
-// handleTemplateList renders all WorkflowTemplate CRs discovered from the cluster.
+// handleTemplateList renders all WorkflowTemplate CRs with their pipeline graphs.
 func (s *Server) handleTemplateList(w http.ResponseWriter, r *http.Request) {
 	templates, err := s.listTemplates(r)
 	if err != nil {
@@ -39,35 +59,43 @@ func (s *Server) handleTemplateList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	summaries := make([]templateSummary, 0, len(templates))
+	// Count workflows per template (by gate plugin name, since templateRef
+	// is optional — most workflows inherit structure by gate convention).
+	wfCounts := map[string][]string{}
+	if wfs, err := s.listAllWorkflows(r); err == nil {
+		for _, wf := range wfs {
+			gate := wf.Spec.Agent.Gate.Plugin.Name
+			if gate == "" {
+				gate = "noop"
+			}
+			wfCounts[gate] = append(wfCounts[gate], wf.Name)
+		}
+	}
+
+	cards := make([]templateCardView, 0, len(templates))
 	for _, t := range templates {
-		summaries = append(summaries, templateSummary{
+		gateName := t.Spec.Agent.Gate.Plugin.Name
+		if gateName == "" {
+			gateName = "noop"
+		}
+		cards = append(cards, templateCardView{
 			Name:        t.Name,
 			Description: t.Spec.Description,
-			Prepare:     t.Spec.Prepare.Plugin.Name,
-			Gate:        t.Spec.Agent.Gate.Plugin.Name,
-			Deploy:      t.Spec.Deploy.Plugin.Name,
+			Pipeline:    buildTemplatePipelineView(&t),
+			Tools:       t.Spec.Agent.Tools,
+			GateName:    gateName,
+			Skill:       t.Spec.Agent.Skill,
+			MaxFixes:    t.Spec.Agent.MaxFixes,
 		})
 	}
 
 	s.render(w, r, "pages/templates.html", map[string]any{
-		"Templates": summaries,
+		"Templates": cards,
 	})
 }
 
-// templateDetailData is the template data for the template detail page.
-type templateDetailData struct {
-	Name        string
-	Description string
-	Prepare     string
-	Gate        string
-	Deploy      string
-	Skill       string
-	Model       string
-	MaxFixes    int
-}
-
-// handleTemplateDetail renders a single WorkflowTemplate with its auto-generated graph.
+// handleTemplateDetail renders a single WorkflowTemplate with its full pipeline
+// graph, feature breakdown, and usage information.
 func (s *Server) handleTemplateDetail(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	if name == "" {
@@ -81,17 +109,45 @@ func (s *Server) handleTemplateDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	maxFixes := tmpl.Spec.Agent.MaxFixes
+	// Find workflows that use this template (by gate plugin name match).
+	var workflows []string
+	if wfs, err := s.listAllWorkflows(r); err == nil {
+		gateName := tmpl.Spec.Agent.Gate.Plugin.Name
+		for _, wf := range wfs {
+			wfGate := wf.Spec.Agent.Gate.Plugin.Name
+			if wfGate == "" {
+				wfGate = "noop"
+			}
+			if wfGate == gateName || wf.Spec.TemplateRef == name {
+				workflows = append(workflows, wf.Name)
+			}
+		}
+	}
 
-	data := templateDetailData{
-		Name:        tmpl.Name,
-		Description: tmpl.Spec.Description,
-		Prepare:     tmpl.Spec.Prepare.Plugin.Name,
-		Gate:        tmpl.Spec.Agent.Gate.Plugin.Name,
-		Deploy:      tmpl.Spec.Deploy.Plugin.Name,
-		Skill:       tmpl.Spec.Agent.Skill,
-		Model:       tmpl.Spec.Agent.Model,
-		MaxFixes:    maxFixes,
+	data := templateDetailView{
+		Name:          tmpl.Name,
+		Description:   tmpl.Spec.Description,
+		Pipeline:      buildTemplatePipelineView(tmpl),
+		PreparePlugin: tmpl.Spec.Prepare.Plugin.Name,
+		GateName:      tmpl.Spec.Agent.Gate.Plugin.Name,
+		DeployPlugin:  tmpl.Spec.Deploy.Plugin.Name,
+		AgentModel:    tmpl.Spec.Agent.Model,
+		AgentSkill:    tmpl.Spec.Agent.Skill,
+		AgentTools:    tmpl.Spec.Agent.Tools,
+		AgentMaxFixes: tmpl.Spec.Agent.MaxFixes,
+		AgentTimeout:  tmpl.Spec.Agent.Timeout,
+		AgentScope:    tmpl.Spec.Agent.Scope,
+		WorkflowCount: len(workflows),
+		Workflows:     workflows,
 	}
 	s.render(w, r, "pages/template_detail.html", data)
+}
+
+// listAllWorkflows returns all workflows in the namespace (for template usage).
+func (s *Server) listAllWorkflows(r *http.Request) ([]v1alpha1.Workflow, error) {
+	var list v1alpha1.WorkflowList
+	if err := s.k8sClient.List(r.Context(), &list, client.InNamespace(s.namespace)); err != nil {
+		return nil, err
+	}
+	return list.Items, nil
 }

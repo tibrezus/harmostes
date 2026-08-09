@@ -1,53 +1,101 @@
 {{define "pages/template_detail.html"}}
 {{$t := .}}
 <div class="page-content">
-	<div class="ds-section">
-		<div class="ds-section-header">
-			<div>
-				<h2 class="ds-section-title">{{$t.Name}}</h2>
-				<span class="ds-card-meta">{{$t.Description}}</span>
-			</div>
+	<!-- Header -->
+	<header class="tpl-detail-header">
+		<div class="tpl-detail-header-main">
+			<a href="/templates" class="tpl-back">◂ Templates</a>
+			<h2 class="tpl-detail-name">{{$t.Name}}</h2>
 		</div>
-	</div>
+		{{if $t.GateName}}<span class="tpl-card-gate">{{$t.GateName}}</span>{{end}}
+	</header>
+	<p class="tpl-detail-desc">{{$t.Description}}</p>
 
-	<!-- Structure -->
-	<div class="ds-section">
-		<h3 class="ds-section-heading">Structure</h3>
-		<div class="ds-pipeline-graph">
-			<div class="ds-pipeline-node">
-				<div class="ds-pipeline-node-type">Prepare</div>
-				<div class="ds-pipeline-node-name"><code>{{$t.Prepare}}</code></div>
-			</div>
-			<div class="ds-pipeline-arrow">→</div>
-			<div class="ds-pipeline-node ds-pipeline-node--agent">
-				<div class="ds-pipeline-node-type">Agent</div>
-				{{if $t.Model}}<div class="ds-pipeline-node-name"><code>{{$t.Model}}</code></div>{{end}}
-				{{if $t.Skill}}<div class="ds-pipeline-node-meta">skill: {{$t.Skill}}</div>{{end}}
-				{{if gt $t.MaxFixes 0}}<div class="ds-pipeline-node-meta">maxFixes: {{$t.MaxFixes}}</div>{{end}}
-				{{if $t.Gate}}
-				<div class="ds-pipeline-node-gate">
-					Gate: <code>{{$t.Gate}}</code>
-				</div>
+	<!-- Pipeline graph (dynamic — adapts to any topology) -->
+	<section class="tpl-section">
+		<h3 class="tpl-section-heading">Pipeline</h3>
+		<div class="pg-graph">
+			{{range $i, $node := $t.Pipeline.Nodes}}
+			{{if gt $i 0}}
+			<div class="pg-connector"><span class="pg-connector-arrow">▶</span></div>
+			{{end}}
+			<div class="pg-node pg-node--{{$node.Type}}">
+				<span class="pg-node-label">{{$node.Label}}</span>
+				{{if $node.Sublabel}}<span class="pg-node-sublabel">{{$node.Sublabel}}</span>{{end}}
+				{{range $node.Meta}}
+				<span class="pg-node-meta"><span class="pg-node-meta-key">{{.Key}}</span> {{.Value}}</span>
 				{{end}}
 			</div>
-			<div class="ds-pipeline-arrow">→</div>
-			<div class="ds-pipeline-node">
-				<div class="ds-pipeline-node-type">Deploy</div>
-				<div class="ds-pipeline-node-name"><code>{{$t.Deploy}}</code></div>
-			</div>
+			{{end}}
 		</div>
+	</section>
+
+	<!-- Feature panels -->
+	<div class="tpl-features-grid">
+		<!-- Agent capabilities -->
+		{{if or $t.AgentModel $t.AgentSkill (gt (len $t.AgentTools) 0)}}
+		<section class="tpl-feature-panel">
+			<h3 class="tpl-feature-heading">Agent</h3>
+			<dl class="tpl-deflist">
+				{{if $t.AgentModel}}<dt>Model</dt><dd><code>{{$t.AgentModel}}</code></dd>{{end}}
+				{{if $t.AgentSkill}}<dt>Skill</dt><dd><code>{{$t.AgentSkill | baseName}}</code></dd>{{end}}
+				{{if gt (len $t.AgentTools) 0}}<dt>Tools</dt><dd>{{range $t.AgentTools}}<span class="tpl-chip">{{.}}</span>{{end}}</dd>{{end}}
+				{{if gt $t.AgentMaxFixes 0}}<dt>Max Fixes</dt><dd>{{$t.AgentMaxFixes}}</dd>{{end}}
+				{{if gt $t.AgentTimeout 0}}<dt>Timeout</dt><dd>{{$t.AgentTimeout}}s</dd>{{end}}
+				{{if $t.AgentScope}}<dt>Scope</dt><dd>{{$t.AgentScope}}</dd>{{end}}
+			</dl>
+		</section>
+		{{end}}
+
+		<!-- Gate contract -->
+		{{if $t.GateName}}
+		<section class="tpl-feature-panel">
+			<h3 class="tpl-feature-heading">Gate</h3>
+			<dl class="tpl-deflist">
+				<dt>Plugin</dt><dd><code>{{$t.GateName}}</code></dd>
+				<dt>Contract</dt><dd>Exit 0 = green, stderr = feedback</dd>
+			</dl>
+		</section>
+		{{end}}
+
+		<!-- Plugins -->
+		<section class="tpl-feature-panel">
+			<h3 class="tpl-feature-heading">Plugins</h3>
+			<dl class="tpl-deflist">
+				<dt>Prepare</dt><dd><code>{{$t.PreparePlugin}}</code></dd>
+				<dt>Deploy</dt><dd><code>{{$t.DeployPlugin}}</code></dd>
+			</dl>
+		</section>
+
+		<!-- Usage -->
+		<section class="tpl-feature-panel">
+			<h3 class="tpl-feature-heading">Usage</h3>
+			{{if gt $t.WorkflowCount 0}}
+			<dl class="tpl-deflist">
+				<dt>Workflows</dt>
+				<dd>{{$t.WorkflowCount}} active</dd>
+			</dl>
+			<ul class="tpl-usage-list">
+				{{range $t.Workflows}}
+				<li><a href="/workflows/{{.}}" class="tpl-usage-link">{{.}}</a></li>
+				{{end}}
+			</ul>
+			{{else}}
+			<p class="tpl-usage-empty">No workflows currently use this template.</p>
+			{{end}}
+		</section>
 	</div>
 
 	<!-- YAML reference -->
-	<div class="ds-section">
-		<h3 class="ds-section-heading">YAML Reference</h3>
-		<pre class="ds-tool-code">apiVersion: harmostes.dev/v1alpha1
+	<section class="tpl-section">
+		<h3 class="tpl-section-heading">YAML Reference</h3>
+		<pre class="tpl-yaml">apiVersion: harmostes.dev/v1alpha1
 kind: Workflow
 spec:
   templateRef: {{$t.Name}}
   source:
     repo: github.com/your-org/your-repo
     branch: main</pre>
-	</div>
+	</section>
 </div>
 {{end}}

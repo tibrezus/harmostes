@@ -121,6 +121,7 @@ func (s *Server) handleWorkflowDetail(w http.ResponseWriter, r *http.Request) {
 	s.render(w, r, "pages/detail.html", map[string]any{
 		"Workflow": wf,
 		"Jobs":     jobs,
+		"Pipeline": buildWorkflowPipelineView(&wf),
 	})
 }
 

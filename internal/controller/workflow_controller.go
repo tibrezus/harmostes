@@ -24,6 +24,7 @@ import (
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
 	"github.com/tibrezus/harmostes/internal/attempt"
+	"github.com/tibrezus/harmostes/internal/dapr"
 	"github.com/tibrezus/harmostes/internal/observability"
 )
 
@@ -41,6 +42,14 @@ type WorkflowReconciler struct {
 	OTLPEndpoint        string // OTLP collector endpoint stamped on worker Jobs (enables the worker's own OTel SDK; empty = disabled)
 	OTLPInsecure        bool   // set OTEL_EXPORTER_OTLP_INSECURE on worker sidecars (fork's GetIsSecure() defaults to TLS)
 	SkillsRepo          string // git URL cloned by the init container into /skills before the worker starts
+
+	// Pub/Sub trigger publishing (Phase 1 — event-driven worker pool).
+	// When PubSubTriggers is true, the controller publishes trigger events to
+	// the Dapr pub/sub topic in ADDITION to creating Jobs. Phase 3 removes
+	// Job creation entirely.
+	DaprClient     dapr.Client // nil = Dapr not configured (Job-only mode)
+	PubSubTriggers bool        // feature flag: publish trigger events to pub/sub
+	TriggerTopic   string      // pub/sub topic (default "harmostes-triggers")
 }
 
 // collectConfigMaps scans the Workflow spec for all ConfigMap references (prepare
@@ -173,6 +182,18 @@ func (r *WorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	if attemptName != "" {
 		if err := attempt.RecordRunStarted(ctx, r.Client, wf.Namespace, attemptName, jobName); err != nil {
 			logger.Error(err, "record attempt run start")
+		}
+	}
+
+	// Pub/Sub trigger publishing (Phase 1 — parallel to Jobs). When enabled,
+	// the controller also publishes a trigger event so the worker pool can
+	// consume it. This is additive: the Job above is still created as the
+	// primary execution path. Phase 3 will remove Job creation.
+	if r.PubSubTriggers {
+		if err := r.publishTrigger(ctx, &wf, triggerReason(&wf), wf.Status.LastProcessedRevision, tp, attemptName); err != nil {
+			logger.Error(err, "publish trigger to pub/sub")
+		} else {
+			span.SetAttributes(attribute.Bool("harmostes.pubsub_trigger", true))
 		}
 	}
 

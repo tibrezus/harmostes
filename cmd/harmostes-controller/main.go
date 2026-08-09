@@ -24,6 +24,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	"github.com/tibrezus/harmostes/internal/controller"
+	"github.com/tibrezus/harmostes/internal/dapr"
 	"github.com/tibrezus/harmostes/internal/k8s"
 	"github.com/tibrezus/harmostes/internal/observability"
 	"github.com/tibrezus/harmostes/internal/webhook"
@@ -44,6 +45,8 @@ func main() {
 		otlpInsecure        bool
 		skillsRepo          string
 		webhookAddr         string
+		pubsubTriggers      bool
+		triggerTopic        string
 	)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "metrics server bind address")
 	flag.StringVar(&namespace, "namespace", envOr("HARMOSTES_NAMESPACE", "harmostes"), "namespace the controller watches + creates worker Jobs in")
@@ -57,6 +60,8 @@ func main() {
 	flag.StringVar(&skillsRepo, "skills-repo", envOr("HARMOSTES_SKILLS_REPO", "https://github.com/tibrezus/agents.git"), "git URL cloned into /skills by the worker init container")
 	flag.BoolVar(&otlpInsecure, "otlp-insecure", false, "set OTEL_EXPORTER_OTLP_INSECURE on worker sidecars (plain gRPC for cluster-internal collectors)")
 	flag.StringVar(&webhookAddr, "webhook-bind-address", envOr("HARMOSTES_WEBHOOK_ADDRESS", ":8082"), "webhook server bind address (for git push events)")
+	flag.BoolVar(&pubsubTriggers, "pubsub-triggers", envOr("HARMOSTES_PUBSUB_TRIGGERS", "") != "", "publish trigger events to Dapr pub/sub (Phase 1: parallel to Jobs)")
+	flag.StringVar(&triggerTopic, "trigger-topic", envOr("HARMOSTES_TRIGGER_TOPIC", "harmostes-triggers"), "Dapr pub/sub topic for trigger events")
 	opts := zap.Options{Development: false}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -82,6 +87,18 @@ func main() {
 			_ = observability.ShutdownWithTimeout(context.Background(), obsShutdown, observability.ShutdownTimeout)
 		}
 	}()
+
+	// Dapr client for pub/sub trigger publishing. The controller's daprd
+	// sidecar (chart injects it) exposes the Dapr HTTP API on localhost:3500.
+	// When Dapr is not injected (local dev), this still works against any
+	// Dapr sidecar at DAPR_HTTP_ENDPOINT; nil-safe if the endpoint is unset.
+	var daprClient dapr.Client
+	if daprEndpoint := envOr("DAPR_HTTP_ENDPOINT", ""); daprEndpoint != "" {
+		daprClient = dapr.Tracing(dapr.New(daprEndpoint))
+		setupLogMsg("dapr client wired for trigger publishing at %s", daprEndpoint)
+	} else if pubsubTriggers {
+		setupLog("pubsub-triggers enabled but DAPR_HTTP_ENDPOINT unset — trigger publishing disabled", nil)
+	}
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 k8s.Scheme(),
@@ -155,6 +172,9 @@ func main() {
 		OTLPEndpoint:        otlpEndpoint,
 		OTLPInsecure:        otlpInsecure,
 		SkillsRepo:          skillsRepo,
+		DaprClient:          daprClient,
+		PubSubTriggers:      pubsubTriggers,
+		TriggerTopic:        triggerTopic,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog("controller setup", err)
 		os.Exit(1)

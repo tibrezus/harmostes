@@ -1,0 +1,92 @@
+{{- if .Values.workerPool.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "harmostes.fullname" . }}-worker-pool
+  labels:
+    app.kubernetes.io/name: harmostes-worker-pool
+    app.kubernetes.io/component: worker-pool
+    {{- include "harmostes.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.workerPool.replicas | default 1 }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: harmostes-worker-pool
+      app.kubernetes.io/component: worker-pool
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: harmostes-worker-pool
+        app.kubernetes.io/component: worker-pool
+      annotations:
+        # Dapr sidecar: subscribes to harmostes-triggers topic and delivers
+        # trigger events to the consumer's /triggers endpoint.
+        dapr.io/enabled: "true"
+        dapr.io/app-id: "harmostes-worker-pool"
+        dapr.io/app-port: "8084"
+        dapr.io/config: {{ include "harmostes.fullname" . }}-config
+        {{- if .Values.observability.daprdImage }}
+        dapr.io/sidecar-image: {{ .Values.observability.daprdImage | quote }}
+        dapr.io/env: "OTEL_EXPORTER_OTLP_INSECURE=true"
+        {{- end }}
+    spec:
+      serviceAccountName: {{ .Values.controller.serviceAccountName | default "harmostes-controller" }}
+      initContainers:
+        - name: sync-skills
+          image: {{ .Values.worker.image | default (printf "ghcr.io/tibrezus/harmostes-worker:%s" .Chart.AppVersion) | quote }}
+          imagePullPolicy: Always
+          command: ["sh", "-c", "git clone --depth 1 {{ .Values.controller.skillsRepo | default "https://github.com/tibrezus/agents.git" }} /tmp/agents && cp -r /tmp/agents/skills /skills"]
+          volumeMounts:
+            - name: skills
+              mountPath: /skills
+      containers:
+        - name: worker
+          image: {{ .Values.worker.image | default (printf "ghcr.io/tibrezus/harmostes-worker:%s" .Chart.AppVersion) | quote }}
+          imagePullPolicy: Always
+          ports:
+            - name: app-port
+              containerPort: 8084
+          env:
+            - name: HARMOSTES_CONSUMER_MODE
+              value: "true"
+            - name: HARMOSTES_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: HARMOSTES_CONSUMER_PORT
+              value: "8084"
+            - name: HARMOSTES_PUBSUB_NAME
+              value: {{ .Values.workerPool.pubsubName | default "pubsub" | quote }}
+            - name: HARMOSTES_TRIGGER_TOPIC
+              value: {{ .Values.workerPool.topic | default "harmostes-triggers" | quote }}
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            {{- range $key, $val := .Values.worker.env }}
+            - name: {{ $key }}
+              value: {{ $val | quote }}
+            {{- end }}
+          volumeMounts:
+            - name: skills
+              mountPath: /skills
+            - name: workspace
+              mountPath: /workspace
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8084
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8084
+            initialDelaySeconds: 15
+            periodSeconds: 20
+      volumes:
+        - name: skills
+          emptyDir: {}
+        - name: workspace
+          emptyDir: {}
+{{- end }}

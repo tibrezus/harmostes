@@ -4,9 +4,14 @@
 	{{if not $s}}
 	<div class="ds-section">
 		<div class="ds-empty-state">
+			{{if .Deterministic}}
+			<span class="ds-empty-title">No agent session — deterministic workflow</span>
+			<p class="ds-empty-text">This workflow (<code>{{.WorkflowRef}}</code>) does not use an LLM agent. It runs entirely through deterministic plugins, so there is no session transcript to display.</p>
+			{{else}}
 			<span class="ds-empty-title">Session transcript not available</span>
 			<p class="ds-empty-text">No session record found for run <code>{{.RunName}}</code>.</p>
-			<p class="ds-empty-text">This may happen if the run predates session capture (Phase 1), or the Dapr state store is not configured.</p>
+			<p class="ds-empty-text">This may happen if the run predates session capture, or the Dapr state store is not configured.</p>
+			{{end}}
 		</div>
 	</div>
 	{{else}}

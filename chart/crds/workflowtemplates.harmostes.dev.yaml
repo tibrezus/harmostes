@@ -46,16 +46,19 @@ spec:
                   properties:
                     plugin:
                       type: object
+                      required: [name]
                       properties:
-                        name:
-                          type: string
+                        name: { type: string }
+                        configMap: { type: string }
+                        args: { type: array, items: { type: string } }
+                    detect: { type: string, enum: [changed, conflict, always] }
+
                 agent:
                   type: object
                   properties:
-                    model:
-                      type: string
-                    skill:
-                      type: string
+                    enabled: { type: boolean }
+                    model: { type: string }
+                    skill: { type: string }
                     tools:
                       type: array
                       items:
@@ -63,27 +66,31 @@ spec:
                     taskTemplate:
                       type: object
                       properties:
-                        name:
-                          type: string
-                    maxFixes:
-                      type: integer
-                      minimum: 1
+                        name: { type: string }
+                        configMap: { type: string }
+                        key: { type: string }
                     gate:
                       type: object
                       properties:
                         plugin:
                           type: object
+                          required: [name]
                           properties:
-                            name:
-                              type: string
+                            name: { type: string }
+                            configMap: { type: string }
+                            args: { type: array, items: { type: string } }
+                    maxFixes: { type: integer, minimum: 1 }
+
                 deploy:
                   type: object
                   properties:
                     plugin:
                       type: object
+                      required: [name]
                       properties:
-                        name:
-                          type: string
+                        name: { type: string }
+                        configMap: { type: string }
+                        args: { type: array, items: { type: string } }
             status:
               type: object
               x-kubernetes-preserve-unknown-fields: true

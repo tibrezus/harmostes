@@ -166,34 +166,39 @@ func (r *WorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	// this run belongs to, so its history is recorded. Best-effort — an empty
 	// attemptName means the worker records nothing (CRD absent / error).
 	attemptName := r.resolveAttempt(ctx, &wf)
-	// Trace handoff: stamp the reconcile span's W3C context onto the worker Job
-	// so its root harmostes.worker.run span is a child of this reconcile span —
-	// one trace from "controller noticed a change" through "worker ran".
+	// Trace handoff: stamp the reconcile span's W3C context onto the trigger
+	// event (or worker Job) so the worker's root harmostes.worker.run span is
+	// a child of this reconcile span — one trace from "controller noticed a
+	// change" through "worker ran".
 	tp := observability.TraceparentFromContext(ctx)
-	jobName, err := r.createWorkerJob(ctx, &wf, tp, attemptName)
-	if err != nil {
-		logger.Error(err, "create worker job")
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		return ctrl.Result{RequeueAfter: time.Minute}, err
-	}
-	recordWorkflowRunScheduled(ctx, wf.Name)
-	// Record the run start in the Attempt (best-effort).
-	if attemptName != "" {
-		if err := attempt.RecordRunStarted(ctx, r.Client, wf.Namespace, attemptName, jobName); err != nil {
-			logger.Error(err, "record attempt run start")
-		}
-	}
 
-	// Pub/Sub trigger publishing (Phase 1 — parallel to Jobs). When enabled,
-	// the controller also publishes a trigger event so the worker pool can
-	// consume it. This is additive: the Job above is still created as the
-	// primary execution path. Phase 3 will remove Job creation.
+	// Phase 3 cutover: when PubSubTriggers is enabled, the controller publishes
+	// a trigger event to the Dapr pub/sub topic and does NOT create a Job.
+	// The worker pool consumes the event and executes the workflow. When
+	// disabled, the legacy Job-based path runs (rollback safety).
 	if r.PubSubTriggers {
 		if err := r.publishTrigger(ctx, &wf, triggerReason(&wf), wf.Status.LastProcessedRevision, tp, attemptName); err != nil {
 			logger.Error(err, "publish trigger to pub/sub")
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
 		} else {
 			span.SetAttributes(attribute.Bool("harmostes.pubsub_trigger", true))
+		}
+	} else {
+		// Legacy: Job-based execution.
+		jobName, err := r.createWorkerJob(ctx, &wf, tp, attemptName)
+		if err != nil {
+			logger.Error(err, "create worker job")
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+			return ctrl.Result{RequeueAfter: time.Minute}, err
+		}
+		recordWorkflowRunScheduled(ctx, wf.Name)
+		// Record the run start in the Attempt (best-effort).
+		if attemptName != "" {
+			if err := attempt.RecordRunStarted(ctx, r.Client, wf.Namespace, attemptName, jobName); err != nil {
+				logger.Error(err, "record attempt run start")
+			}
 		}
 	}
 

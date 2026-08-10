@@ -2,7 +2,10 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"maps"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -21,6 +24,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
+	"github.com/tibrezus/harmostes/internal/dapr"
 	"github.com/tibrezus/harmostes/internal/k8s"
 	"github.com/tibrezus/harmostes/internal/observability"
 )
@@ -247,6 +251,71 @@ func TestReconcileEmitsSpanAndHandoff(t *testing.T) {
 	wantPrefix := "00-" + rec.SpanContext.TraceID().String() + "-"
 	if !strings.HasPrefix(tp, wantPrefix) {
 		t.Errorf("traceparent %q does not reference the reconcile trace (want prefix %q)", tp, wantPrefix)
+	}
+}
+
+func TestReconcilePubSub_NoJobCreated(t *testing.T) {
+	// Phase 3: when PubSubTriggers is enabled, the controller publishes a
+	// trigger event and does NOT create a batchv1.Job.
+	var publishedBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		buf := make([]byte, r.ContentLength)
+		r.Body.Read(buf)
+		publishedBody = string(buf)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	wf := &v1alpha1.Workflow{}
+	wf.Name = "wiki-lint-test"
+	wf.Namespace = "harmostes"
+	wf.Generation = 2
+	wf.Status.ObservedGeneration = 1
+
+	cl := fake.NewClientBuilder().
+		WithScheme(k8s.Scheme()).
+		WithStatusSubresource(&v1alpha1.Workflow{}).
+		WithObjects(wf).
+		Build()
+
+	r := &WorkflowReconciler{
+		Client:             cl,
+		Scheme:             k8s.Scheme(),
+		WorkerImage:        "ghcr.io/tibrezus/harmostes-worker:dev",
+		ServiceAccountName: "harmostes-controller",
+		PollInterval:       5 * time.Minute,
+		JobNamespace:       "harmostes",
+		SkillsRepo:         "https://github.com/tibrezus/agents.git",
+		PubSubTriggers:     true,
+		DaprClient:         dapr.New(srv.URL),
+		TriggerTopic:       "harmostes-triggers",
+	}
+
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: "wiki-lint-test", Namespace: "harmostes"},
+	}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	// 1. NO Job should have been created.
+	var jobs batchv1.JobList
+	if err := cl.List(context.Background(), &jobs, client.MatchingLabels{"app.kubernetes.io/managed-by": "harmostes"}); err != nil {
+		t.Fatalf("list jobs: %v", err)
+	}
+	if len(jobs.Items) != 0 {
+		t.Errorf("expected 0 worker Jobs (pub/sub mode), got %d", len(jobs.Items))
+	}
+
+	// 2. A trigger event should have been published.
+	if publishedBody == "" {
+		t.Fatal("expected trigger event to be published, got empty body")
+	}
+	var trigger TriggerEvent
+	if err := json.Unmarshal([]byte(publishedBody), &trigger); err != nil {
+		t.Fatalf("unmarshal trigger event: %v", err)
+	}
+	if trigger.Workflow != "wiki-lint-test" {
+		t.Errorf("trigger workflow = %q, want wiki-lint-test", trigger.Workflow)
 	}
 }
 

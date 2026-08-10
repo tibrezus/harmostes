@@ -99,6 +99,7 @@ type attemptDetailData struct {
 	NodeResults    []v1alpha1.NodeResultEnvelope
 	Evidence       []v1alpha1.EvidenceReference
 	Owner          string
+	AgentEnabled   bool
 }
 
 type runSummary struct {
@@ -147,6 +148,16 @@ func (s *Server) handleAttemptDetail(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	// Fetch the Workflow to determine whether the agent is enabled.
+	// This controls whether the Session link is shown for runs.
+	agentEnabled := false
+	var wf v1alpha1.Workflow
+	if err := s.k8sClient.Get(r.Context(), client.ObjectKey{Namespace: s.namespace, Name: att.Spec.WorkflowRef}, &wf); err == nil {
+		if wf.Spec.Agent.Enabled != nil {
+			agentEnabled = *wf.Spec.Agent.Enabled
+		}
+	}
+
 	data := attemptDetailData{
 		Name:           att.Name,
 		WorkflowRef:    att.Spec.WorkflowRef,
@@ -160,16 +171,18 @@ func (s *Server) handleAttemptDetail(w http.ResponseWriter, r *http.Request) {
 		NodeResults:    att.Status.NodeResults,
 		Evidence:       att.Status.Evidence,
 		Owner:          att.Spec.Owner,
+		AgentEnabled:   agentEnabled,
 	}
 	s.render(w, r, "pages/attempt_detail.html", data)
 }
 
 // attemptSessionData is the template data for the agent session viewer.
 type attemptSessionData struct {
-	AttemptName string
-	WorkflowRef string
-	RunName     string
-	Session     *agentSessionView
+	AttemptName   string
+	WorkflowRef   string
+	RunName       string
+	Session       *agentSessionView
+	Deterministic bool
 }
 
 // agentSessionView is the session record adapted for template rendering.
@@ -314,11 +327,22 @@ func (s *Server) handleAttemptSession(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Determine whether the workflow uses an agent. Deterministic workflows
+	// (agent disabled) have no session, so the empty state should reflect that.
+	deterministic := true
+	var wf v1alpha1.Workflow
+	if err := s.k8sClient.Get(r.Context(), client.ObjectKey{Namespace: s.namespace, Name: wfName}, &wf); err == nil {
+		if wf.Spec.Agent.Enabled != nil && *wf.Spec.Agent.Enabled {
+			deterministic = false
+		}
+	}
+
 	data := attemptSessionData{
-		AttemptName: attName,
-		WorkflowRef: wfName,
-		RunName:     jobName,
-		Session:     sessionView,
+		AttemptName:   attName,
+		WorkflowRef:   wfName,
+		RunName:       jobName,
+		Session:       sessionView,
+		Deterministic: deterministic,
 	}
 	s.render(w, r, "pages/session.html", data)
 }

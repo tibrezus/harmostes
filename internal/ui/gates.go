@@ -31,7 +31,8 @@ import (
 
 // GateArchetype defines the common structure for all workflows using a gate.
 type GateArchetype struct {
-	// Name is the gate plugin name (matches spec.agent.gate.plugin.name).
+	// Name is the archetype identity (gate-centric grouping key in the UI).
+	// It does NOT have to match a gate plugin — see GatePluginName.
 	Name string `json:"name"`
 
 	// Label is the human-readable gate name for the UI.
@@ -44,10 +45,21 @@ type GateArchetype struct {
 	Category string `json:"category"`
 
 	// Common structure — all workflows using this gate share these defaults.
-	PreparePlugin string `json:"preparePlugin"` // the prepare plugin name
-	DeployPlugin  string `json:"deployPlugin"`  // the deploy plugin name
-	SkillPath     string `json:"skillPath"`     // path to SKILL.md
-	TaskName      string `json:"taskName"`      // task template name
+	PreparePlugin    string `json:"preparePlugin"`    // the prepare plugin name
+	PrepareConfigMap string `json:"prepareConfigMap"` // ConfigMap for prepare plugin (empty = builtin)
+	DeployPlugin     string `json:"deployPlugin"`     // the deploy plugin name
+	DeployConfigMap  string `json:"deployConfigMap"`  // ConfigMap for deploy plugin (empty = builtin)
+
+	// GatePluginName is the actual gate plugin to set in
+	// spec.agent.gate.plugin.name. If empty, Name is used (backward compat).
+	// This separates the archetype identity from the gate plugin — e.g.
+	// the "fork-maintenance" archetype uses the "noop" gate plugin because
+	// fork-sync validates internally.
+	GatePluginName string `json:"gatePluginName,omitempty"`
+	GateConfigMap  string `json:"gateConfigMap,omitempty"` // ConfigMap for gate plugin
+
+	SkillPath string `json:"skillPath"` // path to SKILL.md
+	TaskName  string `json:"taskName"`  // task template name
 
 	// Gate contract.
 	ExitGreen  int    `json:"exitGreen"`  // exit code for green (always 0)
@@ -83,7 +95,11 @@ var gateCatalog = []GateArchetype{
 		Description:            "Fetch labeled PR → agent reviews → pr-review checks structure → post review to git host",
 		Category:               "code-review",
 		PreparePlugin:          "pr-fetch",
+		PrepareConfigMap:       "harmostes-pr-review",
 		DeployPlugin:           "post-review",
+		DeployConfigMap:        "harmostes-pr-review",
+		GatePluginName:         "pr-review",
+		GateConfigMap:          "harmostes-pr-review",
 		SkillPath:              "/skills/pr-review/SKILL.md",
 		TaskName:               "pr-review",
 		ExitGreen:              0,
@@ -92,17 +108,19 @@ var gateCatalog = []GateArchetype{
 		TargetFromPrepareRepos: true,
 	},
 	{
-		Name:          "fork-maintenance",
-		Label:         "Fork Maintenance",
-		Description:   "Upstream sync → cherry-pick replay → agent resolves conflicts → fork-maintenance gate validates build → deploy",
-		Category:      "fork-maintenance",
-		PreparePlugin: "merge-sync",
-		DeployPlugin:  "fork-merge-deploy",
-		SkillPath:     "/skills/fork-maintenance/SKILL.md",
-		TaskName:      "resolve-conflict",
-		ExitGreen:     0,
-		ExitFailed:    1,
-		Feedback:      "stderr",
+		Name:             "fork-maintenance",
+		Label:            "Fork Maintenance",
+		Description:      "Upstream sync → fork-sync merges release branch → conflict-resolver handles disputes → noop gate",
+		Category:         "fork-maintenance",
+		PreparePlugin:    "fork-sync",
+		PrepareConfigMap: "fork-maintenance-plugins",
+		DeployPlugin:     "noop",
+		GatePluginName:   "noop", // fork-sync validates internally; no separate gate
+		SkillPath:        "/skills/fork-maintenance/SKILL.md",
+		TaskName:         "resolve-conflict",
+		ExitGreen:        0,
+		ExitFailed:       1,
+		Feedback:         "stderr",
 	},
 	{
 		Name:          "noop",

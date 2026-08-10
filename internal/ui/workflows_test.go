@@ -96,7 +96,7 @@ func TestHandleWorkflowCreate_GateWikiLint(t *testing.T) {
 	}
 }
 
-func TestHandleWorkflowCreate_GateForkResolved(t *testing.T) {
+func TestHandleWorkflowCreate_GateForkMaintenance(t *testing.T) {
 	s := workflowTestServer()
 
 	form := url.Values{}
@@ -119,14 +119,17 @@ func TestHandleWorkflowCreate_GateForkResolved(t *testing.T) {
 	var wf v1alpha1.Workflow
 	_ = s.k8sClient.Get(req.Context(), types.NamespacedName{Namespace: "harmostes", Name: "custom-wf"}, &wf)
 
-	if wf.Spec.Prepare.Plugin.Name != "merge-sync" {
-		t.Errorf("prepare = %q, want merge-sync", wf.Spec.Prepare.Plugin.Name)
+	if wf.Spec.Prepare.Plugin.Name != "fork-sync" {
+		t.Errorf("prepare = %q, want fork-sync", wf.Spec.Prepare.Plugin.Name)
 	}
-	if wf.Spec.Agent.Gate.Plugin.Name != "fork-maintenance" {
-		t.Errorf("gate = %q, want fork-maintenance", wf.Spec.Agent.Gate.Plugin.Name)
+	if wf.Spec.Prepare.Plugin.ConfigMap != "fork-maintenance-plugins" {
+		t.Errorf("prepare configMap = %q, want fork-maintenance-plugins", wf.Spec.Prepare.Plugin.ConfigMap)
 	}
-	if wf.Spec.Deploy.Plugin.Name != "fork-merge-deploy" {
-		t.Errorf("deploy = %q, want fork-merge-deploy", wf.Spec.Deploy.Plugin.Name)
+	if wf.Spec.Agent.Gate.Plugin.Name != "noop" {
+		t.Errorf("gate = %q, want noop", wf.Spec.Agent.Gate.Plugin.Name)
+	}
+	if wf.Spec.Deploy.Plugin.Name != "noop" {
+		t.Errorf("deploy = %q, want noop", wf.Spec.Deploy.Plugin.Name)
 	}
 	if wf.Spec.Agent.Model != "litellm/zai/glm-4.7" {
 		t.Errorf("model = %q, want glm-4.7", wf.Spec.Agent.Model)
@@ -496,7 +499,7 @@ func TestPresetFor(t *testing.T) {
 	}
 
 	p = presetFor("fork-maintenance")
-	if p.Gate != "fork-maintenance" {
+	if p.Gate != "noop" {
 		t.Errorf("fork-maintenance gate = %q", p.Gate)
 	}
 

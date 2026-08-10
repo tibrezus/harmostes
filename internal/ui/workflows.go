@@ -54,10 +54,10 @@ var presets = []preset{
 	{
 		ID:          "fork-maintenance",
 		Name:        "Fork Maintenance (upstream sync)",
-		Description: "Upstream → merge → agent resolves 3-way conflicts → PR-merge + tag",
-		Prepare:     "merge-sync",
-		Gate:        "fork-maintenance",
-		Deploy:      "fork-merge-deploy",
+		Description: "Upstream → fork-sync merges release branch → conflict-resolver handles disputes",
+		Prepare:     "fork-sync",
+		Gate:        "noop",
+		Deploy:      "noop",
 		Skill:       "/skills/fork-maintenance/SKILL.md",
 		TaskName:    "resolve-conflict",
 	},
@@ -76,9 +76,9 @@ var presets = []preset{
 // knownPlugins is the allowlist of plugin names for the custom preset dropdowns.
 // These are the built-in + deployed plugins the worker can resolve.
 var knownPlugins = map[string][]string{
-	"prepare": {"rig-emit", "raw-copy", "merge-sync"},
-	"gate":    {"wiki-lint", "fork-maintenance"},
-	"deploy":  {"git-push", "fork-merge-deploy"},
+	"prepare": {"rig-emit", "raw-copy", "fork-sync"},
+	"gate":    {"wiki-lint", "noop"},
+	"deploy":  {"git-push", "noop"},
 }
 
 // handleWorkflowNew renders the create form. It loads the user's tokens (for
@@ -177,6 +177,9 @@ func (s *Server) handleWorkflowCreate(w http.ResponseWriter, r *http.Request) {
 	preparePlugin := g.PreparePlugin
 	gatePlugin := g.Name
 	deployPlugin := g.DeployPlugin
+	if g.GatePluginName != "" {
+		gatePlugin = g.GatePluginName
+	}
 
 	if preparePlugin == "" || deployPlugin == "" {
 		s.renderError(w, r, "Gate "+gateID+" does not have a complete structure")
@@ -201,7 +204,7 @@ func (s *Server) handleWorkflowCreate(w http.ResponseWriter, r *http.Request) {
 				Branch: branch,
 			},
 			Prepare: v1alpha1.PrepareSpec{
-				Plugin: v1alpha1.PluginRef{Name: preparePlugin},
+				Plugin: v1alpha1.PluginRef{Name: preparePlugin, ConfigMap: g.PrepareConfigMap},
 				Detect: "changed",
 			},
 			Agent: v1alpha1.AgentSpec{
@@ -214,13 +217,13 @@ func (s *Server) handleWorkflowCreate(w http.ResponseWriter, r *http.Request) {
 					Key:       g.TaskName + ".txt",
 				},
 				Gate: v1alpha1.GateRef{
-					Plugin: v1alpha1.PluginRef{Name: gatePlugin},
+					Plugin: v1alpha1.PluginRef{Name: gatePlugin, ConfigMap: g.GateConfigMap},
 				},
 				MaxFixes: 3,
 				Timeout:  1800,
 			},
 			Deploy: v1alpha1.DeploySpec{
-				Plugin: v1alpha1.PluginRef{Name: deployPlugin},
+				Plugin: v1alpha1.PluginRef{Name: deployPlugin, ConfigMap: g.DeployConfigMap},
 			},
 			Scaling: &v1alpha1.ScalingSpec{
 				Kind:     "keda-scaledjob",

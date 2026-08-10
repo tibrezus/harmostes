@@ -1,63 +1,63 @@
-# fork-maintenance — upstream sync as a Harmostes Workflow.
+# fork-maintenance — upstream sync as a harmostes Workflow.
 #
-# Today this is a fork YAML consumed by sync-fork.sh (CronJob) + an always-on
-# conflict-subscriber that spawns resolve-conflict.sh (→ harmostes → gate-
-# resolved → host_pr_merge + tag). Under Harmostes it is one Workflow CR; the
-# bespoke scripts become plugins (merge-sync, fork-maintenance, fork-merge-deploy)
-# and the bespoke loop + per-platform subscriber become the framework.
+# This is a WORKING example showing the actual fork-maintenance model after
+# the migration from the legacy CronJob system into harmostes. The fork-sync
+# plugin (a wrapper around sync-fork.sh) runs entirely in the prepare phase.
+# It merges the upstream release branch into the fork's release branch,
+# validates (build, divergence tracking, patch signatures), pushes, opens a
+# PR, and auto-merges. If a conflict is detected, it POSTs an event to the
+# conflict-resolver Deployment which uses an LLM agent to resolve it.
 #
-# Sync model: MERGE (Codeberg-style). The engine merges the upstream release
-# branch into the fork's release branch (off a sync branch → PR). Customizations
-# are immutable commits on the release branch, so history is append-only and
-# conflicts are localized 3-way regions — the ideal substrate for the LLM agent
-# below. See skills/fork-maintenance/references/architecture.md "Sync model".
+# The plugin lives in a ConfigMap (fork-maintenance-plugins) and is mounted
+# at /plugins/fork-maintenance-plugins/fork-sync.sh by the worker-pool
+# Deployment (chart value: forkMaintenance.enabled: true).
+#
+# The scripts (sync-fork.sh, divergence-track.sh, validate-fork.sh, etc.)
+# are mounted from ConfigMaps at /workspace/{scripts,checks,forks,
+# post-merge-hooks}. See k8s-config: platform/harmostes/fork-maintenance/.
+---
 apiVersion: harmostes.dev/v1alpha1
 kind: Workflow
 metadata:
-  name: signoz
+  name: fork-maintenance-forgejo
   namespace: harmostes
+  labels:
+    harmostes.dev/owner: tibrez
 spec:
   source:
     kind: git
-    repo: signoz-upstream            # Flux GitRepository of the upstream
-    branch: main
-    fork:                            # the fork to keep in sync
-      url: git@github.com:rezuscloud/signoz.git
-      branch: rezus/main
+    repo: fork-maintenance-forgejo
+    branch: v16.0/forgejo
+    language: go
+
+  # The fork-sync plugin does everything in the prepare phase: it runs
+  # sync-fork.sh which merges, validates, pushes, PRs, and auto-merges.
+  # The fork name is passed as the first argument.
   prepare:
     plugin:
-      name: merge-sync               # → sync-fork.sh: merge upstream release branch into the release line
-    output: rezus/sync-<date>        # the sync branch produced (release + upstream merge)
-    detect: conflict                 # proceed to the agent ONLY when the merge conflicts
+      name: fork-sync
+      configMap: fork-maintenance-plugins
+      args: ["forgejo"]
+    detect: changed
+
+  # Agent disabled — fork-maintenance is deterministic. When sync-fork.sh
+  # detects a conflict, it emits a fork.conflict.needs-resolution event to
+  # the conflict-resolver (a separate always-on Deployment), which runs
+  # resolve-conflict.sh with pi + the fork-maintenance skill. This happens
+  # OUTSIDE the workflow lifecycle.
   agent:
-    model: litellm/zai/glm-4.7
-    skill: /skills/fork-maintenance/SKILL.md
-    tools: [read, bash, edit, grep]
+    enabled: false
+    model: none
     taskTemplate:
-      name: resolve-conflict
-      configMap: harmostes-tasks
-      key: resolve-conflict.txt      # drive merge resolution to completion + push; uses wiki intent
+      name: none
     gate:
       plugin:
-        name: fork-maintenance          # → gate-resolved.sh: markers + validate-fork.sh + signatures
-    maxFixes: 3
-    timeout: 1800
+        name: noop
+
   deploy:
     plugin:
-      name: fork-merge-deploy        # → host_pr_merge (sync→release, append) + tag v…-rezus.N
-  events:
-    onPrepare: fork.conflict.needs-resolution
-    onResolved: fork.sync.deployed
-    onFailed: fork.sync.failed
-  cache:
-    pvc: harmostes-cache
-    git: true
+      name: noop
+
   scaling:
     kind: keda-scaledjob
-    schedule: "0 * * * *"
----
-# A fast-path note: when prepare reports detect: conflict == false (the merge
-# was clean), the framework deploys directly with NO agent step. That is the
-# deterministic fast-path sync-fork.sh already implements today; Harmostes
-# makes it the framework's "agent skipped" branch. Release-branch tracking
-# makes this the common case (small, stable deltas → clean merges).
+    schedule: "*/30 * * * *"

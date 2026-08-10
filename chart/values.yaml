@@ -34,13 +34,12 @@ worker:
   deployRBAC:
     enabled: false
 
-# workerPool: event-driven worker pool (Phase 1 — Dapr pub/sub consumer).
-# When enabled, a long-running Deployment subscribes to the harmostes-triggers
-# topic via daprd and processes trigger events. This replaces the
-# batchv1.Job-per-run model (eliminates pod bloat). Phase 1 runs in parallel
-# with Jobs; Phase 3 removes Jobs entirely.
+# workerPool: event-driven worker pool (Dapr pub/sub consumer).
+# A long-running Deployment subscribes to the harmostes-triggers topic via
+# daprd and processes trigger events. This is the single execution model —
+# the controller no longer creates batchv1.Jobs.
 workerPool:
-  enabled: false       # opt-in for Phase 1
+  enabled: true        # always on (the single trigger model)
   replicas: 1          # fixed replica count (KEDA scale-to-zero in a follow-up)
   pubsubName: pubsub   # Dapr pub/sub component name
   topic: harmostes-triggers  # topic the controller publishes to

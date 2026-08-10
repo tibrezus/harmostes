@@ -33,34 +33,20 @@ import (
 
 func main() {
 	var (
-		metricsAddr         string
-		namespace           string
-		workerImage         string
-		workerImagePullSecs string
-		serviceAccount      string
-		pollInterval        time.Duration
-		daprEnabled         bool
-		daprdImage          string
-		otlpEndpoint        string
-		otlpInsecure        bool
-		skillsRepo          string
-		webhookAddr         string
-		pubsubTriggers      bool
-		triggerTopic        string
+		metricsAddr  string
+		namespace    string
+		pollInterval time.Duration
+		otlpEndpoint string
+		otlpInsecure bool
+		webhookAddr  string
+		triggerTopic string
 	)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "metrics server bind address")
-	flag.StringVar(&namespace, "namespace", envOr("HARMOSTES_NAMESPACE", "harmostes"), "namespace the controller watches + creates worker Jobs in")
-	flag.StringVar(&workerImage, "worker-image", envOr("HARMOSTES_WORKER_IMAGE", "ghcr.io/tibrezus/harmostes-worker:dev"), "worker image the controller spawns")
-	flag.StringVar(&workerImagePullSecs, "worker-image-pull-secret", envOr("HARMOSTES_WORKER_IMAGE_PULL_SECRET", ""), "image pull secret for the worker")
-	flag.StringVar(&serviceAccount, "service-account", "harmostes-controller", "service account for worker Jobs")
+	flag.StringVar(&namespace, "namespace", envOr("HARMOSTES_NAMESPACE", "harmostes"), "namespace the controller watches")
 	flag.DurationVar(&pollInterval, "poll-interval", envDurationOr("HARMOSTES_POLL_INTERVAL", 5*time.Minute), "default run cadence for Workflows without a schedule")
-	flag.BoolVar(&daprEnabled, "dapr-enabled", false, "inject the Dapr sidecar into worker Jobs (requires the namespace/SA trusted by the Dapr sentry)")
-	flag.StringVar(&daprdImage, "daprd-image", envOr("HARMOSTES_DAPRD_IMAGE", ""), "forked daprd sidecar image for worker Jobs (empty = stock daprd, no OTLP push)")
-	flag.StringVar(&otlpEndpoint, "otlp-endpoint", envOr("HARMOSTES_OTLP_ENDPOINT", ""), "OTLP collector endpoint stamped on worker Jobs as OTEL_EXPORTER_OTLP_ENDPOINT (enables worker pipeline spans; empty = disabled)")
-	flag.StringVar(&skillsRepo, "skills-repo", envOr("HARMOSTES_SKILLS_REPO", "https://github.com/tibrezus/agents.git"), "git URL cloned into /skills by the worker init container")
-	flag.BoolVar(&otlpInsecure, "otlp-insecure", false, "set OTEL_EXPORTER_OTLP_INSECURE on worker sidecars (plain gRPC for cluster-internal collectors)")
+	flag.StringVar(&otlpEndpoint, "otlp-endpoint", envOr("HARMOSTES_OTLP_ENDPOINT", ""), "OTLP collector endpoint stamped on trigger events")
+	flag.BoolVar(&otlpInsecure, "otlp-insecure", false, "set OTEL_EXPORTER_OTLP_INSECURE on workers (plain gRPC for cluster-internal collectors)")
 	flag.StringVar(&webhookAddr, "webhook-bind-address", envOr("HARMOSTES_WEBHOOK_ADDRESS", ":8082"), "webhook server bind address (for git push events)")
-	flag.BoolVar(&pubsubTriggers, "pubsub-triggers", envOr("HARMOSTES_PUBSUB_TRIGGERS", "") != "", "publish trigger events to Dapr pub/sub (Phase 1: parallel to Jobs)")
 	flag.StringVar(&triggerTopic, "trigger-topic", envOr("HARMOSTES_TRIGGER_TOPIC", "harmostes-triggers"), "Dapr pub/sub topic for trigger events")
 	opts := zap.Options{Development: false}
 	opts.BindFlags(flag.CommandLine)
@@ -90,19 +76,11 @@ func main() {
 
 	// Dapr client for pub/sub trigger publishing. The controller's daprd
 	// sidecar (chart injects it) exposes the Dapr HTTP API on localhost:3500.
-	// DAPR_HTTP_ENDPOINT is set by newer daprd versions; older ones default to
-	// http://localhost:3500. When pubsub-triggers is enabled, default to
-	// localhost:3500 so the client is always wired.
 	var daprClient dapr.Client
-	daprEndpoint := envOr("DAPR_HTTP_ENDPOINT", "")
-	if daprEndpoint == "" && pubsubTriggers {
-		daprEndpoint = "http://localhost:3500"
-	}
+	daprEndpoint := envOr("DAPR_HTTP_ENDPOINT", "http://localhost:3500")
 	if daprEndpoint != "" {
 		daprClient = dapr.Tracing(dapr.New(daprEndpoint))
 		setupLogMsg("dapr client wired for trigger publishing at %s", daprEndpoint)
-	} else if pubsubTriggers {
-		setupLog("pubsub-triggers enabled but Dapr not configured — trigger publishing disabled", nil)
 	}
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
@@ -165,27 +143,19 @@ func main() {
 	}
 
 	if err := (&controller.WorkflowReconciler{
-		Client:              mgr.GetClient(),
-		Scheme:              mgr.GetScheme(),
-		WorkerImage:         workerImage,
-		WorkerImagePullSecs: workerImagePullSecs,
-		ServiceAccountName:  serviceAccount,
-		PollInterval:        pollInterval,
-		JobNamespace:        namespace,
-		DaprEnabled:         daprEnabled,
-		DaprdImage:          daprdImage,
-		OTLPEndpoint:        otlpEndpoint,
-		OTLPInsecure:        otlpInsecure,
-		SkillsRepo:          skillsRepo,
-		DaprClient:          daprClient,
-		PubSubTriggers:      pubsubTriggers,
-		TriggerTopic:        triggerTopic,
+		Client:       mgr.GetClient(),
+		Scheme:       mgr.GetScheme(),
+		PollInterval: pollInterval,
+		OTLPEndpoint: otlpEndpoint,
+		OTLPInsecure: otlpInsecure,
+		DaprClient:   daprClient,
+		TriggerTopic: triggerTopic,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog("controller setup", err)
 		os.Exit(1)
 	}
 
-	setupLogMsg("starting harmostes monitor controller (worker-image=%s poll=%s webhook=%s)", workerImage, pollInterval, webhookAddr)
+	setupLogMsg("starting harmostes controller (poll=%s webhook=%s)", pollInterval, webhookAddr)
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		setupLog("manager exited", err)
 		os.Exit(1)

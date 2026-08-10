@@ -35,9 +35,8 @@ func TestPublishTrigger_PublishesRawTriggerEvent(t *testing.T) {
 	defer srv.Close()
 
 	r := &WorkflowReconciler{
-		DaprClient:     dapr.New(srv.URL),
-		PubSubTriggers: true,
-		TriggerTopic:   "harmostes-triggers",
+		DaprClient:   dapr.New(srv.URL),
+		TriggerTopic: "harmostes-triggers",
 	}
 
 	wf := &v1alpha1.Workflow{

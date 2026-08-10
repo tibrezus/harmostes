@@ -31,6 +31,7 @@ type TriggerEvent struct {
 	Workflow    string `json:"workflow"`
 	Namespace   string `json:"namespace"`
 	Revision    string `json:"revision,omitempty"`
+	Source      string `json:"source,omitempty"`
 	TriggerType string `json:"triggerType"` // webhook | schedule | revision | manual | spec-change
 	Traceparent string `json:"traceparent,omitempty"`
 	AttemptName string `json:"attemptName,omitempty"`
@@ -57,6 +58,7 @@ func (r *WorkflowReconciler) publishTrigger(ctx context.Context, wf *v1alpha1.Wo
 		Workflow:    wf.Name,
 		Namespace:   wf.Namespace,
 		Revision:    revision,
+		Source:      wf.Spec.Source.Revision,
 		TriggerType: triggerType,
 		Traceparent: traceparent,
 		AttemptName: attemptName,

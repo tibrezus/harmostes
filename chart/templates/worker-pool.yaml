@@ -70,6 +70,35 @@ spec:
             - name: OTEL_EXPORTER_OTLP_INSECURE
               value: "true"
             {{- end }}
+            # Credentials — the consumer-exec'd one-shot worker inherits
+            # these env vars. They mirror the secrets the controller injects
+            # into Job-based workers (workerEnv). Per-user tokens are not
+            # supported in pool mode (Phase 3 will carry them via TriggerEvent).
+            - name: HARMOSTES_GIT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: harmostes-github-token
+                  key: token
+            - name: HARMOSTES_RZC_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: harmostes-rzc-token
+                  key: username
+            - name: HARMOSTES_RZC_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: harmostes-rzc-token
+                  key: password
+            - name: LITELLM_URL
+              valueFrom:
+                secretKeyRef:
+                  name: harmostes-litellm-token
+                  key: url
+            - name: LITELLM_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: harmostes-litellm-token
+                  key: key
           volumeMounts:
             - name: skills
               mountPath: /skills

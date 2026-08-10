@@ -75,6 +75,9 @@ func TestPublishTrigger_PublishesRawTriggerEvent(t *testing.T) {
 	if trigger.Revision != "abc123" {
 		t.Errorf("revision = %q", trigger.Revision)
 	}
+	if trigger.Source != "" {
+		t.Errorf("source = %q, want empty (no source revision on this wf)", trigger.Source)
+	}
 	if trigger.Traceparent != "00-trace" {
 		t.Errorf("traceparent = %q", trigger.Traceparent)
 	}

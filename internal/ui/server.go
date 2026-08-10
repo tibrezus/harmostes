@@ -26,6 +26,8 @@ import (
 	"github.com/tibrezus/harmostes/internal/rbac"
 )
 
+// template-embed-v2: forces Go build cache to re-embed updated templates
+//
 //go:embed templates/*.html templates/pages/*.html
 var templateFS embed.FS
 

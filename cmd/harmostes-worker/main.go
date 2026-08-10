@@ -32,6 +32,8 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
 	"github.com/tibrezus/harmostes/internal/agent"
 	"github.com/tibrezus/harmostes/internal/attempt"
@@ -196,97 +198,136 @@ func main() {
 		SessionMeta:   sessionMeta,
 	}
 
-	// Graph-native mode: dispatch to the graph executor if the Workflow CR
-	// has spec.graph (graph-native Workflow) or if a Pipeline CR is specified
-	// via HARMOSTES_PIPELINE (legacy Pipeline CR). Otherwise, fall through to
-	// the declarative worker.Run() pipeline.
+	// ── Single execution path: graph executor ────────────────────────────
+	// Every workflow — declarative (prepare→agent→deploy) or graph-native
+	// (spec.graph) — runs through the graph executor. Declarative workflows
+	// are compiled to an equivalent graph via graph.CompileWorkflow. This
+	// activates the full ADR guarantees (capability enforcement, Node Result
+	// Envelopes, claim trust, canonical history) for every workflow.
 	var execGraph v1alpha1.GraphSpec
-	var execName string
 	if wf.Spec.Graph != nil {
-		// Graph-native Workflow CR — the graph IS the spec.
 		execGraph = *wf.Spec.Graph
-		execName = wf.Name
 		logf("workflow %s/%s — graph-native mode (%d nodes, %d edges)", namespace, wf.Name, len(execGraph.Nodes), len(execGraph.Edges))
-	} else if pipelineName := os.Getenv("HARMOSTES_PIPELINE"); pipelineName != "" {
-		// Legacy Pipeline CR (deprecated — graph-native Workflows replace it).
-		var pipe v1alpha1.Pipeline
-		if err := cl.Get(ctx, client.ObjectKey{Namespace: namespace, Name: pipelineName}, &pipe); err != nil {
-			fatal("get pipeline %s/%s: %v", namespace, pipelineName, err)
-		}
-		execGraph = pipe.Spec.Graph
-		execName = pipelineName
-		logf("pipeline %s/%s — graph execution (%d nodes, %d edges)", namespace, pipelineName, len(execGraph.Nodes), len(execGraph.Edges))
+	} else {
+		execGraph = graph.CompileWorkflow(&wf)
+		logf("workflow %s/%s — compiled to graph (%d nodes, %d edges)", namespace, wf.Name, len(execGraph.Nodes), len(execGraph.Edges))
 	}
 
-	if execName != "" {
-		graphCtx := observability.ContextWithTraceparent(ctx, os.Getenv(observability.TraceparentCarrierKey))
-		graphCtx, graphCancel := context.WithTimeout(graphCtx, 30*time.Minute)
-		defer graphCancel()
-
-		graphDeps := graph.Dependencies{
-			PluginResolver: deps.Plugins,
-			AgentRunner:    deps.Agent,
-			TaskResolver:   taskResolverAdapter{inner: deps.Tasks},
-			DaprClient:     deps.Dapr,
-			StateStore:     deps.DaprStateStore,
-			KubeClient:     graph.NewKubeClient(cl),
-			SessionWriter:  sessionWriter,
-			ToolPublisher:  toolPublisher,
-			SessionMeta:    sessionMeta,
-		}
-		result, err := graph.ExecuteGraph(graphCtx, execGraph, execName, graphDeps,
-			graph.WithStateStore(deps.DaprStateStore),
-			graph.WithPubSub(deps.DaprPubSub),
-			graph.WithLogger(logfFn),
-			graph.WithProvenance(
-				os.Getenv("HARMOSTES_TRIGGERED_BY"),
-				os.Getenv("HARMOSTES_TRIGGER_SOURCE"),
-			),
-			graph.WithBindings(wf.Spec.Bindings),
-			graph.WithRunID(envOr("POD_NAME", workflow)),
-			graph.WithWorkflowContext(graph.WorkflowContext{
-				Name:         wf.Name,
-				Namespace:    namespace,
-				Workdir:      workdir,
-				Source:       source,
-				SourceURL:    wf.Spec.Source.Repo,
-				SourceBranch: wf.Spec.Source.Branch,
-			}),
-		)
-		flushTelemetry()
-		if err != nil {
-			recordAttemptOutcome(ctx, cl, "failed", nil, fmt.Sprintf("graph pipeline error: %v", err))
-			fatal("graph pipeline error: %v", err)
-		}
-		if result.Status == graph.StatusGreen {
-			recordAttemptOutcome(ctx, cl, "succeeded", envelopesFor(result.NodeEnvelopes), result.Message)
-			logf("graph complete: %s (%d node envelopes recorded)", result.Message, len(result.NodeEnvelopes))
-			finish(0)
-		}
-		recordAttemptOutcome(ctx, cl, "failed", envelopesFor(result.NodeEnvelopes), result.Message)
-		logf("graph complete: %s (%s) — %d node envelopes recorded", result.Status, result.Message, len(result.NodeEnvelopes))
-		finish(1)
+	// Pass HARMOSTES_LAST_RIG_HASH so the rig-emit plugin can do a cross-run
+	// deterministic skip (structure unchanged → changed=false → graph skips
+	// agent/deploy). Also propagate the full process env so plugins inherit
+	// credentials and Dapr endpoints.
+	extraEnv := os.Environ()
+	if wf.Status.LastRigHash != "" {
+		extraEnv = append(extraEnv, "HARMOSTES_LAST_RIG_HASH="+wf.Status.LastRigHash)
 	}
 
-	runCtx := observability.ContextWithTraceparent(ctx, os.Getenv(observability.TraceparentCarrierKey))
-	runCtx, runCancel := context.WithTimeout(runCtx, runTimeout(&wf))
-	defer runCancel()
-	res, err := worker.Run(runCtx, deps, worker.Options{
-		Workflow: &wf, Workdir: workdir, Source: source, ExtraEnv: os.Environ(),
-	})
-	if err != nil {
-		recordAttemptOutcome(ctx, cl, "failed", nil, fmt.Sprintf("pipeline error: %v", err))
-		fatal("pipeline error: %v", err)
+	shadow := ""
+	if wr := wf.Spec.WorkspaceRepo; wr != nil {
+		shadow = wr.Shadow
 	}
-	switch res.Outcome {
-	case worker.OutcomeGreen, worker.OutcomeSkipped:
-		recordAttemptOutcome(ctx, cl, "succeeded", nil, res.Message)
-		logf("complete: %s (%s)", res.Outcome, res.Message)
+
+	graphCtx := observability.ContextWithTraceparent(ctx, os.Getenv(observability.TraceparentCarrierKey))
+	graphCtx, graphCancel := context.WithTimeout(graphCtx, runTimeout(&wf))
+	defer graphCancel()
+
+	graphDeps := graph.Dependencies{
+		PluginResolver: deps.Plugins,
+		AgentRunner:    deps.Agent,
+		TaskResolver:   taskResolverAdapter{inner: deps.Tasks},
+		DaprClient:     deps.Dapr,
+		StateStore:     deps.DaprStateStore,
+		KubeClient:     graph.NewKubeClient(cl),
+		SessionWriter:  sessionWriter,
+		ToolPublisher:  toolPublisher,
+		SessionMeta:    sessionMeta,
+	}
+	result, gErr := graph.ExecuteGraph(graphCtx, execGraph, wf.Name, graphDeps,
+		graph.WithStateStore(deps.DaprStateStore),
+		graph.WithPubSub(deps.DaprPubSub),
+		graph.WithLogger(logfFn),
+		graph.WithProvenance(
+			os.Getenv("HARMOSTES_TRIGGERED_BY"),
+			os.Getenv("HARMOSTES_TRIGGER_SOURCE"),
+		),
+		graph.WithBindings(wf.Spec.Bindings),
+		graph.WithRunID(runID),
+		graph.WithWorkflowContext(graph.WorkflowContext{
+			Name:           wf.Name,
+			Namespace:      namespace,
+			Workdir:        workdir,
+			Source:         source,
+			SourceURL:      wf.Spec.Source.Repo,
+			SourceBranch:   wf.Spec.Source.Branch,
+			SourceLanguage: wf.Spec.Source.Language,
+			WorkspaceDir:   workdir,
+			Shadow:         shadow,
+			State:          wf.Name,
+			ExtraEnv:       extraEnv,
+		}),
+	)
+
+	// Patch Workflow status from the graph result (mirrors the declarative
+	// pipeline's status patching at each phase boundary).
+	patchWorkflowStatus(ctx, cl, namespace, wf.Name, &result, source)
+
+	flushTelemetry()
+	if gErr != nil {
+		recordAttemptOutcome(ctx, cl, "failed", envelopesFor(result.NodeEnvelopes), fmt.Sprintf("graph pipeline error: %v", gErr))
+		fatal("graph pipeline error: %v", gErr)
+	}
+	if result.Status == graph.StatusGreen {
+		recordAttemptOutcome(ctx, cl, "succeeded", envelopesFor(result.NodeEnvelopes), result.Message)
+		logf("graph complete: %s (%d node envelopes recorded)", result.Message, len(result.NodeEnvelopes))
 		finish(0)
-	default:
-		recordAttemptOutcome(ctx, cl, "failed", nil, res.Message)
-		logf("complete: %s (%s)", res.Outcome, res.Message)
-		finish(1)
+	}
+	recordAttemptOutcome(ctx, cl, "failed", envelopesFor(result.NodeEnvelopes), result.Message)
+	logf("graph complete: %s (%s) — %d node envelopes recorded", result.Status, result.Message, len(result.NodeEnvelopes))
+	finish(1)
+}
+
+// patchWorkflowStatus patches the Workflow's observed status from the graph
+// execution result. Extracts rig_hash from any plugin node's outputs (the
+// prepare plugin produces it) and the deploy artifact/commit. Mirrors the
+// declarative pipeline's per-phase status patching in a single post-run call.
+func patchWorkflowStatus(ctx context.Context, c client.Client, namespace, name string, result *graph.ExecutionResult, source string) {
+	gateStatus := "failed"
+	if result.Status == graph.StatusGreen {
+		gateStatus = "green"
+	}
+	msg := result.Message
+	if len(msg) > 400 {
+		msg = msg[len(msg)-400:]
+	}
+
+	var rigHash, agentCommit string
+	for _, nr := range result.NodeResults {
+		if h, ok := nr.Outputs["rig_hash"].(string); ok && h != "" {
+			rigHash = h
+		}
+		if c, ok := nr.Outputs["commit"].(string); ok && c != "" {
+			agentCommit = c
+		} else if a, ok := nr.Outputs["artifact"].(string); ok && a != "" && agentCommit == "" {
+			agentCommit = a
+		}
+	}
+
+	patcher := k8s.StatusPatcher{Client: c, Namespace: namespace}
+	if err := patcher.PatchStatus(ctx, name, func(s *v1alpha1.WorkflowStatus) {
+		s.GateStatus = gateStatus
+		s.LastRunAt = metav1.Now()
+		s.Message = msg
+		if rigHash != "" {
+			s.LastRigHash = rigHash
+		}
+		if agentCommit != "" {
+			s.LastAgentCommit = agentCommit
+		}
+		if source != "" {
+			s.LastProcessedRevision = source
+		}
+	}); err != nil {
+		logf("warn: patch workflow status: %v", err)
 	}
 }
 

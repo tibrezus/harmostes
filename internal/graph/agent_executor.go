@@ -77,6 +77,13 @@ func (e *AgentExecutor) Execute(ctx context.Context, node v1alpha1.NodeSpec, env
 		task = resolved
 	}
 
+	// Append optional scope (injected by CompileWorkflow for gate-specific
+	// workflows like wiki-lint, where the agent must be confined to one
+	// project under raw/arch/).
+	if cfg.Scope != "" {
+		task = task + "\n\n" + cfg.Scope
+	}
+
 	// Build the gate (optional).
 	var gate agent.Gate
 	if cfg.Gate != nil {
@@ -142,6 +149,23 @@ func (e *AgentExecutor) Execute(ctx context.Context, node v1alpha1.NodeSpec, env
 		sessionJSON, _ := json.Marshal(result.Session)
 		if err := e.dapr.SaveState(ctx, e.stateStore, key, string(sessionJSON)); err != nil {
 			// best-effort — don't fail the node over session persistence
+		}
+	}
+
+	// Persist token usage summary to Dapr state so the UI/API can query
+	// per-run token costs (mirrors the declarative pipeline's usage:last key).
+	if e.dapr != nil && e.stateStore != "" && result.Usage.Total() > 0 {
+		usageJSON, _ := json.Marshal(map[string]any{
+			"workflow":  env.Workflow,
+			"input":     result.Usage.Input,
+			"output":    result.Usage.Output,
+			"cacheRead": result.Usage.CacheRead,
+			"cost":      result.Usage.Cost,
+			"green":     result.Green,
+			"attempts":  result.Attempts,
+		})
+		if err := e.dapr.SaveState(ctx, e.stateStore, env.Workflow+":usage:last", string(usageJSON)); err != nil {
+			// best-effort — don't fail the node over usage persistence
 		}
 	}
 

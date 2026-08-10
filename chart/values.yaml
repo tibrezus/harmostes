@@ -45,6 +45,20 @@ workerPool:
   pubsubName: pubsub   # Dapr pub/sub component name
   topic: harmostes-triggers  # topic the controller publishes to
 
+# forkMaintenance: mounts the fork-maintenance engine scripts (sync-fork.sh,
+# divergence-track.sh, validate-fork.sh, etc.) into the worker pod so the
+# worker can resolve fork-maintenance plugins. The scripts live in ConfigMaps
+# applied by k8s-config (platform/harmostes/fork-maintenance/). When enabled,
+# the worker pod gets /workspace/{scripts,checks,forks,post-merge-hooks}
+# mounted from those ConfigMaps, and a fork-sync wrapper plugin is available
+# at /plugins/fork-maintenance/fork-sync.sh.
+forkMaintenance:
+  enabled: false
+  scriptsConfigMap: fork-maintenance-scripts
+  checksConfigMap: fork-maintenance-checks
+  defsConfigMap: fork-maintenance-defs
+  hooksConfigMap: fork-maintenance-hooks
+
 # harmostes-ui: self-service multi-tenant web interface (HTMX + Go templates).
 # Authenticated via Authentik forward-auth. Each user sees only workflows
 # labeled harmostes.dev/owner=<their-username>.

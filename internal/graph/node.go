@@ -37,6 +37,23 @@ const (
 	StatusSkipped NodeStatus = "skipped"
 )
 
+// Execution Class — the native way a Node is executed by Harmostes (ADR-0002).
+// The kernel can enforce class-specific invariants (e.g. a Kubernetes API Node
+// may not exec into pods; that belongs to a Workload Node).
+const (
+	// ExecutionClassWorkload: runs as Kubernetes compute (Job/Pod). For code,
+	// tools, agents, builds, scripts, and imperative remote execution.
+	ExecutionClassWorkload = "workload"
+	// ExecutionClassKubernetesAPI: executed directly by the kernel against the
+	// Kubernetes API, limited to Declarative Cluster Intent (apply/patch/delete,
+	// owner refs, labels, scale, wait on conditions, read status). May NOT exec
+	// into pods or perform imperative remote command execution.
+	ExecutionClassKubernetesAPI = "kubernetes-api"
+	// ExecutionClassPureOrchestration: no external execution; only routing,
+	// policy, and state transitions (branch, retry, gate routing, Dapr state/ops).
+	ExecutionClassPureOrchestration = "pure-orchestration"
+)
+
 // NodeEnv is the execution context passed to every node executor. It carries
 // enough state for executors to do their work without a direct k8s dependency.
 type NodeEnv struct {
@@ -87,6 +104,11 @@ type NodeExecutor interface {
 	// graph executor for optimization (deterministic subgraphs can be run in
 	// deterministic-only mode).
 	Deterministic() bool
+
+	// ExecutionClass returns the ADR-0002 Execution Class (workload,
+	// kubernetes-api, pure-orchestration). The kernel can enforce
+	// class-specific invariants based on this.
+	ExecutionClass() string
 }
 
 // Registry maps node type strings to NodeExecutor implementations. It is the

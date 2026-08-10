@@ -15,7 +15,8 @@ type nonDetRecording struct{ recordingExecutor }
 func newNonDet(typ string, result NodeResult) *nonDetRecording {
 	return &nonDetRecording{recordingExecutor: *newRecording(typ, result)}
 }
-func (r *nonDetRecording) Deterministic() bool { return false }
+func (r *nonDetRecording) Deterministic() bool    { return false }
+func (r *nonDetRecording) ExecutionClass() string { return ExecutionClassWorkload }
 
 // ===========================================================================
 // Trust enforcement: non-deterministic nodes' self-validated claims are demoted

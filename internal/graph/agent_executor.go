@@ -41,8 +41,9 @@ func NewAgentExecutor(runner AgentRunner, tasks TaskResolver, resolver worker.Pl
 	return &AgentExecutor{runner: runner, tasks: tasks, resolver: resolver, dapr: daprClient, stateStore: stateStore}
 }
 
-func (e *AgentExecutor) Type() string        { return "agent" }
-func (e *AgentExecutor) Deterministic() bool { return false }
+func (e *AgentExecutor) Type() string           { return "agent" }
+func (e *AgentExecutor) Deterministic() bool    { return false }
+func (e *AgentExecutor) ExecutionClass() string { return ExecutionClassWorkload }
 
 func (e *AgentExecutor) Execute(ctx context.Context, node v1alpha1.NodeSpec, env NodeEnv) (NodeResult, error) {
 	ctx, span := observability.Tracer().Start(ctx, "graph.node.agent")

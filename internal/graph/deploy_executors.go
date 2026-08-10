@@ -145,8 +145,9 @@ func NewVelaAppExecutor(client KubeClient) *VelaAppExecutor {
 	return &VelaAppExecutor{client: client}
 }
 
-func (e *VelaAppExecutor) Type() string        { return "vela-app" }
-func (e *VelaAppExecutor) Deterministic() bool { return true }
+func (e *VelaAppExecutor) Type() string           { return "vela-app" }
+func (e *VelaAppExecutor) Deterministic() bool    { return true }
+func (e *VelaAppExecutor) ExecutionClass() string { return ExecutionClassKubernetesAPI }
 
 func (e *VelaAppExecutor) Execute(ctx context.Context, node v1alpha1.NodeSpec, env NodeEnv) (NodeResult, error) {
 	ctx, span := observability.Tracer().Start(ctx, "graph.node.vela-app")
@@ -258,8 +259,9 @@ func NewFluxReconcileExecutor(client KubeClient) *FluxReconcileExecutor {
 	return &FluxReconcileExecutor{client: client}
 }
 
-func (e *FluxReconcileExecutor) Type() string        { return "flux-reconcile" }
-func (e *FluxReconcileExecutor) Deterministic() bool { return true }
+func (e *FluxReconcileExecutor) Type() string           { return "flux-reconcile" }
+func (e *FluxReconcileExecutor) Deterministic() bool    { return true }
+func (e *FluxReconcileExecutor) ExecutionClass() string { return ExecutionClassKubernetesAPI }
 
 func (e *FluxReconcileExecutor) Execute(ctx context.Context, node v1alpha1.NodeSpec, env NodeEnv) (NodeResult, error) {
 	ctx, span := observability.Tracer().Start(ctx, "graph.node.flux-reconcile")

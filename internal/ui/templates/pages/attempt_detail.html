@@ -69,7 +69,8 @@
 			<div class="ds-card">
 				<div class="ds-card-header">
 					<span class="ds-card-title">{{.NodeID}}</span>
-					{{if eq (printf "%s" .Status) "green"}}<span class="ds-status-badge ds-status-badge--positive">✓ Green</span>
+					{{if eq (printf "%s" .Status) "ok"}}<span class="ds-status-badge ds-status-badge--positive">✓ {{.Status}}</span>
+					{{else if eq (printf "%s" .Status) "skipped"}}<span class="ds-status-badge ds-status-badge--neutral">− {{.Status}}</span>
 					{{else}}<span class="ds-status-badge ds-status-badge--negative">✗ {{.Status}}</span>
 					{{end}}
 				</div>

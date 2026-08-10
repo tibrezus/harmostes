@@ -126,7 +126,7 @@ spec:
                           type: object
                           required: [name]
                           properties:
-                            name: { type: string }             # wiki-lint | fork-resolved | <custom>
+                            name: { type: string }             # wiki-lint | fork-maintenance | <custom>
                             configMap: { type: string }
                             args: { type: array, items: { type: string } }
                     maxFixes: { type: integer, default: 3 }

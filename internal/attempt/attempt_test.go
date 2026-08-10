@@ -40,7 +40,7 @@ func forkWorkflow() *v1alpha1.Workflow {
 		Repo: "signoz-upstream",
 		Fork: &v1alpha1.ForkSource{URL: "git@github.com:rezuscloud/signoz.git", Branch: "rezus/main"},
 	}
-	wf.Spec.Agent.Gate.Plugin.Name = "fork-resolved"
+	wf.Spec.Agent.Gate.Plugin.Name = "fork-maintenance"
 	return wf
 }
 

@@ -20,18 +20,18 @@ import (
 //
 // where:
 //   - gate       = the gate plugin name (wiki-lint, review-validate,
-//     fork-resolved, noop). The gate IS the workflow archetype — it
+//     fork-maintenance, noop). The gate IS the workflow archetype — it
 //     determines the entire structure.
 //   - targetSlug = a DNS-safe slug derived from the repo the workflow
 //     operates on. For wiki-lint this is the source code repo being
 //     documented; for review-validate, the repo whose PRs are reviewed;
-//     for fork-resolved, the fork being synced.
+//     for fork-maintenance, the fork being synced.
 //
 // Examples:
 //
 //	wiki-lint-harmostes       — harmostes → llm-wiki docs
 //	review-validate-harmostes — review PRs on harmostes
-//	fork-resolved-dapr        — sync the dapr fork
+//	fork-maintenance-dapr     — sync the dapr fork
 //
 // This convention makes the template visible in the name itself, preventing
 // the "mixed-up" problem where `harmostes` and `pr-review-harmostes` look
@@ -99,16 +99,18 @@ func deterministicWorkflowName(gateName, repoURL string) string {
 
 // workflowTarget extracts the target repo from a Workflow CR spec.
 //
-// The target depends on the gate archetype:
-//   - review-validate: the repo in spec.prepare.config.repos[0] (the repo
-//     whose PRs are reviewed). Falls back to spec.source.repo.
+// The target depends on the gate archetype (catalog-driven, no string
+// matching):
+//   - gates with TargetFromPrepareRepos=true (review-validate): the repo in
+//     spec.prepare.config.repos[0] (the repo whose PRs are reviewed). Falls
+//     back to spec.source.repo.
 //   - all others: spec.source.repo (the monitored source), falling back to
 //     spec.workspaceRepo.url.
 //
 // Returns a raw URL/path string suitable for repoSlug().
 func workflowTarget(wf v1alpha1.WorkflowSpec) string {
-	// review-validate: target is in the prepare config repos list.
-	if wf.Agent.Gate.Plugin.Name == "review-validate" {
+	// Check the catalog for the TargetFromPrepareRepos strategy.
+	if g := gateByName(wf.Agent.Gate.Plugin.Name); g != nil && g.TargetFromPrepareRepos {
 		if wf.Prepare.Plugin.Name == "pr-fetch" || wf.Prepare.Plugin.Name == "" {
 			if repos := extractPrepareRepos(wf.Prepare.Config); len(repos) > 0 {
 				return repos[0]

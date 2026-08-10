@@ -56,7 +56,7 @@ var presets = []preset{
 		Name:        "Fork Maintenance (upstream sync)",
 		Description: "Upstream → merge → agent resolves 3-way conflicts → PR-merge + tag",
 		Prepare:     "merge-sync",
-		Gate:        "fork-resolved",
+		Gate:        "fork-maintenance",
 		Deploy:      "fork-merge-deploy",
 		Skill:       "/skills/fork-maintenance/SKILL.md",
 		TaskName:    "resolve-conflict",
@@ -77,7 +77,7 @@ var presets = []preset{
 // These are the built-in + deployed plugins the worker can resolve.
 var knownPlugins = map[string][]string{
 	"prepare": {"rig-emit", "raw-copy", "merge-sync"},
-	"gate":    {"wiki-lint", "fork-resolved"},
+	"gate":    {"wiki-lint", "fork-maintenance"},
 	"deploy":  {"git-push", "fork-merge-deploy"},
 }
 

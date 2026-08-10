@@ -10,7 +10,7 @@ See the [Plugin Interface](https://github.com/tibrezus/harmostes/wiki/Plugin-Int
 | `raw-copy` | prepare | llm-wiki (generic) | `rsync` of source into `raw/<project>/` |
 | `merge-sync` | prepare | fork-maintenance | `sync-fork.sh` (merge upstream release branch into the release line) |
 | `wiki-lint` | gate | llm-wiki | `gate-lint.sh` → full `ci-lint.sh` (markdownlint, mdlint, remark, mermaid, likec4, health, RIG compliance) |
-| `fork-resolved` | gate | fork-maintenance | `gate-resolved.sh` (markers + `validate-fork.sh` + patch signatures) |
+| `fork-maintenance` | gate | fork-maintenance | `gate-resolved.sh` (markers + `validate-fork.sh` + patch signatures) |
 | `git-push` | deploy | llm-wiki | rebase onto FETCH_HEAD + union-merge changelog + `git push HEAD:main` |
 | `fork-merge-deploy` | deploy | fork-maintenance | PR-merge sync branch into release (append-only) + tag `v…-rezus.N` |
 

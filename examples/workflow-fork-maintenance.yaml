@@ -3,7 +3,7 @@
 # Today this is a fork YAML consumed by sync-fork.sh (CronJob) + an always-on
 # conflict-subscriber that spawns resolve-conflict.sh (→ harmostes → gate-
 # resolved → host_pr_merge + tag). Under Harmostes it is one Workflow CR; the
-# bespoke scripts become plugins (merge-sync, fork-resolved, fork-merge-deploy)
+# bespoke scripts become plugins (merge-sync, fork-maintenance, fork-merge-deploy)
 # and the bespoke loop + per-platform subscriber become the framework.
 #
 # Sync model: MERGE (Codeberg-style). The engine merges the upstream release
@@ -39,7 +39,7 @@ spec:
       key: resolve-conflict.txt      # drive merge resolution to completion + push; uses wiki intent
     gate:
       plugin:
-        name: fork-resolved          # → gate-resolved.sh: markers + validate-fork.sh + signatures
+        name: fork-maintenance          # → gate-resolved.sh: markers + validate-fork.sh + signatures
     maxFixes: 3
     timeout: 1800
   deploy:

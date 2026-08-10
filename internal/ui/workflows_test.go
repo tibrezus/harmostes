@@ -102,7 +102,7 @@ func TestHandleWorkflowCreate_GateForkResolved(t *testing.T) {
 	form := url.Values{}
 	form.Set("name", "custom-wf")
 	form.Set("repoUrl", "git@github.com:rezuscloud/repo.git")
-	form.Set("gate", "fork-resolved")
+	form.Set("gate", "fork-maintenance")
 	form.Set("model", "litellm/zai/glm-4.7")
 
 	req := httptest.NewRequest(http.MethodPost, "/workflows", strings.NewReader(form.Encode()))
@@ -122,8 +122,8 @@ func TestHandleWorkflowCreate_GateForkResolved(t *testing.T) {
 	if wf.Spec.Prepare.Plugin.Name != "merge-sync" {
 		t.Errorf("prepare = %q, want merge-sync", wf.Spec.Prepare.Plugin.Name)
 	}
-	if wf.Spec.Agent.Gate.Plugin.Name != "fork-resolved" {
-		t.Errorf("gate = %q, want fork-resolved", wf.Spec.Agent.Gate.Plugin.Name)
+	if wf.Spec.Agent.Gate.Plugin.Name != "fork-maintenance" {
+		t.Errorf("gate = %q, want fork-maintenance", wf.Spec.Agent.Gate.Plugin.Name)
 	}
 	if wf.Spec.Deploy.Plugin.Name != "fork-merge-deploy" {
 		t.Errorf("deploy = %q, want fork-merge-deploy", wf.Spec.Deploy.Plugin.Name)
@@ -496,7 +496,7 @@ func TestPresetFor(t *testing.T) {
 	}
 
 	p = presetFor("fork-maintenance")
-	if p.Gate != "fork-resolved" {
+	if p.Gate != "fork-maintenance" {
 		t.Errorf("fork-maintenance gate = %q", p.Gate)
 	}
 

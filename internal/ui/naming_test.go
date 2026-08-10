@@ -51,7 +51,7 @@ func TestDeterministicWorkflowName(t *testing.T) {
 	}{
 		{"wiki-lint", "https://github.com/tibrezus/harmostes.git", "wiki-lint-harmostes"},
 		{"review-validate", "https://github.com/tibrezus/harmostes.git", "review-validate-harmostes"},
-		{"fork-resolved", "https://github.com/rezuscloud/dapr.git", "fork-resolved-dapr"},
+		{"fork-maintenance", "https://github.com/rezuscloud/dapr.git", "fork-maintenance-dapr"},
 		{"noop", "smoke", "noop-smoke"},
 		// Empty inputs
 		{"", "https://github.com/x/y.git", ""},

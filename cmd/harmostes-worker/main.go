@@ -414,7 +414,15 @@ func fatal(format string, a ...any) {
 // shutdownDapr asks the Dapr sidecar to terminate so the pod reaches Completed
 // (otherwise daprd keeps the pod alive forever, stranding the Job as "Running").
 // Best-effort: a missing or not-yet-ready sidecar simply means no shutdown.
+//
+// SKIPPED when HARMOSTES_NO_DAPR_SHUTDOWN is set — the consumer-exec'd worker
+// shares the pod's daprd sidecar and must NOT shut it down (that would kill
+// the consumer process).
 func shutdownDapr() {
+	if os.Getenv("HARMOSTES_NO_DAPR_SHUTDOWN") != "" {
+		logf("dapr shutdown: skipped (consumer-exec'd worker shares sidecar)")
+		return
+	}
 	ep := os.Getenv("DAPR_HTTP_ENDPOINT")
 	if ep == "" {
 		ep = "http://127.0.0.1:3500"

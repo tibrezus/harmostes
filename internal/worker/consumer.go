@@ -221,6 +221,9 @@ func buildChildEnv(parentEnv []string, workflow, namespace, source, attemptName,
 	childEnv = append(childEnv,
 		"HARMOSTES_WORKFLOW="+workflow,
 		"HARMOSTES_NAMESPACE="+namespace,
+		// Prevent the exec'd worker from shutting down the shared daprd
+		// sidecar (which would kill the consumer process).
+		"HARMOSTES_NO_DAPR_SHUTDOWN=true",
 	)
 	if source != "" {
 		childEnv = append(childEnv, "HARMOSTES_SOURCE="+source)

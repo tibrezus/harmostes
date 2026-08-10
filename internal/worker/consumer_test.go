@@ -194,6 +194,7 @@ func TestBuildChildEnv_ScrubsConsumerMode(t *testing.T) {
 		"HARMOSTES_WORKFLOW=wiki-lint-harmostes": false,
 		"HARMOSTES_NAMESPACE=harmostes":          false,
 		"HARMOSTES_SOURCE=main":                  false,
+		"HARMOSTES_NO_DAPR_SHUTDOWN=true":        false,
 		"HARMOSTES_ATTEMPT=attempt-1":            false,
 		"HARMOSTES_TRACEPARENT=00-trace":         false,
 		"PATH=/usr/bin":                          false,

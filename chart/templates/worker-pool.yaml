@@ -121,6 +121,11 @@ spec:
               mountPath: /plugins/fork-maintenance-plugins
               readOnly: true
             {{- end }}
+            {{- range .Values.pluginConfigMaps }}
+            - name: plugin-cm-{{ . }}
+              mountPath: /plugins/{{ . }}
+              readOnly: true
+            {{- end }}
           readinessProbe:
             httpGet:
               path: /healthz
@@ -158,6 +163,12 @@ spec:
         - name: fork-plugins
           configMap:
             name: fork-maintenance-plugins
+            defaultMode: 0755
+        {{- end }}
+        {{- range .Values.pluginConfigMaps }}
+        - name: plugin-cm-{{ . }}
+          configMap:
+            name: {{ . }}
             defaultMode: 0755
         {{- end }}
 {{- end }}

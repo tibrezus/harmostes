@@ -59,6 +59,14 @@ forkMaintenance:
   defsConfigMap: fork-maintenance-defs
   hooksConfigMap: fork-maintenance-hooks
 
+# pluginConfigMaps: additional ConfigMaps to mount under /plugins/ in the
+# worker pod. Each entry creates a volume mounted at
+# /plugins/<configmap-name>/, making the plugins inside resolvable by the
+# worker's BuiltinResolver as PluginRef{Name: "<key-without-.sh>",
+# ConfigMap: "<configmap-name>"}. Applied by k8s-config.
+pluginConfigMaps: []
+  # - harmostes-pr-review   # mounts pr-fetch.sh, pr-review.sh, post-review.sh
+
 # harmostes-ui: self-service multi-tenant web interface (HTMX + Go templates).
 # Authenticated via Authentik forward-auth. Each user sees only workflows
 # labeled harmostes.dev/owner=<their-username>.

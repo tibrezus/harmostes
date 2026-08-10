@@ -42,23 +42,12 @@ spec:
           imagePullPolicy: Always
           args:
             - --namespace={{ .Values.namespace }}
-            - --dapr-enabled={{ .Values.dapr.injectWorker }}
             {{- if .Values.observability.enabled }}
-            - --daprd-image={{ .Values.observability.daprdImage }}
             - --otlp-endpoint={{ .Values.observability.otlpEndpoint }}
             - --otlp-insecure={{ .Values.observability.otlpInsecure }}
             {{- end }}
-            - --worker-image={{ .Values.image.worker }}
-            - --skills-repo={{ .Values.skills.repo }}
-            - --service-account={{ .Values.controller.serviceAccount }}
             - --poll-interval={{ .Values.controller.pollInterval }}
-            {{- if .Values.workerPool.enabled }}
-            - --pubsub-triggers=true
             - --trigger-topic={{ .Values.workerPool.topic | default "harmostes-triggers" }}
-            {{- end }}
-            {{- if .Values.image.pullSecret }}
-            - --worker-image-pull-secret={{ .Values.image.pullSecret }}
-            {{- end }}
           env:
             - name: HARMOSTES_WORKER_IMAGE
               value: {{ .Values.image.worker }}

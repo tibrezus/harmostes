@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
-	cloudevents "github.com/cloudevents/sdk-go/v2"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -16,13 +16,20 @@ import (
 	"github.com/tibrezus/harmostes/internal/dapr"
 )
 
-func TestPublishTrigger_BuildsCloudEvent(t *testing.T) {
-	// Capture the published event via a mock Dapr HTTP server.
+func TestPublishTrigger_PublishesRawTriggerEvent(t *testing.T) {
+	// Capture the published payload via a mock Dapr HTTP server.
 	var publishedBody string
+	var pubsubName, topicName string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		buf := make([]byte, r.ContentLength)
 		r.Body.Read(buf)
 		publishedBody = string(buf)
+		// Extract pubsub + topic from the URL path: /v1.0/publish/{pubsub}/{topic}
+		parts := strings.Split(r.URL.Path, "/")
+		if len(parts) >= 5 {
+			pubsubName = parts[3]
+			topicName = parts[4]
+		}
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer srv.Close()
@@ -42,25 +49,19 @@ func TestPublishTrigger_BuildsCloudEvent(t *testing.T) {
 		t.Fatalf("publishTrigger: %v", err)
 	}
 
-	// Verify the published CloudEvent
-	var event cloudevents.Event
-	if err := json.Unmarshal([]byte(publishedBody), &event); err != nil {
-		t.Fatalf("unmarshal cloud event: %v", err)
+	// The publish should target the correct pubsub + topic
+	if pubsubName != "pubsub" {
+		t.Errorf("pubsub = %q, want pubsub", pubsubName)
+	}
+	if topicName != "harmostes-triggers" {
+		t.Errorf("topic = %q, want harmostes-triggers", topicName)
 	}
 
-	if event.Type() != "harmostes.trigger" {
-		t.Errorf("event type = %q, want harmostes.trigger", event.Type())
-	}
-	if event.Source() != "harmostes-controller" {
-		t.Errorf("event source = %q", event.Source())
-	}
-	if event.Subject() != "wiki-lint-harmostes" {
-		t.Errorf("event subject = %q", event.Subject())
-	}
-
+	// The published body is raw TriggerEvent JSON (NOT a CloudEvent).
+	// Dapr wraps it in a CloudEvent on delivery.
 	var trigger TriggerEvent
-	if err := event.DataAs(&trigger); err != nil {
-		t.Fatalf("unmarshal trigger data: %v", err)
+	if err := json.Unmarshal([]byte(publishedBody), &trigger); err != nil {
+		t.Fatalf("unmarshal trigger event: %v\nbody: %s", err, publishedBody)
 	}
 	if trigger.Workflow != "wiki-lint-harmostes" {
 		t.Errorf("workflow = %q", trigger.Workflow)

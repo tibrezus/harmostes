@@ -56,6 +56,9 @@ func main() {
 	// the harmostes-triggers topic via daprd and processes trigger events by
 	// execing itself in one-shot mode (process isolation per run).
 	if os.Getenv("HARMOSTES_CONSUMER_MODE") != "" {
+		// Initialize a minimal logger so fatal() (which uses the global logger)
+		// doesn't panic with a nil pointer if RunConsumer returns an error.
+		logger = slog.Default().With("component", "harmostes-worker")
 		ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 		defer cancel()
 		if err := worker.RunConsumer(ctx); err != nil {

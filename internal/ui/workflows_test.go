@@ -94,6 +94,26 @@ func TestHandleWorkflowCreate_GateWikiLint(t *testing.T) {
 	if wf.Spec.WorkspaceRepo.URL != "git@github.com:rezuscloud/llm-wiki.git" {
 		t.Errorf("repo URL = %q", wf.Spec.WorkspaceRepo.URL)
 	}
+
+	// Verify bindings are populated from the gate archetype (ADR-0003)
+	if len(wf.Spec.Bindings) == 0 {
+		t.Fatal("bindings is empty — gate archetype should declare workspaceRepo binding")
+	}
+	foundWorkspace := false
+	for _, b := range wf.Spec.Bindings {
+		if b.Name == "workspaceRepo" {
+			foundWorkspace = true
+			if b.SurfaceKind != v1alpha1.SurfaceKindRepository {
+				t.Errorf("workspaceRepo surface = %q, want repository", b.SurfaceKind)
+			}
+			if b.Target.Host != "github.com" || b.Target.Object != "rezuscloud/llm-wiki" {
+				t.Errorf("workspaceRepo target = %s/%s, want github.com/rezuscloud/llm-wiki", b.Target.Host, b.Target.Object)
+			}
+		}
+	}
+	if !foundWorkspace {
+		t.Error("workspaceRepo binding not found in spec.bindings")
+	}
 }
 
 func TestHandleWorkflowCreate_GateForkMaintenance(t *testing.T) {
@@ -488,6 +508,49 @@ func TestHandleWorkflowToggle_OwnerIsolation(t *testing.T) {
 	_ = s.k8sClient.Get(req.Context(), types.NamespacedName{Namespace: "harmostes", Name: "bobs-workflow"}, &wf)
 	if wf.Spec.Disabled {
 		t.Error("workflow should not have been toggled by cross-tenant user")
+	}
+}
+
+func TestDeriveBindings(t *testing.T) {
+	g := gateByName("wiki-lint")
+	if g == nil {
+		t.Fatal("wiki-lint gate not found")
+	}
+	bindings := deriveBindings(g, "git@github.com:rezuscloud/llm-wiki.git", "main")
+	if len(bindings) != 1 {
+		t.Fatalf("bindings = %d, want 1", len(bindings))
+	}
+	b := bindings[0]
+	if b.Name != "workspaceRepo" {
+		t.Errorf("name = %q, want workspaceRepo", b.Name)
+	}
+	if b.Target.Host != "github.com" {
+		t.Errorf("host = %q, want github.com", b.Target.Host)
+	}
+	if b.Target.Object != "rezuscloud/llm-wiki" {
+		t.Errorf("object = %q, want rezuscloud/llm-wiki", b.Target.Object)
+	}
+	if b.Target.Branch != "main" {
+		t.Errorf("branch = %q, want main", b.Target.Branch)
+	}
+}
+
+func TestParseGitURL(t *testing.T) {
+	cases := []struct {
+		url      string
+		wantHost string
+		wantObj  string
+	}{
+		{"git@github.com:rezuscloud/llm-wiki.git", "github.com", "rezuscloud/llm-wiki"},
+		{"https://github.com/rezuscloud/llm-wiki.git", "github.com", "rezuscloud/llm-wiki"},
+		{"https://gitlab.com/tibrez/operations/k8s-config", "gitlab.com", "tibrez/operations/k8s-config"},
+		{"", "", ""},
+	}
+	for _, c := range cases {
+		host, obj := parseGitURL(c.url)
+		if host != c.wantHost || obj != c.wantObj {
+			t.Errorf("parseGitURL(%q) = (%q, %q), want (%q, %q)", c.url, host, obj, c.wantHost, c.wantObj)
+		}
 	}
 }
 

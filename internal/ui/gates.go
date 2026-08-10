@@ -2,7 +2,9 @@ package ui
 
 import (
 	"net/http"
+	"net/url"
 	"sort"
+	"strings"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
 )
@@ -54,24 +56,36 @@ type GateArchetype struct {
 
 	// GatePluginName is the actual gate plugin to set in
 	// spec.agent.gate.plugin.name. If empty, Name is used (backward compat).
-	// This separates the archetype identity from the gate plugin — e.g.
-	// the "fork-maintenance" archetype uses the "noop" gate plugin because
-	// fork-sync validates internally.
 	GatePluginName string `json:"gatePluginName,omitempty"`
-	GateConfigMap  string `json:"gateConfigMap,omitempty"` // ConfigMap for gate plugin
+	GateConfigMap  string `json:"gateConfigMap,omitempty"`
 
-	SkillPath string `json:"skillPath"` // path to SKILL.md
-	TaskName  string `json:"taskName"`  // task template name
+	SkillPath string `json:"skillPath"`
+	TaskName  string `json:"taskName"`
+
+	// BindingTemplates defines the External System Bindings (ADR-0003) this
+	// gate archetype needs. Each template declares a binding name, role,
+	// surface kind, and granted capabilities. The Target is filled from the
+	// workflow creation form at runtime via deriveBindings().
+	BindingTemplates []BindingTemplate `json:"bindingTemplates,omitempty"`
 
 	// Gate contract.
-	ExitGreen  int    `json:"exitGreen"`  // exit code for green (always 0)
-	ExitFailed int    `json:"exitFailed"` // exit code for failed (always 1)
-	Feedback   string `json:"feedback"`   // where the agent reads feedback ("stderr")
+	ExitGreen  int    `json:"exitGreen"`
+	ExitFailed int    `json:"exitFailed"`
+	Feedback   string `json:"feedback"`
 
 	// TargetFromPrepareRepos is true when the workflow target repo is found in
-	// the prepare plugin's config.repos[] array (e.g. pr-review reads
-	// the reviewed repo from pr-fetch config) rather than spec.source.repo.
+	// the prepare plugin's config.repos[] array.
 	TargetFromPrepareRepos bool `json:"targetFromPrepareRepos,omitempty"`
+}
+
+// BindingTemplate is a declarative External System Binding that a gate
+// archetype needs. The Target is populated at workflow creation time from
+// the repo URL and branch the user provides.
+type BindingTemplate struct {
+	Name        string   // binding name (sourceRepo, workspaceRepo, etc.)
+	BindingRole string   // v1alpha1.BindingRole* constant
+	SurfaceKind string   // v1alpha1.SurfaceKind* constant
+	Granted     []string // capability tokens (e.g. repository.read, repository.push)
 }
 
 // gateCatalog is the built-in registry of known gates. Adding a new gate type
@@ -90,6 +104,10 @@ var gateCatalog = []GateArchetype{
 		ExitGreen:     0,
 		ExitFailed:    1,
 		Feedback:      "stderr",
+		BindingTemplates: []BindingTemplate{
+			{Name: "workspaceRepo", BindingRole: v1alpha1.BindingRoleWorkspaceRepo, SurfaceKind: v1alpha1.SurfaceKindRepository,
+				Granted: []string{"repository.read", "repository.push"}},
+		},
 	},
 	{
 		Name:                   "pr-review",
@@ -108,6 +126,12 @@ var gateCatalog = []GateArchetype{
 		ExitFailed:             1,
 		Feedback:               "stderr",
 		TargetFromPrepareRepos: true,
+		BindingTemplates: []BindingTemplate{
+			{Name: "sourceRepo", BindingRole: v1alpha1.BindingRoleSourceRepo, SurfaceKind: v1alpha1.SurfaceKindRepository,
+				Granted: []string{"repository.read"}},
+			{Name: "review", BindingRole: v1alpha1.BindingRoleReview, SurfaceKind: v1alpha1.SurfaceKindReview,
+				Granted: []string{"review.comment.write"}},
+		},
 	},
 	{
 		Name:             "fork-maintenance",
@@ -123,6 +147,10 @@ var gateCatalog = []GateArchetype{
 		ExitGreen:        0,
 		ExitFailed:       1,
 		Feedback:         "stderr",
+		BindingTemplates: []BindingTemplate{
+			{Name: "workspaceRepo", BindingRole: v1alpha1.BindingRoleWorkspaceRepo, SurfaceKind: v1alpha1.SurfaceKindRepository,
+				Granted: []string{"repository.read", "repository.push"}},
+		},
 	},
 	{
 		Name:          "noop",
@@ -136,6 +164,10 @@ var gateCatalog = []GateArchetype{
 		ExitGreen:     0,
 		ExitFailed:    1,
 		Feedback:      "",
+		BindingTemplates: []BindingTemplate{
+			{Name: "workspaceRepo", BindingRole: v1alpha1.BindingRoleWorkspaceRepo, SurfaceKind: v1alpha1.SurfaceKindRepository,
+				Granted: []string{"repository.read", "repository.push"}},
+		},
 	},
 }
 
@@ -219,8 +251,52 @@ func deriveArchetype(wf *v1alpha1.Workflow) string {
 	}
 }
 
+// deriveBindings populates External System Binding targets from the workflow
+// creation form. Each binding template from the gate archetype gets a Target
+// filled from the repo URL and branch the user provided.
+func deriveBindings(gate *GateArchetype, repoURL, branch string) []v1alpha1.ExternalSystemBinding {
+	if len(gate.BindingTemplates) == 0 {
+		return nil
+	}
+	host, object := parseGitURL(repoURL)
+	bindings := make([]v1alpha1.ExternalSystemBinding, 0, len(gate.BindingTemplates))
+	for _, tmpl := range gate.BindingTemplates {
+		bindings = append(bindings, v1alpha1.ExternalSystemBinding{
+			Name:        tmpl.Name,
+			BindingRole: tmpl.BindingRole,
+			SurfaceKind: tmpl.SurfaceKind,
+			Granted:     tmpl.Granted,
+			Target:      v1alpha1.BindingTarget{Host: host, Object: object, Branch: branch},
+		})
+	}
+	return bindings
+}
+
+// parseGitTarget extracts the host and owner/repo from a git URL.
+// "https://github.com/rezuscloud/signoz.git" → ("github.com", "rezuscloud/signoz")
+// "git@github.com:rezuscloud/signoz.git" → ("github.com", "rezuscloud/signoz")
+func parseGitURL(rawURL string) (host, object string) {
+	s := strings.TrimSpace(rawURL)
+	if s == "" {
+		return "", ""
+	}
+	// SSH form: git@host:path
+	if i := strings.Index(s, ":"); i > 0 && strings.Contains(s[:i], "@") {
+		host = s[:i]
+		if at := strings.LastIndex(host, "@"); at >= 0 {
+			host = host[at+1:]
+		}
+		object = strings.TrimSuffix(s[i+1:], ".git")
+		return host, object
+	}
+	// HTTPS form
+	if u, err := url.Parse(s); err == nil && u.Host != "" {
+		return u.Host, strings.TrimSuffix(strings.TrimPrefix(u.Path, "/"), ".git")
+	}
+	return "", s
+}
+
 // ---------------------------------------------------------------------------
-// API: GET /api/gates — returns the gate catalog
 // ---------------------------------------------------------------------------
 
 // handleGateAPIList returns the gate catalog as JSON. The SPA and the

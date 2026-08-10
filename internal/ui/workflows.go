@@ -229,6 +229,7 @@ func (s *Server) handleWorkflowCreate(w http.ResponseWriter, r *http.Request) {
 				Kind:     "keda-scaledjob",
 				Schedule: schedule,
 			},
+			Bindings: deriveBindings(g, repoURL, branch),
 		},
 	}
 

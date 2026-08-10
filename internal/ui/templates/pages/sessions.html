@@ -1,4 +1,7 @@
 {{- $wf := .WorkflowName -}}
+<div class="view-description">
+	<strong>Sessions</strong> — Agent conversation transcripts: messages, tool calls, and LLM responses from agent-powered runs. This is the <em>message-level</em> view. Deterministic workflows (like <code>fork-maintenance</code>) have no agent and produce no sessions.
+</div>
 <div class="sessions-view">
 	<div class="sessions-header">
 		{{- if $wf}}

@@ -1,5 +1,8 @@
 {{- $wf := .WorkflowName -}}
 {{- $run := .Run -}}
+<div class="view-description">
+	<strong>Live</strong> — Real-time event stream. Watch workflow executions as they happen, terminal-style. Always dark.
+</div>
 <div class="live-view">
 	{{- if not $wf}}
 	<div class="ds-empty-state">

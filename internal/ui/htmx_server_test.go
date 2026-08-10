@@ -336,21 +336,6 @@ func (m *mockK8sClient) UpdateWorkflow(ctx context.Context, wf *v1alpha1.Workflo
 func (m *mockK8sClient) DeleteWorkflow(ctx context.Context, name string) error {
 	return nil
 }
-func (m *mockK8sClient) GetPipeline(ctx context.Context, name string) (*v1alpha1.Pipeline, error) {
-	return nil, nil
-}
-func (m *mockK8sClient) ListPipelines(ctx context.Context, owner string) ([]v1alpha1.Pipeline, error) {
-	return nil, nil
-}
-func (m *mockK8sClient) CreatePipeline(ctx context.Context, pl *v1alpha1.Pipeline) error {
-	return nil
-}
-func (m *mockK8sClient) UpdatePipeline(ctx context.Context, pl *v1alpha1.Pipeline) error {
-	return nil
-}
-func (m *mockK8sClient) DeletePipeline(ctx context.Context, name string) error {
-	return nil
-}
 func (m *mockK8sClient) ListJobs(ctx context.Context, workflowName string) ([]batchv1.Job, error) {
 	return nil, nil
 }

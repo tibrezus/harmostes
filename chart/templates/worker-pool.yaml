@@ -104,6 +104,23 @@ spec:
               mountPath: /skills
             - name: workspace
               mountPath: /workspace
+            {{- if .Values.forkMaintenance.enabled }}
+            - name: fork-scripts
+              mountPath: /workspace/scripts
+              readOnly: true
+            - name: fork-checks
+              mountPath: /workspace/checks
+              readOnly: true
+            - name: fork-defs
+              mountPath: /workspace/forks
+              readOnly: true
+            - name: fork-hooks
+              mountPath: /workspace/post-merge-hooks
+              readOnly: true
+            - name: fork-plugins
+              mountPath: /plugins/fork-maintenance
+              readOnly: true
+            {{- end }}
           readinessProbe:
             httpGet:
               path: /healthz
@@ -121,4 +138,26 @@ spec:
           emptyDir: {}
         - name: workspace
           emptyDir: {}
+        {{- if .Values.forkMaintenance.enabled }}
+        - name: fork-scripts
+          configMap:
+            name: {{ .Values.forkMaintenance.scriptsConfigMap }}
+            defaultMode: 0755
+        - name: fork-checks
+          configMap:
+            name: {{ .Values.forkMaintenance.checksConfigMap }}
+            defaultMode: 0755
+        - name: fork-defs
+          configMap:
+            name: {{ .Values.forkMaintenance.defsConfigMap }}
+            defaultMode: 0644
+        - name: fork-hooks
+          configMap:
+            name: {{ .Values.forkMaintenance.hooksConfigMap }}
+            defaultMode: 0755
+        - name: fork-plugins
+          configMap:
+            name: fork-maintenance-plugins
+            defaultMode: 0755
+        {{- end }}
 {{- end }}

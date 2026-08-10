@@ -24,7 +24,7 @@ package v1alpha1
 // override (Spec.Source.Fork) is handled separately in attempt.DeriveKind.
 var GateObjectiveKinds = map[string]string{
 	"wiki-lint":        ObjectiveKindDocumentationSync,
-	"review-validate":  ObjectiveKindPRReview,
+	"pr-review":        ObjectiveKindPRReview,
 	"fork-maintenance": ObjectiveKindForkSync,
 	"noop":             ObjectiveKindDocumentationSync,
 }

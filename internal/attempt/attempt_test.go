@@ -29,7 +29,7 @@ func wikiWorkflow() *v1alpha1.Workflow {
 func prReviewWorkflow() *v1alpha1.Workflow {
 	wf := wikiWorkflow()
 	wf.Name = "pr-review-harmostes"
-	wf.Spec.Agent.Gate.Plugin.Name = "review-validate"
+	wf.Spec.Agent.Gate.Plugin.Name = "pr-review"
 	return wf
 }
 

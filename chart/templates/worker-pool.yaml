@@ -118,7 +118,7 @@ spec:
               mountPath: /workspace/post-merge-hooks
               readOnly: true
             - name: fork-plugins
-              mountPath: /plugins/fork-maintenance
+              mountPath: /plugins/fork-maintenance-plugins
               readOnly: true
             {{- end }}
           readinessProbe:

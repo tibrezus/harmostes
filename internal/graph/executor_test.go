@@ -33,8 +33,9 @@ func (r *recordingExecutor) Execute(_ context.Context, node v1alpha1.NodeSpec, _
 	return r.result, nil
 }
 
-func (r *recordingExecutor) Type() string        { return r.execType }
-func (r *recordingExecutor) Deterministic() bool { return true }
+func (r *recordingExecutor) Type() string           { return r.execType }
+func (r *recordingExecutor) Deterministic() bool    { return true }
+func (r *recordingExecutor) ExecutionClass() string { return ExecutionClassWorkload }
 
 func (r *recordingExecutor) visitCount() int {
 	r.mu.Lock()
@@ -379,8 +380,9 @@ func (f *flippingExecutor) Execute(_ context.Context, node v1alpha1.NodeSpec, _ 
 	return f.results[idx], nil
 }
 
-func (f *flippingExecutor) Type() string        { return f.execType }
-func (f *flippingExecutor) Deterministic() bool { return true }
+func (f *flippingExecutor) Type() string           { return f.execType }
+func (f *flippingExecutor) Deterministic() bool    { return true }
+func (f *flippingExecutor) ExecutionClass() string { return ExecutionClassWorkload }
 
 // ===========================================================================
 // Template edge condition
@@ -548,8 +550,9 @@ type envCapturingExecutor struct {
 	onExecute func(env NodeEnv)
 }
 
-func (e *envCapturingExecutor) Type() string        { return "plugin" }
-func (e *envCapturingExecutor) Deterministic() bool { return true }
+func (e *envCapturingExecutor) Type() string           { return "plugin" }
+func (e *envCapturingExecutor) Deterministic() bool    { return true }
+func (e *envCapturingExecutor) ExecutionClass() string { return ExecutionClassWorkload }
 func (e *envCapturingExecutor) Execute(_ context.Context, _ v1alpha1.NodeSpec, env NodeEnv) (NodeResult, error) {
 	if e.onExecute != nil {
 		e.onExecute(env)
@@ -711,8 +714,9 @@ func (i *inputCheckingExecutor) Execute(_ context.Context, _ v1alpha1.NodeSpec, 
 	return NodeResult{Status: StatusGreen}, nil
 }
 
-func (i *inputCheckingExecutor) Type() string        { return i.execType }
-func (i *inputCheckingExecutor) Deterministic() bool { return true }
+func (i *inputCheckingExecutor) Type() string           { return i.execType }
+func (i *inputCheckingExecutor) Deterministic() bool    { return true }
+func (i *inputCheckingExecutor) ExecutionClass() string { return ExecutionClassWorkload }
 
 // ===========================================================================
 // ExecuteGraph convenience function

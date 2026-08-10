@@ -25,8 +25,9 @@ func (e *slowExecutor) Execute(ctx context.Context, _ v1alpha1.NodeSpec, _ NodeE
 		return NodeResult{Status: StatusFailed}, ctx.Err()
 	}
 }
-func (e *slowExecutor) Type() string        { return "slow" }
-func (e *slowExecutor) Deterministic() bool { return true }
+func (e *slowExecutor) Type() string           { return "slow" }
+func (e *slowExecutor) Deterministic() bool    { return true }
+func (e *slowExecutor) ExecutionClass() string { return ExecutionClassWorkload }
 
 // TestPerNodeTimeout verifies that a node with a Timeout field is killed
 // when the deadline fires, and marked failed with "timed out after {duration}".

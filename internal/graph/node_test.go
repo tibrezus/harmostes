@@ -161,8 +161,9 @@ type fakeExecutor struct {
 func (f *fakeExecutor) Execute(_ context.Context, _ v1alpha1.NodeSpec, _ NodeEnv) (NodeResult, error) {
 	return NodeResult{Status: StatusGreen}, nil
 }
-func (f *fakeExecutor) Type() string        { return f.typ }
-func (f *fakeExecutor) Deterministic() bool { return true }
+func (f *fakeExecutor) Type() string           { return f.typ }
+func (f *fakeExecutor) Deterministic() bool    { return true }
+func (f *fakeExecutor) ExecutionClass() string { return ExecutionClassWorkload }
 
 type fakeResolver struct {
 	command string
@@ -278,3 +279,27 @@ var _ interface {
 
 // Ensure errors can be returned
 var _ = errors.New
+
+func TestRegisteredExecutorsDeclareValidExecutionClass(t *testing.T) {
+	deps := Dependencies{} // nil-safe: all executors handle nil clients
+	registry := NewDefaultRegistry(deps)
+
+	validClasses := map[string]bool{
+		ExecutionClassWorkload:          true,
+		ExecutionClassKubernetesAPI:     true,
+		ExecutionClassPureOrchestration: true,
+	}
+
+	for _, nodeType := range registry.Types() {
+		t.Run(nodeType, func(t *testing.T) {
+			exec, err := registry.Get(nodeType)
+			if err != nil {
+				t.Fatalf("Get(%q): %v", nodeType, err)
+			}
+			ec := exec.ExecutionClass()
+			if !validClasses[ec] {
+				t.Errorf("ExecutionClass() = %q, want one of workload/kubernetes-api/pure-orchestration", ec)
+			}
+		})
+	}
+}

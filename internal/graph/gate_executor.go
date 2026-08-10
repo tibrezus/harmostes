@@ -23,8 +23,9 @@ func NewGateExecutor(resolver worker.PluginResolver) *GateExecutor {
 	return &GateExecutor{resolver: resolver}
 }
 
-func (e *GateExecutor) Type() string        { return "gate" }
-func (e *GateExecutor) Deterministic() bool { return true }
+func (e *GateExecutor) Type() string           { return "gate" }
+func (e *GateExecutor) Deterministic() bool    { return true }
+func (e *GateExecutor) ExecutionClass() string { return ExecutionClassWorkload }
 
 func (e *GateExecutor) Execute(ctx context.Context, node v1alpha1.NodeSpec, env NodeEnv) (NodeResult, error) {
 	ctx, span := observability.Tracer().Start(ctx, "graph.node.gate")

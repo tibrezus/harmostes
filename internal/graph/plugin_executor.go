@@ -22,8 +22,9 @@ func NewPluginExecutor(resolver worker.PluginResolver) *PluginExecutor {
 	return &PluginExecutor{resolver: resolver}
 }
 
-func (e *PluginExecutor) Type() string        { return "plugin" }
-func (e *PluginExecutor) Deterministic() bool { return true }
+func (e *PluginExecutor) Type() string           { return "plugin" }
+func (e *PluginExecutor) Deterministic() bool    { return true }
+func (e *PluginExecutor) ExecutionClass() string { return ExecutionClassWorkload }
 
 func (e *PluginExecutor) Execute(ctx context.Context, node v1alpha1.NodeSpec, env NodeEnv) (NodeResult, error) {
 	ctx, span := observability.Tracer().Start(ctx, "graph.node.plugin")

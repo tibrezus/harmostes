@@ -56,8 +56,9 @@ func NewStateGetExecutor(client dapr.Client) *StateGetExecutor {
 	return &StateGetExecutor{client: client}
 }
 
-func (e *StateGetExecutor) Type() string        { return "dapr-state-get" }
-func (e *StateGetExecutor) Deterministic() bool { return true }
+func (e *StateGetExecutor) Type() string           { return "dapr-state-get" }
+func (e *StateGetExecutor) Deterministic() bool    { return true }
+func (e *StateGetExecutor) ExecutionClass() string { return ExecutionClassPureOrchestration }
 
 func (e *StateGetExecutor) Execute(ctx context.Context, node v1alpha1.NodeSpec, env NodeEnv) (NodeResult, error) {
 	ctx, span := observability.Tracer().Start(ctx, "graph.node.dapr-state-get")
@@ -110,8 +111,9 @@ func NewStateSetExecutor(client dapr.Client) *StateSetExecutor {
 	return &StateSetExecutor{client: client}
 }
 
-func (e *StateSetExecutor) Type() string        { return "dapr-state-set" }
-func (e *StateSetExecutor) Deterministic() bool { return true }
+func (e *StateSetExecutor) Type() string           { return "dapr-state-set" }
+func (e *StateSetExecutor) Deterministic() bool    { return true }
+func (e *StateSetExecutor) ExecutionClass() string { return ExecutionClassPureOrchestration }
 
 func (e *StateSetExecutor) Execute(ctx context.Context, node v1alpha1.NodeSpec, env NodeEnv) (NodeResult, error) {
 	ctx, span := observability.Tracer().Start(ctx, "graph.node.dapr-state-set")
@@ -163,8 +165,9 @@ func NewPublishExecutor(client dapr.Client) *PublishExecutor {
 	return &PublishExecutor{client: client}
 }
 
-func (e *PublishExecutor) Type() string        { return "dapr-publish" }
-func (e *PublishExecutor) Deterministic() bool { return true }
+func (e *PublishExecutor) Type() string           { return "dapr-publish" }
+func (e *PublishExecutor) Deterministic() bool    { return true }
+func (e *PublishExecutor) ExecutionClass() string { return ExecutionClassPureOrchestration }
 
 func (e *PublishExecutor) Execute(ctx context.Context, node v1alpha1.NodeSpec, env NodeEnv) (NodeResult, error) {
 	ctx, span := observability.Tracer().Start(ctx, "graph.node.dapr-publish")

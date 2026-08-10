@@ -44,23 +44,15 @@ func DeriveObjective(wf *v1alpha1.Workflow, trigger TriggerContext) v1alpha1.Obj
 }
 
 // DeriveKind maps a Workflow to its Objective Kind. A fork source forces
-// fork-sync; otherwise the gate plugin name determines the kind (the gate IS
-// the workflow archetype). Falls back to documentation-sync (the dominant
-// fleet archetype) when neither signal is conclusive.
+// fork-sync; otherwise the gate plugin name determines the kind via the
+// single-source-of-truth map (v1alpha1.GateObjectiveKinds). The gate IS the
+// workflow archetype, but the kind derivation is now data-driven — no
+// switch-on-name string matching.
 func DeriveKind(wf *v1alpha1.Workflow) string {
 	if wf.Spec.Source.Fork != nil && wf.Spec.Source.Fork.URL != "" {
 		return v1alpha1.ObjectiveKindForkSync
 	}
-	switch wf.Spec.Agent.Gate.Plugin.Name {
-	case "wiki-lint":
-		return v1alpha1.ObjectiveKindDocumentationSync
-	case "review-validate":
-		return v1alpha1.ObjectiveKindPRReview
-	case "fork-resolved":
-		return v1alpha1.ObjectiveKindForkSync
-	default:
-		return v1alpha1.ObjectiveKindDocumentationSync
-	}
+	return v1alpha1.ObjectiveKindForGate(wf.Spec.Agent.Gate.Plugin.Name)
 }
 
 // DeriveTargetedState resolves the Targeted State that makes this objective a

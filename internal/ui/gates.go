@@ -22,8 +22,12 @@ import (
 //
 //   wiki-lint        Documentation sync (C4/RIG → agent → lint → push)
 //   review-validate  PR review (fetch PR → agent → validate → post review)
-//   fork-resolved    Fork maintenance (cherry-pick → agent → resolve → deploy)
+//   fork-maintenance Fork maintenance (cherry-pick → agent → resolve → deploy)
 //   noop             Passthrough (deterministic-only, no LLM validation)
+//
+// NAMING RULE: the gate name IS the workflow archetype identity. It must
+// match its purpose — the label is just the display form. See
+// api/v1alpha1/gates.go for the full rule.
 
 // GateArchetype defines the common structure for all workflows using a gate.
 type GateArchetype struct {
@@ -49,6 +53,11 @@ type GateArchetype struct {
 	ExitGreen  int    `json:"exitGreen"`  // exit code for green (always 0)
 	ExitFailed int    `json:"exitFailed"` // exit code for failed (always 1)
 	Feedback   string `json:"feedback"`   // where the agent reads feedback ("stderr")
+
+	// TargetFromPrepareRepos is true when the workflow target repo is found in
+	// the prepare plugin's config.repos[] array (e.g. review-validate reads
+	// the reviewed repo from pr-fetch config) rather than spec.source.repo.
+	TargetFromPrepareRepos bool `json:"targetFromPrepareRepos,omitempty"`
 }
 
 // gateCatalog is the built-in registry of known gates. Adding a new gate type
@@ -69,22 +78,23 @@ var gateCatalog = []GateArchetype{
 		Feedback:      "stderr",
 	},
 	{
-		Name:          "review-validate",
-		Label:         "PR Review",
-		Description:   "Fetch labeled PR → agent reviews → review-validate checks structure → post review to git host",
-		Category:      "code-review",
-		PreparePlugin: "pr-fetch",
-		DeployPlugin:  "post-review",
-		SkillPath:     "/skills/pr-review/SKILL.md",
-		TaskName:      "pr-review",
-		ExitGreen:     0,
-		ExitFailed:    1,
-		Feedback:      "stderr",
+		Name:                   "review-validate",
+		Label:                  "PR Review",
+		Description:            "Fetch labeled PR → agent reviews → review-validate checks structure → post review to git host",
+		Category:               "code-review",
+		PreparePlugin:          "pr-fetch",
+		DeployPlugin:           "post-review",
+		SkillPath:              "/skills/pr-review/SKILL.md",
+		TaskName:               "pr-review",
+		ExitGreen:              0,
+		ExitFailed:             1,
+		Feedback:               "stderr",
+		TargetFromPrepareRepos: true,
 	},
 	{
-		Name:          "fork-resolved",
+		Name:          "fork-maintenance",
 		Label:         "Fork Maintenance",
-		Description:   "Upstream sync → cherry-pick replay → agent resolves conflicts → fork-resolved validates build → deploy",
+		Description:   "Upstream sync → cherry-pick replay → agent resolves conflicts → fork-maintenance gate validates build → deploy",
 		Category:      "fork-maintenance",
 		PreparePlugin: "merge-sync",
 		DeployPlugin:  "fork-merge-deploy",

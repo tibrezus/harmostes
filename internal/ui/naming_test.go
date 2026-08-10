@@ -50,7 +50,7 @@ func TestDeterministicWorkflowName(t *testing.T) {
 		want     string
 	}{
 		{"wiki-lint", "https://github.com/tibrezus/harmostes.git", "wiki-lint-harmostes"},
-		{"review-validate", "https://github.com/tibrezus/harmostes.git", "review-validate-harmostes"},
+		{"pr-review", "https://github.com/tibrezus/harmostes.git", "pr-review-harmostes"},
 		{"fork-maintenance", "https://github.com/rezuscloud/dapr.git", "fork-maintenance-dapr"},
 		{"noop", "smoke", "noop-smoke"},
 		// Empty inputs
@@ -71,7 +71,7 @@ func TestDeterministicWorkflowName(t *testing.T) {
 
 func TestDeterministicWorkflowName_DNSSafe(t *testing.T) {
 	// Full name must be DNS-safe (lowercase, hyphens, ≤63 chars).
-	name := deterministicWorkflowName("review-validate", "https://github.com/some-org/a-very-long-repository-name-that-could-exceed-limits.git")
+	name := deterministicWorkflowName("pr-review", "https://github.com/some-org/a-very-long-repository-name-that-could-exceed-limits.git")
 	if !workflowNameRe.MatchString(name) {
 		t.Errorf("name %q is not DNS-safe", name)
 	}
@@ -104,7 +104,7 @@ func TestWorkflowTarget_ReviewValidate_PrepareRepos(t *testing.T) {
 			Config: config,
 		},
 		Agent: v1alpha1.AgentSpec{
-			Gate: v1alpha1.GateRef{Plugin: v1alpha1.PluginRef{Name: "review-validate"}},
+			Gate: v1alpha1.GateRef{Plugin: v1alpha1.PluginRef{Name: "pr-review"}},
 		},
 	}
 	got := workflowTarget(wf)
@@ -175,9 +175,9 @@ func TestDeterministicNameForExistingWorkflows(t *testing.T) {
 		{"wiki-lint", "https://github.com/rezuscloud/rezuscloud.git", "wiki-lint-rezuscloud"},
 		{"wiki-lint", "https://github.com/rezuscloud/signoz.git", "wiki-lint-signoz"},
 		{"wiki-lint", "https://codeberg.org/forgejo/forgejo", "wiki-lint-forgejo"},
-		{"review-validate", "github.com/tibrezus/harmostes", "review-validate-harmostes"},
-		{"review-validate", "github.com/rezuscloud/llm-wiki", "review-validate-llm-wiki"},
-		{"review-validate", "github.com/tibrez/rhesadox", "review-validate-rhesadox"},
+		{"pr-review", "github.com/tibrezus/harmostes", "pr-review-harmostes"},
+		{"pr-review", "github.com/rezuscloud/llm-wiki", "pr-review-llm-wiki"},
+		{"pr-review", "github.com/tibrez/rhesadox", "pr-review-rhesadox"},
 		{"noop", "smoke", "noop-smoke"},
 	}
 	for _, tt := range tests {

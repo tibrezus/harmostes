@@ -19,18 +19,18 @@ import (
 //	{gate}-{targetSlug}
 //
 // where:
-//   - gate       = the gate plugin name (wiki-lint, review-validate,
+//   - gate       = the gate plugin name (wiki-lint, pr-review,
 //     fork-maintenance, noop). The gate IS the workflow archetype — it
 //     determines the entire structure.
 //   - targetSlug = a DNS-safe slug derived from the repo the workflow
 //     operates on. For wiki-lint this is the source code repo being
-//     documented; for review-validate, the repo whose PRs are reviewed;
+//     documented; for pr-review, the repo whose PRs are reviewed;
 //     for fork-maintenance, the fork being synced.
 //
 // Examples:
 //
 //	wiki-lint-harmostes       — harmostes → llm-wiki docs
-//	review-validate-harmostes — review PRs on harmostes
+//	pr-review-harmostes — review PRs on harmostes
 //	fork-maintenance-dapr     — sync the dapr fork
 //
 // This convention makes the template visible in the name itself, preventing
@@ -41,7 +41,7 @@ import (
 var slugRe = regexp.MustCompile(`[^a-z0-9-]+`)
 
 // maxSlugLen caps the target slug so the full name stays under the 63-char
-// k8s DNS limit even with the longest gate prefix ("review-validate-" = 16).
+// k8s DNS limit even with the longest gate prefix ("fork-maintenance-" = 17).
 const maxSlugLen = 40
 
 // repoSlug extracts a DNS-safe slug from a git repo URL or short path.
@@ -101,7 +101,7 @@ func deterministicWorkflowName(gateName, repoURL string) string {
 //
 // The target depends on the gate archetype (catalog-driven, no string
 // matching):
-//   - gates with TargetFromPrepareRepos=true (review-validate): the repo in
+//   - gates with TargetFromPrepareRepos=true (pr-review): the repo in
 //     spec.prepare.config.repos[0] (the repo whose PRs are reviewed). Falls
 //     back to spec.source.repo.
 //   - all others: spec.source.repo (the monitored source), falling back to

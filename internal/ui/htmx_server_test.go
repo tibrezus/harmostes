@@ -424,7 +424,7 @@ func TestHTMXServer_groupWorkflowsByGate(t *testing.T) {
 			ObjectMeta: metav1.ObjectMeta{Name: "pr-review-harmostes"},
 			Spec: v1alpha1.WorkflowSpec{
 				Agent: v1alpha1.AgentSpec{
-					Gate: v1alpha1.GateRef{Plugin: v1alpha1.PluginRef{Name: "review-validate"}},
+					Gate: v1alpha1.GateRef{Plugin: v1alpha1.PluginRef{Name: "pr-review"}},
 				},
 				Disabled: false,
 			},

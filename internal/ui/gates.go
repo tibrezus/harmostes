@@ -21,7 +21,7 @@ import (
 // Current gates:
 //
 //   wiki-lint        Documentation sync (C4/RIG → agent → lint → push)
-//   review-validate  PR review (fetch PR → agent → validate → post review)
+//   pr-review  PR review (fetch PR → agent → validate → post review)
 //   fork-maintenance Fork maintenance (cherry-pick → agent → resolve → deploy)
 //   noop             Passthrough (deterministic-only, no LLM validation)
 //
@@ -55,7 +55,7 @@ type GateArchetype struct {
 	Feedback   string `json:"feedback"`   // where the agent reads feedback ("stderr")
 
 	// TargetFromPrepareRepos is true when the workflow target repo is found in
-	// the prepare plugin's config.repos[] array (e.g. review-validate reads
+	// the prepare plugin's config.repos[] array (e.g. pr-review reads
 	// the reviewed repo from pr-fetch config) rather than spec.source.repo.
 	TargetFromPrepareRepos bool `json:"targetFromPrepareRepos,omitempty"`
 }
@@ -78,9 +78,9 @@ var gateCatalog = []GateArchetype{
 		Feedback:      "stderr",
 	},
 	{
-		Name:                   "review-validate",
+		Name:                   "pr-review",
 		Label:                  "PR Review",
-		Description:            "Fetch labeled PR → agent reviews → review-validate checks structure → post review to git host",
+		Description:            "Fetch labeled PR → agent reviews → pr-review checks structure → post review to git host",
 		Category:               "code-review",
 		PreparePlugin:          "pr-fetch",
 		DeployPlugin:           "post-review",

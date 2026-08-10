@@ -1,6 +1,6 @@
 // Package ui provides the K8s client wrapper for harmostes-ui.
 // This wraps the controller-runtime client with UI-specific helpers
-// for managing Workflows, Pipelines, Jobs, and Secrets.
+// for managing Workflows, Jobs, and Secrets.
 package ui
 
 import (
@@ -28,13 +28,6 @@ type K8sClient interface {
 	// Attempt queries (observability-first UI)
 	GetAttempt(ctx context.Context, name string) (*v1alpha1.Attempt, error)
 	ListAttempts(ctx context.Context, owner string) ([]v1alpha1.Attempt, error)
-
-	// Pipeline CRUD
-	GetPipeline(ctx context.Context, name string) (*v1alpha1.Pipeline, error)
-	ListPipelines(ctx context.Context, owner string) ([]v1alpha1.Pipeline, error)
-	CreatePipeline(ctx context.Context, pl *v1alpha1.Pipeline) error
-	UpdatePipeline(ctx context.Context, pl *v1alpha1.Pipeline) error
-	DeletePipeline(ctx context.Context, name string) error
 
 	// Job listing
 	ListJobs(ctx context.Context, workflowName string) ([]batchv1.Job, error)
@@ -126,59 +119,6 @@ func (k *k8sClient) DeleteWorkflow(ctx context.Context, name string) error {
 			return nil // idempotent delete
 		}
 		return fmt.Errorf("delete workflow %s: %w", name, err)
-	}
-	return nil
-}
-
-// Pipeline CRUD
-
-// GetPipeline retrieves a Pipeline by name.
-func (k *k8sClient) GetPipeline(ctx context.Context, name string) (*v1alpha1.Pipeline, error) {
-	pl := &v1alpha1.Pipeline{}
-	if err := k.client.Get(ctx, client.ObjectKey{Namespace: k.namespace, Name: name}, pl); err != nil {
-		return nil, fmt.Errorf("get pipeline %s: %w", name, err)
-	}
-	return pl, nil
-}
-
-// ListPipelines lists all Pipelines for a given owner.
-func (k *k8sClient) ListPipelines(ctx context.Context, owner string) ([]v1alpha1.Pipeline, error) {
-	var list v1alpha1.PipelineList
-	if err := k.client.List(ctx, &list, client.MatchingLabels{v1alpha1.OwnerLabel: owner}); err != nil {
-		return nil, fmt.Errorf("list pipelines: %w", err)
-	}
-	return list.Items, nil
-}
-
-// CreatePipeline creates a new Pipeline.
-func (k *k8sClient) CreatePipeline(ctx context.Context, pl *v1alpha1.Pipeline) error {
-	if err := k.client.Create(ctx, pl); err != nil {
-		return fmt.Errorf("create pipeline %s: %w", pl.Name, err)
-	}
-	return nil
-}
-
-// UpdatePipeline updates an existing Pipeline.
-func (k *k8sClient) UpdatePipeline(ctx context.Context, pl *v1alpha1.Pipeline) error {
-	if err := k.client.Update(ctx, pl); err != nil {
-		return fmt.Errorf("update pipeline %s: %w", pl.Name, err)
-	}
-	return nil
-}
-
-// DeletePipeline deletes a Pipeline by name.
-func (k *k8sClient) DeletePipeline(ctx context.Context, name string) error {
-	pl := &v1alpha1.Pipeline{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: k.namespace,
-		},
-	}
-	if err := k.client.Delete(ctx, pl); err != nil {
-		if errors.IsNotFound(err) {
-			return nil // idempotent delete
-		}
-		return fmt.Errorf("delete pipeline %s: %w", name, err)
 	}
 	return nil
 }

@@ -143,7 +143,7 @@ func (s *Server) Routes() http.Handler {
 	pages.HandleFunc("GET /api/workflows/{name}/graph", s.handleWorkflowGraphAPI)
 	pages.HandleFunc("GET /api/gates", s.handleGateAPIList)
 
-	// Pipeline lifecycle SSE stream (kept for live event streaming)
+	// Lifecycle SSE stream (live event streaming for the Live view)
 	pages.HandleFunc("GET /api/pipelines/{name}/events", s.handlePipelineSSE)
 
 	// Flows view: global SSE stream (all workflows or filtered by ?workflow=)

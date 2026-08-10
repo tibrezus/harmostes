@@ -47,7 +47,7 @@ func (e *PluginExecutor) Execute(ctx context.Context, node v1alpha1.NodeSpec, en
 
 	specJSON := string(node.Config)
 	pluginEnv := envToPluginEnv(env, "plugin", specJSON)
-	res, out, runErr := worker.RunPlugin(ctx, command, args, pluginEnv, nil)
+	res, out, runErr := worker.RunPlugin(ctx, command, args, pluginEnv, env.ExtraEnv)
 
 	span.SetAttributes(
 		attribute.String("harmostes.plugin.name", cfg.Name),
@@ -65,12 +65,35 @@ func (e *PluginExecutor) Execute(ctx context.Context, node v1alpha1.NodeSpec, en
 		}, nil // non-zero exit is a node failure, not a system error
 	}
 
+	// Deterministic skip: when the plugin reports changed=false (nothing to
+	// do), return StatusSkipped so conditional green-edges don't traverse
+	// downstream. This mirrors the declarative pipeline's short-circuit.
+	if res.Changed != nil && !*res.Changed {
+		span.SetAttributes(attribute.String("harmostes.plugin.skip", "no_change"))
+		outputs := NodeOutputs{
+			"artifact": res.Artifact,
+			"status":   res.Status,
+			"changed":  false,
+		}
+		for k, v := range res.Event {
+			outputs[k] = v
+		}
+		return NodeResult{
+			Status:   StatusSkipped,
+			Outputs:  outputs,
+			Feedback: out,
+		}, nil
+	}
+
 	outputs := NodeOutputs{
 		"artifact": res.Artifact,
 		"status":   res.Status,
+		"changed":  true,
 	}
-	if res.Changed != nil {
-		outputs["changed"] = *res.Changed
+	// Expose all event fields (rig_hash, commit, components, …) so downstream
+	// nodes and the worker can access them without re-parsing plugin output.
+	for k, v := range res.Event {
+		outputs[k] = v
 	}
 
 	return NodeResult{
@@ -83,14 +106,17 @@ func (e *PluginExecutor) Execute(ctx context.Context, node v1alpha1.NodeSpec, en
 // envToPluginEnv converts the graph NodeEnv to the existing worker.PluginEnv.
 func envToPluginEnv(env NodeEnv, phase, specJSON string) worker.PluginEnv {
 	return worker.PluginEnv{
-		Workflow:     env.Workflow,
-		Namespace:    env.Namespace,
-		Phase:        phase,
-		Spec:         specJSON,
-		Source:       env.Source,
-		Workdir:      env.Workdir,
-		State:        env.State,
-		SourceURL:    env.SourceURL,
-		SourceBranch: env.SourceBranch,
+		Workflow:       env.Workflow,
+		Namespace:      env.Namespace,
+		Phase:          phase,
+		Spec:           specJSON,
+		Source:         env.Source,
+		Workdir:        env.Workdir,
+		State:          env.State,
+		SourceURL:      env.SourceURL,
+		SourceBranch:   env.SourceBranch,
+		SourceLanguage: env.SourceLanguage,
+		WorkspaceDir:   env.WorkspaceDir,
+		Shadow:         env.Shadow,
 	}
 }

@@ -85,6 +85,16 @@ DEST_FILE="$DEST_DIR/rig.json"
 RIG_HASH=$(sha256sum "$RIG_FILE" | cut -d' ' -f1)
 log "RIG hash=$RIG_HASH ($COMPONENTS components)"
 
+# Cross-run skip: if HARMOSTES_LAST_RIG_HASH is set (stamped from Workflow
+# status by the worker) and matches the freshly computed hash, skip even when
+# the workspace file differs (e.g. shadow branch lag). This prevents the agent
+# from re-running on a structurally unchanged source.
+if [ -n "${HARMOSTES_LAST_RIG_HASH:-}" ] && [ "$RIG_HASH" = "$HARMOSTES_LAST_RIG_HASH" ]; then
+  log "RIG hash unchanged ($RIG_HASH) — cross-run deterministic skip"
+  echo "{\"changed\":false,\"artifact\":\"raw/arch/$PROJECT/rig.json\",\"status\":\"ok\",\"event\":{\"components\":$COMPONENTS,\"rig_hash\":\"$RIG_HASH\"}}"
+  exit 0
+fi
+
 # Byte-for-byte comparison with the existing rig.json in the workspace repo.
 # If identical, return changed=false so the pipeline short-circuits BEFORE the
 # agent runs — no LLM tokens consumed. Only a genuinely different RIG triggers

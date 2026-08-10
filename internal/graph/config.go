@@ -44,6 +44,7 @@ type AgentNodeConfig struct {
 	Tools    []string        `json:"tools,omitempty"`
 	Gate     *GateNodeConfig `json:"gate,omitempty"`
 	MaxFixes int             `json:"maxFixes,omitempty"`
+	Scope    string          `json:"scope,omitempty"` // optional task scope appended after resolution
 }
 
 // BranchNodeConfig is the config for a "branch" node. The condition is a Go

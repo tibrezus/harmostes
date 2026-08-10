@@ -107,3 +107,67 @@ func TestPluginExecutorBadConfig(t *testing.T) {
 		t.Fatal("expected config parse error")
 	}
 }
+
+func TestPluginExecutorChangedFalseReturnsSkipped(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "noop.sh")
+	if err := os.WriteFile(script, []byte(`#!/bin/sh
+echo '{"changed":false,"event":{"rig_hash":"abc123"}}'
+`), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	resolver := &fakeResolver{command: "/bin/sh", args: []string{script}}
+	exec := NewPluginExecutor(resolver)
+
+	node := v1alpha1.NodeSpec{
+		ID:     "prepare",
+		Type:   "plugin",
+		Config: mustJSON(t, PluginNodeConfig{Name: "prepare"}),
+	}
+
+	result, err := exec.Execute(context.Background(), node, NodeEnv{Workdir: dir})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if result.Status != StatusSkipped {
+		t.Errorf("status = %q, want skipped", result.Status)
+	}
+	// rig_hash should be exposed in outputs even on skip
+	if result.Outputs["rig_hash"] != "abc123" {
+		t.Errorf("rig_hash = %v, want abc123", result.Outputs["rig_hash"])
+	}
+}
+
+func TestPluginExecutorExposesEventFields(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "emit.sh")
+	if err := os.WriteFile(script, []byte(`#!/bin/sh
+echo '{"changed":true,"artifact":"rig.json","event":{"rig_hash":"sha256:xyz","components":42}}'
+`), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	resolver := &fakeResolver{command: "/bin/sh", args: []string{script}}
+	exec := NewPluginExecutor(resolver)
+
+	node := v1alpha1.NodeSpec{
+		ID:     "prepare",
+		Type:   "plugin",
+		Config: mustJSON(t, PluginNodeConfig{Name: "rig-emit"}),
+	}
+
+	result, err := exec.Execute(context.Background(), node, NodeEnv{Workdir: dir})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if result.Status != StatusGreen {
+		t.Errorf("status = %q, want green", result.Status)
+	}
+	if result.Outputs["rig_hash"] != "sha256:xyz" {
+		t.Errorf("rig_hash = %v, want sha256:xyz", result.Outputs["rig_hash"])
+	}
+	if components, ok := result.Outputs["components"].(float64); !ok || components != 42 {
+		t.Errorf("components = %v, want 42", result.Outputs["components"])
+	}
+}

@@ -132,12 +132,17 @@ type GraphExecutor struct {
 // resolve HARMOSTES_SOURCE_URL, HARMOSTES_WORKDIR, etc. — the same env vars
 // that the declarative worker.Run() injects automatically.
 type WorkflowContext struct {
-	Name         string // workflow / pipeline name
-	Namespace    string // k8s namespace
-	Workdir      string // shared working directory
-	Source       string // resolved source ref/revision
-	SourceURL    string // upstream source repo URL
-	SourceBranch string // upstream source branch
+	Name           string   // workflow / pipeline name
+	Namespace      string   // k8s namespace
+	Workdir        string   // shared working directory
+	Source         string   // resolved source ref/revision
+	SourceURL      string   // upstream source repo URL
+	SourceBranch   string   // upstream source branch
+	SourceLanguage string   // source language hint (go, zig, …) for prepare plugins
+	WorkspaceDir   string   // fetched workspace repo path (== Workdir when a workspaceRepo is set)
+	Shadow         string   // push target branch (parallel/dry-run)
+	State          string   // Dapr state key prefix for this workflow
+	ExtraEnv       []string // extra env vars propagated to all plugin nodes
 }
 
 // GraphExecutorOption configures a GraphExecutor.
@@ -305,14 +310,19 @@ func (e *GraphExecutor) Execute(ctx context.Context, graph v1alpha1.GraphSpec, p
 
 		// Resolve inputs: snapshot of all completed node outputs.
 		env := NodeEnv{
-			Inputs:       snapshotOutputs(result.NodeResults),
-			Workflow:     e.wfCtx.Name,
-			RunID:        e.runID,
-			Namespace:    e.wfCtx.Namespace,
-			Workdir:      e.wfCtx.Workdir,
-			Source:       e.wfCtx.Source,
-			SourceURL:    e.wfCtx.SourceURL,
-			SourceBranch: e.wfCtx.SourceBranch,
+			Inputs:         snapshotOutputs(result.NodeResults),
+			Workflow:       e.wfCtx.Name,
+			RunID:          e.runID,
+			Namespace:      e.wfCtx.Namespace,
+			Workdir:        e.wfCtx.Workdir,
+			Source:         e.wfCtx.Source,
+			SourceURL:      e.wfCtx.SourceURL,
+			SourceBranch:   e.wfCtx.SourceBranch,
+			SourceLanguage: e.wfCtx.SourceLanguage,
+			WorkspaceDir:   e.wfCtx.WorkspaceDir,
+			Shadow:         e.wfCtx.Shadow,
+			State:          e.wfCtx.State,
+			ExtraEnv:       e.wfCtx.ExtraEnv,
 		}
 
 		// Capability Policy enforcement (ADR-0003, ADR-0001): the deterministic

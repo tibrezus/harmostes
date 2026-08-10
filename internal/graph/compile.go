@@ -17,10 +17,14 @@ import (
 // Pipeline CR, the gate would be a separate node with a loop-back edge.
 func CompileWorkflow(wf *v1alpha1.Workflow) v1alpha1.GraphSpec {
 	prepareCfg, _ := json.Marshal(PluginNodeConfig{
-		Name: wf.Spec.Prepare.Plugin.Name,
+		Name:      wf.Spec.Prepare.Plugin.Name,
+		Args:      wf.Spec.Prepare.Plugin.Args,
+		ConfigMap: wf.Spec.Prepare.Plugin.ConfigMap,
 	})
 	deployCfg, _ := json.Marshal(PluginNodeConfig{
-		Name: wf.Spec.Deploy.Plugin.Name,
+		Name:      wf.Spec.Deploy.Plugin.Name,
+		Args:      wf.Spec.Deploy.Plugin.Args,
+		ConfigMap: wf.Spec.Deploy.Plugin.ConfigMap,
 	})
 
 	nodes := []v1alpha1.NodeSpec{
@@ -45,9 +49,12 @@ func CompileWorkflow(wf *v1alpha1.Workflow) v1alpha1.GraphSpec {
 			MaxFixes: maxFixes,
 			Gate: &GateNodeConfig{
 				Plugin: PluginNodeConfig{
-					Name: wf.Spec.Agent.Gate.Plugin.Name,
+					Name:      wf.Spec.Agent.Gate.Plugin.Name,
+					ConfigMap: wf.Spec.Agent.Gate.Plugin.ConfigMap,
+					Args:      wf.Spec.Agent.Gate.Plugin.Args,
 				},
 			},
+			Scope: wikiLintScope(wf.Name),
 		})
 		nodes = append(nodes, v1alpha1.NodeSpec{
 			ID:     "agent",
@@ -77,6 +84,18 @@ func CompileWorkflow(wf *v1alpha1.Workflow) v1alpha1.GraphSpec {
 		Nodes: nodes,
 		Edges: edges,
 	}
+}
+
+// wikiLintScope returns the task scope clause for wiki-lint workflows, or
+// empty for other gate types. The scope confines the agent to one project
+// under raw/arch/ so a multi-project namespace doesn't have the agent touch
+// every project. This matches the declarative pipeline's scope injection.
+func wikiLintScope(workflowName string) string {
+	return "SCOPE: this Workflow owns exactly ONE project: " + workflowName +
+		". Work ONLY on raw/arch/" + workflowName +
+		"/, its model.c4, and wiki/entities/" + workflowName +
+		".md (plus index.md/log.md). Do NOT read or modify any other project" +
+		" under raw/arch/ \u2014 those are owned by other Workflows."
 }
 
 // CompileTemplate compiles a WorkflowTemplate's spec into a pipeline graph,

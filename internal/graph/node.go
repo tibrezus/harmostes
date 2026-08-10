@@ -40,15 +40,19 @@ const (
 // NodeEnv is the execution context passed to every node executor. It carries
 // enough state for executors to do their work without a direct k8s dependency.
 type NodeEnv struct {
-	Workflow     string                 // pipeline/workflow name
-	RunID        string                 // workflow run/job name (for session keys)
-	Namespace    string                 // k8s namespace
-	Workdir      string                 // shared working directory
-	Source       string                 // resolved source ref/revision
-	SourceURL    string                 // upstream source URL
-	SourceBranch string                 // upstream source branch
-	State        string                 // Dapr state key prefix
-	Inputs       map[string]NodeOutputs // upstream node outputs: nodeID → outputs
+	Workflow       string                 // pipeline/workflow name
+	RunID          string                 // workflow run/job name (for session keys)
+	Namespace      string                 // k8s namespace
+	Workdir        string                 // shared working directory
+	Source         string                 // resolved source ref/revision
+	SourceURL      string                 // upstream source URL
+	SourceBranch   string                 // upstream source branch
+	SourceLanguage string                 // source language hint (go, zig, …)
+	WorkspaceDir   string                 // fetched workspace repo path
+	Shadow         string                 // push target branch (parallel/dry-run)
+	State          string                 // Dapr state key prefix
+	ExtraEnv       []string               // extra env vars for plugin subprocesses
+	Inputs         map[string]NodeOutputs // upstream node outputs: nodeID → outputs
 }
 
 // NodeOutputs holds the outputs of a single node, available to downstream nodes

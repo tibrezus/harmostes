@@ -106,7 +106,7 @@ func (s *HTMXServer) groupWorkflowsByGate(workflows []v1alpha1.Workflow) []pages
 	groupMap := map[string]*gateGroupData{}
 
 	for _, wf := range workflows {
-		gateName := workflowGate(wf.Spec.Agent.Gate.Plugin.Name)
+		gateName := deriveArchetype(&wf)
 
 		// Get gate metadata
 		var label, category string

@@ -49,7 +49,7 @@
 		if (series.length === 0 || series.every(function (s) { return !s.points || s.points.length === 0; })) {
 			container.innerHTML = '<div class="ds-empty-state"><div class="ds-empty-text">' +
 				'<p class="ds-empty-title">No token data</p>' +
-				'<p>No telemetry recorded for this time range.</p>' +
+				'<p>No agent telemetry recorded for this time range. Deterministic workflows (e.g. <code>fork-maintenance</code>) don\'t invoke an LLM and have no tokens to report.</p>' +
 				'</div></div>';
 			return;
 		}

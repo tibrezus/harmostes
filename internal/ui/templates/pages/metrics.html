@@ -1,5 +1,8 @@
 {{- $wf := .WorkflowName -}}
 {{- $range := .TimeRange -}}
+<div class="view-description">
+	<strong>Metrics</strong> — Token usage and cost analytics from SigNoz. Only agent-powered workflows produce token data; deterministic workflows (like <code>fork-maintenance</code>) don't use an LLM and have no tokens to report.
+</div>
 <div class="metrics-view">
 	{{- if not .Configured}}
 	<div class="ds-empty-state">

@@ -43,7 +43,7 @@ func (s *Server) handleWorkflowList(w http.ResponseWriter, r *http.Request) {
 	groupMap := map[string]*gateGroup{}
 	for i := range workflows {
 		wf := &workflows[i]
-		gateName := workflowGate(wf.Spec.Agent.Gate.Plugin.Name)
+		gateName := deriveArchetype(wf)
 		g, ok := groupMap[gateName]
 		if !ok {
 			cat := "other"

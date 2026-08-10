@@ -3,6 +3,8 @@ package ui
 import (
 	"net/http"
 	"sort"
+
+	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
 )
 
 // ---------------------------------------------------------------------------
@@ -164,12 +166,57 @@ func gateCategoryLabel(category string) string {
 }
 
 // workflowGate derives the gate name from a Workflow CR's spec.
-// Returns the gate plugin name, or "unknown" if not set.
+// Returns the gate plugin name, or "noop" if not set.
 func workflowGate(gatePluginName string) string {
 	if gatePluginName == "" {
 		return "noop"
 	}
 	return gatePluginName
+}
+
+// deriveArchetype infers the gate archetype from the full workflow spec.
+// This is needed because multiple archetypes can share the same gate plugin
+// (e.g. both fork-maintenance and noop use the noop gate plugin). We
+// disambiguate using the prepare plugin: each archetype has a unique prepare
+// plugin except wiki-lint and noop (both rig-emit), which are separated by
+// the gate plugin name.
+func deriveArchetype(wf *v1alpha1.Workflow) string {
+	preparePlugin := wf.Spec.Prepare.Plugin.Name
+	gatePlugin := wf.Spec.Agent.Gate.Plugin.Name
+	if gatePlugin == "" {
+		gatePlugin = "noop"
+	}
+
+	// Find archetypes whose prepare plugin matches
+	var candidates []*GateArchetype
+	for i := range gateCatalog {
+		if gateCatalog[i].PreparePlugin == preparePlugin {
+			candidates = append(candidates, &gateCatalog[i])
+		}
+	}
+
+	switch len(candidates) {
+	case 1:
+		return candidates[0].Name
+	case 0:
+		// No prepare plugin match — fall back to gate plugin name
+		if arch := gateByName(gatePlugin); arch != nil {
+			return arch.Name
+		}
+		return gatePlugin
+	default:
+		// Multiple candidates — disambiguate by gate plugin
+		for _, c := range candidates {
+			gp := c.GatePluginName
+			if gp == "" {
+				gp = c.Name
+			}
+			if gp == gatePlugin {
+				return c.Name
+			}
+		}
+		return gatePlugin
+	}
 }
 
 // ---------------------------------------------------------------------------

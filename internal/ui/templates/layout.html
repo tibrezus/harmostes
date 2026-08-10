@@ -33,7 +33,7 @@
 				<svg class="ds-sidebar-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0a8 8 0 100 16A8 8 0 008 0zM7 14.93A6 6 0 011.07 9H4a4 4 0 003 3.87v2.06zM7 7H1.07A6 6 0 017 1.07V4a4 4 0 00-3 3h3v0zm2-5.93A6 6 0 0114.93 7H12a4 4 0 00-3-3.87V1.07zM9 9h5.93A6 6 0 019 14.93V12a4 4 0 003-3H9z"></path></svg>
 				Map
 			</a>
-			<a href="/flows" class="ds-sidebar-link {{if eq .PageKey "flows"}}ds-sidebar-link--active{{end}}">
+			<a href="/flows" class="ds-sidebar-link {{if eq .PageKey "flows"}}ds-sidebar-link--active{{end}}" title="Execution timelines — every run's phases">
 				<svg class="ds-sidebar-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M0 2h16v2H0V2zm0 5h16v2H0V7zm0 5h16v2H0v-2z"></path></svg>
 				Flows
 			</a>
@@ -42,7 +42,7 @@
 				Metrics
 			</a>
 			<div class="ds-sidebar-divider"></div>
-			<a href="/sessions" class="ds-sidebar-link {{if eq .PageKey "sessions"}}ds-sidebar-link--active{{end}}">
+			<a href="/sessions" class="ds-sidebar-link {{if eq .PageKey "sessions"}}ds-sidebar-link--active{{end}}" title="Agent conversation transcripts (messages, tool calls)">
 				<svg class="ds-sidebar-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M2 2h12v10H4l-2 2V2zm2 2v6h8V4H4z"></path></svg>
 				Sessions
 			</a>
@@ -59,7 +59,7 @@
 				<svg class="ds-sidebar-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M2 2h5v5H2V2zm7 0h5v5H9V2zM2 9h5v5H2V9zm7 0h5v5H9V9z"></path></svg>
 				Templates
 			</a>
-			<a href="/attempts" class="ds-sidebar-link {{if eq .PageKey "attempts"}}ds-sidebar-link--active{{end}}">
+			<a href="/attempts" class="ds-sidebar-link {{if eq .PageKey "attempts"}}ds-sidebar-link--active{{end}}" title="Agent execution history (iterative claim → run → feedback loop)">
 				<svg class="ds-sidebar-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0a8 8 0 100 16A8 8 0 008 0zm.5 3v5.3l3.5 2-.8 1.4L7 9V3h1.5z"></path></svg>
 				Attempts
 			</a>

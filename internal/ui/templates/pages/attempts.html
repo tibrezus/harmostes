@@ -1,5 +1,8 @@
 {{define "pages/attempts.html"}}
-{{- /* attempts.html — primary observability view (Attempt timeline). */ -}}
+{{- /* attempts.html — agent execution history (iterative loop). */ -}}
+<div class="view-description">
+	<strong>Attempts</strong> — Agent execution history: the iterative loop where the agent works toward the gate objective. Each attempt tracks the prepare output → agent work → gate validation cycle. Multiple attempts per run when <code>maxFixes &gt; 1</code>. Deterministic workflows have no attempts.
+</div>
 {{- $owner := .Owner -}}
 <div class="page-content">
 	<div class="ds-card-list">

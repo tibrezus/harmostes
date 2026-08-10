@@ -1075,6 +1075,8 @@ code, pre {
 	display: flex;
 	flex-direction: column;
 	font-family: var(--font-mono);
+	color-scheme: dark;
+	color: oklch(88% 0.004 270);
 }
 
 .ds-terminal-header {
@@ -1600,4 +1602,25 @@ code, pre {
 	font-size: 0.6875rem;
 	color: var(--fg-muted);
 	margin-left: auto;
+}
+
+/* ===== View descriptions (conceptual clarity) ===== */
+.view-description {
+	padding: 0.75rem 1rem;
+	border-bottom: 1px solid var(--border);
+	font-size: 0.8125rem;
+	color: var(--fg-muted);
+	line-height: 1.5;
+}
+
+.view-description strong {
+	color: var(--fg);
+	font-weight: 600;
+}
+
+.view-description code {
+	font-family: var(--font-mono);
+	font-size: 0.75rem;
+	background: var(--surface-2, transparent);
+	padding: 0.0625rem 0.25rem;
 }

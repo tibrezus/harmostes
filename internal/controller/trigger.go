@@ -4,12 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"time"
-
-	cloudevents "github.com/cloudevents/sdk-go/v2"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
-	"github.com/tibrezus/harmostes/internal/dapr"
 )
 
 // ---------------------------------------------------------------------------
@@ -40,9 +36,9 @@ type TriggerEvent struct {
 	AttemptName string `json:"attemptName,omitempty"`
 }
 
-// publishTrigger publishes a trigger CloudEvent to the Dapr pub/sub topic.
-// The topic defaults to "harmostes-triggers" but is configurable via
-// r.TriggerTopic.
+// publishTrigger publishes a trigger event to the Dapr pub/sub topic. The
+// raw TriggerEvent JSON is published; Dapr wraps it in a CloudEvent and
+// delivers it to the consumer. The topic defaults to "harmostes-triggers".
 //
 // This is best-effort: if the Dapr client is nil (Dapr disabled) or the
 // publish fails, the error is logged but does not block reconciliation.
@@ -57,13 +53,6 @@ func (r *WorkflowReconciler) publishTrigger(ctx context.Context, wf *v1alpha1.Wo
 		topic = "harmostes-triggers"
 	}
 
-	event := cloudevents.NewEvent()
-	event.SetType("harmostes.trigger")
-	event.SetSource("harmostes-controller")
-	event.SetSubject(wf.Name)
-	event.SetTime(time.Now())
-	event.SetID(fmt.Sprintf("%s-%d", wf.Name, time.Now().UnixNano()))
-
 	payload := TriggerEvent{
 		Workflow:    wf.Name,
 		Namespace:   wf.Namespace,
@@ -72,13 +61,9 @@ func (r *WorkflowReconciler) publishTrigger(ctx context.Context, wf *v1alpha1.Wo
 		Traceparent: traceparent,
 		AttemptName: attemptName,
 	}
-	if err := event.SetData(cloudevents.ApplicationJSON, payload); err != nil {
-		return fmt.Errorf("set cloud event data: %w", err)
-	}
-
-	b, err := json.Marshal(event)
+	b, err := json.Marshal(payload)
 	if err != nil {
-		return fmt.Errorf("marshal cloud event: %w", err)
+		return fmt.Errorf("marshal trigger event: %w", err)
 	}
 
 	if err := r.DaprClient.Publish(ctx, "pubsub", topic, string(b)); err != nil {
@@ -102,6 +87,3 @@ func triggerReason(wf *v1alpha1.Workflow) string {
 	}
 	return "schedule"
 }
-
-// Ensure dapr.Client is referenced (the reconciler struct uses it).
-var _ dapr.Client = (*dapr.HTTPClient)(nil)

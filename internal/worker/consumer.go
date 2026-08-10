@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
@@ -206,6 +207,29 @@ type TriggerEvent struct {
 	AttemptName string `json:"attemptName,omitempty"`
 }
 
+// buildChildEnv constructs the environment for the exec'd one-shot worker.
+// It scrubs HARMOSTES_CONSUMER_MODE so the child runs in one-shot mode
+// (not consumer mode), then appends the workflow-specific vars.
+func buildChildEnv(parentEnv []string, workflow, namespace, attemptName, traceparent string) []string {
+	childEnv := make([]string, 0, len(parentEnv)+4)
+	for _, e := range parentEnv {
+		if !strings.HasPrefix(e, "HARMOSTES_CONSUMER_MODE=") {
+			childEnv = append(childEnv, e)
+		}
+	}
+	childEnv = append(childEnv,
+		"HARMOSTES_WORKFLOW="+workflow,
+		"HARMOSTES_NAMESPACE="+namespace,
+	)
+	if attemptName != "" {
+		childEnv = append(childEnv, "HARMOSTES_ATTEMPT="+attemptName)
+	}
+	if traceparent != "" {
+		childEnv = append(childEnv, observability.TraceparentCarrierKey+"="+traceparent)
+	}
+	return childEnv
+}
+
 // RunConsumer is the entry point for consumer mode. Called from main when
 // HARMOSTES_CONSUMER_MODE is set. The RunFunc shells out to /proc/self/exe
 // in one-shot Job mode for each trigger event.
@@ -215,16 +239,7 @@ func RunConsumer(ctx context.Context) error {
 	// The RunFunc execs ourselves in one-shot mode.
 	runFunc := func(runCtx context.Context, workflow, namespace, attemptName, traceparent string) error {
 		cmd := exec.CommandContext(runCtx, "/proc/self/exe")
-		cmd.Env = append(os.Environ(),
-			"HARMOSTES_WORKFLOW="+workflow,
-			"HARMOSTES_NAMESPACE="+namespace,
-		)
-		if attemptName != "" {
-			cmd.Env = append(cmd.Env, "HARMOSTES_ATTEMPT="+attemptName)
-		}
-		if traceparent != "" {
-			cmd.Env = append(cmd.Env, observability.TraceparentCarrierKey+"="+traceparent)
-		}
+		cmd.Env = buildChildEnv(os.Environ(), workflow, namespace, attemptName, traceparent)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		return cmd.Run()

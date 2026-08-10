@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -173,5 +174,82 @@ func TestConsumerTriggerEvent_InvalidJSON(t *testing.T) {
 
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", rr.Code)
+	}
+}
+
+func TestBuildChildEnv_ScrubsConsumerMode(t *testing.T) {
+	parent := []string{
+		"PATH=/usr/bin",
+		"HARMOSTES_CONSUMER_MODE=true",
+		"HOME=/root",
+	}
+	env := buildChildEnv(parent, "wiki-lint-harmostes", "harmostes", "attempt-1", "00-trace")
+
+	// HARMOSTES_CONSUMER_MODE must NOT be present
+	for _, e := range env {
+		if strings.HasPrefix(e, "HARMOSTES_CONSUMER_MODE=") {
+			t.Errorf("HARMOSTES_CONSUMER_MODE leaked into child env: %s", e)
+		}
+	}
+
+	// Workflow vars must be present
+	mustContain := map[string]bool{
+		"HARMOSTES_WORKFLOW=wiki-lint-harmostes": false,
+		"HARMOSTES_NAMESPACE=harmostes":          false,
+		"HARMOSTES_ATTEMPT=attempt-1":            false,
+		"HARMOSTES_TRACEPARENT=00-trace":         false,
+		"PATH=/usr/bin":                          false,
+		"HOME=/root":                             false,
+	}
+	for _, e := range env {
+		if _, ok := mustContain[e]; ok {
+			mustContain[e] = true
+		}
+	}
+	for k, found := range mustContain {
+		if !found {
+			t.Errorf("missing expected env var: %s", k)
+		}
+	}
+}
+
+func TestBuildChildEnv_OmitsEmptyOptional(t *testing.T) {
+	env := buildChildEnv([]string{"PATH=/usr/bin"}, "wf", "ns", "", "")
+
+	for _, e := range env {
+		if strings.HasPrefix(e, "HARMOSTES_ATTEMPT=") {
+			t.Errorf("HARMOSTES_ATTEMPT should be omitted when empty, got: %s", e)
+		}
+		if strings.HasPrefix(e, "TRACEPARENT=") {
+			t.Errorf("TRACEPARENT should be omitted when empty, got: %s", e)
+		}
+	}
+}
+
+func TestConsumerTriggerEvent_EmptyWorkflow(t *testing.T) {
+	// Dapr delivers a CloudEvent whose data is the raw TriggerEvent JSON.
+	// If the workflow field is empty, the consumer should return 500 (not
+	// crash) so Dapr can retry.
+	var capturedWorkflow string
+	consumer := NewConsumer(ConsumerConfig{
+		RunFunc: func(_ context.Context, workflow, _, _, _ string) error {
+			capturedWorkflow = workflow
+			return fmt.Errorf("simulated failure")
+		},
+	})
+
+	// Dapr-generated CloudEvent with empty workflow. Source must be a valid URI.
+	cloudEvent := `{"specversion":"1.0","id":"test","type":"com.dapr.event.sent","source":"harmostes-controller","data":{"workflow":"","namespace":"harmostes","triggerType":"schedule"}}`
+
+	req := httptest.NewRequest(http.MethodPost, "/triggers", strings.NewReader(cloudEvent))
+	req.Body = http.MaxBytesReader(nil, req.Body, 1<<20)
+	rr := httptest.NewRecorder()
+	consumer.handleTrigger(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", rr.Code)
+	}
+	if capturedWorkflow != "" {
+		t.Errorf("workflow = %q, want empty", capturedWorkflow)
 	}
 }

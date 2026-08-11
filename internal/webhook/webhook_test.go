@@ -28,7 +28,7 @@ func newTestHandler(objs ...client.Object) *Handler {
 		WithScheme(k8s.Scheme()).
 		WithObjects(objs...).
 		Build()
-	return NewHandler(cl, ctrl.Log.WithName("test-webhook"))
+	return NewHandler(cl, "test-ns", ctrl.Log.WithName("test-webhook"))
 }
 
 // githubPushBody returns a minimal GitHub-style push payload.

@@ -115,7 +115,7 @@ func main() {
 
 		// Create webhook mux
 		webhookMux := http.NewServeMux()
-		webhookHandler := webhook.NewHandler(webhookClient, ctrl.Log.WithName("webhook"))
+		webhookHandler := webhook.NewHandler(webhookClient, namespace, ctrl.Log.WithName("webhook"))
 
 		// Register routes: /webhook/{workflow-name}
 		webhookMux.HandleFunc("/webhook/", func(w http.ResponseWriter, req *http.Request) {

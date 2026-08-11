@@ -1,10 +1,10 @@
 /bin/
 *.test
 vendor/
-harmostes-controller
-harmostes-ui
+/harmostes-controller
+/harmostes-ui
 web/node_modules/
 web/dist/
 internal/ui/static/spa/assets/
 web/tsconfig.tsbuildinfo
-harmostes-worker
+/harmostes-worker

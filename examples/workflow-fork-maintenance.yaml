@@ -1,20 +1,28 @@
 # fork-maintenance — upstream sync as a harmostes Workflow.
 #
-# This is a WORKING example showing the actual fork-maintenance model after
-# the migration from the legacy CronJob system into harmostes. The fork-sync
-# plugin (a wrapper around sync-fork.sh) runs entirely in the prepare phase.
-# It merges the upstream release branch into the fork's release branch,
-# validates (build, divergence tracking, patch signatures), pushes, opens a
-# PR, and auto-merges. If a conflict is detected, it POSTs an event to the
-# conflict-resolver Deployment which uses an LLM agent to resolve it.
+# This is a WORKING example showing the actual fork-maintenance model.
+# The fork-sync plugin (a wrapper around sync-fork.sh) runs entirely in
+# the prepare phase. It merges the upstream mirror branch into the fork's
+# release branch, validates (build, divergence tracking, patch signatures),
+# pushes, opens a PR, and auto-merges. If a conflict is detected, it POSTs
+# an event to the conflict-resolver Deployment which uses an LLM agent
+# to resolve it.
+#
+# TRIGGER MODEL: event-driven via GitHub push webhook.
+#   - A GitHub Action (upstream-mirror.yml) on the fork repo mirrors ALL
+#     upstream release branches every 6h.
+#   - When a mirror branch moves → GitHub push webhook → harmostes triggers.
+#   - When upstream is static → no push → harmostes sleeps (zero polling).
+#   - The source.branch field controls which release line is actively synced.
+#     Upgrading to v17.0 = changing this field. The Action auto-discovers
+#     new versions.
+#
+# Full documentation: https://github.com/tibrezus/harmostes/wiki/Fork-Maintenance
 #
 # The plugin lives in a ConfigMap (fork-maintenance-plugins) and is mounted
 # at /plugins/fork-maintenance-plugins/fork-sync.sh by the worker-pool
-# Deployment (chart value: forkMaintenance.enabled: true).
-#
-# The scripts (sync-fork.sh, divergence-track.sh, validate-fork.sh, etc.)
-# are mounted from ConfigMaps at /workspace/{scripts,checks,forks,
-# post-merge-hooks}. See k8s-config: platform/harmostes/fork-maintenance/.
+# Deployment. The scripts (sync-fork.sh, divergence-track.sh, etc.) are in
+# k8s-config: platform/harmostes/fork-maintenance/.
 ---
 apiVersion: harmostes.dev/v1alpha1
 kind: Workflow
@@ -24,11 +32,16 @@ metadata:
   labels:
     harmostes.dev/owner: tibrez
 spec:
+  # Event-driven: triggered by GitHub push webhook when the upstream-mirror
+  # Action pushes new commits to the v16.0/forgejo mirror branch.
   source:
-    kind: git
-    repo: fork-maintenance-forgejo
+    kind: webhook
+    webhook:
+      url: https://github.com/rezuscloud/forgejo
+      secretRef:
+        name: webhook-secrets
+        key: forgejo-upstream
     branch: v16.0/forgejo
-    language: go
 
   # The fork-sync plugin does everything in the prepare phase: it runs
   # sync-fork.sh which merges, validates, pushes, PRs, and auto-merges.
@@ -38,7 +51,6 @@ spec:
       name: fork-sync
       configMap: fork-maintenance-plugins
       args: ["forgejo"]
-    detect: changed
 
   # Agent disabled — fork-maintenance is deterministic. When sync-fork.sh
   # detects a conflict, it emits a fork.conflict.needs-resolution event to
@@ -57,7 +69,3 @@ spec:
   deploy:
     plugin:
       name: noop
-
-  scaling:
-    kind: keda-scaledjob
-    schedule: "*/30 * * * *"

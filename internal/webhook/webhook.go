@@ -29,14 +29,17 @@ const (
 // Handler is an HTTP handler for git push events.
 type Handler struct {
 	client.Client
-	log logr.Logger
+	log       logr.Logger
+	namespace string
 }
 
-// NewHandler creates a new webhook handler.
-func NewHandler(k8sClient client.Client, logger logr.Logger) *Handler {
+// NewHandler creates a new webhook handler. The namespace is used as the
+// default when the request does not include a ?namespace= query parameter.
+func NewHandler(k8sClient client.Client, namespace string, logger logr.Logger) *Handler {
 	return &Handler{
-		Client: k8sClient,
-		log:    logger,
+		Client:    k8sClient,
+		log:       logger,
+		namespace: namespace,
 	}
 }
 
@@ -70,8 +73,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request, workflowNa
 	defer req.Body.Close()
 
 	// Fetch the workflow
+	namespace := req.URL.Query().Get("namespace")
+	if namespace == "" {
+		namespace = h.namespace
+	}
 	var wf v1alpha1.Workflow
-	if err := h.Get(req.Context(), types.NamespacedName{Namespace: req.URL.Query().Get("namespace"), Name: workflowName}, &wf); err != nil {
+	if err := h.Get(req.Context(), types.NamespacedName{Namespace: namespace, Name: workflowName}, &wf); err != nil {
 		h.log.Error(err, "workflow not found", "workflow", workflowName)
 		http.Error(w, "workflow not found", http.StatusNotFound)
 		return
@@ -84,7 +91,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request, workflowNa
 		if wf.Spec.Source.Webhook.SecretRef != nil {
 			var secret corev1.Secret
 			if err := h.Get(req.Context(), types.NamespacedName{
-				Namespace: req.URL.Query().Get("namespace"),
+				Namespace: namespace,
 				Name:      wf.Spec.Source.Webhook.SecretRef.Name,
 			}, &secret); err != nil {
 				h.log.Error(err, "failed to read webhook secret", "secret", wf.Spec.Source.Webhook.SecretRef.Name)

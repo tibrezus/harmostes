@@ -121,14 +121,20 @@ func (r *WorkflowReconciler) isDue(wf *v1alpha1.Workflow) (bool, time.Duration) 
 		if triggerRev != wf.Status.LastProcessedRevision {
 			return true, 0 // Trigger immediately
 		}
-		// Re-queue after short interval (webhook may arrive before annotation is processed)
-		return false, 10 * time.Second
 	}
 
 	// Spec changed
 	if wf.Status.ObservedGeneration != wf.Generation {
 		return true, r.PollInterval
 	}
+
+	// Webhook-only workflows do not trigger on schedule — they wait for
+	// push events. Without this guard, isDue falls through to the schedule
+	// path and fires every PollInterval, defeating the event-driven model.
+	if wf.Spec.Source.Kind == "webhook" {
+		return false, r.PollInterval
+	}
+
 	// Schedule elapsed
 	if !wf.Status.LastRunAt.IsZero() {
 		elapsed := time.Since(wf.Status.LastRunAt.Time)

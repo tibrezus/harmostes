@@ -126,9 +126,20 @@ func TestIsDue_WebhookTrigger(t *testing.T) {
 	wf2 := &v1alpha1.Workflow{}
 	wf2.Annotations = map[string]string{"harmostes.dev/trigger-revision": "abc123"}
 	wf2.Status.LastProcessedRevision = "abc123"
+	wf2.Spec.Source.Kind = "webhook"
 	due, _ = r.isDue(wf2)
 	if due {
 		t.Error("expected due=false for webhook with same revision")
+	}
+
+	// Webhook-only workflow with no trigger-revision → not due (waits for webhook)
+	wf4 := &v1alpha1.Workflow{}
+	wf4.Spec.Source.Kind = "webhook"
+	wf4.Status.ObservedGeneration = 1
+	wf4.Generation = 1
+	due, _ = r.isDue(wf4)
+	if due {
+		t.Error("expected due=false for webhook-only workflow without trigger-revision")
 	}
 
 	// No webhook, spec changed → due

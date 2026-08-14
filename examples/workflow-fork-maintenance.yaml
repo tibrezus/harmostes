@@ -1,28 +1,31 @@
-# fork-maintenance — upstream sync as a harmostes Workflow.
+# fork-maintenance — upstream sync as a GRAPH-NATIVE harmostes Workflow.
 #
-# This is a WORKING example showing the actual fork-maintenance model.
-# The fork-sync plugin (a wrapper around sync-fork.sh) runs entirely in
-# the prepare phase. It merges the upstream mirror branch into the fork's
-# release branch, validates (build, divergence tracking, patch signatures),
-# pushes, opens a PR, and auto-merges. If a conflict is detected, it POSTs
-# an event to the conflict-resolver Deployment which uses an LLM agent
-# to resolve it.
+# The sync engine's phases are REAL nodes (one plugin invocation each), and the
+# out-of-band systems are declared as external (display-only) topology. The Map
+# renders the whole story; the executor runs the real nodes:
 #
-# TRIGGER MODEL: event-driven via GitHub push webhook.
-#   - A GitHub Action (upstream-mirror.yml) on the fork repo mirrors ALL
-#     upstream release branches every 6h.
-#   - When a mirror branch moves → GitHub push webhook → harmostes triggers.
-#   - When upstream is static → no push → harmostes sleeps (zero polling).
-#   - The source.branch field controls which release line is actively synced.
-#     Upgrading to v17.0 = changing this field. The Action auto-discovers
-#     new versions.
+#   upstream → mirror (webhook) → merge ─┬─ changed → hook → gates →
+#                                        │   validate → pr ─ changed → tag
+#                                        │                      ↓
+#                                        │                 release pipeline
+#                                        └─ failed → conflict resolver (pi agent, async)
+#
+# Node semantics:
+#   merge    changed:false → node skipped → run completes (no-op; static upstream)
+#            conflict (exit 2) → when:failed → resolver (external) → green terminal
+#   gates    red → needs-fix PR pushed, then an honest failed node
+#   pr       changed:false (PR left for review) → tag/release skipped
+#   tag      machine-cuts v<upstream>-rezus.<N+1> → release pipeline builds
+#
+# TRIGGER: GitHub push webhook. A GitHub Action (upstream-mirror.yml) on the
+# fork mirrors all upstream release branches every 6h; harmostes only wakes
+# when the mirror actually moves. source.branch selects the release line
+# (upgrading to a new major = changing that field; the Action auto-discovers).
 #
 # Full documentation: https://github.com/tibrezus/harmostes/wiki/Fork-Maintenance
 #
-# The plugin lives in a ConfigMap (fork-maintenance-plugins) and is mounted
-# at /plugins/fork-maintenance-plugins/fork-sync.sh by the worker-pool
-# Deployment. The scripts (sync-fork.sh, divergence-track.sh, etc.) are in
-# k8s-config: platform/harmostes/fork-maintenance/.
+# The fork-sync plugin (ConfigMap fork-maintenance-plugins) and the sync
+# engine scripts live in k8s-config: platform/harmostes/fork-maintenance/.
 ---
 apiVersion: harmostes.dev/v1alpha1
 kind: Workflow
@@ -32,8 +35,6 @@ metadata:
   labels:
     harmostes.dev/owner: tibrez
 spec:
-  # Event-driven: triggered by GitHub push webhook when the upstream-mirror
-  # Action pushes new commits to the v16.0/forgejo mirror branch.
   source:
     kind: webhook
     webhook:
@@ -42,30 +43,55 @@ spec:
         name: webhook-secrets
         key: forgejo-upstream
     branch: v16.0/forgejo
-
-  # The fork-sync plugin does everything in the prepare phase: it runs
-  # sync-fork.sh which merges, validates, pushes, PRs, and auto-merges.
-  # The fork name is passed as the first argument.
-  prepare:
-    plugin:
-      name: fork-sync
-      configMap: fork-maintenance-plugins
-      args: ["forgejo"]
-
-  # Agent disabled — fork-maintenance is deterministic. When sync-fork.sh
-  # detects a conflict, it emits a fork.conflict.needs-resolution event to
-  # the conflict-resolver (a separate always-on Deployment), which runs
-  # resolve-conflict.sh with pi + the fork-maintenance skill. This happens
-  # OUTSIDE the workflow lifecycle.
-  agent:
-    enabled: false
-    model: none
-    taskTemplate:
-      name: none
-    gate:
-      plugin:
-        name: noop
-
-  deploy:
-    plugin:
-      name: noop
+  graph:
+    nodes:
+      - id: upstream
+        type: external
+        label: Upstream
+        config: { component: upstream, description: forgejo upstream project }
+      - id: mirror
+        type: external
+        label: Mirror action
+        config: { component: mirror-action, description: upstream-mirror.yml keeps the mirror branch current, trigger: every 6h → push webhook }
+      - id: merge
+        type: plugin
+        label: Merge upstream
+        config: { name: fork-sync, configMap: fork-maintenance-plugins, args: [forgejo, merge] }
+      - id: hook
+        type: plugin
+        label: Post-merge hook
+        config: { name: fork-sync, configMap: fork-maintenance-plugins, args: [forgejo, hook] }
+      - id: gates
+        type: plugin
+        label: Divergence + patches
+        config: { name: fork-sync, configMap: fork-maintenance-plugins, args: [forgejo, gates] }
+      - id: validate
+        type: plugin
+        label: Validation
+        config: { name: fork-sync, configMap: fork-maintenance-plugins, args: [forgejo, validate] }
+      - id: pr
+        type: plugin
+        label: PR + auto-merge
+        config: { name: fork-sync, configMap: fork-maintenance-plugins, args: [forgejo, pr] }
+      - id: tag
+        type: plugin
+        label: Release tag
+        config: { name: fork-sync, configMap: fork-maintenance-plugins, args: [forgejo, tag] }
+      - id: resolver
+        type: external
+        label: Conflict resolver
+        config: { component: agent, description: pi agent resolves 3-way conflict regions asynchronously, gates as proof, trigger: fork.conflict.needs-resolution event }
+      - id: release
+        type: external
+        label: Release pipeline
+        config: { component: release-pipeline, description: builds images/CLI/chart from the machine-cut tag, trigger: v*-rezus.N tag }
+    edges:
+      - { from: upstream, to: mirror }
+      - { from: mirror, to: merge }
+      - { from: merge, to: hook, when: changed }
+      - { from: merge, to: resolver, when: failed }
+      - { from: hook, to: gates }
+      - { from: gates, to: validate }
+      - { from: validate, to: pr }
+      - { from: pr, to: tag, when: changed }
+      - { from: tag, to: release }

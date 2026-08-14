@@ -45,6 +45,7 @@
 			'flux-reconcile': 'FLUX',
 			'http-call': 'HTTP',
 			'human-gate': 'HUMAN',
+			external: 'EXTERNAL',
 		};
 		return labels[type] || type.toUpperCase();
 	}
@@ -55,13 +56,20 @@
 		var elements = [];
 		var nodeStatuses = (graphData.nodeStatuses || {});
 		(graphData.graph.nodes || []).forEach(function (n) {
+			var cfg = {};
+			if (n.type === 'external' && n.config) {
+				try { cfg = typeof n.config === 'string' ? JSON.parse(n.config) : n.config; } catch (e) { cfg = {}; }
+			}
 			elements.push({
 				group: 'nodes',
 				data: {
 					id: n.id,
 					label: n.label || n.id,
 					nodeType: n.type,
-					status: nodeStatuses[n.id] || 'pending',
+					status: nodeStatuses[n.id] || (n.type === 'external' ? 'external' : 'pending'),
+					description: cfg.description || '',
+					trigger: cfg.trigger || '',
+					component: cfg.component || '',
 				},
 			});
 		});
@@ -132,6 +140,21 @@
 						'animation': 'pulse-border 2s linear infinite',
 					},
 				},
+				// External (display-only) nodes: out-of-band systems — dashed
+				// outline, transparent fill, muted italic label. They never
+				// execute; the map renders them as conceptual topology.
+				{
+					selector: 'node[nodeType = "external"]',
+					style: {
+						'border-style': 'dashed',
+						'border-width': 1.5,
+						'background-color': isDark() ? 'rgba(0,0,0,0.25)' : 'rgba(255,255,255,0.55)',
+						'color': isDark() ? token('--color-next-light') : token('--color-ink-muted'),
+						'font-style': 'italic',
+						'shape': 'round-rectangle',
+						'border-color': isDark() ? token('--color-next-light') : token('--color-rule'),
+					},
+				},
 			],
 			layout: {
 				name: 'breadthfirst',
@@ -156,8 +179,10 @@
 					'</div>' +
 					'<div class="map-details-body">' +
 					'<p><span class="detail-label">Type</span> <span class="detail-value">' + typeLabel(data.nodeType) + '</span></p>' +
-					'<p><span class="detail-label">Status</span> <span class="detail-value">' + (data.status || 'pending') + '</span></p>' +
+					'<p><span class="detail-label">Status</span> <span class="detail-value">' + (data.nodeType === 'external' ? 'out-of-band' : (data.status || 'pending')) + '</span></p>' +
 					'<p><span class="detail-label">Node ID</span> <span class="detail-value">' + data.id + '</span></p>' +
+					(data.description ? '<p><span class="detail-label">Role</span> <span class="detail-value">' + data.description + '</span></p>' : '') +
+					(data.trigger ? '<p><span class="detail-label">Triggered by</span> <span class="detail-value">' + data.trigger + '</span></p>' : '') +
 					'</div>';
 				detailsPanel.classList.add('map-details--open');
 			}

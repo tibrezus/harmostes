@@ -75,6 +75,25 @@ type FluxReconcileConfig struct {
 	Timeout   string `json:"timeout"`   // e.g. "600s" (default: "300s")
 }
 
+// ExternalNodeConfig configures an "external" node — a system that
+// participates in the workflow OUTSIDE the kernel. External nodes are never
+// executed: the map renders them as part of the conceptual topology, and
+// edges to/from them describe out-of-band routing (e.g. a failed merge →
+// async conflict-resolver agent; a release tag → CI pipeline). Use them to
+// make the workflow graph tell the WHOLE story, not just the kernel's part.
+type ExternalNodeConfig struct {
+	// Component classifies the external system for rendering:
+	// upstream | mirror-action | agent | release-pipeline | git-host | other
+	Component string `json:"component"`
+
+	// Description is a human-readable explanation shown on the map.
+	Description string `json:"description,omitempty"`
+
+	// Trigger describes how the external system is activated (display-only).
+	// e.g. "fork.conflict.needs-resolution event" or "v*-rezus.N tag".
+	Trigger string `json:"trigger,omitempty"`
+}
+
 // parseConfig unmarshals a node's raw JSON config into the target type.
 func parseConfig[T any](raw json.RawMessage) (T, error) {
 	var cfg T

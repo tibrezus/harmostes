@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -139,20 +140,47 @@ func TestHandleWorkflowCreate_GateForkMaintenance(t *testing.T) {
 	var wf v1alpha1.Workflow
 	_ = s.k8sClient.Get(req.Context(), types.NamespacedName{Namespace: "harmostes", Name: "custom-wf"}, &wf)
 
-	if wf.Spec.Prepare.Plugin.Name != "fork-sync" {
-		t.Errorf("prepare = %q, want fork-sync", wf.Spec.Prepare.Plugin.Name)
+	// fork-maintenance is a graph-native gate: creation builds spec.graph
+	// (the sync engine's phases as real nodes + external display-only
+	// components), not the declarative prepare/agent/deploy form.
+	if wf.Spec.Graph == nil {
+		t.Fatalf("spec.graph = nil, want graph-native for fork-maintenance gate")
 	}
-	if wf.Spec.Prepare.Plugin.ConfigMap != "fork-maintenance-plugins" {
-		t.Errorf("prepare configMap = %q, want fork-maintenance-plugins", wf.Spec.Prepare.Plugin.ConfigMap)
+	nodeIDs := map[string]bool{}
+	for _, n := range wf.Spec.Graph.Nodes {
+		nodeIDs[n.ID] = true
 	}
-	if wf.Spec.Agent.Gate.Plugin.Name != "noop" {
-		t.Errorf("gate = %q, want noop", wf.Spec.Agent.Gate.Plugin.Name)
+	for _, want := range []string{"merge", "hook", "gates", "validate", "pr", "tag", "upstream", "mirror", "resolver", "release"} {
+		if !nodeIDs[want] {
+			t.Errorf("graph node %q missing (nodes: %v)", want, nodeIDs)
+		}
 	}
-	if wf.Spec.Deploy.Plugin.Name != "noop" {
-		t.Errorf("deploy = %q, want noop", wf.Spec.Deploy.Plugin.Name)
+	// The merge node carries the fork-sync plugin with the {{fork}}
+	// placeholder substituted (name "custom-wf" has no fork-maintenance-
+	// prefix, so the fork name is the workflow name itself).
+	var mergeCfg struct {
+		Name string   `json:"name"`
+		Args []string `json:"args"`
 	}
-	if wf.Spec.Agent.Model != "litellm/zai/glm-4.7" {
-		t.Errorf("model = %q, want glm-4.7", wf.Spec.Agent.Model)
+	for _, n := range wf.Spec.Graph.Nodes {
+		if n.ID == "merge" {
+			if err := json.Unmarshal(n.Config, &mergeCfg); err != nil {
+				t.Fatalf("merge config: %v", err)
+			}
+		}
+	}
+	if mergeCfg.Name != "fork-sync" {
+		t.Errorf("merge plugin = %q, want fork-sync", mergeCfg.Name)
+	}
+	if len(mergeCfg.Args) != 2 || mergeCfg.Args[0] != "custom-wf" || mergeCfg.Args[1] != "merge" {
+		t.Errorf("merge args = %v, want [custom-wf merge] ({{fork}} substituted)", mergeCfg.Args)
+	}
+	// Workspace + bindings still flow from the form.
+	if wf.Spec.WorkspaceRepo == nil || wf.Spec.WorkspaceRepo.URL != "git@github.com:rezuscloud/repo.git" {
+		t.Errorf("workspaceRepo = %+v, want form repo URL", wf.Spec.WorkspaceRepo)
+	}
+	if len(wf.Spec.Bindings) == 0 {
+		t.Errorf("bindings empty, want workspaceRepo binding from the gate template")
 	}
 }
 

@@ -259,20 +259,20 @@ func (e *GraphExecutor) Execute(ctx context.Context, graph v1alpha1.GraphSpec, p
 	}
 	for _, edge := range graph.Edges {
 		outEdges[edge.From] = append(outEdges[edge.From], edge)
-		// Edges with maxRetries > 0 are loop-backs (documented in the CRD).
-		// They don't count towards inDegree: the target is an entry point that
-		// is reached via a non-loop-back edge first, then re-reached via the
-		// loop-back. Without this, a gate-feedback graph (agent→gate→agent)
-		// would have no entry nodes.
-		if edge.MaxRetries == 0 {
+		// Edges FROM an external node are display-only (external nodes never
+		// execute, so these edges never traverse). They must not suppress the
+		// target's entry-node status — otherwise a real node whose only incoming
+		// edge comes from an external node (e.g. mirror→merge) would never run.
+		if edge.MaxRetries == 0 && !isExternalNode(nodeMap, edge.From) {
 			inDegree[edge.To]++
 		}
 	}
 
-	// Entry nodes: no incoming edges.
+	// Entry nodes: no incoming edges. External nodes are never entries — they
+	// are display-only topology (the map renders them; the executor ignores them).
 	var queue []string
 	for _, n := range graph.Nodes {
-		if inDegree[n.ID] == 0 {
+		if inDegree[n.ID] == 0 && n.Type != NodeTypeExternal {
 			queue = append(queue, n.ID)
 		}
 	}
@@ -355,7 +355,7 @@ func (e *GraphExecutor) Execute(ctx context.Context, graph v1alpha1.GraphSpec, p
 			handled := false
 			for _, edge := range outEdges[nodeID] {
 				if e.shouldTraverse(edge, denied, result.NodeResults) {
-					if e.enqueueEdge(&queue, edge, edgeCount) {
+					if e.enqueueEdge(&queue, edge, edgeCount, nodeMap) {
 						handled = true
 					}
 				}
@@ -471,7 +471,7 @@ func (e *GraphExecutor) Execute(ctx context.Context, graph v1alpha1.GraphSpec, p
 			handled := false
 			for _, edge := range outEdges[nodeID] {
 				if e.shouldTraverse(edge, nodeResult, result.NodeResults) {
-					if e.enqueueEdge(&queue, edge, edgeCount) {
+					if e.enqueueEdge(&queue, edge, edgeCount, nodeMap) {
 						handled = true
 					}
 				}
@@ -502,7 +502,7 @@ func (e *GraphExecutor) Execute(ctx context.Context, graph v1alpha1.GraphSpec, p
 		// Node succeeded: traverse outgoing edges.
 		for _, edge := range outEdges[nodeID] {
 			if e.shouldTraverse(edge, nodeResult, result.NodeResults) {
-				e.enqueueEdge(&queue, edge, edgeCount)
+				e.enqueueEdge(&queue, edge, edgeCount, nodeMap)
 			}
 		}
 	}
@@ -519,7 +519,16 @@ func (e *GraphExecutor) Execute(ctx context.Context, graph v1alpha1.GraphSpec, p
 
 // enqueueEdge adds the edge's target to the queue, enforcing maxRetries. Returns
 // false (and sets the pipeline to failed) if maxRetries is exceeded.
-func (e *GraphExecutor) enqueueEdge(queue *[]string, edge v1alpha1.EdgeSpec, edgeCount map[string]int) bool {
+//
+// Edges targeting an EXTERNAL node are display-only: the target is never
+// enqueued, but the traversal counts as handled — a failed node routed to an
+// external system (e.g. merge conflict → async conflict-resolver) is a
+// legitimate terminal state, delegated out-of-band, not a pipeline failure.
+func (e *GraphExecutor) enqueueEdge(queue *[]string, edge v1alpha1.EdgeSpec, edgeCount map[string]int, nodeMap map[string]v1alpha1.NodeSpec) bool {
+	if isExternalNode(nodeMap, edge.To) {
+		e.log("edge %s→%s: external target — display-only, not executed", edge.From, edge.To)
+		return true
+	}
 	key := edge.From + "→" + edge.To
 	edgeCount[key]++
 
@@ -529,6 +538,17 @@ func (e *GraphExecutor) enqueueEdge(queue *[]string, edge v1alpha1.EdgeSpec, edg
 	}
 	*queue = append(*queue, edge.To)
 	return true
+}
+
+// NodeTypeExternal is the display-only node type for out-of-band systems.
+// External nodes never execute; the map renders them as conceptual topology.
+const NodeTypeExternal = "external"
+
+// isExternalNode reports whether the node referenced by id is an external
+// (display-only) node. Unknown ids are not external.
+func isExternalNode(nodeMap map[string]v1alpha1.NodeSpec, id string) bool {
+	n, ok := nodeMap[id]
+	return ok && n.Type == NodeTypeExternal
 }
 
 // shouldTraverse evaluates an edge condition against the source node's result.

@@ -26,8 +26,19 @@ type NodeSpec struct {
 
 	// Type is the node type (determines the executor):
 	// plugin | agent | gate | branch | dapr-state-get | dapr-state-set |
-	// dapr-publish | vela-app | flux-reconcile | http-call | human-gate
+	// dapr-publish | vela-app | flux-reconcile | http-call | human-gate |
+	// external
+	//
+	// "external" nodes are NEVER executed: they declare out-of-band systems
+	// that participate in the workflow outside the kernel (async agents,
+	// CI pipelines, the upstream itself). The map renders them (conceptual
+	// topology); edges to/from them are display-only routing annotations.
 	Type string `json:"type"`
+
+	// Label is an optional human-readable display label for the map/canvas.
+	// Falls back to ID when empty.
+	//+optional
+	Label string `json:"label,omitempty"`
 
 	// Config is type-specific node configuration (raw JSON).
 	// Validated by the node type's executor before execution.

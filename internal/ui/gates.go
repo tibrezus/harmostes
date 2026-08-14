@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/url"
 	"sort"
@@ -76,6 +77,22 @@ type GateArchetype struct {
 	// TargetFromPrepareRepos is true when the workflow target repo is found in
 	// the prepare plugin's config.repos[] array.
 	TargetFromPrepareRepos bool `json:"targetFromPrepareRepos,omitempty"`
+
+	// GraphTemplate is an optional graph-native workflow shape. When present,
+	// workflow creation builds spec.graph from it instead of the declarative
+	// prepare/agent/deploy form — the canvas then shows (and the executor runs)
+	// the full node-by-node topology, including external (display-only)
+	// components. The placeholder "{{fork}}" in node args is replaced with the
+	// fork name derived from the workflow name (fork-maintenance-<fork>).
+	GraphTemplate *GraphTemplateSpec `json:"graphTemplate,omitempty"`
+}
+
+// GraphTemplateSpec is a graph-native workflow shape carried by a gate
+// archetype. Mirrors v1alpha1.GraphSpec but as a plain struct so the catalog
+// stays decoupled from the API types' JSON marshalling details.
+type GraphTemplateSpec struct {
+	Nodes []v1alpha1.NodeSpec `json:"nodes"`
+	Edges []v1alpha1.EdgeSpec `json:"edges,omitempty"`
 }
 
 // BindingTemplate is a declarative External System Binding that a gate
@@ -151,6 +168,10 @@ var gateCatalog = []GateArchetype{
 			{Name: "workspaceRepo", BindingRole: v1alpha1.BindingRoleWorkspaceRepo, SurfaceKind: v1alpha1.SurfaceKindRepository,
 				Granted: []string{"repository.read", "repository.push"}},
 		},
+		// Graph-native shape: the sync engine's phases as real nodes, plus the
+		// out-of-band systems as external (display-only) topology. This is what
+		// the Map renders and the graph executor runs.
+		GraphTemplate: forkMaintenanceGraph(),
 	},
 	{
 		Name:          "noop",
@@ -308,4 +329,85 @@ func (s *Server) handleGateAPIList(w http.ResponseWriter, r *http.Request) {
 		return gates[i].Label < gates[j].Label
 	})
 	s.writeJSON(w, http.StatusOK, map[string]any{"gates": gates})
+}
+
+// forkMaintenanceGraph builds the graph-native shape for fork-maintenance
+// workflows: the sync engine's phases as real plugin nodes, plus the
+// out-of-band systems as external (display-only) nodes. "{{fork}}" is the
+// placeholder for the fork name, substituted at workflow creation time.
+//
+// Execution semantics (graph executor):
+//   - merge exits 0 changed:false  → node skipped   → pipeline completes (no-op)
+//   - merge exits 0 changed:true   → when:changed   → hook → gates → validate → pr
+//   - merge exits non-zero (conflict) → when:failed → resolver (external,
+//     display-only: counts as handled; the run completes green with an honest
+//     failed envelope on the merge node)
+//   - pr outputs changed:false (PR left for review) → tag/release skipped
+func forkMaintenanceGraph() *GraphTemplateSpec {
+	ext := func(id, label, component, description, trigger string) v1alpha1.NodeSpec {
+		cfg, _ := json.Marshal(map[string]string{
+			"component":   component,
+			"description": description,
+			"trigger":     trigger,
+		})
+		return v1alpha1.NodeSpec{ID: id, Type: "external", Label: label, Config: cfg}
+	}
+	phase := func(id, label, phase string) v1alpha1.NodeSpec {
+		cfg, _ := json.Marshal(map[string]any{
+			"name":      "fork-sync",
+			"configMap": "fork-maintenance-plugins",
+			"args":      []string{"{{fork}}", phase},
+		})
+		return v1alpha1.NodeSpec{ID: id, Type: "plugin", Label: label, Config: cfg}
+	}
+	return &GraphTemplateSpec{
+		Nodes: []v1alpha1.NodeSpec{
+			ext("upstream", "Upstream", "upstream",
+				"Upstream project (release branch)", ""),
+			ext("mirror", "Mirror", "mirror-action",
+				"upstream-mirror action keeps the mirror branch current",
+				"every 6h → push webhook"),
+			phase("merge", "Merge upstream", "merge"),
+			phase("hook", "Post-merge hook", "hook"),
+			phase("gates", "Divergence + patches", "gates"),
+			phase("validate", "Validation", "validate"),
+			phase("pr", "PR + auto-merge", "pr"),
+			phase("tag", "Release tag", "tag"),
+			ext("resolver", "Conflict resolver", "agent",
+				"pi agent resolves 3-way conflict regions asynchronously",
+				"fork.conflict.needs-resolution event"),
+			ext("release", "Release pipeline", "release-pipeline",
+				"builds images/CLI/chart from the machine-cut tag",
+				"v*-rezus.N tag"),
+		},
+		Edges: []v1alpha1.EdgeSpec{
+			{From: "upstream", To: "mirror"},
+			{From: "mirror", To: "merge"}, // display: webhook trigger
+			{From: "merge", To: "hook", When: "changed"},
+			{From: "merge", To: "resolver", When: "failed"},
+			{From: "hook", To: "gates"},
+			{From: "gates", To: "validate"},
+			{From: "validate", To: "pr"},
+			{From: "pr", To: "tag", When: "changed"},
+			{From: "tag", To: "release"},
+		},
+	}
+}
+
+// materializeGraphTemplate instantiates a GraphTemplateSpec for a concrete
+// workflow, substituting the "{{fork}}" placeholder in plugin node args with
+// the fork name (derived from the workflow name at the call site).
+func materializeGraphTemplate(tmpl *GraphTemplateSpec, fork string) v1alpha1.GraphSpec {
+	gs := v1alpha1.GraphSpec{
+		Nodes: make([]v1alpha1.NodeSpec, len(tmpl.Nodes)),
+		Edges: append([]v1alpha1.EdgeSpec(nil), tmpl.Edges...),
+	}
+	for i, n := range tmpl.Nodes {
+		nn := n
+		if len(nn.Config) > 0 && strings.Contains(string(nn.Config), "{{fork}}") {
+			nn.Config = json.RawMessage(strings.ReplaceAll(string(nn.Config), "{{fork}}", fork))
+		}
+		gs.Nodes[i] = nn
+	}
+	return gs
 }

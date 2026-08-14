@@ -235,7 +235,10 @@ spec:
                           id: { type: string }
                           type:
                             type: string
-                            enum: [plugin, agent, gate, branch, dapr-state-get, dapr-state-set, dapr-publish, vela-app, flux-reconcile, http-call, human-gate]
+                            # "external" nodes are display-only topology (never
+                            # executed by the kernel; rendered on the map).
+                            enum: [plugin, agent, gate, branch, dapr-state-get, dapr-state-set, dapr-publish, vela-app, flux-reconcile, http-call, human-gate, external]
+                          label: { type: string, description: "Optional display label for the map (falls back to id)" }
                           config: { type: object, x-kubernetes-preserve-unknown-fields: true }
                           outputs: { type: array, items: { type: string } }
                           when: { type: string }

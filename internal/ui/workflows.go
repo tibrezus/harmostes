@@ -173,7 +173,49 @@ func (s *Server) handleWorkflowCreate(w http.ResponseWriter, r *http.Request) {
 		g = &gateCatalog[0] // fallback to first gate
 	}
 
-	// The gate determines the workflow structure.
+	// The gate determines the workflow structure. A graph-native gate
+	// (GraphTemplate) builds spec.graph — the full node-by-node topology,
+	// including external display-only components; the executor runs the real
+	// nodes and the Map renders the whole story. Otherwise the declarative
+	// prepare/agent/deploy form applies.
+	if g.GraphTemplate != nil {
+		fork := strings.TrimPrefix(name, "fork-maintenance-")
+		gs := materializeGraphTemplate(g.GraphTemplate, fork)
+		wf := &v1alpha1.Workflow{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: s.namespace,
+			},
+			Spec: v1alpha1.WorkflowSpec{
+				Source: v1alpha1.SourceSpec{
+					Kind:     "git",
+					Repo:     name,
+					Branch:   branch,
+					Language: "go",
+				},
+				WorkspaceRepo: &v1alpha1.WorkspaceRepoSpec{URL: repoURL, Branch: branch},
+				Graph:         &gs,
+				Bindings:      deriveBindings(g, repoURL, branch),
+			},
+		}
+		if tokenSecret != "" {
+			wf.Spec.WorkspaceRepo.TokenRef = &v1alpha1.SecretRef{Name: tokenSecret, Key: "token"}
+		}
+		StampOwnerLabel(wf, owner)
+		if err := s.k8sClient.Create(r.Context(), wf); err != nil {
+			if errors.IsAlreadyExists(err) {
+				s.renderError(w, r, "A workflow with that name already exists")
+				return
+			}
+			s.logger.Error("create workflow", "owner", owner, "name", name, "err", err)
+			s.renderError(w, r, "Failed to create workflow: "+err.Error())
+			return
+		}
+		s.logger.Info("workflow created (graph-native)", "owner", owner, "name", name, "gate", gateID)
+		http.Redirect(w, r, "/workflows/"+name, http.StatusSeeOther)
+		return
+	}
+
 	preparePlugin := g.PreparePlugin
 	gatePlugin := g.Name
 	deployPlugin := g.DeployPlugin

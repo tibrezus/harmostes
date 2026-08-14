@@ -962,3 +962,94 @@ func TestIntegrationGateFeedbackLoop(t *testing.T) {
 		}
 	}
 }
+
+// ===========================================================================
+// External nodes (display-only topology): never executed, edges to them are
+// routing annotations, edges from them don't suppress entry-node status.
+// ===========================================================================
+
+func TestExternalNode_NeverExecuted(t *testing.T) {
+	execA := newRecording("typeA", NodeResult{Status: StatusGreen})
+
+	registry := registryWith(map[string]NodeExecutor{"typeA": execA})
+
+	gs := v1alpha1.GraphSpec{
+		Nodes: []v1alpha1.NodeSpec{
+			{ID: "A", Type: "typeA"},
+			{ID: "resolver", Type: "external", Label: "Conflict resolver"},
+			{ID: "upstream", Type: "external"},
+		},
+		Edges: []v1alpha1.EdgeSpec{
+			{From: "upstream", To: "A"}, // display edge: external → real
+			{From: "A", To: "resolver"}, // display edge: real → external
+		},
+	}
+
+	// A has an incoming edge — but from an external node, so A is still an
+	// entry node and must run. Neither external node must execute (no
+	// executor is registered for "external"; if one were queued, Get would
+	// fail the pipeline).
+	exec := NewGraphExecutor(registry, nil)
+	result, err := exec.Execute(context.Background(), gs, "test-external")
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if result.Status != StatusGreen {
+		t.Errorf("status = %q, want green", result.Status)
+	}
+	if execA.visitCount() != 1 {
+		t.Errorf("A visited %d times, want 1", execA.visitCount())
+	}
+	if len(result.NodeResults) != 1 {
+		t.Errorf("nodeResults = %d, want 1 (externals produce no results)", len(result.NodeResults))
+	}
+}
+
+func TestFailedNodeRoutedToExternal_PipelineGreen(t *testing.T) {
+	// A real node fails, and its only failure-handling edge targets an
+	// external system (e.g. merge conflict → async conflict-resolver agent).
+	// The delegation is a legitimate terminal state: the pipeline completes
+	// green, the failed node's envelope records what happened.
+	execA := newRecording("typeA", NodeResult{Status: StatusFailed, Feedback: "merge conflict"})
+
+	registry := registryWith(map[string]NodeExecutor{"typeA": execA})
+
+	gs := v1alpha1.GraphSpec{
+		Nodes: []v1alpha1.NodeSpec{
+			{ID: "A", Type: "typeA"},
+			{ID: "resolver", Type: "external"},
+		},
+		Edges: []v1alpha1.EdgeSpec{
+			{From: "A", To: "resolver", When: "failed"},
+		},
+	}
+
+	exec := NewGraphExecutor(registry, nil)
+	result, err := exec.Execute(context.Background(), gs, "test-external-delegate")
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if result.Status != StatusGreen {
+		t.Errorf("status = %q, want green (failure delegated to external system)", result.Status)
+	}
+	if r, ok := result.NodeResults["A"]; !ok || r.Status != StatusFailed {
+		t.Errorf("node A result = %+v, want failed (honest envelope)", r)
+	}
+	if _, ok := result.NodeResults["resolver"]; ok {
+		t.Errorf("external node resolver must not produce a result")
+	}
+}
+
+func TestExternalOnlyGraph_HasNoEntry(t *testing.T) {
+	gs := v1alpha1.GraphSpec{
+		Nodes: []v1alpha1.NodeSpec{{ID: "upstream", Type: "external"}},
+	}
+	exec := NewGraphExecutor(NewRegistry(), nil)
+	result, err := exec.Execute(context.Background(), gs, "test-external-only")
+	if err == nil {
+		t.Fatalf("expected error for external-only graph")
+	}
+	if result.Status != StatusFailed {
+		t.Errorf("status = %q, want failed", result.Status)
+	}
+}

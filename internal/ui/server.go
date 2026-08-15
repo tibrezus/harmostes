@@ -17,6 +17,8 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/tibrezus/harmostes/version"
+
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes"
@@ -161,6 +163,10 @@ func (s *Server) Routes() http.Handler {
 
 func parseTemplates() (*template.Template, error) {
 	tmpl := template.New("").Funcs(template.FuncMap{
+		// assetVersion cache-busts static assets: browsers may otherwise serve a
+		// stale map.js/styles across releases (no cache headers are set), and a
+		// new chart must ship its fixed assets to every client.
+		"assetVersion": func() string { return version.String() },
 		"statusClass":  statusClass,
 		"statusText":   statusText,
 		"splitLines":   splitLines,

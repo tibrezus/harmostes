@@ -8,9 +8,9 @@
 	<meta charset="utf-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1">
 	<title>harmostes — {{.Page}}</title>
-	<link rel="stylesheet" href="/static/css/app.css">
-	<link rel="stylesheet" href="/static/css/tokens.css">
-	<link rel="stylesheet" href="/static/css/components.css">
+	<link rel="stylesheet" href="/static/css/app.css?v={{assetVersion}}">
+	<link rel="stylesheet" href="/static/css/tokens.css?v={{assetVersion}}">
+	<link rel="stylesheet" href="/static/css/components.css?v={{assetVersion}}">
 	<script>
 		// Apply theme before paint to avoid flash.
 		(function() {
@@ -129,13 +129,13 @@
 <script src="/static/alpine.min.js" defer></script>
 {{- if eq .PageKey "map"}}
 <script src="/static/cytoscape.min.js"></script>
-<script src="/static/js/map.js"></script>
+<script src="/static/js/map.js?v={{assetVersion}}"></script>
 {{- end}}
 {{- if eq .PageKey "metrics"}}
-<script src="/static/js/metrics.js"></script>
+<script src="/static/js/metrics.js?v={{assetVersion}}"></script>
 {{- end}}
 {{- if eq .PageKey "live"}}
-<script src="/static/js/live.js"></script>
+<script src="/static/js/live.js?v={{assetVersion}}"></script>
 {{- end}}
 <script>
 function topbarFilters() {

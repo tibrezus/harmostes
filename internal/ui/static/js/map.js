@@ -10,8 +10,53 @@
 	'use strict';
 
 	// Colours map to DS tokens (read from CSS custom properties at runtime).
+	// CAUTION: tokens.css is written in oklch(), and Cytoscape's colour parser
+	// does NOT understand modern CSS colour functions — an oklch() string fed
+	// into a cytoscape style silently falls back to black (which once rendered
+	// external nodes invisible on the dark canvas: "arrows pointing to
+	// nothing"). So token() converts oklch()/oklab() to plain hex first.
+	var tokenCache = {};
+
+	function gamma(v) {
+		v = v <= 0.0031308 ? 12.92 * v : 1.055 * Math.pow(v, 1 / 2.4) - 0.055;
+		return Math.round(Math.min(1, Math.max(0, v)) * 255);
+	}
+
+	function oklabToHex(L, a, b) {
+		var l_ = L + 0.3963377774 * a + 0.2158037573 * b;
+		var m_ = L - 0.1055613458 * a - 0.0638541728 * b;
+		var s_ = L - 0.0894841775 * a - 1.291485548 * b;
+		var l = l_ * l_ * l_, m = m_ * m_ * m_, s = s_ * s_ * s_;
+		var r = gamma(4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s);
+		var g = gamma(-1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s);
+		var bl = gamma(-0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s);
+		return '#' + ((1 << 24) | (r << 16) | (g << 8) | bl).toString(16).slice(1);
+	}
+
+	// oklch(72% 0.005 85) → #999-ish hex; oklab(...) likewise; hex()/rgb()/named
+	// pass through — those cytoscape parses natively. Percent L normalised to 0..1.
+	function cssColorToHex(v) {
+		v = v.trim();
+		var m = v.match(/^oklch\(\s*([\d.]+)%?\s+([\d.eE+-]+)\s+([\d.eE+-]+)(?:\s*\/\s*[\d.]+%?)?\s*\)$/);
+		if (m) {
+			var L = parseFloat(m[1]) / (v.indexOf('%') === -1 ? 1 : 100);
+			var C = parseFloat(m[2]), H = parseFloat(m[3]) * Math.PI / 180;
+			return oklabToHex(L, C * Math.cos(H), C * Math.sin(H));
+		}
+		m = v.match(/^oklab\(\s*([\d.]+)%?\s+([\d.eE+-]+)\s+([\d.eE+-]+)(?:\s*\/\s*[\d.]+%?)?\s*\)$/);
+		if (m) {
+			var L2 = parseFloat(m[1]) / (v.indexOf('%') === -1 ? 1 : 100);
+			return oklabToHex(L2, parseFloat(m[2]), parseFloat(m[3]));
+		}
+		return v;
+	}
+
 	function token(name) {
-		return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || '#888';
+		if (tokenCache[name]) return tokenCache[name];
+		var raw = getComputedStyle(document.documentElement).getPropertyValue(name).trim() || '#888';
+		var hex = cssColorToHex(raw);
+		tokenCache[name] = hex;
+		return hex;
 	}
 
 	function isDark() {
@@ -22,6 +67,7 @@
 		if (status === 'completed' || status === 'green') return token('--color-positive');
 		if (status === 'failed') return token('--color-negative');
 		if (status === 'running' || status === 'started') return token('--warning');
+		if (status === 'external') return isDark() ? '#2a2d3a' : '#e9e7e2'; // visible ghost boxes
 		return token('--border'); // pending/neutral
 	}
 
@@ -146,9 +192,11 @@
 				{
 					selector: 'node[nodeType = "external"]',
 					style: {
+						// The fill must stay VISIBLE against the canvas in both themes
+						// (they once rendered black-on-black via unparsed oklch tokens).
 						'border-style': 'dashed',
 						'border-width': 1.5,
-						'background-color': isDark() ? 'rgba(0,0,0,0.25)' : 'rgba(255,255,255,0.55)',
+						'background-color': isDark() ? '#2a2d3a' : '#e9e7e2',
 						'color': isDark() ? token('--color-next-light') : token('--color-ink-muted'),
 						'font-style': 'italic',
 						'shape': 'round-rectangle',

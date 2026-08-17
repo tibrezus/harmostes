@@ -28,6 +28,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from rig.builder import RIGBuilder
 from rig.validator import validate_rig
+from rig import db as rig_db
+from rig import symbols as rig_symbols
 from rig.extractors.base import Extractor
 from rig.extractors.go import GoExtractor
 from rig.extractors.zig import ZigExtractor
@@ -108,6 +110,41 @@ def main():
     with open(args.output, "w") as f:
         json.dump(rig, f, indent=2)
 
+    # Write the canonical SQLite database alongside the JSON.
+    # rig.db is queryable + compact (FTS5 symbol search, per-component
+    # queries); rig.json stays as the compat/export view.
+    db_path = Path(args.output).with_suffix(".db")
+    rig_db.write_db(rig, db_path)
+    source_root = Path(".").resolve()
+    syms = rig_symbols.extract_symbols(rig, source_root)
+    rig_db.add_symbols(db_path, syms)
+    # File metadata (language, bytes, lines, doc comment) for the files table.
+    from rig.builder import SOURCE_EXTENSIONS
+    file_rows = []
+    seen_paths: set[str] = set()
+    for c in rig["components"]:
+        lang = c.get("programming_language", "")
+        for sf in c.get("source_files", []):
+            if sf in seen_paths:
+                continue
+            p = source_root / sf
+            if not p.is_file():
+                continue
+            seen_paths.add(sf)
+            try:
+                text = p.read_text(encoding="utf-8", errors="replace")
+                file_rows.append({
+                    "path": sf,
+                    "component_id": c["id"],
+                    "language": SOURCE_EXTENSIONS.get(p.suffix.lower(), ""),
+                    "bytes": p.stat().st_size,
+                    "lines": text.count("\n") + 1,
+                    "doc": rig_symbols.extract_doc_comment(p, lang),
+                })
+            except OSError:
+                continue
+    rig_db.add_files(db_path, file_rows)
+
     total_edges = sum(len(c.get("depends_on_ids", [])) for c in rig["components"])
     print(
         f"[emit-rig] RIG: {len(rig['components'])} components, "
@@ -117,6 +154,11 @@ def main():
         f"{len(rig['evidence'])} evidence, "
         f"{len(rig['test_definitions'])} test definitions, "
         f"{len(rig['runners'])} runners",
+        file=sys.stderr,
+    )
+    print(
+        f"[emit-rig] DB: {db_path} ({db_path.stat().st_size} bytes, "
+        f"{len(syms)} symbols, hash {rig_db.canonical_hash(db_path)[:12]})",
         file=sys.stderr,
     )
 

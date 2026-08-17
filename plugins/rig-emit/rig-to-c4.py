@@ -1,13 +1,19 @@
 #!/usr/bin/env python3
 """rig-to-c4.py — Deterministic RIG → LikeC4 model generator.
 
-Reads a rig.json and produces a model.c4 where every element is derived
-from the RIG. Source files that carry a top-of-file doc comment (Zig //!,
-Go //, C /* */, Python docstrings) get the comment extracted verbatim into
-the C4 component description — no LLM, no hallucination, fully reproducible.
+Reads a rig.db (canonical) or rig.json (legacy) and produces a model.c4
+where every element is derived from the RIG. Source files that carry a
+top-of-file doc comment (Zig //!, Go //, C /* */, Python docstrings) get
+the comment extracted verbatim into the C4 component description — no LLM,
+no hallucination, fully reproducible.
+
+When reading rig.db, file docs and exported symbols are served from the DB
+(precomputed at emit time); when reading rig.json they are extracted from
+source on the fly. Both paths share ONE implementation (rig/symbols.py), so
+model.c4 is byte-identical either way — the golden-parity test enforces it.
 
 Usage:
-    rig-to-c4.py <rig.json> [--source-dir <path>] [-o <output.c4>]
+    rig-to-c4.py <rig.db | rig.json> [--source-dir <path>] [-o <output.c4>]
 
 If --source-dir is given (or source files exist in the CWD), doc comments
 are extracted from the actual source files. Otherwise, descriptions are
@@ -19,223 +25,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 from pathlib import Path
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# ── Doc comment extraction ────────────────────────────────────────────
-
-def _extract_consecutive(lines: list[str], prefix: str) -> str:
-    """Extract consecutive comment lines starting from line 0."""
-    out: list[str] = []
-    for line in lines:
-        stripped = line.strip()
-        if stripped.startswith(prefix):
-            text = stripped[len(prefix):].lstrip()
-            out.append(text)
-        elif stripped == "" and out:
-            continue  # skip blank lines within a comment block
-        elif stripped and not stripped.startswith(prefix):
-            break  # hit code
-        elif not out:
-            continue  # skip leading blanks
-    return "\n".join(out).strip()
-
-
-def _extract_block_comment(lines: list[str]) -> str:
-    """Extract a /* */ block at the top of the file."""
-    for i, line in enumerate(lines):
-        stripped = line.strip()
-        if stripped.startswith("/*"):
-            # Collect until closing */
-            block: list[str] = []
-            if stripped.endswith("*/") and len(stripped) > 2:
-                inner = stripped[2:-2].strip()
-                if inner:
-                    block.append(inner)
-                return "\n".join(block)
-            for sub in lines[i + 1:]:
-                if "*/" in sub:
-                    before = sub[: sub.index("*/")].strip()
-                    if before:
-                        block.append(before)
-                    break
-                # Strip leading * (C block convention)
-                cleaned = sub.strip()
-                if cleaned.startswith("*"):
-                    cleaned = cleaned[1:].lstrip()
-                if cleaned:
-                    block.append(cleaned)
-            return "\n".join(block).strip()
-        elif stripped and not stripped.startswith("//"):
-            break  # code before any comment
-    return ""
-
-
-def _extract_python_docstring(lines: list[str]) -> str:
-    """Extract a Python module docstring (\"\"\"...\"\"\")."""
-    text = "\n".join(lines)
-    m = re.search(r'"""(.*?)"""', text, re.DOTALL)
-    if m:
-        return m.group(1).strip()
-    m = re.search(r"'''(.*?)'''", text, re.DOTALL)
-    if m:
-        return m.group(1).strip()
-    return ""
-
-
-def extract_doc_comment(filepath: Path, language: str) -> str:
-    """Extract the top-of-file documentation comment from a source file.
-
-    Returns an empty string if the file doesn't exist or has no doc comment.
-    """
-    try:
-        raw = filepath.read_text(encoding="utf-8", errors="replace")
-    except (OSError, UnicodeDecodeError):
-        return ""
-
-    lines = raw.split("\n")
-
-    if language == "zig":
-        # Zig: //! module doc comments at the top
-        comment = _extract_consecutive(lines, "//!")
-        if comment:
-            return comment
-        # Fall back to // comments (some files use these)
-        return _extract_consecutive(lines, "//")
-
-    if language == "python":
-        # Python: module docstring first, then # comments
-        docstring = _extract_python_docstring(lines)
-        if docstring:
-            return docstring
-        return _extract_consecutive(lines, "#")
-
-    if language in ("go",):
-        # Go: // package comment before the package declaration
-        return _extract_consecutive(lines, "//")
-
-    if language in ("c", "cuda", "cpp", "c++"):
-        # C/CUDA: /* */ block first, then // lines
-        block = _extract_block_comment(lines)
-        if block:
-            return block
-        return _extract_consecutive(lines, "//")
-
-    # Generic fallback
-    return (
-        _extract_block_comment(lines)
-        or _extract_consecutive(lines, "//")
-        or _extract_consecutive(lines, "#")
-    )
-
-
-# ── Exported symbol extraction ────────────────────────────────────────
-
-# Caps per file to keep model.c4 readable. A file with 100 exports
-# would bloat the model without helping an agent find reuse targets.
-_MAX_EXPORTS = 20
-
-
-def _extract_go_exports(raw: str) -> list[str]:
-    """Extract exported Go symbols (capitalized func/type/var/const)."""
-    exports: list[str] = []
-    for line in raw.split("\n"):
-        stripped = line.strip()
-        # func ExportedName(
-        if m := re.match(r"^func\s+(?:\([^)]*\)\s+)?([A-Z][A-Za-z0-9_]*)", stripped):
-            exports.append(f"func {m.group(1)}")
-        # type ExportedName struct/interface/...
-        elif m := re.match(r"^type\s+([A-Z][A-Za-z0-9_]*)", stripped):
-            exports.append(f"type {m.group(1)}")
-        # var/const ExportedName (block or single)
-        elif m := re.match(r"^(?:var|const)\s+([A-Z][A-Za-z0-9_]*)", stripped):
-            exports.append(m.group(1))
-        if len(exports) >= _MAX_EXPORTS:
-            break
-    return exports
-
-
-def _extract_zig_exports(raw: str) -> list[str]:
-    """Extract exported Zig symbols (pub fn, pub const, pub var)."""
-    exports: list[str] = []
-    for line in raw.split("\n"):
-        stripped = line.strip()
-        if m := re.match(r"^pub\s+fn\s+([A-Za-z0-9_]*)", stripped):
-            exports.append(f"fn {m.group(1)}")
-        elif m := re.match(r"^pub\s+const\s+([A-Za-z0-9_]*)", stripped):
-            # Distinguish struct/type aliases from plain constants
-            if "struct" in stripped or "type" in stripped.lower():
-                exports.append(f"type {m.group(1)}")
-            else:
-                exports.append(m.group(1))
-        elif m := re.match(r"^pub\s+var\s+([A-Za-z0-9_]*)", stripped):
-            exports.append(f"var {m.group(1)}")
-        if len(exports) >= _MAX_EXPORTS:
-            break
-    return exports
-
-
-def _extract_python_exports(raw: str) -> list[str]:
-    """Extract module-level Python def/class/async def."""
-    exports: list[str] = []
-    for line in raw.split("\n"):
-        # Module-level only: no leading whitespace
-        if line and not line[0].isspace():
-            stripped = line.strip()
-            if m := re.match(r"^(?:async\s+)?def\s+([A-Za-z0-9_]*)", stripped):
-                exports.append(f"def {m.group(1)}")
-            elif m := re.match(r"^class\s+([A-Za-z0-9_]*)", stripped):
-                exports.append(f"class {m.group(1)}")
-        if len(exports) >= _MAX_EXPORTS:
-            break
-    return exports
-
-
-def _extract_c_exports(raw: str) -> list[str]:
-    """Extract C/CUDA function declarations (non-static, name before '(')."""
-    exports: list[str] = []
-    for line in raw.split("\n"):
-        stripped = line.strip()
-        # Skip preprocessor, comments, static, blank lines
-        if (not stripped or stripped.startswith("#") or stripped.startswith("//")
-                or stripped.startswith("/*") or stripped.startswith("*")):
-            continue
-        # Match: return-type function-name(...  — exclude static/inline-only
-        if "(" in stripped and not stripped.startswith("static"):
-            # Extract the word immediately before the first '('
-            if m := re.search(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(", stripped):
-                name = m.group(1)
-                # Filter out C keywords that appear before '('
-                if name not in ("if", "for", "while", "switch", "return",
-                                "sizeof", "typedef", "extern", "struct"):
-                    exports.append(f"fn {name}")
-        if len(exports) >= _MAX_EXPORTS:
-            break
-    return exports
-
-
-def extract_exports(filepath: Path, language: str) -> list[str]:
-    """Extract exported function/type names from a source file.
-
-    Returns a list of strings like ['fn ParseConfig', 'type Config'].
-    Empty list if the file doesn't exist or the language is unsupported.
-    """
-    try:
-        raw = filepath.read_text(encoding="utf-8", errors="replace")
-    except (OSError, UnicodeDecodeError):
-        return []
-
-    if language == "go":
-        return _extract_go_exports(raw)
-    if language == "zig":
-        return _extract_zig_exports(raw)
-    if language == "python":
-        return _extract_python_exports(raw)
-    if language in ("c", "cuda", "cpp", "c++"):
-        return _extract_c_exports(raw)
-    return []
+from rig import db as rig_db
+from rig.symbols import extract_doc_comment, extract_exports
 
 
 def sanitize_for_c4(text: str) -> str:
@@ -302,8 +100,24 @@ def unique_ident(name: str, used: set[str]) -> str:
 
 # ── C4 generation ─────────────────────────────────────────────────────
 
-def generate_c4(rig: dict, source_dir: Path | None) -> str:
-    """Generate the full LikeC4 model text from a RIG."""
+def generate_c4(rig: dict, source_dir: Path | None,
+                file_data: dict[str, tuple[str, list[str]]] | None = None) -> str:
+    """Generate the full LikeC4 model text from a RIG.
+
+    ``file_data`` (path → (doc, exports)) serves precomputed per-file data
+    from rig.db. When omitted and ``source_dir`` is set, extraction runs
+    on the fly via rig/symbols.py — the SAME implementation, so output is
+    identical either way.
+    """
+    def _lookup(sf: str, lang: str) -> tuple[str, list[str]]:
+        if file_data is not None:
+            return file_data.get(sf, ("", []))
+        sf_path = source_dir / sf if source_dir else Path(sf)
+        if source_dir and sf_path.exists():
+            return (extract_doc_comment(sf_path, lang),
+                    extract_exports(sf_path, lang))
+        return ("", [])
+
     used_idents: set[str] = set()
     components = rig.get("components", [])
     comp_by_id = {c["id"]: c for c in components}
@@ -332,9 +146,10 @@ def generate_c4(rig: dict, source_dir: Path | None) -> str:
     lines: list[str] = []
 
     # ── Header comment ────────────────────────────────────────────────
-    lines.append("// LikeC4 C4 model — deterministically generated from rig.json.")
-    lines.append(f"// Project: {repo.get('name', '?')} | Build: {repo.get('build_system', '?')} | "
-                 f"Generated: {repo.get('generated_at', '?')[:19]}")
+    # No timestamp: model.c4 must be byte-deterministic for identical input
+    # (diff-free regeneration, hash-based skips).
+    lines.append("// LikeC4 C4 model — deterministically generated from the RIG.")
+    lines.append(f"// Project: {repo.get('name', '?')} | Build: {repo.get('build_system', '?')}")
     lines.append(f"// {len(components)} components, "
                  f"{sum(len(c.get('depends_on_ids', [])) for c in components)} edges, "
                  f"{len(rig.get('entrypoints', []))} entrypoints, "
@@ -422,12 +237,7 @@ def generate_c4(rig: dict, source_dir: Path | None) -> str:
         files_rendered = 0
         files_without_anything = 0
         for sf in srcs:
-            sf_path = source_dir / sf if source_dir else Path(sf)
-            comment = ""
-            exports: list[str] = []
-            if source_dir and sf_path.exists():
-                comment = extract_doc_comment(sf_path, c_lang)
-                exports = extract_exports(sf_path, c_lang)
+            comment, exports = _lookup(sf, c_lang)
 
             # Render the file as a C4 component if it has a doc comment OR exports.
             # Exports-only files are valuable: they show the API surface even when
@@ -450,11 +260,8 @@ def generate_c4(rig: dict, source_dir: Path | None) -> str:
 
         if files_without_anything:
             lines.append(f"      // {files_without_anything} file(s) without doc comments or exports: "
-                         + ", ".join(Path(sf).name for sf in srcs if not (
-                             source_dir and (source_dir / sf).exists() and
-                             (extract_doc_comment(source_dir / sf, c_lang)
-                              or extract_exports(source_dir / sf, c_lang))
-                         ))[:200])
+                         + ", ".join(Path(sf).name for sf in srcs if not _lookup(sf, c.get("programming_language", ""))[0]
+                                     and not _lookup(sf, c.get("programming_language", ""))[1])[:200])
 
         lines.append("    }")
         lines.append("")
@@ -478,16 +285,12 @@ def generate_c4(rig: dict, source_dir: Path | None) -> str:
     lines.append("views {")
     all_container_ids = [c4_ids[c["id"]] for c in components]
 
-    # Context view
-    lines.append(f"  view context of {sys_ident} {{")
-    lines.append(f"    title '{repo.get('name', 'System')} — System Context'")
-    lines.append("    include *")
-    lines.append("  }")
-    lines.append("")
-
-    # Container view
-    lines.append(f"  view containers of {sys_ident} {{")
-    lines.append(f"    title '{repo.get('name', 'System')} — Containers'")
+    # Structure view — the complete component graph (all build targets +
+    # their dependencies). For a build-system RIG there is no real
+    # context/container hierarchy — all components are peers — so a single
+    # overview view is more useful than two identical context/container views.
+    lines.append(f"  view structure of {sys_ident} {{")
+    lines.append(f"    title '{repo.get('name', 'System')} — Repository Structure'")
     lines.append("    include *")
     lines.append("  }")
     lines.append("")
@@ -499,7 +302,13 @@ def generate_c4(rig: dict, source_dir: Path | None) -> str:
         # Only create a component view if there are nested elements
         # (files with doc comments or exports).
         has_nested = False
-        if source_dir:
+        if file_data is not None:
+            for sf in srcs:
+                doc, exports = file_data.get(sf, ("", []))
+                if doc or exports:
+                    has_nested = True
+                    break
+        elif source_dir:
             for sf in srcs:
                 sf_path = source_dir / sf
                 lang = c.get("programming_language", "")
@@ -529,7 +338,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Deterministic RIG → LikeC4 model generator."
     )
-    parser.add_argument("rig_json", help="Path to rig.json")
+    parser.add_argument("rig_input", help="Path to rig.db (canonical) or rig.json (legacy)")
     parser.add_argument(
         "--source-dir", "-s",
         help="Path to the source repo (for extracting code comments). "
@@ -543,26 +352,44 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    rig_path = Path(args.rig_json)
+    rig_path = Path(args.rig_input)
     if not rig_path.exists():
         print(f"Error: {rig_path} not found", file=sys.stderr)
         sys.exit(1)
 
-    rig = json.loads(rig_path.read_text())
+    rig = rig_db.load_rig(rig_path)
+
+    file_data: dict[str, tuple[str, list[str]]] | None = None
+    if rig_path.suffix == ".db":
+        # Serve docs + exports from the DB (precomputed at emit time).
+        import sqlite3
+        con = sqlite3.connect(rig_path)
+        try:
+            file_data = {
+                r[0]: (r[1] or "", r[2].split(", ") if r[2] else [])
+                for r in con.execute(
+                    "SELECT f.path, f.doc, ("
+                    "  SELECT GROUP_CONCAT(s.signature, ', ' ORDER BY s.seq) "
+                    "  FROM symbols s WHERE s.file = f.path) FROM files f")
+        }
+        finally:
+            con.close()
 
     source_dir = Path(args.source_dir) if args.source_dir else Path.cwd()
 
-    # Check if source files are actually accessible
-    test_files = [
-        source_dir / sf
-        for c in rig.get("components", [])[:3]
-        for sf in c.get("source_files", [])[:1]
-    ]
-    if not any(f.exists() for f in test_files):
-        # Source files not accessible — disable comment extraction
-        source_dir = None
+    # Check if source files are actually accessible (only matters when we
+    # are NOT serving from the DB)
+    if file_data is None:
+        test_files = [
+            source_dir / sf
+            for c in rig.get("components", [])[:3]
+            for sf in c.get("source_files", [])[:1]
+        ]
+        if not any(f.exists() for f in test_files):
+            # Source files not accessible — disable comment extraction
+            source_dir = None
 
-    c4_text = generate_c4(rig, source_dir)
+    c4_text = generate_c4(rig, source_dir, file_data)
 
     if args.output:
         Path(args.output).write_text(c4_text)

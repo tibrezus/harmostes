@@ -57,32 +57,23 @@ log "generating RIG (language=${SRC_LANG:-auto})…"
 COMPONENTS=$(python3 -c "import json;print(len(json.load(open('$RIG_FILE'))['components']))" 2>/dev/null || echo 0)
 log "RIG: $COMPONENTS components"
 
-# Generate model.c4 deterministically from the RIG + source code comments.
-# This replaces the LLM arch-sync step entirely.
+# Canonical artifact: rig.db (queryable SQLite with symbols + FTS5).
+# rig.json stays alongside as a compat export.
 DEST_DIR="$WS_DIR/raw/arch/$PROJECT"
 mkdir -p "$DEST_DIR"
 MODEL_FILE="$DEST_DIR/model.c4"
-if [ -f "$EMITTER_DIR/rig-to-c4.py" ]; then
-  log "generating model.c4 (deterministic, from RIG + code comments)…"
-  python3 "$EMITTER_DIR/rig-to-c4.py" "$RIG_FILE" --source-dir "$SRC_DIR" -o "$MODEL_FILE" 2>&1 | tail -1 || log "WARN: model.c4 generation failed (non-fatal)"
-else
-  log "rig-to-c4.py not found — skipping model.c4 generation"
-fi
+DB_FILE="${RIG_FILE%.json}.db"
 
-# Generate Mermaid diagrams deterministically from the C4 model.
-# The full artifact set (rig.json + model.c4 + *.mmd) is deterministic —
-# the LLM agent never touches these files.
-if [ -f "$MODEL_FILE" ]; then
-  log "generating Mermaid diagrams (deterministic, from model.c4)…"
-  likec4 gen mermaid -o "$DEST_DIR" "$DEST_DIR" 2>&1 | tail -1 || log "WARN: mermaid generation failed (non-fatal)"
-fi
-
-DEST_FILE="$DEST_DIR/rig.json"
-
-# Compute the RIG hash for deterministic skip (stored in Workflow status by the
-# pipeline). This is more reliable than comparing with the workspace file because
-# deploys may push to shadow branches — the workspace repo on 'main' can lag.
-RIG_HASH=$(sha256sum "$RIG_FILE" | cut -d' ' -f1)
+# Compute the canonical hash from the DB (page-layout-independent, volatile-
+# free) — stored in Workflow status by the pipeline. More reliable than the
+# workspace file because deploys may push to shadow branches.
+RIG_HASH=$(EMITTER="$EMITTER_DIR" python3 - "$DB_FILE" <<'PYEOF'
+import os, sys
+sys.path.insert(0, os.environ["EMITTER"])
+from rig.db import canonical_hash
+print(canonical_hash(sys.argv[1]))
+PYEOF
+) || RIG_HASH=$(sha256sum "$RIG_FILE" | cut -d' ' -f1)
 log "RIG hash=$RIG_HASH ($COMPONENTS components)"
 
 # Cross-run skip: if HARMOSTES_LAST_RIG_HASH is set (stamped from Workflow
@@ -91,20 +82,40 @@ log "RIG hash=$RIG_HASH ($COMPONENTS components)"
 # from re-running on a structurally unchanged source.
 if [ -n "${HARMOSTES_LAST_RIG_HASH:-}" ] && [ "$RIG_HASH" = "$HARMOSTES_LAST_RIG_HASH" ]; then
   log "RIG hash unchanged ($RIG_HASH) — cross-run deterministic skip"
-  echo "{\"changed\":false,\"artifact\":\"raw/arch/$PROJECT/rig.json\",\"status\":\"ok\",\"event\":{\"components\":$COMPONENTS,\"rig_hash\":\"$RIG_HASH\"}}"
+  echo "{\"changed\":false,\"artifact\":\"raw/arch/$PROJECT/rig.db\",\"status\":\"ok\",\"event\":{\"components\":$COMPONENTS,\"rig_hash\":\"$RIG_HASH\"}}"
   exit 0
 fi
 
-# Byte-for-byte comparison with the existing rig.json in the workspace repo.
-# If identical, return changed=false so the pipeline short-circuits BEFORE the
-# agent runs — no LLM tokens consumed. Only a genuinely different RIG triggers
-# the agent.
-if [ -f "$DEST_FILE" ] && cmp -s "$RIG_FILE" "$DEST_FILE"; then
+# Compare the DB (byte-deterministic) — NOT rig.json, which carries a
+# generated_at timestamp and would never match byte-for-byte.
+DEST_FILE="$DEST_DIR/rig.json"
+if [ -f "$DEST_DIR/rig.db" ] && cmp -s "$DB_FILE" "$DEST_DIR/rig.db"; then
   log "RIG unchanged (byte-for-byte identical to existing) — deterministic skip"
-  echo "{\"changed\":false,\"artifact\":\"raw/arch/$PROJECT/rig.json\",\"status\":\"ok\",\"event\":{\"components\":$COMPONENTS,\"rig_hash\":\"$RIG_HASH\"}}"
+  echo "{\"changed\":false,\"artifact\":\"raw/arch/$PROJECT/rig.db\",\"status\":\"ok\",\"event\":{\"components\":$COMPONENTS,\"rig_hash\":\"$RIG_HASH\"}}"
   exit 0
 fi
 
 cp "$RIG_FILE" "$DEST_FILE"
+cp "$DB_FILE" "$DEST_DIR/rig.db"
+
+# Generate model.c4 deterministically FROM THE DB + docs precomputed at emit.
+# This replaces the LLM arch-sync step entirely.
+if [ -f "$EMITTER_DIR/rig-to-c4.py" ]; then
+  log "generating model.c4 (deterministic, from rig.db)…"
+  python3 "$EMITTER_DIR/rig-to-c4.py" "$DEST_DIR/rig.db" -o "$MODEL_FILE" 2>&1 | tail -1 || log "WARN: model.c4 generation failed (non-fatal)"
+else
+  log "rig-to-c4.py not found — skipping model.c4 generation"
+fi
+
+# Generate Mermaid diagrams deterministically from the C4 model.
+# The full artifact set (rig.db + rig.json + model.c4 + *.mmd) is deterministic —
+# the LLM agent never touches these files.
+if [ -f "$MODEL_FILE" ]; then
+  log "generating Mermaid diagrams (deterministic, from model.c4)…"
+  likec4 gen mermaid --use-dot -o "$DEST_DIR" "$DEST_DIR" 2>&1 | tail -1 \
+    || likec4 gen mermaid -o "$DEST_DIR" "$DEST_DIR" 2>&1 | tail -1 \
+    || log "WARN: mermaid generation failed (non-fatal)"
+fi
+
 log "RIG changed — agent will run"
-echo "{\"changed\":true,\"artifact\":\"raw/arch/$PROJECT/rig.json\",\"status\":\"ok\",\"event\":{\"components\":$COMPONENTS,\"rig_hash\":\"$RIG_HASH\"}}"
+echo "{\"changed\":true,\"artifact\":\"raw/arch/$PROJECT/rig.db\",\"status\":\"ok\",\"event\":{\"components\":$COMPONENTS,\"rig_hash\":\"$RIG_HASH\"}}"

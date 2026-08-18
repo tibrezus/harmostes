@@ -36,7 +36,7 @@ spec:
         - name: sync-skills
           image: {{ .Values.image.worker | quote }}
           imagePullPolicy: Always
-          command: ["sh", "-c", "git clone --depth 1 {{ .Values.skills.repo | default "https://github.com/tibrezus/agents.git" }} /tmp/agents && cp -r /tmp/agents/skills /skills"]
+          command: ["sh", "-c", "git clone --depth 1 {{ .Values.skills.repo | default "https://github.com/tibrezus/agents.git" }} /tmp/agents && mkdir -p /skills && cp -r /tmp/agents/skills/. /skills/"]
           volumeMounts:
             - name: skills
               mountPath: /skills

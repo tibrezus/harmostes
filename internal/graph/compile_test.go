@@ -1,6 +1,7 @@
 package graph
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -123,5 +124,48 @@ func TestCompileWorkflowCarriesConfigMapAndArgs(t *testing.T) {
 	}
 	if len(prepCfg.Args) != 1 || prepCfg.Args[0] != "forgejo" {
 		t.Errorf("Args = %v, want [forgejo]", prepCfg.Args)
+	}
+}
+
+// Regression: declarative Workflows keep their prepare plugin config in the
+// compiled graph — without it, pr-fetch saw an empty repo list and skipped
+// every run (the pr-review workflow never fired on labeled PRs).
+func TestCompileWorkflowCarriesPrepareConfig(t *testing.T) {
+	wf := &v1alpha1.Workflow{
+		Spec: v1alpha1.WorkflowSpec{
+			Prepare: v1alpha1.PrepareSpec{
+				Plugin: v1alpha1.PluginRef{Name: "pr-fetch", ConfigMap: "harmostes-pr-review"},
+				Config: json.RawMessage(`{"label":"needs-review","repos":["tibrezus/harmostes"]}`),
+			},
+			Agent: v1alpha1.AgentSpec{
+				Model:        "m",
+				TaskTemplate: v1alpha1.TaskTemplate{Name: "t"},
+				Gate:         v1alpha1.GateRef{Plugin: v1alpha1.PluginRef{Name: "g"}},
+			},
+			Deploy: v1alpha1.DeploySpec{Plugin: v1alpha1.PluginRef{Name: "post-review"}},
+		},
+	}
+
+	gs := CompileWorkflow(wf)
+
+	var prepare PluginNodeConfig
+	for _, n := range gs.Nodes {
+		if n.ID == "prepare" {
+			if err := json.Unmarshal(n.Config, &prepare); err != nil {
+				t.Fatalf("unmarshal prepare config: %v", err)
+			}
+		}
+	}
+	if prepare.Name != "pr-fetch" {
+		t.Fatalf("prepare plugin = %q, want pr-fetch", prepare.Name)
+	}
+	if string(prepare.Config) == "" || !bytes.Contains(prepare.Config, []byte("needs-review")) {
+		t.Fatalf("prepare plugin config lost in compilation: %q", string(prepare.Config))
+	}
+	// And the plugin-visible SPEC (node.Config) must surface it at top level.
+	for _, n := range gs.Nodes {
+		if n.ID == "prepare" && !bytes.Contains(n.Config, []byte(`"config":`)) {
+			t.Fatalf("node.Config lacks config key: %s", string(n.Config))
+		}
 	}
 }

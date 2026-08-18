@@ -20,6 +20,7 @@ func CompileWorkflow(wf *v1alpha1.Workflow) v1alpha1.GraphSpec {
 		Name:      wf.Spec.Prepare.Plugin.Name,
 		Args:      wf.Spec.Prepare.Plugin.Args,
 		ConfigMap: wf.Spec.Prepare.Plugin.ConfigMap,
+		Config:    wf.Spec.Prepare.Config,
 	})
 	deployCfg, _ := json.Marshal(PluginNodeConfig{
 		Name:      wf.Spec.Deploy.Plugin.Name,

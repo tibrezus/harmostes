@@ -190,8 +190,8 @@ func TestDeterministicNameForExistingWorkflows(t *testing.T) {
 }
 
 func TestTruncateMiddle(t *testing.T) {
-	if got := TruncateMiddle("abcdefghij", 7); got != "abc…ij" {
-		t.Errorf("TruncateMiddle = %q, want %q", got, "abc…ij")
+	if got := TruncateMiddle("abcdefghij", 7); got != "abc…hij" {
+		t.Errorf("TruncateMiddle = %q, want %q", got, "abc…hij")
 	}
 	if got := TruncateMiddle("short", 10); got != "short" {
 		t.Errorf("short string should pass through, got %q", got)

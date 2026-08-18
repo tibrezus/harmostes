@@ -143,3 +143,18 @@ func extractPrepareRepos(rawConfig json.RawMessage) []string {
 	}
 	return cfg.Repos
 }
+
+// TruncateMiddle shortens long identifiers for display, keeping both the
+// prefix and the suffix (both carry meaning in k8s names).
+func TruncateMiddle(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	if max < 2 {
+		return s[:max]
+	}
+	keep := max - 1
+	head := keep / 2
+	tail := keep - head
+	return s[:head] + "…" + s[len(s)-tail:]
+}

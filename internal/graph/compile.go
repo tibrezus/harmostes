@@ -112,70 +112,15 @@ func taskRef(tt v1alpha1.TaskTemplate) string {
 	return tt.Name
 }
 
-// CompileTemplate compiles a WorkflowTemplate's spec into a pipeline graph,
-// identical in structure to CompileWorkflow but operating on WorkflowTemplateSpec.
-// This lets the UI render any template as a visual pipeline graph without
-// duplicating the compilation logic.
+// CompileTemplate compiles a WorkflowTemplate's spec into a pipeline graph
+// by delegating to CompileWorkflow with the template's spec as the workflow
+// spec. One compiler, one defaults policy — template and workflow specs are
+// the same shape, so they must never diverge in how they compile.
 func CompileTemplate(tmpl *v1alpha1.WorkflowTemplate) v1alpha1.GraphSpec {
-	prepareCfg, _ := json.Marshal(PluginNodeConfig{
-		Name: tmpl.Spec.Prepare.Plugin.Name,
-	})
-	deployCfg, _ := json.Marshal(PluginNodeConfig{
-		Name: tmpl.Spec.Deploy.Plugin.Name,
-	})
-
-	nodes := []v1alpha1.NodeSpec{
-		{
-			ID:     "prepare",
-			Type:   "plugin",
-			Config: prepareCfg,
-		},
-	}
-
-	agentEnabled := tmpl.Spec.Agent.Enabled == nil || *tmpl.Spec.Agent.Enabled
-	if agentEnabled {
-		maxFixes := tmpl.Spec.Agent.MaxFixes
-		if maxFixes == 0 {
-			maxFixes = 3
-		}
-		agentCfg, _ := json.Marshal(AgentNodeConfig{
-			Model:    tmpl.Spec.Agent.Model,
-			Skill:    tmpl.Spec.Agent.Skill,
-			Tools:    tmpl.Spec.Agent.Tools,
-			Task:     taskRef(tmpl.Spec.Agent.TaskTemplate),
-			MaxFixes: maxFixes,
-			Gate: &GateNodeConfig{
-				Plugin: PluginNodeConfig{
-					Name: tmpl.Spec.Agent.Gate.Plugin.Name,
-				},
-			},
-		})
-		nodes = append(nodes, v1alpha1.NodeSpec{
-			ID:     "agent",
-			Type:   "agent",
-			Config: agentCfg,
-		})
-	}
-
-	nodes = append(nodes, v1alpha1.NodeSpec{
-		ID:     "deploy",
-		Type:   "plugin",
-		Config: deployCfg,
-	})
-
-	edges := []v1alpha1.EdgeSpec{
-		{From: "prepare", To: "agent"},
-	}
-	if !agentEnabled {
-		edges = []v1alpha1.EdgeSpec{
-			{From: "prepare", To: "deploy"},
-		}
-	} else {
-		edges = append(edges, v1alpha1.EdgeSpec{From: "agent", To: "deploy"})
-	}
-
-	return v1alpha1.GraphSpec{
-		Nodes: nodes,
-		Edges: edges,
-	}
+	wf := v1alpha1.Workflow{Spec: v1alpha1.WorkflowSpec{
+		Prepare: tmpl.Spec.Prepare,
+		Agent:   tmpl.Spec.Agent,
+		Deploy:  tmpl.Spec.Deploy,
+	}}
+	return CompileWorkflow(&wf)
 }

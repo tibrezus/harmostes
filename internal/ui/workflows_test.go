@@ -622,6 +622,11 @@ func prReviewTemplate() *v1alpha1.WorkflowTemplate {
 		ObjectMeta: metav1.ObjectMeta{Name: "pr-review", Namespace: "harmostes"},
 		Spec: v1alpha1.WorkflowTemplateSpec{
 			Description: "PR review",
+			Scope: []v1alpha1.ScopeParam{
+				{Name: "label", Kind: "string", Label: "Label trigger", Default: "needs-review", Description: "only act when this label is present"},
+				{Name: "repos", Kind: "list", Label: "Repos", Description: "the scope the prepare plugin operates on"},
+				{Name: "wiki", Kind: "string", Label: "Wiki repo", Description: "context repo some agents use for design evidence"},
+			},
 			Prepare: v1alpha1.PrepareSpec{
 				Plugin: v1alpha1.PluginRef{Name: "pr-fetch", ConfigMap: "harmostes-pr-review"},
 				Detect: "changed",
@@ -790,5 +795,89 @@ func TestHandleWorkflowDetail_ThinInstanceRendersMergedPipeline(t *testing.T) {
 	}
 	if !strings.Contains(body, "AGENT") {
 		t.Error("detail page must render the agent node for thin instances")
+	}
+}
+
+func TestHandleWorkflowCreate_CustomScopeDialect(t *testing.T) {
+	// A template may declare an arbitrary configuration dialect: the form
+	// and the stored instance config follow the declaration, with no UI
+	// code knowing these keys.
+	tmpl := &v1alpha1.WorkflowTemplate{
+		ObjectMeta: metav1.ObjectMeta{Name: "deploy-thing", Namespace: "harmostes"},
+		Spec: v1alpha1.WorkflowTemplateSpec{
+			Description: "deploy thing",
+			Scope: []v1alpha1.ScopeParam{
+				{Name: "env", Kind: "string", Label: "Environment", Default: "staging"},
+				{Name: "targets", Kind: "list", Label: "Targets"},
+			},
+			Prepare: v1alpha1.PrepareSpec{Plugin: v1alpha1.PluginRef{Name: "noop"}},
+			Agent:   v1alpha1.AgentSpec{Enabled: boolPtr(false), Model: "none", Gate: v1alpha1.GateRef{Plugin: v1alpha1.PluginRef{Name: "noop"}}},
+			Deploy:  v1alpha1.DeploySpec{Plugin: v1alpha1.PluginRef{Name: "noop"}},
+		},
+	}
+	s := workflowTestServer(tmpl)
+
+	form := url.Values{}
+	form.Set("name", "deploy-thing-prod")
+	form.Set("templateRef", "deploy-thing")
+	form.Set("schedule", "0 * * * *")
+	form.Set("env", "prod")
+	form.Set("targets", "cluster-a, cluster-b")
+	// Stray keys the template does NOT declare must be ignored.
+	form.Set("label", "needs-review")
+
+	req := httptest.NewRequest(http.MethodPost, "/workflows", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req = req.WithContext(withIdentity(req.Context(), &Identity{Username: "alice"}))
+	rec := httptest.NewRecorder()
+	s.handleWorkflowCreate(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d. body: %s", rec.Code, rec.Body.String())
+	}
+	var wf v1alpha1.Workflow
+	if err := s.k8sClient.Get(context.Background(), types.NamespacedName{Namespace: "harmostes", Name: "deploy-thing-prod"}, &wf); err != nil {
+		t.Fatalf("not created: %v", err)
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal(wf.Spec.Config, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg["env"] != "prod" {
+		t.Errorf("env = %v, want prod", cfg["env"])
+	}
+	if tg, _ := cfg["targets"].([]any); len(tg) != 2 || tg[0] != "cluster-a" {
+		t.Errorf("targets = %v, want [cluster-a cluster-b]", cfg["targets"])
+	}
+	if _, exists := cfg["label"]; exists {
+		t.Error("undeclared key 'label' must not be stored")
+	}
+}
+
+func TestHandleWorkflowCreate_ScopeDefaultsApply(t *testing.T) {
+	tmpl := prReviewTemplate()
+	s := workflowTestServer(tmpl)
+
+	form := url.Values{}
+	form.Set("name", "pr-review-defaults")
+	form.Set("templateRef", "pr-review")
+	form.Set("repos", "tibrezus/harmostes")
+	// label + wiki left empty → defaults (needs-review) / empty string
+
+	req := httptest.NewRequest(http.MethodPost, "/workflows", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req = req.WithContext(withIdentity(req.Context(), &Identity{Username: "alice"}))
+	rec := httptest.NewRecorder()
+	s.handleWorkflowCreate(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d. body: %s", rec.Code, rec.Body.String())
+	}
+	var wf v1alpha1.Workflow
+	_ = s.k8sClient.Get(context.Background(), types.NamespacedName{Namespace: "harmostes", Name: "pr-review-defaults"}, &wf)
+	var cfg map[string]any
+	_ = json.Unmarshal(wf.Spec.Config, &cfg)
+	if cfg["label"] != "needs-review" {
+		t.Errorf("label default not applied: %v", cfg["label"])
 	}
 }

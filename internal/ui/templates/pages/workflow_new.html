@@ -5,7 +5,7 @@
 	<p class="ds-empty-text">
 		Pick a reusable template and give it a name, a schedule, and its scope.
 		The instance inherits its pipeline shape (prepare → agent → gate → deploy)
-		from the template — you only set what varies per instance.
+		from the template — you only set what the template declares below.
 	</p>
 </div>
 
@@ -18,6 +18,7 @@
 <form method="POST" action="/workflows" class="wf-new-form" id="wf-new-form">
 	<section class="tpl-list">
 		{{- $sel := .SelectedTemplate}}
+	{{- if not $sel}}{{- with index .Templates 0}}{{$sel = .Name}}{{- end}}{{- end}}
 		{{- range .Templates}}
 		<label class="tpl-card wf-new-template{{if eq .Name $sel}} wf-new-template--selected{{end}}">
 			<input type="radio" name="templateRef" value="{{.Name}}" required {{if eq .Name $sel}}checked{{end}}>
@@ -44,24 +45,50 @@
 			<input type="text" name="schedule" value="*/10 * * * *">
 			<small>how often the trigger fires</small>
 		</label>
-		<label class="wf-new-field">
-			<span>Repos (comma-separated)</span>
-			<input type="text" name="repos" placeholder="tibrezus/harmostes, github.com/org/repo">
-			<small>the scope the prepare plugin operates on</small>
-		</label>
-		<label class="wf-new-field">
-			<span>Label trigger</span>
-			<input type="text" name="label" placeholder="needs-review">
-			<small>optional: only act when this label is present</small>
-		</label>
-		<label class="wf-new-field">
-			<span>Wiki repo (optional)</span>
-			<input type="text" name="wiki" placeholder="">
-			<small>context repo some agents use for design evidence</small>
-		</label>
 	</div>
+
+	{{/* Per-template scope fields — the template declares its own dialect;
+	     the form renders exactly what the selected template consumes. */}}
+	{{- range .Templates}}
+	<fieldset class="wf-new-scope" data-template="{{.Name}}" {{if not (eq .Name $.SelectedTemplate)}}hidden{{end}}>
+		<legend class="wf-new-scope-legend">Scope — {{.Name}}</legend>
+		<div class="wf-new-fields">
+			{{- if not .Spec.Scope}}
+			<p class="ds-empty-text">This template takes no scope parameters — name and schedule are all it needs.</p>
+			{{- end}}
+			{{- range .Spec.Scope}}
+			<label class="wf-new-field">
+				<span>{{if .Label}}{{.Label}}{{else}}{{.Name}}{{end}}</span>
+				{{- if eq .Kind "list"}}
+				<input type="text" name="{{.Name}}" {{if .Default}}value="{{.Default}}"{{end}}
+					placeholder="{{.Name}} (comma-separated)">
+				{{- else}}
+				<input type="text" name="{{.Name}}" {{if .Default}}value="{{.Default}}"{{end}} placeholder="{{.Name}}">
+				{{- end}}
+				{{- if .Description}}<small>{{.Description}}</small>{{end}}
+			</label>
+			{{- end}}
+		</div>
+	</fieldset>
+	{{- end}}
 
 	<button type="submit" class="ds-button ds-button--primary">Create Workflow</button>
 </form>
+<script>
+	// Swap the scope fieldset to match the selected template radio.
+	(function () {
+		var form = document.getElementById('wf-new-form');
+		if (!form) return;
+		function sync() {
+			var sel = form.querySelector('input[name="templateRef"]:checked');
+			if (!sel) return;
+			form.querySelectorAll('.wf-new-scope').forEach(function (fs) {
+				fs.hidden = fs.dataset.template !== sel.value;
+			});
+		}
+		form.addEventListener('change', sync);
+		sync();
+	})();
+</script>
 {{- end}}
 {{end}}

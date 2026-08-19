@@ -41,6 +41,18 @@ spec:
               properties:
                 description:
                   type: string
+                scope:                              # instance-level params the template consumes from spec.config
+                  type: array
+                  x-kubernetes-preserve-unknown-fields: true
+                  items:
+                    type: object
+                    required: [name, kind]
+                    properties:
+                      name: { type: string }            # key under spec.config
+                      kind: { type: string, enum: [string, list] }
+                      label: { type: string }
+                      description: { type: string }
+                      default: { type: string }
                 prepare:
                   type: object
                   properties:

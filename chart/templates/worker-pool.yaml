@@ -89,6 +89,13 @@ spec:
                 secretKeyRef:
                   name: harmostes-rzc-token
                   key: password
+            # Forgejo PAT (git.rezus.cloud): token-scheme API auth + token-
+            # embedded git URLs — basic-auth passwords are rejected (forgejo#2809).
+            - name: HARMOSTES_FORGEJO_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: harmostes-forgejo-token
+                  key: token
             - name: LITELLM_URL
               valueFrom:
                 secretKeyRef:

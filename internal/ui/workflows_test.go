@@ -615,3 +615,180 @@ func TestWorkflowNameRe_RejectsInvalid(t *testing.T) {
 		}
 	}
 }
+
+// prReviewTemplate builds the standard pr-review WorkflowTemplate for tests.
+func prReviewTemplate() *v1alpha1.WorkflowTemplate {
+	return &v1alpha1.WorkflowTemplate{
+		ObjectMeta: metav1.ObjectMeta{Name: "pr-review", Namespace: "harmostes"},
+		Spec: v1alpha1.WorkflowTemplateSpec{
+			Description: "PR review",
+			Prepare: v1alpha1.PrepareSpec{
+				Plugin: v1alpha1.PluginRef{Name: "pr-fetch", ConfigMap: "harmostes-pr-review"},
+				Detect: "changed",
+			},
+			Agent: v1alpha1.AgentSpec{
+				Model:        "litellm/zai/glm-4.7",
+				Skill:        "/skills/pr-review/SKILL.md",
+				Tools:        []string{"read", "bash", "grep"},
+				TaskTemplate: v1alpha1.TaskTemplate{Name: "pr-review", ConfigMap: "harmostes-tasks", Key: "pr-review.txt"},
+				Gate:         v1alpha1.GateRef{Plugin: v1alpha1.PluginRef{Name: "pr-review", ConfigMap: "harmostes-pr-review"}},
+				MaxFixes:     1,
+			},
+			Deploy: v1alpha1.DeploySpec{Plugin: v1alpha1.PluginRef{Name: "post-review", ConfigMap: "harmostes-pr-review"}},
+		},
+	}
+}
+
+func TestHandleWorkflowCreate_TemplateInstance(t *testing.T) {
+	s := workflowTestServer(prReviewTemplate())
+
+	form := url.Values{}
+	form.Set("name", "pr-review-harmostes")
+	form.Set("templateRef", "pr-review")
+	form.Set("schedule", "*/10 * * * *")
+	form.Set("label", "needs-review")
+	form.Set("repos", "tibrezus/harmostes, github.com/other/repo")
+	form.Set("wiki", "")
+
+	req := httptest.NewRequest(http.MethodPost, "/workflows", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req = req.WithContext(withIdentity(req.Context(), &Identity{Username: "alice"}))
+
+	rec := httptest.NewRecorder()
+	s.handleWorkflowCreate(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d. body: %s", rec.Code, http.StatusSeeOther, rec.Body.String())
+	}
+
+	var wf v1alpha1.Workflow
+	if err := s.k8sClient.Get(context.Background(), types.NamespacedName{Namespace: "harmostes", Name: "pr-review-harmostes"}, &wf); err != nil {
+		t.Fatalf("workflow not created: %v", err)
+	}
+	if wf.Spec.TemplateRef != "pr-review" {
+		t.Errorf("templateRef = %q, want pr-review", wf.Spec.TemplateRef)
+	}
+	if wf.Spec.Source.Kind != "schedule" || wf.Spec.Source.Schedule != "*/10 * * * *" {
+		t.Errorf("source = %+v, want schedule */10", wf.Spec.Source)
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal(wf.Spec.Config, &cfg); err != nil {
+		t.Fatalf("config not JSON: %v", err)
+	}
+	if repos, _ := cfg["repos"].([]any); len(repos) != 2 || repos[0] != "tibrezus/harmostes" {
+		t.Errorf("config repos = %v, want 2 repos", cfg["repos"])
+	}
+	// Owner is stamped from the authenticated identity — the creation
+	// invariant: every created workflow is visible to its creator.
+	if wf.Labels[v1alpha1.OwnerLabel] != "alice" {
+		t.Errorf("owner label = %q, want alice", wf.Labels[v1alpha1.OwnerLabel])
+	}
+	// The stored CR stays thin: pipeline shape lives in the template.
+	if wf.Spec.Agent.Model != "" || wf.Spec.Prepare.Plugin.Name != "" {
+		t.Errorf("thin instance must not duplicate template spec, got agent=%+v prepare=%+v", wf.Spec.Agent, wf.Spec.Prepare)
+	}
+}
+
+func TestHandleWorkflowCreate_TemplateInstanceUnknownTemplate(t *testing.T) {
+	s := workflowTestServer()
+
+	form := url.Values{}
+	form.Set("name", "orphan")
+	form.Set("templateRef", "does-not-exist")
+
+	req := httptest.NewRequest(http.MethodPost, "/workflows", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req = req.WithContext(withIdentity(req.Context(), &Identity{Username: "alice"}))
+
+	rec := httptest.NewRecorder()
+	s.handleWorkflowCreate(rec, req)
+
+	if rec.Code != http.StatusOK { // renders the error page
+		t.Fatalf("status = %d, want 200 (error page)", rec.Code)
+	}
+	var list v1alpha1.WorkflowList
+	_ = s.k8sClient.List(context.Background(), &list)
+	if len(list.Items) != 0 {
+		t.Fatalf("no workflow should be created for unknown template, got %d", len(list.Items))
+	}
+}
+
+func TestResolveWorkflow_MergesTemplate(t *testing.T) {
+	thin := &v1alpha1.Workflow{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "pr-review-harmostes",
+			Namespace: "harmostes",
+			Labels:    map[string]string{v1alpha1.OwnerLabel: "alice"},
+		},
+		Spec: v1alpha1.WorkflowSpec{
+			TemplateRef: "pr-review",
+			Source:      v1alpha1.SourceSpec{Kind: "schedule", Schedule: "*/10 * * * *"},
+			Config:      json.RawMessage(`{"label":"needs-review","repos":["tibrezus/harmostes"]}`),
+		},
+	}
+	s := workflowTestServer(prReviewTemplate(), thin)
+
+	merged := s.resolveWorkflow(context.Background(), thin)
+	if merged.Spec.Agent.Model != "litellm/zai/glm-4.7" {
+		t.Errorf("merged model = %q, want inherited", merged.Spec.Agent.Model)
+	}
+	if merged.Spec.Prepare.Plugin.Name != "pr-fetch" {
+		t.Errorf("merged prepare = %q, want pr-fetch", merged.Spec.Prepare.Plugin.Name)
+	}
+	if merged.Spec.Deploy.Plugin.Name != "post-review" {
+		t.Errorf("merged deploy = %q, want post-review", merged.Spec.Deploy.Plugin.Name)
+	}
+	if string(merged.Spec.Prepare.Config) == "" {
+		t.Error("instance config must overlay prepare.config")
+	}
+	// The stored CR is never mutated by resolution.
+	if thin.Spec.Agent.Model != "" {
+		t.Error("resolveWorkflow must not mutate the stored thin spec")
+	}
+}
+
+func TestResolveWorkflow_MissingTemplateDegrades(t *testing.T) {
+	thin := &v1alpha1.Workflow{
+		ObjectMeta: metav1.ObjectMeta{Name: "x", Namespace: "harmostes"},
+		Spec:       v1alpha1.WorkflowSpec{TemplateRef: "gone"},
+	}
+	s := workflowTestServer()
+	got := s.resolveWorkflow(context.Background(), thin)
+	if got.Spec.TemplateRef != "gone" || got.Spec.Agent.Model != "" {
+		t.Error("missing template must degrade to the thin spec unchanged")
+	}
+}
+
+func TestHandleWorkflowDetail_ThinInstanceRendersMergedPipeline(t *testing.T) {
+	thin := &v1alpha1.Workflow{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "pr-review-harmostes",
+			Namespace: "harmostes",
+			Labels:    map[string]string{v1alpha1.OwnerLabel: "alice"},
+		},
+		Spec: v1alpha1.WorkflowSpec{
+			TemplateRef: "pr-review",
+			Source:      v1alpha1.SourceSpec{Kind: "schedule", Schedule: "*/10 * * * *"},
+		},
+	}
+	s := workflowTestServer(prReviewTemplate(), thin)
+
+	req := httptest.NewRequest(http.MethodGet, "/workflows/pr-review-harmostes", nil)
+	req.SetPathValue("name", "pr-review-harmostes")
+	req = req.WithContext(withIdentity(req.Context(), &Identity{Username: "alice"}))
+	rec := httptest.NewRecorder()
+	s.handleWorkflowDetail(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d. body: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	// The pipeline renders node sublabels from the compiled merged spec:
+	// prepare=pr-fetch, agent present, deploy=post-review.
+	if !strings.Contains(body, "pr-fetch") || !strings.Contains(body, "post-review") {
+		t.Error("detail page must render the merged pipeline (template shape) for thin instances")
+	}
+	if !strings.Contains(body, "AGENT") {
+		t.Error("detail page must render the agent node for thin instances")
+	}
+}

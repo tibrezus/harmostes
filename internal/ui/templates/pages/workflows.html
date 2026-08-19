@@ -1,6 +1,7 @@
 {{define "pages/workflows.html"}}
-<div class="ds-section">
-	<p class="ds-empty-text">Workflows are declared as YAML and managed via GitOps. This view is read-only.</p>
+<div class="ds-section ds-section--row">
+	<p class="ds-empty-text">Workflows are created here — instantiate a reusable template. This is the only creation surface; every workflow you create is visible to you.</p>
+	<a href="/workflows/new" class="ds-button ds-button--primary">New Workflow</a>
 </div>
 {{- if not .Workflows}}
 <div class="ds-empty">
@@ -10,7 +11,7 @@
 		</svg>
 	</div>
 	<span class="ds-empty-title">No Workflows Yet</span>
-	<p class="ds-empty-text">You have no workflows. Create one to start automating with harmostes.</p>
+	<p class="ds-empty-text">You have no workflows. <a href="/workflows/new">Create one</a> to start automating with harmostes.</p>
 </div>
 {{- else}}
 {{range .GateGroups}}

@@ -63,6 +63,11 @@ func (s *Server) handleWorkflowGraphAPI(w http.ResponseWriter, r *http.Request) 
 		trigger = "webhook"
 	}
 
+	// Thin templateRef instances compile from their merged spec (template
+	// defaults + instance config) so the canvas shows the real structure.
+	resolved := s.resolveWorkflow(r.Context(), &wf)
+	wf = resolved
+
 	// If the Workflow has an explicit spec.graph (graph-native mode), return it
 	// directly. Otherwise, compile the declarative spec (prepare → agent → deploy)
 	// into a graph for the read-only canvas view.

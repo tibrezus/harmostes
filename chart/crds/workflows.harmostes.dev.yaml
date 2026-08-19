@@ -54,6 +54,9 @@ spec:
               required: [source]
               properties:
                 templateRef: { type: string, description: "Optional: inherits prepare/agent/deploy defaults from a WorkflowTemplate CR" }
+                config:                                    # instance-level scope (repos, label, wiki, …); overlays prepare.config after templateRef merge
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
                 source:
                   type: object
                   required: [kind]

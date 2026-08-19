@@ -46,7 +46,7 @@ func CompileWorkflow(wf *v1alpha1.Workflow) v1alpha1.GraphSpec {
 			Model:    wf.Spec.Agent.Model,
 			Skill:    wf.Spec.Agent.Skill,
 			Tools:    wf.Spec.Agent.Tools,
-			Task:     wf.Spec.Agent.TaskTemplate.Name,
+			Task:     taskRef(wf.Spec.Agent.TaskTemplate),
 			MaxFixes: maxFixes,
 			Gate: &GateNodeConfig{
 				Plugin: PluginNodeConfig{
@@ -99,6 +99,19 @@ func wikiLintScope(workflowName string) string {
 		" under raw/arch/ \u2014 those are owned by other Workflows."
 }
 
+// taskRef renders a TaskTemplate as the agent node's task string. When the
+// template carries full resolution info (configMap + key) the ref is
+// "configmap/key" — the graph TaskResolver parses it back into a lookup, so
+// the 6 KB task text actually reaches the agent (a bare name like "pr-review"
+// fails the looksLikeRef heuristic and would be used as literal inline text).
+// Without resolution info the bare name is kept (legacy behavior).
+func taskRef(tt v1alpha1.TaskTemplate) string {
+	if tt.ConfigMap != "" && tt.Key != "" {
+		return tt.ConfigMap + "/" + tt.Key
+	}
+	return tt.Name
+}
+
 // CompileTemplate compiles a WorkflowTemplate's spec into a pipeline graph,
 // identical in structure to CompileWorkflow but operating on WorkflowTemplateSpec.
 // This lets the UI render any template as a visual pipeline graph without
@@ -129,7 +142,7 @@ func CompileTemplate(tmpl *v1alpha1.WorkflowTemplate) v1alpha1.GraphSpec {
 			Model:    tmpl.Spec.Agent.Model,
 			Skill:    tmpl.Spec.Agent.Skill,
 			Tools:    tmpl.Spec.Agent.Tools,
-			Task:     tmpl.Spec.Agent.TaskTemplate.Name,
+			Task:     taskRef(tmpl.Spec.Agent.TaskTemplate),
 			MaxFixes: maxFixes,
 			Gate: &GateNodeConfig{
 				Plugin: PluginNodeConfig{

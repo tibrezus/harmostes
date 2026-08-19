@@ -88,6 +88,7 @@ type WorkflowList struct {
 type WorkflowSpec struct {
 	Source        SourceSpec              `json:"source"`
 	TemplateRef   string                  `json:"templateRef,omitempty"`   // optional: inherits prepare/agent/deploy defaults from a WorkflowTemplate CR
+	Config        json.RawMessage         `json:"config,omitempty"`        // instance-level scope (repos, label, wiki, …) — overlays prepare.config after templateRef merge
 	WorkspaceRepo *WorkspaceRepoSpec      `json:"workspaceRepo,omitempty"` // the repo the pipeline operates on (prepare populates, agent edits, deploy pushes)
 	Prepare       PrepareSpec             `json:"prepare,omitempty"`
 	Agent         AgentSpec               `json:"agent,omitempty"`

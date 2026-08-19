@@ -107,6 +107,18 @@ func main() {
 	if err := cl.Get(ctx, client.ObjectKey{Namespace: namespace, Name: workflow}, &wf); err != nil {
 		fatal("get workflow %s/%s: %v", namespace, workflow, err)
 	}
+	// A Workflow referencing a WorkflowTemplate (spec.templateRef) inherits the
+	// template's prepare/agent/deploy defaults; instance-set fields and
+	// spec.config win. Applied here so every trigger path executes the merged
+	// spec (the stored CR stays thin — the template remains the single source
+	// of pipeline shape).
+	if ref := wf.Spec.TemplateRef; ref != "" {
+		var tmpl v1alpha1.WorkflowTemplate
+		if err := cl.Get(ctx, client.ObjectKey{Namespace: namespace, Name: ref}, &tmpl); err != nil {
+			fatal("get workflow template %s/%s: %v", namespace, ref, err)
+		}
+		v1alpha1.ApplyTemplateDefaults(&wf, &tmpl)
+	}
 	logf("workflow %s/%s phase=run source=%q workdir=%s", namespace, workflow, source, workdir)
 
 	// If the Workflow declares a workspace repo (the wiki / the fork), fetch it
@@ -395,6 +407,11 @@ func runTimeout(wf *v1alpha1.Workflow) time.Duration {
 type taskResolverAdapter struct{ inner worker.TaskResolver }
 
 func (a taskResolverAdapter) Get(ctx context.Context, ref string) (string, error) {
+	// "configmap/key" refs (emitted by compile.taskRef) resolve directly;
+	// anything else falls back to the legacy Name-only form.
+	if cm, key, ok := strings.Cut(ref, "/"); ok && cm != "" && key != "" && !strings.Contains(key, " ") {
+		return a.inner.Get(ctx, v1alpha1.TaskTemplate{ConfigMap: cm, Key: key})
+	}
 	return a.inner.Get(ctx, v1alpha1.TaskTemplate{Name: ref})
 }
 

@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -82,27 +84,43 @@ var knownPlugins = map[string][]string{
 }
 
 // handleWorkflowNew renders the create form. It loads the user's tokens (for
-// the token selector) and the gate catalog.
+// the template catalog (WorkflowTemplate CRs — the reusable pipeline
+// shapes). This is the only sanctioned creation surface: the owner label is
+// stamped from the authenticated identity, so a created workflow is always
+// visible to its creator in the UI. (GitOps/YAML creation was removed — it
+// could produce workflows no one could see.)
 func (s *Server) handleWorkflowNew(w http.ResponseWriter, r *http.Request) {
 	owner := identityFromContext(r.Context()).Username
 
-	tokens, err := s.listTokens(r, owner)
+	templates, err := s.listTemplates(r)
 	if err != nil {
-		s.logger.Error("list tokens for workflow form", "owner", owner, "err", err)
-		tokens = nil // non-fatal — form renders without token dropdown
-	}
-
-	gateID := r.URL.Query().Get("gate")
-	if gateID == "" {
-		gateID = "wiki-lint"
+		s.logger.Error("list templates for workflow form", "owner", owner, "err", err)
+		s.renderError(w, r, "Failed to load templates: "+err.Error())
+		return
 	}
 
 	s.render(w, r, "pages/workflow_new.html", map[string]any{
-		"Gates":      gateCatalog,
-		"ActiveGate": gateByID(gateID),
-		"Tokens":     tokens,
-		"Models":     []string{"litellm/zai/glm-5.2", "litellm/zai/glm-5.1", "litellm/zai/glm-4.7"},
+		"Templates":        templates,
+		"SelectedTemplate": r.URL.Query().Get("template"),
 	})
+}
+
+// resolveWorkflow returns wf with its effective spec: when spec.templateRef
+// names a WorkflowTemplate, the template defaults are overlaid (instance-set
+// fields win; spec.config overlays prepare.config). Read paths (list
+// grouping, detail, graph) render the merged shape while the stored CR stays
+// thin. A missing template degrades to the thin spec (rendered as-is).
+func (s *Server) resolveWorkflow(ctx context.Context, wf *v1alpha1.Workflow) v1alpha1.Workflow {
+	if wf.Spec.TemplateRef == "" {
+		return *wf
+	}
+	var tmpl v1alpha1.WorkflowTemplate
+	if err := s.k8sClient.Get(ctx, client.ObjectKey{Namespace: s.namespace, Name: wf.Spec.TemplateRef}, &tmpl); err != nil {
+		return *wf
+	}
+	merged := wf.DeepCopy()
+	v1alpha1.ApplyTemplateDefaults(merged, &tmpl)
+	return *merged
 }
 
 // gateByID returns the GateArchetype for the given gate name, or nil.
@@ -126,9 +144,16 @@ func presetFor(id string) preset {
 	return presets[len(presets)-1] // custom
 }
 
-// handleWorkflowCreate handles POST /workflows — creates a Workflow CR from
-// form input. The owner label is stamped via StampOwnerLabel (anti-spoof —
-// the server sets it from the authenticated identity, never from client input).
+// handleWorkflowCreate handles POST /workflows. Two forms:
+//
+//   - template instance (the UI path): name + templateRef + schedule +
+//     config (label, repos, wiki) → a thin Workflow CR.
+//   - legacy gate-archetype form (kept for compat): full spec built from the
+//     gate catalog.
+//
+// The owner label is stamped via StampOwnerLabel (anti-spoof — the server
+// sets it from the authenticated identity, never from client input), so
+// every created workflow is visible to its creator.
 func (s *Server) handleWorkflowCreate(w http.ResponseWriter, r *http.Request) {
 	owner := identityFromContext(r.Context()).Username
 
@@ -163,6 +188,59 @@ func (s *Server) handleWorkflowCreate(w http.ResponseWriter, r *http.Request) {
 		s.renderError(w, r, "Invalid workflow name: must be lowercase, alphanumeric with hyphens, max 63 characters")
 		return
 	}
+
+	// Template-instance path (the UI creation surface): a thin CR that
+	// inherits its pipeline shape from a WorkflowTemplate. Only the
+	// per-instance variables are supplied: schedule + scope config.
+	if templateRef := strings.TrimSpace(r.FormValue("templateRef")); templateRef != "" {
+		var tmpl v1alpha1.WorkflowTemplate
+		if err := s.k8sClient.Get(r.Context(), client.ObjectKey{Namespace: s.namespace, Name: templateRef}, &tmpl); err != nil {
+			s.renderError(w, r, "Unknown template: "+templateRef)
+			return
+		}
+
+		repos := []string{}
+		for _, rv := range strings.Split(r.FormValue("repos"), ",") {
+			if rv = strings.TrimSpace(rv); rv != "" {
+				repos = append(repos, rv)
+			}
+		}
+		cfg, err := json.Marshal(map[string]any{
+			"label": strings.TrimSpace(r.FormValue("label")),
+			"repos": repos,
+			"wiki":  strings.TrimSpace(r.FormValue("wiki")),
+		})
+		if err != nil {
+			s.renderError(w, r, "Failed to build config: "+err.Error())
+			return
+		}
+
+		wf := &v1alpha1.Workflow{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: s.namespace,
+			},
+			Spec: v1alpha1.WorkflowSpec{
+				TemplateRef: templateRef,
+				Source:      v1alpha1.SourceSpec{Kind: "schedule", Schedule: schedule},
+				Config:      cfg,
+			},
+		}
+		StampOwnerLabel(wf, owner)
+		if err := s.k8sClient.Create(r.Context(), wf); err != nil {
+			if errors.IsAlreadyExists(err) {
+				s.renderError(w, r, "A workflow with that name already exists")
+				return
+			}
+			s.logger.Error("create workflow", "owner", owner, "name", name, "err", err)
+			s.renderError(w, r, "Failed to create workflow: "+err.Error())
+			return
+		}
+		s.logger.Info("workflow created (template instance)", "owner", owner, "name", name, "template", templateRef)
+		http.Redirect(w, r, "/workflows/"+name, http.StatusSeeOther)
+		return
+	}
+
 	if repoURL == "" {
 		s.renderError(w, r, "Repository URL is required")
 		return

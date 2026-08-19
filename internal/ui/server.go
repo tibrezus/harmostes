@@ -142,6 +142,15 @@ func (s *Server) Routes() http.Handler {
 	pages.HandleFunc("GET /workflows/{name}/runs/{job}", s.handleRunDetail)
 	pages.HandleFunc("POST /workflows/{name}/trigger", s.handleWorkflowTrigger)
 	pages.HandleFunc("POST /workflows/{name}/toggle", s.handleWorkflowToggle)
+	pages.HandleFunc("POST /workflows/{name}/delete", s.handleWorkflowDelete)
+
+	// Workflow creation — the ONLY sanctioned creation surface. The owner
+	// label is stamped from the authenticated identity (StampOwnerLabel), so
+	// every created workflow is visible to its creator. GitOps/YAML workflow
+	// creation was deliberately removed (it produced workflows invisible in
+	// the UI); nothing else may create Workflow CRs.
+	pages.HandleFunc("GET /workflows/new", s.handleWorkflowNew)
+	pages.HandleFunc("POST /workflows", s.handleWorkflowCreate)
 
 	// Read-only graph API (auto-generated from Workflow spec — no editing)
 	pages.HandleFunc("GET /api/workflows/{name}/graph", s.handleWorkflowGraphAPI)

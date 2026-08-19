@@ -1,0 +1,67 @@
+{{define "pages/workflow_new.html"}}
+<div class="ds-section">
+	<a href="/workflows" class="tpl-back">◂ Workflows</a>
+	<h1 class="ds-section-title">New Workflow</h1>
+	<p class="ds-empty-text">
+		Pick a reusable template and give it a name, a schedule, and its scope.
+		The instance inherits its pipeline shape (prepare → agent → gate → deploy)
+		from the template — you only set what varies per instance.
+	</p>
+</div>
+
+{{- if not .Templates}}
+<div class="ds-empty">
+	<span class="ds-empty-title">No Templates</span>
+	<p class="ds-empty-text">No WorkflowTemplates exist yet — workflows instantiate templates, so add one first.</p>
+</div>
+{{- else}}
+<form method="POST" action="/workflows" class="wf-new-form" id="wf-new-form">
+	<section class="tpl-list">
+		{{- $sel := .SelectedTemplate}}
+		{{- range .Templates}}
+		<label class="tpl-card wf-new-template{{if eq .Name $sel}} wf-new-template--selected{{end}}">
+			<input type="radio" name="templateRef" value="{{.Name}}" required {{if eq .Name $sel}}checked{{end}}>
+			<header class="tpl-card-header">
+				<span class="tpl-card-name">{{.Name}}</span>
+				{{if .Spec.Agent.Gate.Plugin.Name}}<span class="tpl-card-gate">{{.Spec.Agent.Gate.Plugin.Name}}</span>{{end}}
+			</header>
+			<p class="tpl-card-desc">{{.Spec.Description}}</p>
+			{{if .Spec.Agent.Model}}<span class="tpl-chip">{{.Spec.Agent.Model}}</span>{{end}}
+			{{if .Spec.Agent.Skill}}<span class="tpl-chip">{{.Spec.Agent.Skill | baseName}}</span>{{end}}
+		</label>
+		{{- end}}
+	</section>
+
+	<div class="wf-new-fields">
+		<label class="wf-new-field">
+			<span>Name</span>
+			<input type="text" name="name" pattern="[a-z0-9]([-a-z0-9]*[a-z0-9])?" maxlength="63"
+				placeholder="pr-review-myrepo" required>
+			<small>lowercase alphanumerics and hyphens, max 63 chars</small>
+		</label>
+		<label class="wf-new-field">
+			<span>Schedule (cron)</span>
+			<input type="text" name="schedule" value="*/10 * * * *">
+			<small>how often the trigger fires</small>
+		</label>
+		<label class="wf-new-field">
+			<span>Repos (comma-separated)</span>
+			<input type="text" name="repos" placeholder="tibrezus/harmostes, github.com/org/repo">
+			<small>the scope the prepare plugin operates on</small>
+		</label>
+		<label class="wf-new-field">
+			<span>Label trigger</span>
+			<input type="text" name="label" placeholder="needs-review">
+			<small>optional: only act when this label is present</small>
+		</label>
+		<label class="wf-new-field">
+			<span>Wiki repo (optional)</span>
+			<input type="text" name="wiki" placeholder="">
+			<small>context repo some agents use for design evidence</small>
+		</label>
+	</div>
+
+	<button type="submit" class="ds-button ds-button--primary">Create Workflow</button>
+</form>
+{{- end}}
+{{end}}

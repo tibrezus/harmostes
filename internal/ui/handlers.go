@@ -43,7 +43,10 @@ func (s *Server) handleWorkflowList(w http.ResponseWriter, r *http.Request) {
 	groupMap := map[string]*gateGroup{}
 	for i := range workflows {
 		wf := &workflows[i]
-		gateName := deriveArchetype(wf)
+		// Thin templateRef instances render under their template's archetype —
+		// resolve the merged spec for grouping (stored CR stays thin).
+		resolved := s.resolveWorkflow(r.Context(), wf)
+		gateName := deriveArchetype(&resolved)
 		g, ok := groupMap[gateName]
 		if !ok {
 			cat := "other"
@@ -111,6 +114,11 @@ func (s *Server) handleWorkflowDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Thin templateRef instances render their merged shape (template defaults
+	// + instance config) — pipeline, archetype, and graph all show the real
+	// structure while the stored CR stays thin.
+	resolved := s.resolveWorkflow(r.Context(), &wf)
+
 	// Get run history (Jobs for this workflow, filtered by owner)
 	jobs, err := s.listJobs(r, name, owner)
 	if err != nil {
@@ -119,9 +127,9 @@ func (s *Server) handleWorkflowDetail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.render(w, r, "pages/detail.html", map[string]any{
-		"Workflow": wf,
+		"Workflow": resolved,
 		"Jobs":     jobs,
-		"Pipeline": buildWorkflowPipelineView(&wf),
+		"Pipeline": buildWorkflowPipelineView(&resolved),
 	})
 }
 

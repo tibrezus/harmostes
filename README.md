@@ -48,7 +48,7 @@ chart/                  # the Helm chart (controller, worker, ui)
 cmd/                    # harmostes-{controller,worker,agent,ui} entrypoints
 internal/               # controller, worker, agent, graph executor, ui, webhook, dapr, observability
 plugins/                # reference plugins (rig-emit, merge-sync, …) + their README
-examples/               # example Workflow CRs
+examples/               # task-template + platform notes (workflow creation lives in the UI)
 ```
 
 ## The primitive (standalone)

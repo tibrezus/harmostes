@@ -2,10 +2,12 @@ package ui
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/url"
 	"path"
 	"regexp"
 	"strings"
+	"time"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
 )
@@ -109,12 +111,11 @@ func deterministicWorkflowName(gateName, repoURL string) string {
 //
 // Returns a raw URL/path string suitable for repoSlug().
 func workflowTarget(wf v1alpha1.WorkflowSpec) string {
-	// Check the catalog for the TargetFromPrepareRepos strategy.
-	if g := gateByName(wf.Agent.Gate.Plugin.Name); g != nil && g.TargetFromPrepareRepos {
-		if wf.Prepare.Plugin.Name == "pr-fetch" || wf.Prepare.Plugin.Name == "" {
-			if repos := extractPrepareRepos(wf.Prepare.Config); len(repos) > 0 {
-				return repos[0]
-			}
+	// PR-review workflows name their target from the first scoped repo (the
+	// prepare plugin is pr-fetch or resolved from a pr-review template).
+	if wf.Prepare.Plugin.Name == "pr-fetch" || wf.Prepare.Plugin.Name == "" {
+		if repos := extractPrepareRepos(wf.Prepare.Config); len(repos) > 0 {
+			return repos[0]
 		}
 	}
 
@@ -142,4 +143,39 @@ func extractPrepareRepos(rawConfig json.RawMessage) []string {
 		return nil
 	}
 	return cfg.Repos
+}
+
+// parseGitTarget extracts the host and owner/repo from a git URL.
+// "https://github.com/rezuscloud/signoz.git" → ("github.com", "rezuscloud/signoz")
+// "git@github.com:rezuscloud/signoz.git" → ("github.com", "rezuscloud/signoz")
+func parseGitURL(rawURL string) (host, object string) {
+	s := strings.TrimSpace(rawURL)
+	if s == "" {
+		return "", ""
+	}
+	// SSH form: git@host:path
+	if i := strings.Index(s, ":"); i > 0 && strings.Contains(s[:i], "@") {
+		host = s[:i]
+		if at := strings.LastIndex(host, "@"); at >= 0 {
+			host = host[at+1:]
+		}
+		object = strings.TrimSuffix(s[i+1:], ".git")
+		return host, object
+	}
+	// HTTPS form
+	if u, err := url.Parse(s); err == nil && u.Host != "" {
+		return u.Host, strings.TrimSuffix(strings.TrimPrefix(u.Path, "/"), ".git")
+	}
+	return "", s
+}
+
+// formatDuration renders a duration for UI display (compact, one decimal).
+func formatDuration(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%.1fs", d.Seconds())
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%.1fm", d.Minutes())
+	}
+	return fmt.Sprintf("%.1fh", d.Hours())
 }

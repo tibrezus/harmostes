@@ -27,62 +27,6 @@ const maxWorkflowNameLen = 63
 // Setting it to a value that differs from status.lastProcessedRevision triggers a run.
 const triggerAnnotation = "harmostes.dev/trigger-revision"
 
-// preset describes a workflow template that pre-fills plugin selection + defaults.
-type preset struct {
-	ID          string
-	Name        string
-	Description string
-	Prepare     string // plugin name
-	Gate        string // plugin name
-	Deploy      string // plugin name
-	Skill       string // SKILL.md path
-	TaskName    string // task template name
-}
-
-// presets is the built-in template catalog. Each maps to a proven pipeline
-// structure. The user picks a preset, and the form pre-fills plugin names +
-// skill + task — the user only supplies the repo URL, branch, and token.
-var presets = []preset{
-	{
-		ID:          "llm-wiki",
-		Name:        "LLM Wiki (architecture docs)",
-		Description: "Source → RIG extraction → agent writes C4 docs → push to wiki repo",
-		Prepare:     "rig-emit",
-		Gate:        "wiki-lint",
-		Deploy:      "git-push",
-		Skill:       "/skills/wiki/SKILL.md",
-		TaskName:    "arch-sync-lc4",
-	},
-	{
-		ID:          "fork-maintenance",
-		Name:        "Fork Maintenance (upstream sync)",
-		Description: "Upstream → fork-sync merges release branch → conflict-resolver handles disputes",
-		Prepare:     "fork-sync",
-		Gate:        "noop",
-		Deploy:      "noop",
-		Skill:       "/skills/fork-maintenance/SKILL.md",
-		TaskName:    "resolve-conflict",
-	},
-	{
-		ID:          "custom",
-		Name:        "Custom (manual plugin selection)",
-		Description: "Choose your own prepare, gate, and deploy plugins",
-		Prepare:     "",
-		Gate:        "",
-		Deploy:      "",
-		Skill:       "/skills/wiki/SKILL.md",
-		TaskName:    "arch-sync-lc4",
-	},
-}
-
-// knownPlugins is the allowlist of plugin names for the custom preset dropdowns.
-// These are the built-in + deployed plugins the worker can resolve.
-var knownPlugins = map[string][]string{
-	"prepare": {"rig-emit", "raw-copy", "fork-sync"},
-	"gate":    {"wiki-lint", "noop"},
-	"deploy":  {"git-push", "noop"},
-}
-
 // handleWorkflowNew renders the create form. It loads the user's tokens (for
 // the template catalog (WorkflowTemplate CRs — the reusable pipeline
 // shapes). This is the only sanctioned creation surface: the owner label is
@@ -123,16 +67,6 @@ func (s *Server) resolveWorkflow(ctx context.Context, wf *v1alpha1.Workflow) v1a
 	return *merged
 }
 
-// gateByID returns the GateArchetype for the given gate name, or nil.
-func gateByID(id string) *GateArchetype {
-	for i := range gateCatalog {
-		if gateCatalog[i].Name == id {
-			return &gateCatalog[i]
-		}
-	}
-	return nil
-}
-
 // scopeConfigJSON builds the instance's spec.config from the form, using
 // ONLY the parameters the selected template declares (spec.scope). The
 // template owns its configuration dialect end-to-end: the form renders from
@@ -168,23 +102,10 @@ func scopeConfigJSON(r *http.Request, tmpl *v1alpha1.WorkflowTemplate) ([]byte, 
 	return json.Marshal(cfg)
 }
 
-// presetFor is retained for backward compatibility with older template references.
-// Deprecated: use gateByID instead.
-func presetFor(id string) preset {
-	for _, p := range presets {
-		if p.ID == id {
-			return p
-		}
-	}
-	return presets[len(presets)-1] // custom
-}
-
-// handleWorkflowCreate handles POST /workflows. Two forms:
-//
-//   - template instance (the UI path): name + templateRef + schedule +
-//     config (label, repos, wiki) → a thin Workflow CR.
-//   - legacy gate-archetype form (kept for compat): full spec built from the
-//     gate catalog.
+// handleWorkflowCreate handles POST /workflows — the ONLY creation form:
+// a thin template instance (name + templateRef + schedule + the template's
+// declared scope params). The legacy gate-archetype branch is retired —
+// WorkflowTemplate CRs are the single archetype registry.
 //
 // The owner label is stamped via StampOwnerLabel (anti-spoof — the server
 // sets it from the authenticated identity, never from client input), so
@@ -198,17 +119,6 @@ func (s *Server) handleWorkflowCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	name := strings.TrimSpace(r.FormValue("name"))
-	repoURL := strings.TrimSpace(r.FormValue("repoUrl"))
-	branch := strings.TrimSpace(r.FormValue("branch"))
-	if branch == "" {
-		branch = "main"
-	}
-	gateID := r.FormValue("gate")
-	tokenSecret := r.FormValue("tokenSecret")
-	model := strings.TrimSpace(r.FormValue("model"))
-	if model == "" {
-		model = "litellm/zai/glm-5.2"
-	}
 	schedule := strings.TrimSpace(r.FormValue("schedule"))
 	if schedule == "" {
 		schedule = "*/30 * * * *"
@@ -224,171 +134,36 @@ func (s *Server) handleWorkflowCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Template-instance path (the UI creation surface): a thin CR that
-	// inherits its pipeline shape from a WorkflowTemplate. Only the
-	// per-instance variables are supplied: schedule + scope config.
-	if templateRef := strings.TrimSpace(r.FormValue("templateRef")); templateRef != "" {
-		var tmpl v1alpha1.WorkflowTemplate
-		if err := s.k8sClient.Get(r.Context(), client.ObjectKey{Namespace: s.namespace, Name: templateRef}, &tmpl); err != nil {
-			s.renderError(w, r, "Unknown template: "+templateRef)
-			return
-		}
-
-		cfg, err := scopeConfigJSON(r, &tmpl)
-		if err != nil {
-			s.renderError(w, r, "Failed to build config: "+err.Error())
-			return
-		}
-
-		wf := &v1alpha1.Workflow{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      name,
-				Namespace: s.namespace,
-			},
-			Spec: v1alpha1.WorkflowSpec{
-				TemplateRef: templateRef,
-				Source:      v1alpha1.SourceSpec{Kind: "schedule", Schedule: schedule},
-				Config:      cfg,
-			},
-		}
-		StampOwnerLabel(wf, owner)
-		if err := s.k8sClient.Create(r.Context(), wf); err != nil {
-			if errors.IsAlreadyExists(err) {
-				s.renderError(w, r, "A workflow with that name already exists")
-				return
-			}
-			s.logger.Error("create workflow", "owner", owner, "name", name, "err", err)
-			s.renderError(w, r, "Failed to create workflow: "+err.Error())
-			return
-		}
-		s.logger.Info("workflow created (template instance)", "owner", owner, "name", name, "template", templateRef)
-		http.Redirect(w, r, "/workflows/"+name, http.StatusSeeOther)
+	templateRef := strings.TrimSpace(r.FormValue("templateRef"))
+	if templateRef == "" {
+		s.renderError(w, r, "A template must be selected — workflows are template instances (the gate-archetype form was retired)")
 		return
 	}
 
-	if repoURL == "" {
-		s.renderError(w, r, "Repository URL is required")
+	var tmpl v1alpha1.WorkflowTemplate
+	if err := s.k8sClient.Get(r.Context(), client.ObjectKey{Namespace: s.namespace, Name: templateRef}, &tmpl); err != nil {
+		s.renderError(w, r, "Unknown template: "+templateRef)
 		return
 	}
 
-	g := gateByID(gateID)
-	if g == nil {
-		g = &gateCatalog[0] // fallback to first gate
-	}
-
-	// The gate determines the workflow structure. A graph-native gate
-	// (GraphTemplate) builds spec.graph — the full node-by-node topology,
-	// including external display-only components; the executor runs the real
-	// nodes and the Map renders the whole story. Otherwise the declarative
-	// prepare/agent/deploy form applies.
-	if g.GraphTemplate != nil {
-		fork := strings.TrimPrefix(name, "fork-maintenance-")
-		gs := materializeGraphTemplate(g.GraphTemplate, fork)
-		wf := &v1alpha1.Workflow{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      name,
-				Namespace: s.namespace,
-			},
-			Spec: v1alpha1.WorkflowSpec{
-				Source: v1alpha1.SourceSpec{
-					Kind:     "git",
-					Repo:     name,
-					Branch:   branch,
-					Language: "go",
-				},
-				WorkspaceRepo: &v1alpha1.WorkspaceRepoSpec{URL: repoURL, Branch: branch},
-				Graph:         &gs,
-				Bindings:      deriveBindings(g, repoURL, branch),
-			},
-		}
-		if tokenSecret != "" {
-			wf.Spec.WorkspaceRepo.TokenRef = &v1alpha1.SecretRef{Name: tokenSecret, Key: "token"}
-		}
-		StampOwnerLabel(wf, owner)
-		if err := s.k8sClient.Create(r.Context(), wf); err != nil {
-			if errors.IsAlreadyExists(err) {
-				s.renderError(w, r, "A workflow with that name already exists")
-				return
-			}
-			s.logger.Error("create workflow", "owner", owner, "name", name, "err", err)
-			s.renderError(w, r, "Failed to create workflow: "+err.Error())
-			return
-		}
-		s.logger.Info("workflow created (graph-native)", "owner", owner, "name", name, "gate", gateID)
-		http.Redirect(w, r, "/workflows/"+name, http.StatusSeeOther)
+	cfg, err := scopeConfigJSON(r, &tmpl)
+	if err != nil {
+		s.renderError(w, r, "Failed to build config: "+err.Error())
 		return
 	}
 
-	preparePlugin := g.PreparePlugin
-	gatePlugin := g.Name
-	deployPlugin := g.DeployPlugin
-	if g.GatePluginName != "" {
-		gatePlugin = g.GatePluginName
-	}
-
-	if preparePlugin == "" || deployPlugin == "" {
-		s.renderError(w, r, "Gate "+gateID+" does not have a complete structure")
-		return
-	}
-
-	// Build the Workflow CR
 	wf := &v1alpha1.Workflow{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: s.namespace,
 		},
 		Spec: v1alpha1.WorkflowSpec{
-			Source: v1alpha1.SourceSpec{
-				Kind:     "git",
-				Repo:     name, // Flux GitRepository name convention = workflow name
-				Branch:   branch,
-				Language: "go",
-			},
-			WorkspaceRepo: &v1alpha1.WorkspaceRepoSpec{
-				URL:    repoURL,
-				Branch: branch,
-			},
-			Prepare: v1alpha1.PrepareSpec{
-				Plugin: v1alpha1.PluginRef{Name: preparePlugin, ConfigMap: g.PrepareConfigMap},
-				Detect: "changed",
-			},
-			Agent: v1alpha1.AgentSpec{
-				Model: model,
-				Skill: g.SkillPath,
-				Tools: []string{"read", "bash", "edit", "grep"},
-				TaskTemplate: v1alpha1.TaskTemplate{
-					Name:      g.TaskName,
-					ConfigMap: "harmostes-tasks",
-					Key:       g.TaskName + ".txt",
-				},
-				Gate: v1alpha1.GateRef{
-					Plugin: v1alpha1.PluginRef{Name: gatePlugin, ConfigMap: g.GateConfigMap},
-				},
-				MaxFixes: 3,
-				Timeout:  1800,
-			},
-			Deploy: v1alpha1.DeploySpec{
-				Plugin: v1alpha1.PluginRef{Name: deployPlugin, ConfigMap: g.DeployConfigMap},
-			},
-			Scaling: &v1alpha1.ScalingSpec{
-				Kind:     "keda-scaledjob",
-				Schedule: schedule,
-			},
-			Bindings: deriveBindings(g, repoURL, branch),
+			TemplateRef: templateRef,
+			Source:      v1alpha1.SourceSpec{Kind: "schedule", Schedule: schedule},
+			Config:      cfg,
 		},
 	}
-
-	// Per-user token (Phase C integration)
-	if tokenSecret != "" {
-		wf.Spec.WorkspaceRepo.TokenRef = &v1alpha1.SecretRef{
-			Name: tokenSecret,
-			Key:  "token",
-		}
-	}
-
-	// Stamp owner label (anti-spoof — server-set from authenticated identity)
 	StampOwnerLabel(wf, owner)
-
 	if err := s.k8sClient.Create(r.Context(), wf); err != nil {
 		if errors.IsAlreadyExists(err) {
 			s.renderError(w, r, "A workflow with that name already exists")
@@ -398,8 +173,7 @@ func (s *Server) handleWorkflowCreate(w http.ResponseWriter, r *http.Request) {
 		s.renderError(w, r, "Failed to create workflow: "+err.Error())
 		return
 	}
-
-	s.logger.Info("workflow created", "owner", owner, "name", name, "gate", gateID)
+	s.logger.Info("workflow created (template instance)", "owner", owner, "name", name, "template", templateRef)
 	http.Redirect(w, r, "/workflows/"+name, http.StatusSeeOther)
 }
 

@@ -30,44 +30,51 @@ func (s *Server) handleWorkflowList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Group workflows by gate (derived from spec.agent.gate.plugin.name).
+	// Group workflows by their template identity (spec.templateRef, resolved).
+	// The WorkflowTemplate CRs are the single archetype registry — no more
+	// plugin-name guessing; the description comes from the template itself.
+	templates, err := s.listTemplates(r)
+	if err != nil {
+		s.logger.Error("list templates for grouping", "err", err)
+		templates = nil // non-fatal — group with bare names
+	}
+	tmplMeta := map[string]v1alpha1.WorkflowTemplate{}
+	for _, t := range templates {
+		tmplMeta[t.Name] = t
+	}
+
 	type gateGroup struct {
-		Gate        string // gate plugin name
-		Label       string // archetype label (e.g. "Documentation Sync")
+		Gate        string // gate plugin name (resolved spec)
+		Label       string // template name (grouping identity)
 		Category    string
-		CategoryUI  string // category label with icon (e.g. "📚 Documentation")
-		Description string // archetype description
+		CategoryUI  string // template kind marker
+		Description string // template description
 		Count       int
 		Items       []v1alpha1.Workflow
 	}
 	groupMap := map[string]*gateGroup{}
 	for i := range workflows {
 		wf := &workflows[i]
-		// Thin templateRef instances render under their template's archetype —
-		// resolve the merged spec for grouping (stored CR stays thin).
 		resolved := s.resolveWorkflow(r.Context(), wf)
-		gateName := deriveArchetype(&resolved)
-		g, ok := groupMap[gateName]
+		key := resolved.Spec.TemplateRef
+		if key == "" {
+			key = "custom" // graph-native or standalone specs
+		}
+		g, ok := groupMap[key]
 		if !ok {
-			cat := "other"
-			label := gateName
-			desc := ""
-			catUI := gateName
-			if arch := gateByName(gateName); arch != nil {
-				cat = arch.Category
-				label = arch.Label
-				desc = arch.Description
-				catUI = gateCategoryLabel(cat)
+			label, desc := key, ""
+			if t, found := tmplMeta[key]; found {
+				desc = t.Spec.Description
 			}
 			g = &gateGroup{
-				Gate:        gateName,
+				Gate:        resolved.Spec.Agent.Gate.Plugin.Name,
 				Label:       label,
-				Category:    cat,
-				CategoryUI:  catUI,
+				Category:    "template",
+				CategoryUI:  "template",
 				Description: desc,
 				Items:       []v1alpha1.Workflow{},
 			}
-			groupMap[gateName] = g
+			groupMap[key] = g
 		}
 		g.Items = append(g.Items, *wf)
 		g.Count++

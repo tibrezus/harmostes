@@ -10,7 +10,6 @@ import (
 	"strings"
 	"testing"
 
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -42,185 +41,6 @@ func workflowTestServer(existing ...client.Object) *Server {
 		hub:        NewEventHub(),
 		nodePolicy: nil,
 		platforms:  newPlatformRegistry(DefaultPlatformConfigs()),
-	}
-}
-
-func TestHandleWorkflowCreate_GateWikiLint(t *testing.T) {
-	s := workflowTestServer()
-
-	form := url.Values{}
-	form.Set("name", "my-wiki")
-	form.Set("repoUrl", "git@github.com:rezuscloud/llm-wiki.git")
-	form.Set("branch", "main")
-	form.Set("gate", "wiki-lint")
-	form.Set("model", "litellm/zai/glm-5.2")
-	form.Set("schedule", "*/30 * * * *")
-
-	req := httptest.NewRequest(http.MethodPost, "/workflows", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req = req.WithContext(withIdentity(req.Context(), &Identity{Username: "alice"}))
-
-	rec := httptest.NewRecorder()
-	s.handleWorkflowCreate(rec, req)
-
-	if rec.Code != http.StatusSeeOther {
-		t.Fatalf("status = %d, want %d. body: %s", rec.Code, http.StatusSeeOther, rec.Body.String())
-	}
-
-	var wf v1alpha1.Workflow
-	if err := s.k8sClient.Get(req.Context(), types.NamespacedName{Namespace: "harmostes", Name: "my-wiki"}, &wf); err != nil {
-		t.Fatalf("workflow not created: %v", err)
-	}
-
-	// Verify owner label
-	if wf.Labels[v1alpha1.OwnerLabel] != "alice" {
-		t.Errorf("owner = %q, want alice", wf.Labels[v1alpha1.OwnerLabel])
-	}
-
-	// Verify gate-derived structure
-	if wf.Spec.Prepare.Plugin.Name != "rig-emit" {
-		t.Errorf("prepare plugin = %q, want rig-emit", wf.Spec.Prepare.Plugin.Name)
-	}
-	if wf.Spec.Agent.Gate.Plugin.Name != "wiki-lint" {
-		t.Errorf("gate plugin = %q, want wiki-lint", wf.Spec.Agent.Gate.Plugin.Name)
-	}
-	if wf.Spec.Deploy.Plugin.Name != "git-push" {
-		t.Errorf("deploy plugin = %q, want git-push", wf.Spec.Deploy.Plugin.Name)
-	}
-
-	// Verify workspace repo
-	if wf.Spec.WorkspaceRepo == nil {
-		t.Fatal("workspaceRepo is nil")
-	}
-	if wf.Spec.WorkspaceRepo.URL != "git@github.com:rezuscloud/llm-wiki.git" {
-		t.Errorf("repo URL = %q", wf.Spec.WorkspaceRepo.URL)
-	}
-
-	// Verify bindings are populated from the gate archetype (ADR-0003)
-	if len(wf.Spec.Bindings) == 0 {
-		t.Fatal("bindings is empty — gate archetype should declare workspaceRepo binding")
-	}
-	foundWorkspace := false
-	for _, b := range wf.Spec.Bindings {
-		if b.Name == "workspaceRepo" {
-			foundWorkspace = true
-			if b.SurfaceKind != v1alpha1.SurfaceKindRepository {
-				t.Errorf("workspaceRepo surface = %q, want repository", b.SurfaceKind)
-			}
-			if b.Target.Host != "github.com" || b.Target.Object != "rezuscloud/llm-wiki" {
-				t.Errorf("workspaceRepo target = %s/%s, want github.com/rezuscloud/llm-wiki", b.Target.Host, b.Target.Object)
-			}
-		}
-	}
-	if !foundWorkspace {
-		t.Error("workspaceRepo binding not found in spec.bindings")
-	}
-}
-
-func TestHandleWorkflowCreate_GateForkMaintenance(t *testing.T) {
-	s := workflowTestServer()
-
-	form := url.Values{}
-	form.Set("name", "custom-wf")
-	form.Set("repoUrl", "git@github.com:rezuscloud/repo.git")
-	form.Set("gate", "fork-maintenance")
-	form.Set("model", "litellm/zai/glm-4.7")
-
-	req := httptest.NewRequest(http.MethodPost, "/workflows", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req = req.WithContext(withIdentity(req.Context(), &Identity{Username: "bob"}))
-
-	rec := httptest.NewRecorder()
-	s.handleWorkflowCreate(rec, req)
-
-	if rec.Code != http.StatusSeeOther {
-		t.Fatalf("status = %d, body: %s", rec.Code, rec.Body.String())
-	}
-
-	var wf v1alpha1.Workflow
-	_ = s.k8sClient.Get(req.Context(), types.NamespacedName{Namespace: "harmostes", Name: "custom-wf"}, &wf)
-
-	// fork-maintenance is a graph-native gate: creation builds spec.graph
-	// (the sync engine's phases as real nodes + external display-only
-	// components), not the declarative prepare/agent/deploy form.
-	if wf.Spec.Graph == nil {
-		t.Fatalf("spec.graph = nil, want graph-native for fork-maintenance gate")
-	}
-	nodeIDs := map[string]bool{}
-	for _, n := range wf.Spec.Graph.Nodes {
-		nodeIDs[n.ID] = true
-	}
-	for _, want := range []string{"merge", "hook", "gates", "validate", "pr", "tag", "upstream", "mirror", "resolver", "release"} {
-		if !nodeIDs[want] {
-			t.Errorf("graph node %q missing (nodes: %v)", want, nodeIDs)
-		}
-	}
-	// The merge node carries the fork-sync plugin with the {{fork}}
-	// placeholder substituted (name "custom-wf" has no fork-maintenance-
-	// prefix, so the fork name is the workflow name itself).
-	var mergeCfg struct {
-		Name string   `json:"name"`
-		Args []string `json:"args"`
-	}
-	for _, n := range wf.Spec.Graph.Nodes {
-		if n.ID == "merge" {
-			if err := json.Unmarshal(n.Config, &mergeCfg); err != nil {
-				t.Fatalf("merge config: %v", err)
-			}
-		}
-	}
-	if mergeCfg.Name != "fork-sync" {
-		t.Errorf("merge plugin = %q, want fork-sync", mergeCfg.Name)
-	}
-	if len(mergeCfg.Args) != 2 || mergeCfg.Args[0] != "custom-wf" || mergeCfg.Args[1] != "merge" {
-		t.Errorf("merge args = %v, want [custom-wf merge] ({{fork}} substituted)", mergeCfg.Args)
-	}
-	// Workspace + bindings still flow from the form.
-	if wf.Spec.WorkspaceRepo == nil || wf.Spec.WorkspaceRepo.URL != "git@github.com:rezuscloud/repo.git" {
-		t.Errorf("workspaceRepo = %+v, want form repo URL", wf.Spec.WorkspaceRepo)
-	}
-	if len(wf.Spec.Bindings) == 0 {
-		t.Errorf("bindings empty, want workspaceRepo binding from the gate template")
-	}
-}
-
-func TestHandleWorkflowCreate_WithTokenRef(t *testing.T) {
-	s := workflowTestServer()
-
-	// Pre-create a token secret for alice
-	token := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "alice-github-abcd1234",
-			Namespace: "harmostes",
-			Labels: map[string]string{
-				v1alpha1.OwnerLabel: "alice",
-				TokenLabel:          "github",
-			},
-		},
-	}
-	_ = s.k8sClient.Create(context.Background(), token)
-
-	form := url.Values{}
-	form.Set("name", "tokenized-wf")
-	form.Set("repoUrl", "git@github.com:rezuscloud/repo.git")
-	form.Set("gate", "wiki-lint")
-	form.Set("tokenSecret", "alice-github-abcd1234")
-
-	req := httptest.NewRequest(http.MethodPost, "/workflows", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req = req.WithContext(withIdentity(req.Context(), &Identity{Username: "alice"}))
-
-	rec := httptest.NewRecorder()
-	s.handleWorkflowCreate(rec, req)
-
-	var wf v1alpha1.Workflow
-	_ = s.k8sClient.Get(req.Context(), types.NamespacedName{Namespace: "harmostes", Name: "tokenized-wf"}, &wf)
-
-	if wf.Spec.WorkspaceRepo.TokenRef == nil {
-		t.Fatal("tokenRef is nil — should reference the per-user token")
-	}
-	if wf.Spec.WorkspaceRepo.TokenRef.Name != "alice-github-abcd1234" {
-		t.Errorf("tokenRef.Name = %q", wf.Spec.WorkspaceRepo.TokenRef.Name)
 	}
 }
 
@@ -270,35 +90,8 @@ func TestHandleWorkflowCreate_RejectsInvalidName(t *testing.T) {
 	}
 }
 
-func TestHandleWorkflowCreate_DuplicateName(t *testing.T) {
-	existing := &v1alpha1.Workflow{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "existing-wf",
-			Namespace: "harmostes",
-			Labels:    map[string]string{v1alpha1.OwnerLabel: "alice"},
-		},
-	}
-	s := workflowTestServer(existing)
-
-	form := url.Values{}
-	form.Set("name", "existing-wf")
-	form.Set("repoUrl", "git@github.com:rezuscloud/repo.git")
-	form.Set("gate", "wiki-lint")
-
-	req := httptest.NewRequest(http.MethodPost, "/workflows", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req = req.WithContext(withIdentity(req.Context(), &Identity{Username: "alice"}))
-
-	rec := httptest.NewRecorder()
-	s.handleWorkflowCreate(rec, req)
-
-	if !strings.Contains(rec.Body.String(), "already exists") {
-		t.Error("expected 'already exists' error")
-	}
-}
-
 func TestHandleWorkflowCreate_OwnerNeverSpoofed(t *testing.T) {
-	s := workflowTestServer()
+	s := workflowTestServer(prReviewTemplate())
 
 	// Even though the form has no owner field, the server should stamp "alice"
 	// from the authenticated identity. A malicious client CANNOT inject an
@@ -306,8 +99,7 @@ func TestHandleWorkflowCreate_OwnerNeverSpoofed(t *testing.T) {
 	// overwrites any existing label).
 	form := url.Values{}
 	form.Set("name", "spoof-test")
-	form.Set("repoUrl", "git@github.com:rezuscloud/repo.git")
-	form.Set("gate", "wiki-lint")
+	form.Set("templateRef", "pr-review")
 
 	req := httptest.NewRequest(http.MethodPost, "/workflows", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -539,30 +331,6 @@ func TestHandleWorkflowToggle_OwnerIsolation(t *testing.T) {
 	}
 }
 
-func TestDeriveBindings(t *testing.T) {
-	g := gateByName("wiki-lint")
-	if g == nil {
-		t.Fatal("wiki-lint gate not found")
-	}
-	bindings := deriveBindings(g, "git@github.com:rezuscloud/llm-wiki.git", "main")
-	if len(bindings) != 1 {
-		t.Fatalf("bindings = %d, want 1", len(bindings))
-	}
-	b := bindings[0]
-	if b.Name != "workspaceRepo" {
-		t.Errorf("name = %q, want workspaceRepo", b.Name)
-	}
-	if b.Target.Host != "github.com" {
-		t.Errorf("host = %q, want github.com", b.Target.Host)
-	}
-	if b.Target.Object != "rezuscloud/llm-wiki" {
-		t.Errorf("object = %q, want rezuscloud/llm-wiki", b.Target.Object)
-	}
-	if b.Target.Branch != "main" {
-		t.Errorf("branch = %q, want main", b.Target.Branch)
-	}
-}
-
 func TestParseGitURL(t *testing.T) {
 	cases := []struct {
 		url      string
@@ -579,25 +347,6 @@ func TestParseGitURL(t *testing.T) {
 		if host != c.wantHost || obj != c.wantObj {
 			t.Errorf("parseGitURL(%q) = (%q, %q), want (%q, %q)", c.url, host, obj, c.wantHost, c.wantObj)
 		}
-	}
-}
-
-func TestPresetFor(t *testing.T) {
-	// Known presets
-	p := presetFor("llm-wiki")
-	if p.Prepare != "rig-emit" {
-		t.Errorf("llm-wiki prepare = %q", p.Prepare)
-	}
-
-	p = presetFor("fork-maintenance")
-	if p.Gate != "noop" {
-		t.Errorf("fork-maintenance gate = %q", p.Gate)
-	}
-
-	// Unknown → falls back to custom
-	p = presetFor("nonexistent")
-	if p.ID != "custom" {
-		t.Errorf("unknown preset should fall back to custom, got %q", p.ID)
 	}
 }
 

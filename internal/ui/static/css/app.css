@@ -1687,3 +1687,19 @@ code, pre {
 	justify-content: space-between;
 	gap: 1rem;
 }
+
+/* ---- Scope fieldsets (per-template form sections) ---- */
+.wf-new-scope {
+	border: 1px dashed var(--border);
+	border-radius: 10px;
+	padding: 0.9rem;
+	margin: 0 0 1.25rem;
+}
+.wf-new-scope-legend {
+	font-size: 0.8rem;
+	font-weight: 600;
+	color: var(--fg-muted);
+	padding: 0 0.4rem;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+}

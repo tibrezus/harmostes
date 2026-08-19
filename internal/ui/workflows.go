@@ -133,6 +133,41 @@ func gateByID(id string) *GateArchetype {
 	return nil
 }
 
+// scopeConfigJSON builds the instance's spec.config from the form, using
+// ONLY the parameters the selected template declares (spec.scope). The
+// template owns its configuration dialect end-to-end: the form renders from
+// the same declaration, and keys the template does not declare are never
+// stored. Defaults apply when a field is left empty.
+func scopeConfigJSON(r *http.Request, tmpl *v1alpha1.WorkflowTemplate) ([]byte, error) {
+	cfg := map[string]any{}
+	for _, p := range tmpl.Spec.Scope {
+		switch p.Kind {
+		case "list":
+			items := []string{}
+			for _, v := range strings.Split(r.FormValue(p.Name), ",") {
+				if v = strings.TrimSpace(v); v != "" {
+					items = append(items, v)
+				}
+			}
+			if len(items) == 0 && p.Default != "" {
+				for _, v := range strings.Split(p.Default, ",") {
+					if v = strings.TrimSpace(v); v != "" {
+						items = append(items, v)
+					}
+				}
+			}
+			cfg[p.Name] = items
+		default: // "string" (and undeclared kinds degrade to string)
+			v := strings.TrimSpace(r.FormValue(p.Name))
+			if v == "" {
+				v = p.Default
+			}
+			cfg[p.Name] = v
+		}
+	}
+	return json.Marshal(cfg)
+}
+
 // presetFor is retained for backward compatibility with older template references.
 // Deprecated: use gateByID instead.
 func presetFor(id string) preset {
@@ -199,17 +234,7 @@ func (s *Server) handleWorkflowCreate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		repos := []string{}
-		for _, rv := range strings.Split(r.FormValue("repos"), ",") {
-			if rv = strings.TrimSpace(rv); rv != "" {
-				repos = append(repos, rv)
-			}
-		}
-		cfg, err := json.Marshal(map[string]any{
-			"label": strings.TrimSpace(r.FormValue("label")),
-			"repos": repos,
-			"wiki":  strings.TrimSpace(r.FormValue("wiki")),
-		})
+		cfg, err := scopeConfigJSON(r, &tmpl)
 		if err != nil {
 			s.renderError(w, r, "Failed to build config: "+err.Error())
 			return

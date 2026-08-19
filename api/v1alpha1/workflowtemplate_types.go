@@ -47,6 +47,14 @@ type WorkflowTemplateSpec struct {
 	// Description is a human-readable explanation of what this template does.
 	Description string `json:"description"`
 
+	// Scope declares the instance-level parameters this template consumes
+	// from Workflow spec.config. It is the single owner of the instance
+	// configuration surface: the UI creation form renders from it, and the
+	// creation handler builds spec.config exclusively from its params — a
+	// template and its prepare plugin define their own dialect end-to-end,
+	// so adding a template never touches UI code.
+	Scope []ScopeParam `json:"scope,omitempty"`
+
 	// Prepare defines the prepare plugin that produces the working artifact.
 	Prepare PrepareSpec `json:"prepare"`
 
@@ -55,6 +63,27 @@ type WorkflowTemplateSpec struct {
 
 	// Deploy defines the deploy plugin that ships the result.
 	Deploy DeploySpec `json:"deploy"`
+}
+
+// ScopeParam is one instance-level configuration parameter.
+type ScopeParam struct {
+	// Name is the key under spec.config the parameter is stored at (and the
+	// form field name the UI posts).
+	Name string `json:"name"`
+
+	// Kind is the value shape: "string" (single value) or "list" (comma-
+	// separated in the form, stored as a JSON array).
+	Kind string `json:"kind"` // "string" | "list"
+
+	// Label is the human-readable form label.
+	Label string `json:"label,omitempty"`
+
+	// Description is the per-field hint shown under the form input.
+	Description string `json:"description,omitempty"`
+
+	// Default is the value used when the form field is left empty (a list
+	// default is comma-separated, mirroring the form).
+	Default string `json:"default,omitempty"`
 }
 
 // ---------------------------------------------------------------------------

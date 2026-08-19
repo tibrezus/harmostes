@@ -169,3 +169,28 @@ func TestCompileWorkflowCarriesPrepareConfig(t *testing.T) {
 		}
 	}
 }
+
+func TestCompileWorkflowTaskRefCarriesResolution(t *testing.T) {
+	enabled := true
+	wf := &v1alpha1.Workflow{Spec: v1alpha1.WorkflowSpec{
+		Agent: v1alpha1.AgentSpec{
+			Enabled:      &enabled,
+			Model:        "m",
+			TaskTemplate: v1alpha1.TaskTemplate{Name: "pr-review", ConfigMap: "harmostes-tasks", Key: "pr-review.txt"},
+		},
+	}}
+	g := CompileWorkflow(wf)
+	var agent v1alpha1.NodeSpec
+	for _, n := range g.Nodes {
+		if n.Type == "agent" {
+			agent = n
+		}
+	}
+	var cfg AgentNodeConfig
+	if err := json.Unmarshal(agent.Config, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Task != "harmostes-tasks/pr-review.txt" {
+		t.Fatalf("task ref must carry configmap/key so the resolver can fetch the real text, got %q", cfg.Task)
+	}
+}

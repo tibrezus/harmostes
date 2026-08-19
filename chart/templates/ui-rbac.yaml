@@ -19,11 +19,12 @@ metadata:
   name: harmostes-ui
   namespace: {{ .Values.namespace }}
 rules:
-  # Read workflows (read-only catalog — config is GitOps YAML). Keep update/patch
-  # for trigger/toggle operational actions.
+  # Workflows: the UI is the ONLY creation surface (owner label stamped from
+  # the authenticated identity — every created workflow is visible to its
+  # creator). Full lifecycle: create/delete + trigger/toggle (update/patch).
   - apiGroups: ["harmostes.dev"]
     resources: ["workflows"]
-    verbs: ["get", "list", "watch", "update", "patch"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   # Read attempts (observability-first primary view — Attempt timeline).
   - apiGroups: ["harmostes.dev"]
     resources: ["attempts"]

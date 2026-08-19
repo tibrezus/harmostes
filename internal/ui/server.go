@@ -154,7 +154,6 @@ func (s *Server) Routes() http.Handler {
 
 	// Read-only graph API (auto-generated from Workflow spec — no editing)
 	pages.HandleFunc("GET /api/workflows/{name}/graph", s.handleWorkflowGraphAPI)
-	pages.HandleFunc("GET /api/gates", s.handleGateAPIList)
 
 	// Lifecycle SSE stream (live event streaming for the Live view)
 	pages.HandleFunc("GET /api/pipelines/{name}/events", s.handlePipelineSSE)
@@ -204,21 +203,6 @@ func parseTemplates() (*template.Template, error) {
 		"queryHas": func(q url.Values, key string) bool {
 			_, ok := q[key]
 			return ok
-		},
-		// gateIcon returns a unicode glyph for a gate category.
-		"gateIcon": func(category string) string {
-			switch category {
-			case "documentation":
-				return "📚"
-			case "code-review":
-				return "🔍"
-			case "fork-maintenance":
-				return "🔀"
-			case "passthrough":
-				return "⚙️"
-			default:
-				return "📋"
-			}
 		},
 		// workflowTargetSlug extracts the target repo slug from a Workflow CR
 		// for display on the workflow card. The full CR name already encodes

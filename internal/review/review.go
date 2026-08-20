@@ -333,16 +333,24 @@ func (a *RESTAPI) ContextStates(ctx context.Context, repo, sha string) (map[stri
 	default: // Forgejo
 		var statuses []struct {
 			Context string `json:"context"`
-			State   string `json:"state"`
+			State   string `json:"state"`  // GitHub field name
+			StatusF string `json:"status"` // Forgejo/Gitea field name
 		}
 		get(fmt.Sprintf("/repos/%s/commits/%s/statuses", host.RepoPath, sha), "application/json", &statuses)
 		// Forgejo returns NEWEST-FIRST with multiple entries per context
 		// (superseded attempts linger below). FIRST entry wins — last-wins
 		// let a stale pending clobber the fresh success, arming the gate
-		// forever on green heads (observed live on rhesadox #1566).
+		// forever on green heads (observed live on rhesadox #1566). Field
+		// name differs by host: GitHub sends `state`, Forgejo sends
+		// `status` (a missing field parsing as "" classified as failure —
+		// observed live: an all-green head read as red).
 		for _, s := range statuses {
+			v := s.State
+			if v == "" {
+				v = s.StatusF
+			}
 			if _, ok := states[s.Context]; !ok {
-				states[s.Context] = normalizeStatusState(s.State)
+				states[s.Context] = normalizeStatusState(v)
 			}
 		}
 		var checks struct {

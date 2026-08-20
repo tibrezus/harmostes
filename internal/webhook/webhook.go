@@ -227,6 +227,12 @@ var pullRequestWakeActions = map[string]bool{
 	"reopened":         true,
 	"closed":           true, // disarm path — the gate stands down promptly
 	"ready_for_review": true,
+
+	// Forgejo granular-event vocabulary (the `pull_request_label` /
+	// `pull_request_sync` event types carry their own action names; the
+	// gate re-verifies state, so a wake is a wake):
+	"label_updated": true,
+	"synchronized":  true,
 }
 
 // servePullRequest handles a consolidated pull_request event. The handler

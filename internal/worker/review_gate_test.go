@@ -47,6 +47,17 @@ func reviewServer(t *testing.T, prState string, labels []string, contexts map[st
 	return srv
 }
 
+// clearTriggerEnv makes the gate tests hermetic: a worker pod exports
+// HARMOSTES_TRIGGER_* (the trigger payload), and reviewGate prefers env
+// over annotations — uncleaned, six tests fail with "missing #"
+// (the reviewer's round-E2E finding).
+func clearTriggerEnv(t *testing.T) {
+	t.Helper()
+	for _, k := range []string{"HARMOSTES_TRIGGER_PR", "HARMOSTES_TRIGGER_ACTION", "HARMOSTES_TRIGGER_REVISION"} {
+		t.Setenv(k, "")
+	}
+}
+
 func gateWorkflow() *v1alpha1.Workflow {
 	wf := newWorkflow()
 	wf.Spec.ReviewReady = &v1alpha1.ReviewReadySpec{Label: "needs-review", Horizon: "6h"}
@@ -68,6 +79,7 @@ func pinReviewAPI(t *testing.T, srv *httptest.Server, forgejo bool) {
 }
 
 func TestReviewGateIdleCostsNothing(t *testing.T) {
+	clearTriggerEnv(t)
 	// Unarmed, unwoken: no API calls — the review package must not even be
 	// constructed with a server. If it tried to call out, it would fail.
 	os.Setenv("HARMOSTES_FORGEJO_TOKEN", "tok")
@@ -84,6 +96,7 @@ func TestReviewGateIdleCostsNothing(t *testing.T) {
 }
 
 func TestReviewGateWaitingReturnsNilAtSeam(t *testing.T) {
+	clearTriggerEnv(t)
 	// The production seam: the one-shot main calls RunReviewGate BEFORE any
 	// provisioning/graph execution; nil means "exit this cycle". (The gate
 	// no longer lives in pipeline.Run — that path is legacy since #177.)
@@ -112,6 +125,7 @@ func TestReviewGateWaitingReturnsNilAtSeam(t *testing.T) {
 }
 
 func TestReviewGateProceedPassesEnvelope(t *testing.T) {
+	clearTriggerEnv(t)
 	srv := reviewServer(t, "open", []string{"needs-review", "other"},
 		map[string]string{"ci / build-test (push)": "success"}, []string{"ci / build-test (push)"})
 	pinReviewAPI(t, srv, true)
@@ -140,6 +154,7 @@ func TestReviewGateProceedPassesEnvelope(t *testing.T) {
 }
 
 func TestReviewGateDisarmHint(t *testing.T) {
+	clearTriggerEnv(t)
 	// action=closed with no reachable PR: still stands down and disarms.
 	os.Setenv("HARMOSTES_FORGEJO_TOKEN", "tok")
 	defer os.Unsetenv("HARMOSTES_FORGEJO_TOKEN")
@@ -159,6 +174,7 @@ func TestReviewGateDisarmHint(t *testing.T) {
 }
 
 func TestReviewGateReEvaluationWithoutEvent(t *testing.T) {
+	clearTriggerEnv(t)
 	// Armed from a previous cycle (status), no new annotation: the gate
 	// re-evaluates (the poll fallback after CI turns green).
 	srv := reviewServer(t, "open", []string{"needs-review"},
@@ -180,6 +196,7 @@ func TestReviewGateReEvaluationWithoutEvent(t *testing.T) {
 }
 
 func TestReviewGateOutOfScopeRepoIgnored(t *testing.T) {
+	clearTriggerEnv(t)
 	// A webhook from a repo not in spec.config.repos must not arm the gate
 	// (fail closed) — mis-pointed hooks stand down idle.
 	st := &fakeStatus{}
@@ -198,6 +215,7 @@ func TestReviewGateOutOfScopeRepoIgnored(t *testing.T) {
 }
 
 func TestReviewGateBareRepoScopeMatchesGitHub(t *testing.T) {
+	clearTriggerEnv(t)
 	// Hermetic: a server that 404s the PR fetch — the scope MUST have
 	// matched (bare owner/name → github.com/owner/name) because the gate
 	// reached the fetch (waiting), not the out-of-scope ignore (idle).

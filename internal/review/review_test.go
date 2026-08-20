@@ -395,6 +395,32 @@ func TestContextStatesNewestFirstWins(t *testing.T) {
 	}
 }
 
+func TestForgejoStatusFieldParsed(t *testing.T) {
+	// Live regression (rhesadox #1566): Forgejo's status objects carry the
+	// field `status`, GitHub's carry `state`. Parsing only `state` read
+	// every Forgejo context as failure ("") → all-green head judged red.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(req.URL.Path, "/statuses"):
+			json.NewEncoder(w).Encode([]map[string]string{
+				{"context": "ci / build-test (push)", "status": "success"},
+			})
+		default:
+			http.NotFound(w, req)
+		}
+	}))
+	defer srv.Close()
+	api := &RESTAPI{Client: srv.Client(), BaseOverride: srv.URL + "/api/v1"}
+	states, err := api.ContextStates(context.Background(), "git.rezus.cloud/o/r", "abc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if states["ci / build-test (push)"] != "success" {
+		t.Fatalf("Forgejo `status` field must parse: %+v", states)
+	}
+}
+
 func TestResolveHost(t *testing.T) {
 	cases := []struct {
 		in, base, kind string

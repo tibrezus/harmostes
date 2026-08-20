@@ -93,11 +93,24 @@ func reviewGate(ctx context.Context, deps Deps, wf *v1alpha1.Workflow) *review.E
 			params.ArmedAt = armed.ArmedSince.Time
 		}
 	}
-	// A wake event targeting a different PR than the armed one re-targets
-	// the gate (single-flight per workflow: newest request wins).
+	// A wake event targeting a DIFFERENT PR than the armed one re-targets
+	// the gate ONLY when the wake is request-shaped (a label was touched —
+	// a human or the skill asked for something). A synchronize/push wake on
+	// an unrelated PR must NOT hijack an armed review: observed live when a
+	// push on #1577 re-targeted an armed #1566, whose "label absent"
+	// standdown then disarmed it. The armed PR's OWN synchronize arrives as
+	// its own wake and re-arms its head correctly.
 	if armed != nil && trigPR != "" && armed.ArmedPR != 0 && (armed.ArmedRepo != repo || armed.ArmedPR != pr) {
-		params.ArmedSha = ""
-		params.ArmedAt = time.Time{}
+		switch action {
+		case "labeled", "unlabeled", "label_updated":
+			// request-shaped: re-target (reset the armed head)
+			params.ArmedSha = ""
+			params.ArmedAt = time.Time{}
+		default:
+			// push-shaped on another PR: ignore — keep the armed review
+			deps.log()("review-ready: wake for pr=%d (%s) while armed on pr=%d — ignored, armed review preserved", pr, action, armed.ArmedPR)
+			return nil
+		}
 	}
 
 	// Scope allowlist (defense-in-depth): spec.config.repos declares which

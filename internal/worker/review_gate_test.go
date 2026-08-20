@@ -240,6 +240,53 @@ func TestReviewGateBareRepoScopeMatchesGitHub(t *testing.T) {
 	}
 }
 
+func TestReviewGateUnrelatedPushDoesNotHijackArmed(t *testing.T) {
+	// Live regression: a synchronize wake on another in-scope PR must not
+	// re-target/disarm an armed review.
+	st := &fakeStatus{}
+	wf := gateWorkflow()
+	since := metav1.NewTime(time.Now().Add(-5 * time.Minute))
+	wf.Status.ReviewReady = &v1alpha1.ReviewReadyStatus{
+		ArmedRepo: "git.rezus.cloud/tibrez/rhesadox", ArmedPR: 1566,
+		ArmedSha: "abc123", ArmedSince: &since, LastDecision: "waiting",
+	}
+	// push wake for a DIFFERENT pr (env-first path)
+	t.Setenv("HARMOSTES_TRIGGER_PR", "git.rezus.cloud/tibrez/rhesadox#1577")
+	t.Setenv("HARMOSTES_TRIGGER_ACTION", "synchronize")
+	t.Setenv("HARMOSTES_TRIGGER_REVISION", "dd8cfd14")
+	env := reviewGate(context.Background(), testDeps(st), wf)
+	if env != nil {
+		t.Fatal("unrelated push must not proceed")
+	}
+	// the gate must not PATCH at all — the armed state on the live CR
+	// (not visible to the fake) is what stays preserved
+	if rr := st.last.ReviewReady; rr != nil {
+		t.Fatalf("unrelated push must not touch status, got %+v", rr)
+	}
+}
+
+func TestReviewGateLabelWakeRetargets(t *testing.T) {
+	// A labeled wake on another PR re-targets (newest REQUEST wins).
+	srv := reviewServer(t, "open", []string{"needs-review"},
+		map[string]string{"ci / build-test (push)": "success"}, []string{"ci / build-test (push)"})
+	pinReviewAPI(t, srv, true)
+	st := &fakeStatus{}
+	wf := gateWorkflow()
+	since := metav1.NewTime(time.Now().Add(-5 * time.Minute))
+	wf.Status.ReviewReady = &v1alpha1.ReviewReadyStatus{
+		ArmedRepo: "git.rezus.cloud/tibrez/rhesadox", ArmedPR: 1566,
+		ArmedSha: "abc123", ArmedSince: &since, LastDecision: "waiting",
+	}
+	wf.Annotations = map[string]string{
+		"harmostes.dev/trigger-pr":     "git.rezus.cloud/tibrez/rhesadox#42",
+		"harmostes.dev/trigger-action": "labeled",
+	}
+	env := reviewGate(context.Background(), testDeps(st), wf)
+	if env == nil || env.PR != 42 {
+		t.Fatalf("label wake must re-target to 42, got %+v", env)
+	}
+}
+
 func TestParsePRPointer(t *testing.T) {
 	cases := []struct {
 		in        string

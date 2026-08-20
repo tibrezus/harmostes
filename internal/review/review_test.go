@@ -350,8 +350,10 @@ func TestNormalizeCheckRun(t *testing.T) {
 		{"completed", "timed_out", "failure"},
 		{"in_progress", "", "pending"},
 		{"queued", "", "pending"},
-		{"completed", "skipped", "pending"},
-		{"completed", "neutral", "pending"},
+		// skipped/neutral SATISFY (host merge-rule parity — round-4 MAJOR)
+		{"completed", "skipped", "success"},
+		{"completed", "neutral", "success"},
+		{"completed", "stale", "pending"},
 		{"", "", "pending"},
 	}
 	for _, c := range cases {

@@ -29,6 +29,17 @@ var newReviewAPI = func() review.API {
 // The gate's armed state lives on the Workflow status (persisted via the
 // status patcher): unarmed workflows cost zero API calls; armed ones cost
 // one PR fetch (+ protection/contexts while the label is present).
+// RunReviewGate is the PRODUCTION seam: the one-shot worker calls it after
+// template resolution and BEFORE graph execution (the pipeline.Run path is
+// legacy — production has routed through graph.ExecuteGraph since #177).
+// Returns the Trigger Envelope on proceed; nil otherwise (waiting, stood
+// down, or gate not configured). The caller exits before provisioning when
+// nil is returned for a gated workflow.
+func RunReviewGate(ctx context.Context, status StatusPatcher, logFn func(string, ...any), wf *v1alpha1.Workflow) *review.Envelope {
+	deps := Deps{Status: status, Log: logFn}
+	return reviewGate(ctx, deps, wf)
+}
+
 func reviewGate(ctx context.Context, deps Deps, wf *v1alpha1.Workflow) *review.Envelope {
 	rr := wf.Spec.ReviewReady
 	if rr == nil {

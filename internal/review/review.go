@@ -371,11 +371,15 @@ func normalizeCheckRun(status, conclusion string) string {
 		return "pending"
 	}
 	switch conclusion {
-	case "success":
+	case "success", "skipped", "neutral":
+		// skipped/neutral SATISFY the requirement — host merge-rule parity:
+		// GitHub branch protection counts a skipped/neutral required check
+		// as satisfied. Mapping them to pending made the gate stricter than
+		// the merge rules (mergeable PRs stood down at the horizon).
 		return "success"
 	case "failure", "cancelled", "timed_out", "action_required":
 		return "failure"
-	default: // skipped, neutral, stale, "" (still running)
+	default: // stale, "" (still running)
 		return "pending"
 	}
 }

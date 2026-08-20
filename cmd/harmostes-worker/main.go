@@ -121,6 +121,27 @@ func main() {
 	}
 	logf("workflow %s/%s phase=run source=%q workdir=%s", namespace, workflow, source, workdir)
 
+	// ── Review-Ready Gate (ADR-0006) — the PRODUCTION seam. ──────────────
+	// Event-armed deterministic trigger for adversarial PR review, evaluated
+	// BEFORE any provisioning or graph execution (the graph path is the live
+	// one since #177; pipeline.Run is legacy). The gate consumes the wake
+	// (env-carried PR pointer + revision) and either hands the run a Trigger
+	// Envelope or ends this cycle: waiting (CI pending/red — stays armed,
+	// poll re-evaluates) or stood down (label gone / closed / horizon).
+	// The envelope flows to the workspace plugin via the process env
+	// (HARMOSTES_TRIGGER_*), which the consumer set from the TriggerEvent
+	// payload — nothing else to wire.
+	if wf.Spec.ReviewReady != nil {
+		env := worker.RunReviewGate(ctx, k8s.StatusPatcher{Client: cl, Namespace: namespace}, logf, &wf)
+		if env == nil {
+			logf("review-ready: not proceeding this cycle — exiting (waiting/standdown recorded in status)")
+			flushTelemetry()
+			recordAttemptOutcome(ctx, cl, "skipped", nil, "review-ready: waiting or stood down")
+			os.Exit(0)
+		}
+		logf("review-ready: proceed pr=%d head=%s base=%s — provisioning workspace", env.PR, env.HeadSHA, env.Base)
+	}
+
 	// If the Workflow declares a workspace repo (the wiki / the fork), fetch it
 	// into the workdir + operate there. prepare populates it, the agent edits it,
 	// deploy pushes it.

@@ -83,7 +83,10 @@ func TestReviewGateIdleCostsNothing(t *testing.T) {
 	}
 }
 
-func TestReviewGateWaitingShortCircuitsPipeline(t *testing.T) {
+func TestReviewGateWaitingReturnsNilAtSeam(t *testing.T) {
+	// The production seam: the one-shot main calls RunReviewGate BEFORE any
+	// provisioning/graph execution; nil means "exit this cycle". (The gate
+	// no longer lives in pipeline.Run — that path is legacy since #177.)
 	srv := reviewServer(t, "open", []string{"needs-review"},
 		map[string]string{"ci / build-test (push)": "pending"}, []string{"ci / build-test (push)"})
 	pinReviewAPI(t, srv, true)
@@ -94,13 +97,9 @@ func TestReviewGateWaitingShortCircuitsPipeline(t *testing.T) {
 		"harmostes.dev/trigger-action": "labeled",
 	}
 
-	deps := testDeps(st)
-	res, err := Run(context.Background(), deps, Options{Workflow: wf, Workdir: t.TempDir()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Outcome != OutcomeSkipped {
-		t.Fatalf("waiting gate must skip the run, got %s (%s)", res.Outcome, res.Message)
+	env := RunReviewGate(context.Background(), st, func(format string, a ...any) {}, wf)
+	if env != nil {
+		t.Fatalf("waiting gate must return nil at the seam, got %+v", env)
 	}
 	// Armed state persisted: sha + since + decision.
 	rr := st.last.ReviewReady

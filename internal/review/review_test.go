@@ -421,6 +421,16 @@ func TestForgejoStatusFieldParsed(t *testing.T) {
 	}
 }
 
+func TestSkippedStatusSatisfies(t *testing.T) {
+	// Live regression: a label event re-ran a guarded workflow whose legs
+	// skipped; Forgejo posted `skipped` statuses; the PR is mergeable=True
+	// (host rules: skipped satisfies) but the gate read failure and held
+	// armed on red forever.
+	if got := normalizeStatusState("skipped"); got != "success" {
+		t.Fatalf(`normalizeStatusState("skipped")=%q, want success`, got)
+	}
+}
+
 func TestResolveHost(t *testing.T) {
 	cases := []struct {
 		in, base, kind string

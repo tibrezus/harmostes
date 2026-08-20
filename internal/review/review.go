@@ -309,8 +309,12 @@ func (a *RESTAPI) ContextStates(ctx context.Context, repo, sha string) (map[stri
 			} `json:"statuses"`
 		}
 		get(fmt.Sprintf("/repos/%s/commits/%s/status", host.RepoPath, sha), "application/json", &combined)
+		// First-wins: both hosts list newest-first; superseded attempts must
+		// not clobber the freshest state per context.
 		for _, s := range combined.Statuses {
-			states[s.Context] = normalizeStatusState(s.State)
+			if _, ok := states[s.Context]; !ok {
+				states[s.Context] = normalizeStatusState(s.State)
+			}
 		}
 		var checks struct {
 			TotalCount int `json:"total_count"`
@@ -322,7 +326,9 @@ func (a *RESTAPI) ContextStates(ctx context.Context, repo, sha string) (map[stri
 		}
 		get(fmt.Sprintf("/repos/%s/commits/%s/check-runs", host.RepoPath, sha), "application/vnd.github+json", &checks)
 		for _, c := range checks.CheckRuns {
-			states[c.Name] = normalizeCheckRun(c.Status, c.Conclusion)
+			if _, ok := states[c.Name]; !ok {
+				states[c.Name] = normalizeCheckRun(c.Status, c.Conclusion)
+			}
 		}
 	default: // Forgejo
 		var statuses []struct {
@@ -330,11 +336,14 @@ func (a *RESTAPI) ContextStates(ctx context.Context, repo, sha string) (map[stri
 			State   string `json:"state"`
 		}
 		get(fmt.Sprintf("/repos/%s/commits/%s/statuses", host.RepoPath, sha), "application/json", &statuses)
-		// Forgejo can return multiple entries per context; keep the LATEST
-		// (last entry in the response wins, matching newest-last ordering;
-		// identical-state duplicates are harmless).
+		// Forgejo returns NEWEST-FIRST with multiple entries per context
+		// (superseded attempts linger below). FIRST entry wins — last-wins
+		// let a stale pending clobber the fresh success, arming the gate
+		// forever on green heads (observed live on rhesadox #1566).
 		for _, s := range statuses {
-			states[s.Context] = normalizeStatusState(s.State)
+			if _, ok := states[s.Context]; !ok {
+				states[s.Context] = normalizeStatusState(s.State)
+			}
 		}
 		var checks struct {
 			CheckRuns []struct {
@@ -345,7 +354,9 @@ func (a *RESTAPI) ContextStates(ctx context.Context, repo, sha string) (map[stri
 		}
 		get(fmt.Sprintf("/repos/%s/commits/%s/check-runs", host.RepoPath, sha), "application/json", &checks)
 		for _, c := range checks.CheckRuns {
-			states[c.Name] = normalizeCheckRun(c.Status, c.Conclusion)
+			if _, ok := states[c.Name]; !ok {
+				states[c.Name] = normalizeCheckRun(c.Status, c.Conclusion)
+			}
 		}
 	}
 	if firstErr != nil {

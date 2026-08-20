@@ -82,7 +82,13 @@ func (r *WorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	// "worker ran".
 	tp := observability.TraceparentFromContext(ctx)
 
-	if err := r.publishTrigger(ctx, &wf, dueReason(&wf), wf.Status.LastProcessedRevision, tp, attemptName); err != nil {
+	// For webhook wakes the revision under review is the trigger annotation
+	// (the PR head SHA), not the last processed one.
+	wakeRev := wf.Annotations["harmostes.dev/trigger-revision"]
+	if wakeRev == "" {
+		wakeRev = wf.Status.LastProcessedRevision
+	}
+	if err := r.publishTrigger(ctx, &wf, dueReason(&wf), wakeRev, tp, attemptName); err != nil {
 		logger.Error(err, "publish trigger to pub/sub")
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())

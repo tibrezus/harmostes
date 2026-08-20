@@ -94,13 +94,11 @@ func TestReviewGateWaitingShortCircuitsPipeline(t *testing.T) {
 		"harmostes.dev/trigger-action": "labeled",
 	}
 
-	prepared := false
 	deps := testDeps(st)
 	res, err := Run(context.Background(), deps, Options{Workflow: wf, Workdir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = prepared
 	if res.Outcome != OutcomeSkipped {
 		t.Fatalf("waiting gate must skip the run, got %s (%s)", res.Outcome, res.Message)
 	}
@@ -112,7 +110,6 @@ func TestReviewGateWaitingShortCircuitsPipeline(t *testing.T) {
 	if rr.ArmedSince == nil || time.Since(rr.ArmedSince.Time) > time.Minute {
 		t.Fatalf("armedSince = %+v", rr.ArmedSince)
 	}
-	_ = srv
 }
 
 func TestReviewGateProceedPassesEnvelope(t *testing.T) {
@@ -141,22 +138,14 @@ func TestReviewGateProceedPassesEnvelope(t *testing.T) {
 	if rr := st.last.ReviewReady; rr == nil || rr.ArmedPR != 0 || rr.LastDecision != "proceed" {
 		t.Fatalf("post-proceed state = %+v", rr)
 	}
-	_ = srv
 }
 
 func TestReviewGateDisarmHint(t *testing.T) {
 	// action=closed with no reachable PR: still stands down and disarms.
 	os.Setenv("HARMOSTES_FORGEJO_TOKEN", "tok")
 	defer os.Unsetenv("HARMOSTES_FORGEJO_TOKEN")
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.NotFound(w, r)
-	}))
-	defer srv.Close()
-
 	st := &fakeStatus{}
 	wf := gateWorkflow()
-	// Point the API at the 404 server via BaseOverride — set through env? No:
-	// reviewGate uses the real RESTAPI. For the hint path no fetch happens.
 	wf.Annotations = map[string]string{
 		"harmostes.dev/trigger-pr":     "git.rezus.cloud/tibrez/rhesadox#42",
 		"harmostes.dev/trigger-action": "closed",
@@ -189,7 +178,6 @@ func TestReviewGateReEvaluationWithoutEvent(t *testing.T) {
 	if env == nil {
 		t.Fatal("armed+green must proceed without a new event")
 	}
-	_ = srv
 }
 
 func TestReviewGateOutOfScopeRepoIgnored(t *testing.T) {

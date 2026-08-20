@@ -272,7 +272,11 @@ func (h *Handler) servePullRequest(w http.ResponseWriter, req *http.Request, wf 
 		http.Error(w, "failed to trigger workflow", http.StatusInternalServerError)
 		return
 	}
-	h.log.Info("webhook armed workflow (pull_request)", "workflow", wf.Name, "pr", prNum, "action", pre.Action, "head", pre.PullRequest.Head.Sha[:12])
+	headShort := pre.PullRequest.Head.Sha
+	if len(headShort) > 12 {
+		headShort = headShort[:12]
+	}
+	h.log.Info("webhook armed workflow (pull_request)", "workflow", wf.Name, "pr", prNum, "action", pre.Action, "head", headShort)
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprintf(w, "workflow %s armed for %s#%d (%s)\n", wf.Name, repo, prNum, pre.Action)
 }

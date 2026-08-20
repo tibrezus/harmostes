@@ -74,6 +74,7 @@ func reviewGate(ctx context.Context, deps Deps, wf *v1alpha1.Workflow) *review.E
 		Label:      rr.EffectiveLabel(),
 		Horizon:    rr.HorizonDuration(),
 		DisarmHint: action == "closed",
+		WakeSHA:    wakeRevision(wf),
 	}
 	if armed != nil {
 		params.ArmedSha = armed.ArmedSha
@@ -130,6 +131,15 @@ func reviewGate(ctx context.Context, deps Deps, wf *v1alpha1.Workflow) *review.E
 		return result.Envelope
 	}
 	return nil
+}
+
+// wakeRevision returns the wake event's trigger-revision (env first — the
+// controller clears annotations at schedule time — annotation fallback).
+func wakeRevision(wf *v1alpha1.Workflow) string {
+	if rev := os.Getenv("HARMOSTES_TRIGGER_REVISION"); rev != "" {
+		return rev
+	}
+	return wf.Annotations["harmostes.dev/trigger-revision"]
 }
 
 // repoInScope reports whether repo matches the instance's configured repos.

@@ -18,7 +18,7 @@ func TestConsumerSubscribeEndpoint(t *testing.T) {
 		HTTPPort:   "0", // unused — we test the handler directly
 		PubsubName: "pubsub",
 		Topic:      "harmostes-triggers",
-		RunFunc:    func(_ context.Context, _, _, _, _, _, _, _ string) error { return nil },
+		RunFunc:    func(_ context.Context, _, _, _, _, _, _, _, _ string) error { return nil },
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/dapr/subscribe", nil)
@@ -65,7 +65,7 @@ func TestConsumerHealthz(t *testing.T) {
 func TestConsumerTriggerEvent_ParsesCloudEvent(t *testing.T) {
 	var callCount int32
 	consumer := NewConsumer(ConsumerConfig{
-		RunFunc: func(_ context.Context, workflow, namespace, _, _, _, _, _ string) error {
+		RunFunc: func(_ context.Context, workflow, namespace, _, _, _, _, _, _ string) error {
 			atomic.AddInt32(&callCount, 1)
 			if workflow != "wiki-lint-harmostes" {
 				t.Errorf("workflow = %q", workflow)
@@ -113,7 +113,7 @@ func TestConsumerTriggerEvent_SingleFlight(t *testing.T) {
 	// Simulate a slow RunFunc; a second concurrent trigger should get 503.
 	block := make(chan struct{})
 	consumer := NewConsumer(ConsumerConfig{
-		RunFunc: func(_ context.Context, _, _, _, _, _, _, _ string) error {
+		RunFunc: func(_ context.Context, _, _, _, _, _, _, _, _ string) error {
 			<-block // block until test releases
 			return nil
 		},
@@ -162,7 +162,7 @@ func TestConsumerTriggerEvent_SingleFlight(t *testing.T) {
 
 func TestConsumerTriggerEvent_InvalidJSON(t *testing.T) {
 	consumer := NewConsumer(ConsumerConfig{
-		RunFunc: func(_ context.Context, _, _, _, _, _, _, _ string) error { return nil },
+		RunFunc: func(_ context.Context, _, _, _, _, _, _, _, _ string) error { return nil },
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "/triggers", strings.NewReader("not json"))
@@ -181,10 +181,11 @@ func TestBuildChildEnv_ScrubsConsumerMode(t *testing.T) {
 		"HARMOSTES_CONSUMER_MODE=true",
 		"HOME=/root",
 	}
-	env := buildChildEnv(parent, "wiki-lint-harmostes", "harmostes", "main", "attempt-1", "00-trace", "git.rezus.cloud/tibrez/rhesadox#42", "labeled")
+	env := buildChildEnv(parent, "wiki-lint-harmostes", "harmostes", "main", "attempt-1", "00-trace", "git.rezus.cloud/tibrez/rhesadox#42", "labeled", "wake123")
 	if !slices.Contains(env, "HARMOSTES_TRIGGER_PR=git.rezus.cloud/tibrez/rhesadox#42") ||
-		!slices.Contains(env, "HARMOSTES_TRIGGER_ACTION=labeled") {
-		t.Fatalf("PR/action env missing: %v", env)
+		!slices.Contains(env, "HARMOSTES_TRIGGER_ACTION=labeled") ||
+		!slices.Contains(env, "HARMOSTES_TRIGGER_REVISION=wake123") {
+		t.Fatalf("wake env missing: %v", env)
 	}
 
 	// HARMOSTES_CONSUMER_MODE must NOT be present
@@ -218,7 +219,7 @@ func TestBuildChildEnv_ScrubsConsumerMode(t *testing.T) {
 }
 
 func TestBuildChildEnv_OmitsEmptyOptional(t *testing.T) {
-	env := buildChildEnv([]string{"PATH=/usr/bin"}, "wf", "ns", "", "", "", "", "")
+	env := buildChildEnv([]string{"PATH=/usr/bin"}, "wf", "ns", "", "", "", "", "", "")
 
 	for _, e := range env {
 		if strings.HasPrefix(e, "HARMOSTES_ATTEMPT=") {
@@ -236,7 +237,7 @@ func TestConsumerTriggerEvent_EmptyWorkflow(t *testing.T) {
 	// crash) so Dapr can retry.
 	var capturedWorkflow string
 	consumer := NewConsumer(ConsumerConfig{
-		RunFunc: func(_ context.Context, workflow, _, _, _, _, _, _ string) error {
+		RunFunc: func(_ context.Context, workflow, _, _, _, _, _, _, _ string) error {
 			capturedWorkflow = workflow
 			return fmt.Errorf("simulated failure")
 		},

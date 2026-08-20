@@ -170,6 +170,52 @@ func TestNoProtectionProceedsOnLabel(t *testing.T) {
 	}
 }
 
+func TestFreshWakeTransientFailureArms(t *testing.T) {
+	// Round-3 MAJOR: a fresh wake (no prior armed state) whose first PR
+	// fetch fails must ARM at the wake SHA — an empty NewArmedSha would
+	// write the disarm branch and silently lose the review.
+	p := base
+	p.ArmedSha = ""
+	p.ArmedAt = time.Time{}
+	p.WakeSHA = "wake123"
+	r := Evaluate(context.Background(), &fakeAPI{prErr: fmt.Errorf("boom")}, p)
+	if r.Decision != DecisionWaiting {
+		t.Fatalf("want waiting, got %s (%s)", r.Decision, r.Reason)
+	}
+	if r.NewArmedSha != "wake123" {
+		t.Fatalf("fresh-wake transient failure must arm at wake SHA, got %q", r.NewArmedSha)
+	}
+	if r.NewArmedAt.IsZero() {
+		t.Fatal("fresh-wake arming must stamp armedAt")
+	}
+}
+
+func Test403ProtectionMeansNoReadableContexts(t *testing.T) {
+	// Round-3 MAJOR: 403 (token cannot read protection) must behave like
+	// no-protection — proceed on label alone — not block until horizon.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(req.URL.Path, "/pulls/1"):
+			json.NewEncoder(w).Encode(map[string]any{
+				"state": "open", "head": map[string]string{"sha": "s1"},
+				"base":   map[string]string{"ref": "main"},
+				"labels": []map[string]string{{"name": "needs-review"}},
+			})
+		case strings.Contains(req.URL.Path, "/protection"):
+			http.Error(w, `{"message":"Resource not accessible by integration"}`, http.StatusForbidden)
+		default:
+			http.NotFound(w, req)
+		}
+	}))
+	defer srv.Close()
+	api := &RESTAPI{Client: srv.Client(), BaseOverride: srv.URL}
+	ctxs, err := api.RequiredContexts(context.Background(), "github.com/o/r", "main")
+	if err != nil || len(ctxs) != 0 {
+		t.Fatalf("403 protection must mean no readable contexts, got %v err=%v", ctxs, err)
+	}
+}
+
 func TestTransientAPIFailureStaysArmed(t *testing.T) {
 	p := base
 	p.ArmedSha = "abc123"

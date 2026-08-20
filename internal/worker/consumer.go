@@ -56,7 +56,7 @@ type ConsumerConfig struct {
 // process per run, no state leaks) without pod bloat. The consumer pod is the
 // supervisor; it spawns worker processes and monitors them. When idle, the
 // pod just waits (minimal resource usage).
-type RunFunc func(ctx context.Context, workflow, namespace, source, attemptName, traceparent, pr, action string) error
+type RunFunc func(ctx context.Context, workflow, namespace, source, attemptName, traceparent, pr, action, revision string) error
 
 // Consumer is the pub/sub-triggered workflow executor.
 type Consumer struct {
@@ -185,7 +185,7 @@ func (c *Consumer) handleTrigger(w http.ResponseWriter, r *http.Request) {
 	runCtx, cancel := context.WithTimeout(r.Context(), 30*time.Minute)
 	defer cancel()
 
-	if err := c.cfg.RunFunc(runCtx, trigger.Workflow, trigger.Namespace, trigger.Source, trigger.AttemptName, trigger.Traceparent, trigger.Pr, trigger.Action); err != nil {
+	if err := c.cfg.RunFunc(runCtx, trigger.Workflow, trigger.Namespace, trigger.Source, trigger.AttemptName, trigger.Traceparent, trigger.Pr, trigger.Action, trigger.Revision); err != nil {
 		c.cfg.Logger.Error("workflow run failed", "workflow", trigger.Workflow, "error", err)
 		http.Error(w, fmt.Sprintf("run failed: %v", err), http.StatusInternalServerError)
 		return
@@ -213,7 +213,7 @@ type TriggerEvent struct {
 // buildChildEnv constructs the environment for the exec'd one-shot worker.
 // It scrubs HARMOSTES_CONSUMER_MODE so the child runs in one-shot mode
 // (not consumer mode), then appends the workflow-specific vars.
-func buildChildEnv(parentEnv []string, workflow, namespace, source, attemptName, traceparent, pr, action string) []string {
+func buildChildEnv(parentEnv []string, workflow, namespace, source, attemptName, traceparent, pr, action, revision string) []string {
 	childEnv := make([]string, 0, len(parentEnv)+5)
 	for _, e := range parentEnv {
 		if !strings.HasPrefix(e, "HARMOSTES_CONSUMER_MODE=") {
@@ -242,6 +242,9 @@ func buildChildEnv(parentEnv []string, workflow, namespace, source, attemptName,
 	if action != "" {
 		childEnv = append(childEnv, "HARMOSTES_TRIGGER_ACTION="+action)
 	}
+	if revision != "" {
+		childEnv = append(childEnv, "HARMOSTES_TRIGGER_REVISION="+revision)
+	}
 	return childEnv
 }
 
@@ -252,9 +255,9 @@ func RunConsumer(ctx context.Context) error {
 	logger := slog.Default().With("component", "harmostes-consumer")
 
 	// The RunFunc execs ourselves in one-shot mode.
-	runFunc := func(runCtx context.Context, workflow, namespace, source, attemptName, traceparent, pr, action string) error {
+	runFunc := func(runCtx context.Context, workflow, namespace, source, attemptName, traceparent, pr, action, revision string) error {
 		cmd := exec.CommandContext(runCtx, "/proc/self/exe")
-		cmd.Env = buildChildEnv(os.Environ(), workflow, namespace, source, attemptName, traceparent, pr, action)
+		cmd.Env = buildChildEnv(os.Environ(), workflow, namespace, source, attemptName, traceparent, pr, action, revision)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		return cmd.Run()

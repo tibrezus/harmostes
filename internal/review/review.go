@@ -24,7 +24,9 @@ package review
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -181,7 +183,8 @@ func (a *RESTAPI) get(ctx context.Context, host Host, path, accept string, out a
 		return errNotFound
 	}
 	if resp.StatusCode >= 400 {
-		return fmt.Errorf("review: %s %s: %s", http.MethodGet, path, resp.Status)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return &httpError{Status: resp.StatusCode, Body: string(body)}
 	}
 	if out == nil {
 		return nil
@@ -190,6 +193,22 @@ func (a *RESTAPI) get(ctx context.Context, host Host, path, accept string, out a
 }
 
 var errNotFound = fmt.Errorf("review: not found")
+
+// httpError carries a non-2xx status from get().
+type httpError struct {
+	Status int
+	Body   string
+}
+
+func (e *httpError) Error() string { return fmt.Sprintf("review: HTTP %d: %s", e.Status, e.Body) }
+
+func isForbidden(err error) bool {
+	var he *httpError
+	if errors.As(err, &he) {
+		return he.Status == http.StatusForbidden
+	}
+	return false
+}
 
 // GetPullRequest fetches the normalized PR view (labels, head, base, state).
 func (a *RESTAPI) GetPullRequest(ctx context.Context, repo string, number int) (*PullRequest, error) {
@@ -234,11 +253,14 @@ func (a *RESTAPI) RequiredContexts(ctx context.Context, repo, branch string) ([]
 				Contexts []string `json:"contexts"`
 			} `json:"required_status_checks"`
 		}
-		// 403 (insufficient scope) and 404 (no protection) both mean "no
-		// required contexts defined we can read" — proceed on label alone
-		// rather than blocking review on API permissions.
+		// 404 = no protection configured. 403 = protection exists but the
+		// token cannot read it (fine-grained PAT / App without
+		// Administration:read) — the repo HAS merge rules we cannot see.
+		// Proceed on label alone: blocking review on token scope would
+		// silently kill every review for such tokens (6h horizon standdown),
+		// while the CI itself still gates the merge on the host side.
 		if err := a.get(ctx, host, fmt.Sprintf("/repos/%s/branches/%s/protection", host.RepoPath, branch), "application/vnd.github+json", &prot); err != nil {
-			if err == errNotFound {
+			if err == errNotFound || isForbidden(err) {
 				return nil, nil
 			}
 			return nil, err
@@ -249,7 +271,7 @@ func (a *RESTAPI) RequiredContexts(ctx context.Context, repo, branch string) ([]
 			StatusCheckContexts []string `json:"status_check_contexts"`
 		}
 		if err := a.get(ctx, host, fmt.Sprintf("/repos/%s/branch_protections/%s", host.RepoPath, branch), "application/json", &prot); err != nil {
-			if err == errNotFound {
+			if err == errNotFound || isForbidden(err) {
 				return nil, nil
 			}
 			return nil, err
@@ -268,6 +290,16 @@ func (a *RESTAPI) ContextStates(ctx context.Context, repo, sha string) (map[stri
 	}
 	states := map[string]string{}
 
+	// Only errNotFound legitimately means "no results on this surface";
+	// every other error (401/403/5xx) propagates so the gate's waiting
+	// reason names the fault instead of masquerading as "ci pending".
+	var firstErr error
+	get := func(path, accept string, out any) {
+		if err := a.get(ctx, host, path, accept, out); err != nil && err != errNotFound && firstErr == nil {
+			firstErr = err
+		}
+	}
+
 	switch host.Kind {
 	case HostGitHub:
 		var combined struct {
@@ -276,10 +308,9 @@ func (a *RESTAPI) ContextStates(ctx context.Context, repo, sha string) (map[stri
 				State   string `json:"state"`
 			} `json:"statuses"`
 		}
-		if err := a.get(ctx, host, fmt.Sprintf("/repos/%s/commits/%s/status", host.RepoPath, sha), "application/json", &combined); err == nil {
-			for _, s := range combined.Statuses {
-				states[s.Context] = normalizeStatusState(s.State)
-			}
+		get(fmt.Sprintf("/repos/%s/commits/%s/status", host.RepoPath, sha), "application/json", &combined)
+		for _, s := range combined.Statuses {
+			states[s.Context] = normalizeStatusState(s.State)
 		}
 		var checks struct {
 			TotalCount int `json:"total_count"`
@@ -289,20 +320,21 @@ func (a *RESTAPI) ContextStates(ctx context.Context, repo, sha string) (map[stri
 				Conclusion string `json:"conclusion"`
 			} `json:"check_runs"`
 		}
-		if err := a.get(ctx, host, fmt.Sprintf("/repos/%s/commits/%s/check-runs", host.RepoPath, sha), "application/vnd.github+json", &checks); err == nil {
-			for _, c := range checks.CheckRuns {
-				states[c.Name] = normalizeCheckRun(c.Status, c.Conclusion)
-			}
+		get(fmt.Sprintf("/repos/%s/commits/%s/check-runs", host.RepoPath, sha), "application/vnd.github+json", &checks)
+		for _, c := range checks.CheckRuns {
+			states[c.Name] = normalizeCheckRun(c.Status, c.Conclusion)
 		}
 	default: // Forgejo
 		var statuses []struct {
 			Context string `json:"context"`
 			State   string `json:"state"`
 		}
-		if err := a.get(ctx, host, fmt.Sprintf("/repos/%s/commits/%s/statuses", host.RepoPath, sha), "application/json", &statuses); err == nil {
-			for _, s := range statuses {
-				states[s.Context] = normalizeStatusState(s.State)
-			}
+		get(fmt.Sprintf("/repos/%s/commits/%s/statuses", host.RepoPath, sha), "application/json", &statuses)
+		// Forgejo can return multiple entries per context; keep the LATEST
+		// (last entry in the response wins, matching newest-last ordering;
+		// identical-state duplicates are harmless).
+		for _, s := range statuses {
+			states[s.Context] = normalizeStatusState(s.State)
 		}
 		var checks struct {
 			CheckRuns []struct {
@@ -311,11 +343,13 @@ func (a *RESTAPI) ContextStates(ctx context.Context, repo, sha string) (map[stri
 				Conclusion string `json:"conclusion"`
 			} `json:"check_runs"`
 		}
-		if err := a.get(ctx, host, fmt.Sprintf("/repos/%s/commits/%s/check-runs", host.RepoPath, sha), "application/json", &checks); err == nil {
-			for _, c := range checks.CheckRuns {
-				states[c.Name] = normalizeCheckRun(c.Status, c.Conclusion)
-			}
+		get(fmt.Sprintf("/repos/%s/commits/%s/check-runs", host.RepoPath, sha), "application/json", &checks)
+		for _, c := range checks.CheckRuns {
+			states[c.Name] = normalizeCheckRun(c.Status, c.Conclusion)
 		}
+	}
+	if firstErr != nil {
+		return states, firstErr
 	}
 	return states, nil
 }
@@ -362,6 +396,10 @@ type Params struct {
 	ArmedAt time.Time
 	// ArmedSha is the SHA the gate last saw ("" → arm at the current head).
 	ArmedSha string
+
+	// WakeSHA is the trigger-revision from the wake event (the webhook's
+	// head SHA); used to arm on a fresh wake whose first PR fetch fails.
+	WakeSHA string
 	// DisarmHint is set when the wake event already implies stand-down
 	// (e.g. action=closed).
 	DisarmHint bool
@@ -388,8 +426,17 @@ func Evaluate(ctx context.Context, api API, p Params) Result {
 
 	pr, err := api.GetPullRequest(ctx, p.Repo, p.PR)
 	if err != nil {
-		// Transient API failure: keep armed, retry next cycle.
-		return Result{Evaluation: waiting("pr fetch failed: " + err.Error()), NewArmedSha: p.ArmedSha, NewArmedAt: armTime(p.ArmedAt, now)}
+		// Transient API failure: keep armed, retry next cycle. On a FRESH
+		// wake (no prior armed state) we must ARM here — an empty
+		// NewArmedSha would write the disarm branch, switching the
+		// controller's armed carve-out off and silently losing this wake's
+		// review until the next PR event. The wake's trigger revision is
+		// the best-known head; the next evaluation refreshes it.
+		keepSha := p.ArmedSha
+		if keepSha == "" {
+			keepSha = p.WakeSHA
+		}
+		return Result{Evaluation: waiting("pr fetch failed: " + err.Error()), NewArmedSha: keepSha, NewArmedAt: armTime(p.ArmedAt, now)}
 	}
 
 	if pr.State != "open" {

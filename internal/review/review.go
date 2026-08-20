@@ -377,6 +377,14 @@ func normalizeStatusState(s string) string {
 	switch s {
 	case "success":
 		return "success"
+	case "skipped":
+		// Host merge-rule parity: Forgejo posts a `skipped` commit status
+		// for guard-skipped jobs, and its branch protection counts a
+		// required context whose latest status is `skipped` as SATISFIED
+		// (verified live: PR mergeable=true with skipped decode contexts;
+		// GitHub behaves the same for neutral/skipped checks). Mapping it
+		// to failure made the gate stricter than the merge rules.
+		return "success"
 	case "pending":
 		return "pending"
 	default: // error, failure

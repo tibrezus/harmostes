@@ -26,6 +26,17 @@ canonical glossary. The rest lives in the places below.
 The ADRs are the source of truth for *why* the architecture is shaped this way.
 If something here and an ADR disagree, the ADR wins.
 
+## PR Review (event-armed)
+
+PR-review workflows are event-armed (ADR-0006): a git host sends the
+consolidated `pull_request` event to `POST /webhook/{workflow-name}`
+(one webhook per watched repo, HMAC-signed). The Review-Ready Gate —
+native Go in the worker — proceeds only when the trigger label is
+present AND every merge-rule required context is green at the PR head
+SHA; red CI is a silent non-event; a moved head re-arms at the new SHA.
+The verdict posts as an issue comment carrying the trailer
+`<!-- pr-review: DECISION @ sha -->` and consumes the label.
+
 ## The model in one paragraph
 
 A **Workflow** is a graph of typed **Nodes**. The kernel is deterministic: it

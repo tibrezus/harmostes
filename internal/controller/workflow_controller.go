@@ -98,6 +98,10 @@ func (r *WorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	if triggerRev := wf.Annotations["harmostes.dev/trigger-revision"]; triggerRev != "" {
 		base := wf.DeepCopy()
 		delete(wf.Annotations, "harmostes.dev/trigger-revision")
+		// The PR pointer rode the TriggerEvent payload (Pr/Action); clearing
+		// here too prevents a stale wake from re-arming every poll cycle.
+		delete(wf.Annotations, "harmostes.dev/trigger-pr")
+		delete(wf.Annotations, "harmostes.dev/trigger-action")
 		if err := r.Patch(ctx, &wf, client.MergeFrom(base)); err != nil {
 			logger.Error(err, "clear webhook trigger annotation")
 		}

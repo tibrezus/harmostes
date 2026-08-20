@@ -312,18 +312,12 @@ func (h *Handler) verifySignature(req *http.Request, body []byte, hostURL, secre
 	if tok := req.Header.Get("X-Gitlab-Token"); tok != "" {
 		return tok == secret
 	}
-	// No signature header: legacy URL-sniffed behavior.
-	switch {
-	case strings.Contains(hostURL, "github.com"):
-		return false // GitHub always signs; absence = reject
-	case strings.Contains(hostURL, "gitlab.com"):
-		return false
-	case strings.Contains(hostURL, "forgejo"):
-		return false
-	default:
-		h.log.Info("unsigned webhook from unknown host", "url", hostURL)
-		return true // preserve legacy tolerance for self-hosted unsigned hooks
-	}
+	// No signature header and a secret is configured: fail closed. Legacy
+	// tolerance for self-hosted unsigned hooks let forged wakes reach the
+	// gate (bounded by repoInScope, but pointless risk — the gate re-verifies
+	// via the authenticated API anyway).
+	h.log.Info("unsigned webhook rejected (secret configured, no signature header)", "url", hostURL)
+	return false
 }
 
 func verifyHMACSHA256(header, prefix string, body []byte, secret string) bool {

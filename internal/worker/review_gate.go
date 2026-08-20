@@ -36,8 +36,18 @@ func reviewGate(ctx context.Context, deps Deps, wf *v1alpha1.Workflow) *review.E
 	}
 
 	armed := wf.Status.ReviewReady
-	trigPR := wf.Annotations["harmostes.dev/trigger-pr"]
-	action := wf.Annotations["harmostes.dev/trigger-action"]
+	// The controller clears the trigger annotations at schedule time (it must,
+	// or isDue rapid-fires), so the PR pointer rides the TriggerEvent payload
+	// through the consumer into the one-shot worker's environment. The
+	// annotation is the fallback for direct/manual invocations.
+	trigPR := os.Getenv("HARMOSTES_TRIGGER_PR")
+	if trigPR == "" {
+		trigPR = wf.Annotations["harmostes.dev/trigger-pr"]
+	}
+	action := os.Getenv("HARMOSTES_TRIGGER_ACTION")
+	if action == "" {
+		action = wf.Annotations["harmostes.dev/trigger-action"]
+	}
 
 	// Nothing armed, no wake event: idle — the old path would have polled
 	// every open PR of every repo; here we do nothing at all.
@@ -149,7 +159,14 @@ func repoInScope(wf *v1alpha1.Workflow, repo string) bool {
 }
 
 func patchIdle(ctx context.Context, deps Deps, name, reason string) {
+	// Preserve any armed state: an out-of-scope wake must not disarm a
+	// legitimately armed in-scope PR (self-heals, but do not cause it).
 	if err := deps.Status.PatchStatus(ctx, name, func(s *v1alpha1.WorkflowStatus) {
+		if s.ReviewReady != nil {
+			s.ReviewReady.LastDecision = "idle"
+			s.ReviewReady.LastReason = reason
+			return
+		}
 		s.ReviewReady = &v1alpha1.ReviewReadyStatus{LastDecision: "idle", LastReason: reason}
 	}); err != nil {
 		deps.log()("review-ready: status patch failed: %v", err)

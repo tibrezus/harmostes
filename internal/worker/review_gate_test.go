@@ -211,6 +211,14 @@ func TestReviewGateOutOfScopeRepoIgnored(t *testing.T) {
 }
 
 func TestReviewGateBareRepoScopeMatchesGitHub(t *testing.T) {
+	// Hermetic: a server that 404s the PR fetch — the scope MUST have
+	// matched (bare owner/name → github.com/owner/name) because the gate
+	// reached the fetch (waiting), not the out-of-scope ignore (idle).
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+	pinReviewAPI(t, srv, false)
 	st := &fakeStatus{}
 	wf := gateWorkflow()
 	wf.Spec.Config = []byte(`{"repos": ["tibrezus/harmostes"]}`)
@@ -218,14 +226,12 @@ func TestReviewGateBareRepoScopeMatchesGitHub(t *testing.T) {
 		"harmostes.dev/trigger-pr":     "github.com/tibrezus/harmostes#9",
 		"harmostes.dev/trigger-action": "labeled",
 	}
-	// The gate will try to fetch PR 9 from api.github.com and fail (no
-	// server) → waiting (armed kept, not idle) — proving scope matched.
 	env := reviewGate(context.Background(), testDeps(st), wf)
 	if env != nil {
 		t.Fatal("unreachable API must not proceed")
 	}
 	if rr := st.last.ReviewReady; rr == nil || rr.LastDecision != "waiting" {
-		t.Fatalf("scope-matched state = %+v (want waiting: API unreachable)", rr)
+		t.Fatalf("scope-matched state = %+v (want waiting: fetch failed)", rr)
 	}
 }
 

@@ -128,10 +128,9 @@ func TestStanddownClosed(t *testing.T) {
 
 func TestDisarmHintBeatsFetch(t *testing.T) {
 	// action=closed arrives: stand down without trusting a possibly-404 PR.
-	r := Evaluate(context.Background(), &fakeAPI{prErr: fmt.Errorf("404")}, base)
-	base2 := base
-	base2.DisarmHint = true
-	r = Evaluate(context.Background(), &fakeAPI{prErr: fmt.Errorf("404")}, base2)
+	p := base
+	p.DisarmHint = true
+	r := Evaluate(context.Background(), &fakeAPI{prErr: fmt.Errorf("404")}, p)
 	if r.Decision != DecisionStanddown {
 		t.Fatalf("want standdown on disarm hint, got %s (%s)", r.Decision, r.Reason)
 	}

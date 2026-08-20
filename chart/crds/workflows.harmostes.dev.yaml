@@ -183,6 +183,16 @@ spec:
                     schedule: { type: string }
                 disabled: { type: boolean }   # suspend scheduling (defined but not run)
 
+                # Review-Ready Gate (ADR-0006): the event-armed deterministic
+                # trigger for adversarial PR review — proceeds only when the
+                # trigger label is present AND every merge-rule required
+                # context is green at the PR head SHA.
+                reviewReady:
+                  type: object
+                  properties:
+                    label:   { type: string, default: needs-review }
+                    horizon: { type: string, default: 6h }
+
                 # External System Bindings (ADR-0003). Optional — legacy
                 # Workflows without bindings still validate. When present, this
                 # is the Binding Authority Boundary; runtime may create objects
@@ -272,6 +282,16 @@ spec:
                 lastAgentCommit: { type: string }
                 lastRigHash: { type: string }
                 gateStatus: { type: string, enum: [green, failed, unknown] }
+                reviewReady:
+                  type: object
+                  description: armed state of the Review-Ready Gate (ADR-0006)
+                  properties:
+                    armedRepo:    { type: string }
+                    armedPR:      { type: integer }
+                    armedSha:     { type: string }
+                    armedSince:   { type: string, format: date-time }
+                    lastDecision: { type: string, enum: [proceed, waiting, standdown, idle] }
+                    lastReason:   { type: string }
                 lastRunAt: { type: string }
                 message: { type: string }
                 conditions:

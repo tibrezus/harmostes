@@ -35,6 +35,11 @@ type TriggerEvent struct {
 	TriggerType string `json:"triggerType"` // webhook | schedule | revision | manual | spec-change
 	Traceparent string `json:"traceparent,omitempty"`
 	AttemptName string `json:"attemptName,omitempty"`
+	// PR + Action carry the pull_request wake (ADR-0006) to the worker: the
+	// controller clears the trigger annotations at schedule time, so the
+	// Review-Ready Gate receives its target through this payload.
+	Pr     string `json:"pr,omitempty"`
+	Action string `json:"action,omitempty"`
 }
 
 // publishTrigger publishes a trigger event to the Dapr pub/sub topic. The
@@ -62,6 +67,8 @@ func (r *WorkflowReconciler) publishTrigger(ctx context.Context, wf *v1alpha1.Wo
 		TriggerType: triggerType,
 		Traceparent: traceparent,
 		AttemptName: attemptName,
+		Pr:          wf.Annotations["harmostes.dev/trigger-pr"],
+		Action:      wf.Annotations["harmostes.dev/trigger-action"],
 	}
 	b, err := json.Marshal(payload)
 	if err != nil {

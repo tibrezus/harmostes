@@ -82,7 +82,13 @@ func (r *WorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	// "worker ran".
 	tp := observability.TraceparentFromContext(ctx)
 
-	if err := r.publishTrigger(ctx, &wf, dueReason(&wf), wf.Status.LastProcessedRevision, tp, attemptName); err != nil {
+	// For webhook wakes the revision under review is the trigger annotation
+	// (the PR head SHA), not the last processed one.
+	wakeRev := wf.Annotations["harmostes.dev/trigger-revision"]
+	if wakeRev == "" {
+		wakeRev = wf.Status.LastProcessedRevision
+	}
+	if err := r.publishTrigger(ctx, &wf, dueReason(&wf), wakeRev, tp, attemptName); err != nil {
 		logger.Error(err, "publish trigger to pub/sub")
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
@@ -98,6 +104,10 @@ func (r *WorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	if triggerRev := wf.Annotations["harmostes.dev/trigger-revision"]; triggerRev != "" {
 		base := wf.DeepCopy()
 		delete(wf.Annotations, "harmostes.dev/trigger-revision")
+		// The PR pointer rode the TriggerEvent payload (Pr/Action); clearing
+		// here too prevents a stale wake from re-arming every poll cycle.
+		delete(wf.Annotations, "harmostes.dev/trigger-pr")
+		delete(wf.Annotations, "harmostes.dev/trigger-action")
 		if err := r.Patch(ctx, &wf, client.MergeFrom(base)); err != nil {
 			logger.Error(err, "clear webhook trigger annotation")
 		}
@@ -125,6 +135,16 @@ func (r *WorkflowReconciler) isDue(wf *v1alpha1.Workflow) (bool, time.Duration) 
 
 	// Spec changed
 	if wf.Status.ObservedGeneration != wf.Generation {
+		return true, r.PollInterval
+	}
+
+	// An ARMED Review-Ready gate (ADR-0006) must re-evaluate on schedule:
+	// neither host sends a CI-completion wake (Forgejo has no status
+	// webhooks; GitHub status/check_run events carry no `action`), so the
+	// poll is the only thing that moves waiting → proceed. This carve-out
+	// comes BEFORE the webhook-only guard: an armed gate on a kind:webhook
+	// workflow would otherwise starve and die at the horizon.
+	if wf.Status.ReviewReady != nil && wf.Status.ReviewReady.ArmedPR != 0 {
 		return true, r.PollInterval
 	}
 

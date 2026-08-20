@@ -63,6 +63,12 @@ type WorkflowTemplateSpec struct {
 
 	// Deploy defines the deploy plugin that ships the result.
 	Deploy DeploySpec `json:"deploy"`
+
+	// ReviewReady optionally configures the event-armed Review-Ready Gate
+	// (ADR-0006): the deterministic trigger decision for adversarial PR
+	// review (label ∧ merge-rule contexts green at the head SHA). Templates
+	// for pr-review workflows set this; instances inherit it.
+	ReviewReady *ReviewReadySpec `json:"reviewReady,omitempty"`
 }
 
 // ScopeParam is one instance-level configuration parameter.

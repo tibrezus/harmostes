@@ -6,8 +6,10 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -233,5 +235,148 @@ func TestServeHTTP_MethodNotAllowed(t *testing.T) {
 
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("expected 405, got %d", rec.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Consolidated pull_request events (ADR-0006)
+// ---------------------------------------------------------------------------
+
+// prWorkflow builds a workflow whose webhook secret (if any) resolves from
+// the given inline secret value via the direct-secret (legacy) mode.
+func prWorkflow(name, secret, hostURL string) (*v1alpha1.Workflow, *corev1.Secret) {
+	wf := &v1alpha1.Workflow{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "harmostes"},
+		Spec: v1alpha1.WorkflowSpec{
+			Source: v1alpha1.SourceSpec{
+				Webhook: &v1alpha1.WebhookSpec{URL: hostURL, Secret: secret},
+			},
+		},
+	}
+	sec := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: name + "-sec", Namespace: "harmostes"},
+		Data:       map[string][]byte{"secret": []byte(secret)},
+	}
+	return wf, sec
+}
+
+// prEventBody builds a GitHub/Forgejo-consolidated pull_request payload.
+func prEventBody(action string, pr int, sha, fullName, htmlURL string) string {
+	return fmt.Sprintf(`{"action":%q,"number":%d,"pull_request":{"number":%d,`+
+		`"state":"open","head":{"sha":%q}},"repository":{"full_name":%q,"html_url":%q}}`,
+		action, pr, pr, sha, fullName, htmlURL)
+}
+
+func TestPullRequestEventAnnotates(t *testing.T) {
+	wf, sec := prWorkflow("w-pr", "", "")
+	h := newTestHandler(sec, wf)
+
+	body := prEventBody("labeled", 42, "abc123def4567890", "tibrez/rhesadox", "https://git.rezus.cloud/tibrez/rhesadox")
+	req := httptest.NewRequest(http.MethodPost, "/webhook/w-pr?namespace=harmostes", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req, "w-pr")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+	var got v1alpha1.Workflow
+	_ = h.Get(context.Background(), types.NamespacedName{Namespace: "harmostes", Name: "w-pr"}, &got)
+	if got.Annotations[TriggerRevisionAnnotation] != "abc123def4567890" {
+		t.Errorf("trigger-revision = %q", got.Annotations[TriggerRevisionAnnotation])
+	}
+	if got.Annotations[TriggerPRAnnotation] != "git.rezus.cloud/tibrez/rhesadox#42" {
+		t.Errorf("trigger-pr = %q", got.Annotations[TriggerPRAnnotation])
+	}
+	if got.Annotations[TriggerActionAnnotation] != "labeled" {
+		t.Errorf("trigger-action = %q", got.Annotations[TriggerActionAnnotation])
+	}
+}
+
+func TestPullRequestEventGitHubNormalizesHost(t *testing.T) {
+	wf, _ := prWorkflow("w-gh", "", "")
+	h := newTestHandler(wf)
+
+	body := prEventBody("synchronize", 10, "def456abcdef456abcdef456abcdef456abcd", "tibrezus/harmostes", "https://github.com/tibrezus/harmostes")
+	req := httptest.NewRequest(http.MethodPost, "/webhook/w-gh?namespace=harmostes", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req, "w-gh")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+	var got v1alpha1.Workflow
+	_ = h.Get(context.Background(), types.NamespacedName{Namespace: "harmostes", Name: "w-gh"}, &got)
+	if g := got.Annotations[TriggerPRAnnotation]; g != "github.com/tibrezus/harmostes#10" {
+		t.Errorf("trigger-pr = %q, want github.com-normalized", g)
+	}
+}
+
+func TestPullRequestEventNonWakeActionNoOp(t *testing.T) {
+	wf, _ := prWorkflow("w-nw", "", "")
+	h := newTestHandler(wf)
+
+	body := prEventBody("assigned", 5, "aaaa", "o/r", "https://git.rezus.cloud/o/r")
+	req := httptest.NewRequest(http.MethodPost, "/webhook/w-nw?namespace=harmostes", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req, "w-nw")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("non-wake action must 200, got %d", rec.Code)
+	}
+	var got v1alpha1.Workflow
+	_ = h.Get(context.Background(), types.NamespacedName{Namespace: "harmostes", Name: "w-nw"}, &got)
+	if g := got.Annotations[TriggerPRAnnotation]; g != "" {
+		t.Errorf("non-wake action must not annotate, got %q", g)
+	}
+}
+
+func TestPullRequestEventMissingHead400(t *testing.T) {
+	wf, _ := prWorkflow("w-mf", "", "")
+	h := newTestHandler(wf)
+
+	body := `{"action":"labeled","number":1,"pull_request":{"number":1},"repository":{"full_name":"o/r","html_url":"https://git.rezus.cloud/o/r"}}`
+	req := httptest.NewRequest(http.MethodPost, "/webhook/w-mf?namespace=harmostes", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req, "w-mf")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("missing head sha must 400, got %d", rec.Code)
+	}
+}
+
+func TestForgejoSignatureHeaderVerified(t *testing.T) {
+	const secret = "s3cr3t"
+	wf, sec := prWorkflow("w-fj", secret, "https://git.rezus.cloud/tibrez/r") // hostname WITHOUT "forgejo"
+	h := newTestHandler(sec, wf)
+
+	body := prEventBody("labeled", 7, "fff000fff000fff000fff000fff000fff000fff0", "tibrez/r", "https://git.rezus.cloud/tibrez/r")
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(body))
+	sig := hex.EncodeToString(mac.Sum(nil))
+
+	req := httptest.NewRequest(http.MethodPost, "/webhook/w-fj?namespace=harmostes", strings.NewReader(body))
+	req.Header.Set("X-Forgejo-Signature", "sha256="+sig)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req, "w-fj")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("valid Forgejo signature rejected: %d %s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/webhook/w-fj?namespace=harmostes", strings.NewReader(body))
+	req.Header.Set("X-Forgejo-Signature", "sha256="+strings.Repeat("0", 64))
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req, "w-fj")
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("bad signature must 401, got %d", rec.Code)
+	}
+}
+
+func TestUnsignedRejectedWhenSecretConfigured(t *testing.T) {
+	wf, sec := prWorkflow("w-us", "s3cr3t", "https://git.example.com/o/r")
+	h := newTestHandler(sec, wf)
+
+	body := prEventBody("labeled", 3, "bbb000bbb000bbb000bbb000bbb000bbb000bbb0", "o/r", "https://git.example.com/o/r")
+	req := httptest.NewRequest(http.MethodPost, "/webhook/w-us?namespace=harmostes", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req, "w-us")
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("unsigned + secret configured must fail closed (401), got %d", rec.Code)
 	}
 }

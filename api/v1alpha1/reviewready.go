@@ -19,6 +19,13 @@ import (
 //
 // Set on a WorkflowTemplate (flows to instances via ApplyTemplateDefaults);
 // a Workflow may override it.
+//
+// Instance requirements (fail-closed otherwise): spec.config.repos must
+// name the watched repos (host/owner/name — spec.config is instance-owned,
+// a template cannot declare it), and the source kind should not be
+// "webhook" (an armed gate re-evaluates on the poll interval; the isDue
+// carve-out covers kind:webhook too, but schedule/event kinds are the
+// natural fit).
 type ReviewReadySpec struct {
 	// Label is the single review-request label (e.g. "needs-review").
 	// Human-ticking the label in the UI and the dev-workflow skill are

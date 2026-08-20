@@ -132,6 +132,16 @@ func (r *WorkflowReconciler) isDue(wf *v1alpha1.Workflow) (bool, time.Duration) 
 		return true, r.PollInterval
 	}
 
+	// An ARMED Review-Ready gate (ADR-0006) must re-evaluate on schedule:
+	// neither host sends a CI-completion wake (Forgejo has no status
+	// webhooks; GitHub status/check_run events carry no `action`), so the
+	// poll is the only thing that moves waiting → proceed. This carve-out
+	// comes BEFORE the webhook-only guard: an armed gate on a kind:webhook
+	// workflow would otherwise starve and die at the horizon.
+	if wf.Status.ReviewReady != nil && wf.Status.ReviewReady.ArmedPR != 0 {
+		return true, r.PollInterval
+	}
+
 	// Webhook-only workflows do not trigger on schedule — they wait for
 	// push events. Without this guard, isDue falls through to the schedule
 	// path and fires every PollInterval, defeating the event-driven model.

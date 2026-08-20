@@ -370,7 +370,7 @@ func TestContextStatesNewestFirstWins(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
-		case strings.HasSuffix(req.URL.Path, "/statuses/abc"):
+		case strings.HasSuffix(req.URL.Path, "/statuses"):
 			json.NewEncoder(w).Encode([]map[string]string{
 				{"context": "decode / decode (cuda) (pull_request)", "state": "success"}, // newest
 				{"context": "decode / decode (cuda) (pull_request)", "state": "pending"}, // superseded

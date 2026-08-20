@@ -103,6 +103,16 @@ spec:
                         name: { type: string }
                         configMap: { type: string }
                         args: { type: array, items: { type: string } }
+                # Review-Ready Gate (ADR-0006): the event-armed deterministic
+                # trigger for adversarial PR review — proceeds only when the
+                # trigger label is present AND every merge-rule required
+                # context is green at the PR head SHA.
+                reviewReady:
+                  type: object
+                  properties:
+                    label:   { type: string, default: needs-review }
+                    horizon: { type: string, default: 6h }
+
             status:
               type: object
               x-kubernetes-preserve-unknown-fields: true

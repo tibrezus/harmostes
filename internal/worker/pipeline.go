@@ -116,6 +116,37 @@ func Run(ctx context.Context, deps Deps, opts Options) (res Result, err error) {
 		}
 	}
 
+	// ── 0. review-ready gate (deterministic, native Go — ADR-0006) ─────────
+	// Event-armed: pull_request webhooks annotate the workflow; the gate
+	// re-verifies label ∧ merge-rule greenness at the head SHA and either
+	// hands the pipeline a Trigger Envelope or stands down. Unarmed and
+	// unwoken workflows pay nothing here.
+	if env := reviewGate(runCtx, deps, wf); env != nil {
+		envelopeJSON, _ := json.Marshal(env)
+		opts.ExtraEnv = append(opts.ExtraEnv,
+			"HARMOSTES_TRIGGER_REPO="+env.Repo,
+			fmt.Sprintf("HARMOSTES_TRIGGER_PR=%d", env.PR),
+			"HARMOSTES_TRIGGER_SHA="+env.HeadSHA,
+			"HARMOSTES_TRIGGER_BASE="+env.Base,
+			"HARMOSTES_TRIGGER_LABEL="+env.Label,
+			"HARMOSTES_TRIGGER_CONTEXTS="+string(envelopeJSON),
+		)
+		logf("review-ready: proceed pr=%d head=%s", env.PR, env.HeadSHA[:12])
+	} else if wf.Spec.ReviewReady != nil {
+		// Gate evaluated and did not proceed: this cycle is over (waiting or
+		// stood down). No prepare run, no repo scan — the armed state on the
+		// status and the next event/poll re-evaluate. The wake must be
+		// consumed (LastProcessedRevision = trigger-revision) or isDue
+		// would re-trigger every reconcile.
+		if rev := wf.Annotations["harmostes.dev/trigger-revision"]; rev != "" {
+			patchStatus(runCtx, deps, name, func(s *v1alpha1.WorkflowStatus) {
+				s.LastProcessedRevision = rev
+				s.LastRunAt = nowMeta()
+			})
+		}
+		return Result{Outcome: OutcomeSkipped, Message: "review-ready: waiting or stood down"}, nil
+	}
+
 	// ── 1. prepare (deterministic) ────────────────────────────────────────────
 	pctx, prepSpan := tracer.Start(runCtx, "prepare")
 	prepCmd, prepArgs, perr := deps.Plugins.Resolve(pctx, wf.Spec.Prepare.Plugin, "prepare")

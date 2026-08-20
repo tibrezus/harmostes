@@ -93,8 +93,9 @@ type WorkflowSpec struct {
 	Prepare       PrepareSpec             `json:"prepare,omitempty"`
 	Agent         AgentSpec               `json:"agent,omitempty"`
 	Deploy        DeploySpec              `json:"deploy,omitempty"`
-	Graph         *GraphSpec              `json:"graph,omitempty"`    // graph-native mode: explicit nodes + edges (overrides Prepare/Agent/Deploy)
-	Bindings      []ExternalSystemBinding `json:"bindings,omitempty"` // ADR-0003: external system authority boundary (static; runtime may not expand)
+	Graph         *GraphSpec              `json:"graph,omitempty"`       // graph-native mode: explicit nodes + edges (overrides Prepare/Agent/Deploy)
+	ReviewReady   *ReviewReadySpec        `json:"reviewReady,omitempty"` // event-armed Review-Ready Gate (ADR-0006): label ∧ merge-rule contexts green at head
+	Bindings      []ExternalSystemBinding `json:"bindings,omitempty"`    // ADR-0003: external system authority boundary (static; runtime may not expand)
 	Events        *EventsSpec             `json:"events,omitempty"`
 	Cache         *CacheSpec              `json:"cache,omitempty"`
 	Scaling       *ScalingSpec            `json:"scaling,omitempty"`
@@ -229,6 +230,7 @@ type WorkflowStatus struct {
 	LastAgentCommit       string             `json:"lastAgentCommit,omitempty"`
 	LastRigHash           string             `json:"lastRigHash,omitempty"` // sha256 of the last processed RIG (deterministic skip)
 	GateStatus            string             `json:"gateStatus,omitempty"`  // green | failed | unknown
+	ReviewReady           *ReviewReadyStatus `json:"reviewReady,omitempty"` // armed state of the Review-Ready Gate (ADR-0006)
 	LastRunAt             metav1.Time        `json:"lastRunAt,omitempty"`
 	Message               string             `json:"message,omitempty"`
 	Conditions            []metav1.Condition `json:"conditions,omitempty"`

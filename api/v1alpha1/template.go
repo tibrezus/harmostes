@@ -67,6 +67,12 @@ func ApplyTemplateDefaults(wf *Workflow, tmpl *WorkflowTemplate) {
 		s.Deploy.Plugin = t.Deploy.Plugin
 	}
 
+	// Review-Ready Gate (ADR-0006): the template declares the gate; the
+	// instance may override it.
+	if s.ReviewReady == nil {
+		s.ReviewReady = t.ReviewReady
+	}
+
 	// Instance scope wins: spec.config overrides whatever prepare.config
 	// holds after the template overlay.
 	if len(s.Config) > 0 {

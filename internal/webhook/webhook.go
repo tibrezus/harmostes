@@ -24,6 +24,14 @@ const (
 	// TriggerRevisionAnnotation is set on a Workflow when a webhook arrives.
 	// The Reconcile respects this annotation to trigger immediately.
 	TriggerRevisionAnnotation = "harmostes.dev/trigger-revision"
+
+	// TriggerPRAnnotation carries the pull-request pointer ("host/owner/name#N")
+	// from a pull_request event to the Review-Ready Gate.
+	TriggerPRAnnotation = "harmostes.dev/trigger-pr"
+
+	// TriggerActionAnnotation carries the consolidated event action
+	// (labeled, unlabeled, synchronize, opened, reopened, closed, …).
+	TriggerActionAnnotation = "harmostes.dev/trigger-action"
 )
 
 // Handler is an HTTP handler for git push events.
@@ -53,6 +61,26 @@ type PushEvent struct {
 	} `json:"repository"`
 	After  string `json:"after"`  // new HEAD commit SHA
 	Before string `json:"before"` // old HEAD commit SHA (0000000000000000000000000000000000000000 = new branch)
+}
+
+// PullRequestEvent is the GitHub-consolidated pull_request event (GitHub
+// and Forgejo share the payload shape; the action field dispatches).
+// Only the fields the dumb handler needs are captured — the Review-Ready
+// Gate re-verifies everything against the API at evaluation time.
+type PullRequestEvent struct {
+	Action      string `json:"action"`
+	Number      int    `json:"number"`
+	PullRequest struct {
+		Number int    `json:"number"`
+		State  string `json:"state"`
+		Head   struct {
+			Sha string `json:"sha"`
+		} `json:"head"`
+	} `json:"pull_request"`
+	Repository struct {
+		FullName string `json:"full_name"`
+		HTMLURL  string `json:"html_url"`
+	} `json:"repository"`
 }
 
 // ServeHTTP handles webhook POST requests.
@@ -121,6 +149,23 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request, workflowNa
 		}
 	}
 
+	// Parse: git push event (branch/revision trigger) or consolidated
+	// pull_request event (Review-Ready Gate arming, ADR-0006).
+	var probe struct {
+		Action string `json:"action"`
+	}
+	_ = json.Unmarshal(body, &probe)
+	if probe.Action != "" {
+		var pre PullRequestEvent
+		if err := json.Unmarshal(body, &pre); err != nil {
+			h.log.Error(err, "failed to parse pull_request event")
+			http.Error(w, "invalid event payload", http.StatusBadRequest)
+			return
+		}
+		h.servePullRequest(w, req, &wf, pre)
+		return
+	}
+
 	// Parse push event
 	var pushEvent PushEvent
 	if err := json.Unmarshal(body, &pushEvent); err != nil {
@@ -171,41 +216,123 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request, workflowNa
 	fmt.Fprintf(w, "workflow %s triggered for revision %s\n", workflowName, revision)
 }
 
-// verifySignature verifies the HMAC signature from the webhook request.
-// Returns false if verification fails.
-func (h *Handler) verifySignature(req *http.Request, body []byte, hostURL, secret string) bool {
-	var sigHeader, sigPrefix string
+// pullRequestWakeActions are the consolidated actions that wake the
+// Review-Ready Gate. Everything else (assigned, review_requested, …) is a
+// no-op: 200, no annotations.
+var pullRequestWakeActions = map[string]bool{
+	"labeled":          true, // a human or the skill set a label — arm
+	"unlabeled":        true, // label removed (also the post-review consume) — re-evaluate
+	"synchronize":      true, // new push — head moved, re-arm at new SHA
+	"opened":           true,
+	"reopened":         true,
+	"closed":           true, // disarm path — the gate stands down promptly
+	"ready_for_review": true,
+}
 
+// servePullRequest handles a consolidated pull_request event. The handler
+// stays DUMB: verify → parse → annotate. No business logic lives here — the
+// Review-Ready Gate (internal/review, executed by the worker) re-verifies
+// label presence and CI greenness at evaluation time, so duplicate or early
+// events are free.
+func (h *Handler) servePullRequest(w http.ResponseWriter, req *http.Request, wf *v1alpha1.Workflow, pre PullRequestEvent) {
+	if !pullRequestWakeActions[pre.Action] {
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, "action %q ignored\n", pre.Action)
+		return
+	}
+	prNum := pre.Number
+	if prNum == 0 {
+		prNum = pre.PullRequest.Number
+	}
+	if prNum == 0 || pre.PullRequest.Head.Sha == "" {
+		h.log.Info("pull_request event missing number/head", "action", pre.Action)
+		http.Error(w, "missing number or head sha", http.StatusBadRequest)
+		return
+	}
+	if pre.Repository.FullName == "" {
+		http.Error(w, "missing repository full_name", http.StatusBadRequest)
+		return
+	}
+
+	// The repo as the platform configures it: host/owner/name. The host comes
+	// from the payload URL (GitHub and Forgejo both fill html_url), not from
+	// a hard-coded list.
+	repo := normalizeRepo(pre.Repository.HTMLURL, pre.Repository.FullName)
+
+	base := wf.DeepCopy()
+	if wf.Annotations == nil {
+		wf.Annotations = make(map[string]string)
+	}
+	wf.Annotations[TriggerRevisionAnnotation] = pre.PullRequest.Head.Sha
+	wf.Annotations[TriggerPRAnnotation] = fmt.Sprintf("%s#%d", repo, prNum)
+	wf.Annotations[TriggerActionAnnotation] = pre.Action
+
+	if err := h.Patch(req.Context(), wf, client.MergeFrom(base)); err != nil {
+		h.log.Error(err, "failed to annotate workflow (pull_request)", "workflow", wf.Name, "pr", prNum)
+		http.Error(w, "failed to trigger workflow", http.StatusInternalServerError)
+		return
+	}
+	h.log.Info("webhook armed workflow (pull_request)", "workflow", wf.Name, "pr", prNum, "action", pre.Action, "head", pre.PullRequest.Head.Sha[:12])
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprintf(w, "workflow %s armed for %s#%d (%s)\n", wf.Name, repo, prNum, pre.Action)
+}
+
+// normalizeRepo turns the payload's html_url + full_name into the platform
+// repo path convention (host/owner/name; GitHub two-segment paths stay
+// owner/name-compatible by keeping the github.com host explicitly).
+func normalizeRepo(htmlURL, fullName string) string {
+	host := ""
+	if u := strings.TrimPrefix(htmlURL, "https://"); u != htmlURL {
+		host = strings.SplitN(u, "/", 2)[0]
+	} else if u := strings.TrimPrefix(htmlURL, "http://"); u != htmlURL {
+		host = strings.SplitN(u, "/", 2)[0]
+	}
+	if host == "" || host == "github.com" {
+		// Keep github.com explicit so the gate's host resolution is uniform;
+		// a bare owner/name also resolves to GitHub, but the annotation should
+		// carry exactly what the config compares against.
+		return "github.com/" + fullName
+	}
+	return host + "/" + fullName
+}
+
+// verifySignature verifies the webhook request's authenticity by the HEADER
+// the host actually sent (GitHub X-Hub-Signature-256, Forgejo
+// X-Forgejo-Signature — both HMAC-SHA256 of the body; GitLab X-Gitlab-Token
+// — shared secret), falling back to URL sniffing when no header matches.
+// Header-first matters for self-hosted Forgejo whose hostname does not
+// contain "forgejo".
+func (h *Handler) verifySignature(req *http.Request, body []byte, hostURL, secret string) bool {
+	if sig := req.Header.Get("X-Hub-Signature-256"); sig != "" {
+		return verifyHMACSHA256(sig, "sha256=", body, secret)
+	}
+	if sig := req.Header.Get("X-Forgejo-Signature"); sig != "" {
+		return verifyHMACSHA256(sig, "sha256=", body, secret)
+	}
+	if tok := req.Header.Get("X-Gitlab-Token"); tok != "" {
+		return tok == secret
+	}
+	// No signature header: legacy URL-sniffed behavior.
 	switch {
 	case strings.Contains(hostURL, "github.com"):
-		sigHeader = req.Header.Get("X-Hub-Signature-256")
-		sigPrefix = "sha256="
+		return false // GitHub always signs; absence = reject
 	case strings.Contains(hostURL, "gitlab.com"):
-		sigToken := req.Header.Get("X-Gitlab-Token")
-		return sigToken == secret // GitLab uses simple token comparison
-	case strings.Contains(hostURL, "forgejo"):
-		sigHeader = req.Header.Get("X-Forgejo-Signature")
-		sigPrefix = "sha256="
-	default:
-		h.log.Info("unknown git host for signature verification", "url", hostURL)
-		return true // Unknown host, skip verification
-	}
-
-	if sigHeader == "" {
 		return false
+	case strings.Contains(hostURL, "forgejo"):
+		return false
+	default:
+		h.log.Info("unsigned webhook from unknown host", "url", hostURL)
+		return true // preserve legacy tolerance for self-hosted unsigned hooks
 	}
+}
 
-	// Extract signature from header
-	sig := strings.TrimPrefix(sigHeader, sigPrefix)
+func verifyHMACSHA256(header, prefix string, body []byte, secret string) bool {
+	sig := strings.TrimPrefix(header, prefix)
 	if len(sig) != 64 { // sha256 hex = 64 chars
 		return false
 	}
-
-	// Compute HMAC
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write(body)
-	expectedSig := hex.EncodeToString(mac.Sum(nil))
-
-	// Constant-time comparison to avoid timing attacks
-	return hmac.Equal([]byte(expectedSig), []byte(sig))
+	expected := hex.EncodeToString(mac.Sum(nil))
+	return hmac.Equal([]byte(expected), []byte(sig))
 }

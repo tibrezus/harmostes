@@ -20,6 +20,18 @@ _Avoid_: Smart step, AI step
 A Node whose outcome depends on interpretation, external judgment, or unstable side effects.
 _Avoid_: Normal step
 
+**Review-Ready Gate**:
+The deterministic decision that a Pull Request may enter adversarial review: the required label is present AND every merge-rule required context is green at the head SHA. The repository's merge rules are the single definition of "CI green" — review readiness and merge readiness read the same contract.
+_Avoid_: CI check in the trigger, webhook-side filtering
+
+**Workspace Provisioning**:
+The deterministic preparation of everything a reviewing agent needs before judgment begins: repository clone checked out at the head SHA, installed tools, the PR pointer, the skill, and the task. The agent spends no effort rediscovering knowns.
+_Avoid_: Agent-driven bootstrap, self-service context
+
+**Trigger Envelope**:
+The minimal durable handoff from deterministic Nodes into the agent: repo, PR number, head SHA, base, required green contexts, workspace paths, skill path.
+_Avoid_: Fat context blob, implicit environment
+
 **Deterministic Orchestration Kernel**:
 The part of Harmostes that schedules Nodes, records their inputs and outputs, evaluates rules, and advances Workflow state without making interpretive decisions itself.
 _Avoid_: Smart controller, agentic orchestrator

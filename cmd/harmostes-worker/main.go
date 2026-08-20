@@ -139,6 +139,18 @@ func main() {
 			recordAttemptOutcome(ctx, cl, "skipped", nil, "review-ready: waiting or stood down")
 			os.Exit(0)
 		}
+		// Export the FULL Trigger Envelope into the process env: the
+		// consumer pre-sets PR/ACTION/REVISION (buildChildEnv), but
+		// REPO/SHA/BASE/LABEL/CONTEXTS are the gate's output and must reach
+		// the workspace plugin — extraEnv below snapshots os.Environ(), so
+		// os.Setenv here flows to every plugin node.
+		envelopeJSON, _ := json.Marshal(env)
+		os.Setenv("HARMOSTES_TRIGGER_REPO", env.Repo)
+		os.Setenv("HARMOSTES_TRIGGER_PR", fmt.Sprintf("%d", env.PR))
+		os.Setenv("HARMOSTES_TRIGGER_SHA", env.HeadSHA)
+		os.Setenv("HARMOSTES_TRIGGER_BASE", env.Base)
+		os.Setenv("HARMOSTES_TRIGGER_LABEL", env.Label)
+		os.Setenv("HARMOSTES_TRIGGER_CONTEXTS", string(envelopeJSON))
 		logf("review-ready: proceed pr=%d head=%s base=%s — provisioning workspace", env.PR, env.HeadSHA, env.Base)
 	}
 

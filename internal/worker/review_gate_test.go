@@ -50,6 +50,7 @@ func reviewServer(t *testing.T, prState string, labels []string, contexts map[st
 func gateWorkflow() *v1alpha1.Workflow {
 	wf := newWorkflow()
 	wf.Spec.ReviewReady = &v1alpha1.ReviewReadySpec{Label: "needs-review", Horizon: "6h"}
+	wf.Spec.Config = []byte(`{"repos": ["git.rezus.cloud/tibrez/rhesadox"]}`)
 	return wf
 }
 
@@ -189,6 +190,43 @@ func TestReviewGateReEvaluationWithoutEvent(t *testing.T) {
 		t.Fatal("armed+green must proceed without a new event")
 	}
 	_ = srv
+}
+
+func TestReviewGateOutOfScopeRepoIgnored(t *testing.T) {
+	// A webhook from a repo not in spec.config.repos must not arm the gate
+	// (fail closed) — mis-pointed hooks stand down idle.
+	st := &fakeStatus{}
+	wf := gateWorkflow()
+	wf.Annotations = map[string]string{
+		"harmostes.dev/trigger-pr":     "git.rezus.cloud/other/repo#1",
+		"harmostes.dev/trigger-action": "labeled",
+	}
+	env := reviewGate(context.Background(), testDeps(st), wf)
+	if env != nil {
+		t.Fatal("out-of-scope wake must not proceed")
+	}
+	if rr := st.last.ReviewReady; rr == nil || rr.LastDecision != "idle" {
+		t.Fatalf("out-of-scope state = %+v", rr)
+	}
+}
+
+func TestReviewGateBareRepoScopeMatchesGitHub(t *testing.T) {
+	st := &fakeStatus{}
+	wf := gateWorkflow()
+	wf.Spec.Config = []byte(`{"repos": ["tibrezus/harmostes"]}`)
+	wf.Annotations = map[string]string{
+		"harmostes.dev/trigger-pr":     "github.com/tibrezus/harmostes#9",
+		"harmostes.dev/trigger-action": "labeled",
+	}
+	// The gate will try to fetch PR 9 from api.github.com and fail (no
+	// server) → waiting (armed kept, not idle) — proving scope matched.
+	env := reviewGate(context.Background(), testDeps(st), wf)
+	if env != nil {
+		t.Fatal("unreachable API must not proceed")
+	}
+	if rr := st.last.ReviewReady; rr == nil || rr.LastDecision != "waiting" {
+		t.Fatalf("scope-matched state = %+v (want waiting: API unreachable)", rr)
+	}
 }
 
 func TestParsePRPointer(t *testing.T) {

@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -77,6 +78,15 @@ func reviewGate(ctx context.Context, deps Deps, wf *v1alpha1.Workflow) *review.E
 		params.ArmedAt = time.Time{}
 	}
 
+	// Scope allowlist (defense-in-depth): spec.config.repos declares which
+	// repos this instance serves. A signed webhook from an undeclared repo
+	// (mis-pointed hook) stands down instead of arming.
+	if !repoInScope(wf, repo) {
+		deps.log()("review-ready: %s not in spec.config.repos — ignoring wake", repo)
+		patchIdle(ctx, deps, wf.Name, "wake for out-of-scope repo "+repo)
+		return nil
+	}
+
 	result := review.Evaluate(ctx, newReviewAPI(), params)
 
 	// Persist the armed state (and the decision, for the UI).
@@ -110,6 +120,40 @@ func reviewGate(ctx context.Context, deps Deps, wf *v1alpha1.Workflow) *review.E
 		return result.Envelope
 	}
 	return nil
+}
+
+// repoInScope reports whether repo matches the instance's configured repos.
+// The config stores either "host/owner/name" or bare "owner/name" (GitHub);
+// both forms must match the annotation's normalized "host/owner/name".
+// An empty/missing config accepts nothing (fail closed).
+func repoInScope(wf *v1alpha1.Workflow, repo string) bool {
+	if len(wf.Spec.Config) == 0 {
+		return false
+	}
+	var cfg struct {
+		Repos []string `json:"repos"`
+	}
+	if err := json.Unmarshal(wf.Spec.Config, &cfg); err != nil {
+		return false
+	}
+	for _, r := range cfg.Repos {
+		if r == repo {
+			return true
+		}
+		// bare 2-segment "owner/name" form: GitHub implied
+		if len(strings.Split(r, "/")) == 2 && repo == "github.com/"+r {
+			return true
+		}
+	}
+	return false
+}
+
+func patchIdle(ctx context.Context, deps Deps, name, reason string) {
+	if err := deps.Status.PatchStatus(ctx, name, func(s *v1alpha1.WorkflowStatus) {
+		s.ReviewReady = &v1alpha1.ReviewReadyStatus{LastDecision: "idle", LastReason: reason}
+	}); err != nil {
+		deps.log()("review-ready: status patch failed: %v", err)
+	}
 }
 
 // parsePRPointer splits "host/owner/name#N" (the webhook's annotation form).

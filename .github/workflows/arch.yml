@@ -1,0 +1,203 @@
+# Architecture Graph — deterministic RIG → C4 → wiki on every merge.
+#
+# Three-stage pipeline (the per-push pattern, GitHub-native):
+#
+#   publish: source → rig.db (+ legacy rig.json export) + model.c4 + Mermaid
+#            + Architecture.md, exposed as a workflow artifact
+#   wiki:    artifact → Architecture.md → harmostes.wiki (the C4 authority)
+#   kb:      artifact → rig.db/rig.json/model.c4/*.mmd → rezuscloud/llm-wiki
+#            raw/arch/harmostes/ (machine graph for agents + pr-review)
+#
+# Triggered by source pushes to main — never by tags (release tags are pushed
+# with GITHUB_TOKEN, which GitHub suppresses as a workflow trigger; the old
+# tag-triggered repo-map.yml never ran for exactly that reason).
+#
+# Artifacts:
+#   rig.db        machine graph (SQLite + FTS5) — query via rig-query.py /
+#                 the pi `rig` tool; never load into context
+#   rig.json      legacy serialization kept for consumers that read it
+#                 directly (harmostes workspace.sh RIG discovery)
+#   Architecture.md  the ONE human-facing page (views + source map + model)
+
+name: Architecture Graph
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'cmd/**'
+      - 'internal/**'
+      - 'api/**'
+      - 'version/**'
+      - '.github/workflows/arch.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: arch-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  TOOLS_DIR: /tmp/arch-tools
+  # Deterministic toolchain (review round 1, #225): the graph pipeline is
+  # only as reproducible as its tools — pin the exact llm-wiki-core commit
+  # (validated locally for this workflow) and the likec4 version. Bump
+  # deliberately, with a local dry-run.
+  LWC_SHA: 5c42e0496ec5b7bf195a72e11636c0aa1e522c3a
+  LIKEC4_VERSION: 1.59.2
+
+jobs:
+  # ── Stage 1: generate the graph + render the page ────────────────────
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get arch-graph tools
+        run: |
+          git clone --depth 1 --filter=blob:none --sparse \
+            https://git.rezus.cloud/tibrez/llm-wiki-core.git "$TOOLS_DIR"
+          cd "$TOOLS_DIR" \
+            && git fetch --depth 1 origin "$LWC_SHA" \
+            && git checkout --quiet FETCH_HEAD \
+            && git sparse-checkout set .github/actions/repo-map
+          [ "$(git -C "$TOOLS_DIR" rev-parse HEAD)" = "$LWC_SHA" ] \
+            || { echo "tool pin mismatch"; exit 1; }
+
+      - name: Setup Node.js 22 + LikeC4 + graphviz
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: |
+          npm install -g "likec4@${LIKEC4_VERSION}"
+          sudo apt-get update -qq && sudo apt-get install -y -qq graphviz > /dev/null
+          dot -V
+
+      - name: Generate rig.db (canonical graph)
+        env:
+          PYTHONPATH: ${{ env.TOOLS_DIR }}/.github/actions/repo-map
+        run: |
+          mkdir -p arch-out
+          bash "$TOOLS_DIR/.github/actions/repo-map/emit-rig.sh" arch-out/rig.db go
+          echo "rig.db: $(wc -c < arch-out/rig.db) bytes"
+
+      - name: Export legacy rig.json (workspace.sh consumers)
+        env:
+          PYTHONPATH: ${{ env.TOOLS_DIR }}/.github/actions/repo-map
+        run: |
+          python3 - <<'EOF'
+          import json, sys
+          from pathlib import Path
+          from rig.db import read_db
+          rig = read_db(Path("arch-out/rig.db"))
+          Path("arch-out/rig.json").write_text(
+              json.dumps(rig, indent=1, sort_keys=True) + "\n")
+          print(f"rig.json: {len(rig['components'])} components")
+          EOF
+
+      - name: Derive model.c4 + Mermaid views
+        env:
+          PYTHONPATH: ${{ env.TOOLS_DIR }}/.github/actions/repo-map
+        run: |
+          python3 "$TOOLS_DIR/.github/actions/repo-map/rig-to-c4.py" \
+            arch-out/rig.db -o arch-out/model.c4
+          likec4 gen mermaid --use-dot -o arch-out arch-out \
+            || likec4 gen mermaid -o arch-out arch-out
+          echo "Mermaid: $(find arch-out -name '*.mmd' | wc -l) diagram(s)"
+
+      - name: Render Architecture.md
+        env:
+          PYTHONPATH: ${{ env.TOOLS_DIR }}/.github/actions/repo-map
+        run: |
+          python3 "$TOOLS_DIR/.github/actions/repo-map/build-wiki-pages.py" \
+            arch-out \
+            --output-dir wiki-out \
+            --project-name harmostes \
+            --rig-file arch-out/rig.db \
+            --model-file arch-out/model.c4
+          wc -l wiki-out/Architecture.md
+
+      - name: Expose graph package
+        uses: actions/upload-artifact@v4
+        with:
+          name: arch-package
+          path: |
+            arch-out/
+            wiki-out/
+          retention-days: 7
+
+  # ── Stage 2: harmostes.wiki carries the generated C4 page ────────────
+  wiki:
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Download graph package
+        uses: actions/download-artifact@v4
+        with:
+          name: arch-package
+
+      - name: Get arch-graph tools
+        run: |
+          git clone --depth 1 --filter=blob:none --sparse \
+            https://git.rezus.cloud/tibrez/llm-wiki-core.git "$TOOLS_DIR"
+          cd "$TOOLS_DIR" \
+            && git fetch --depth 1 origin "$LWC_SHA" \
+            && git checkout --quiet FETCH_HEAD \
+            && git sparse-checkout set .github/actions/repo-map
+          [ "$(git -C "$TOOLS_DIR" rev-parse HEAD)" = "$LWC_SHA" ] \
+            || { echo "tool pin mismatch"; exit 1; }
+
+      - name: Push Architecture.md to harmostes.wiki
+        env:
+          WIKI_TOKEN: ${{ secrets.LLM_WIKI_TOKEN }}
+        run: |
+          bash "$TOOLS_DIR/.github/actions/repo-map/push-to-wiki.sh" wiki-out \
+            --commit-message "Update architecture page (arch graph, ${{ github.sha }})"
+
+  # ── Stage 3: llm-wiki instance carries the machine graph ─────────────
+  kb:
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Download graph package
+        uses: actions/download-artifact@v4
+        with:
+          name: arch-package
+
+      - name: Push graph artifacts to llm-wiki raw/arch/harmostes
+        env:
+          TOKEN: ${{ secrets.LLM_WIKI_TOKEN }}
+        run: |
+          git config --global user.name "arch-graph-bot"
+          git config --global user.email "arch-graph-bot@users.noreply.github.com"
+          git clone --depth 1 \
+            "https://x-access-token:${TOKEN}@github.com/rezuscloud/llm-wiki.git" /tmp/kb
+          DEST=/tmp/kb/raw/arch/harmostes
+          mkdir -p "$DEST"
+          # Replace the deterministic set atomically: stale .mmd from older
+          # graphs must not survive a rename/rename of components.
+          find "$DEST" -maxdepth 1 -name '*.mmd' -delete
+          cp arch-out/rig.db arch-out/rig.json arch-out/model.c4 "$DEST/"
+          cp arch-out/*.mmd "$DEST/"
+          cd /tmp/kb
+          # Stage first: `git diff --quiet` alone misses untracked files —
+          # on the first run every artifact is untracked and the job would
+          # wrongly skip the push (review round 2).
+          git add -A raw/arch/harmostes
+          if git diff --cached --quiet; then
+            echo "raw/arch/harmostes unchanged — nothing to push"
+            exit 0
+          fi
+          git commit -m "arch-sync(harmostes): refresh from tibrezus/harmostes@${GITHUB_SHA}"
+          # Rebase on concurrent instance pushes instead of failing the run.
+          for attempt in 1 2 3; do
+            git push origin main && break
+            [ "$attempt" = 3 ] && { echo "kb push failed after retries"; exit 1; }
+            git pull --rebase --autostash origin main
+          done
+          echo "pushed: raw/arch/harmostes (rig.db + rig.json + model.c4 + $(ls "$DEST"/*.mmd | wc -l) views)"

@@ -148,6 +148,8 @@ jobs:
             && git fetch --depth 1 origin "$LWC_SHA" \
             && git checkout --quiet FETCH_HEAD \
             && git sparse-checkout set .github/actions/repo-map
+          [ "$(git -C "$TOOLS_DIR" rev-parse HEAD)" = "$LWC_SHA" ] \
+            || { echo "tool pin mismatch"; exit 1; }
 
       - name: Push Architecture.md to harmostes.wiki
         env:
@@ -183,11 +185,19 @@ jobs:
           cp arch-out/rig.db arch-out/rig.json arch-out/model.c4 "$DEST/"
           cp arch-out/*.mmd "$DEST/"
           cd /tmp/kb
-          if git diff --quiet; then
+          # Stage first: `git diff --quiet` alone misses untracked files —
+          # on the first run every artifact is untracked and the job would
+          # wrongly skip the push (review round 2).
+          git add -A raw/arch/harmostes
+          if git diff --cached --quiet; then
             echo "raw/arch/harmostes unchanged — nothing to push"
             exit 0
           fi
-          git add -A raw/arch/harmostes
           git commit -m "arch-sync(harmostes): refresh from tibrezus/harmostes@${GITHUB_SHA}"
-          git push origin main
+          # Rebase on concurrent instance pushes instead of failing the run.
+          for attempt in 1 2 3; do
+            git push origin main && break
+            [ "$attempt" = 3 ] && { echo "kb push failed after retries"; exit 1; }
+            git pull --rebase --autostash origin main
+          done
           echo "pushed: raw/arch/harmostes (rig.db + rig.json + model.c4 + $(ls "$DEST"/*.mmd | wc -l) views)"

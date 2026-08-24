@@ -41,6 +41,12 @@ permissions:
 
 env:
   TOOLS_DIR: /tmp/arch-tools
+  # Deterministic toolchain (review round 1, #225): the graph pipeline is
+  # only as reproducible as its tools — pin the exact llm-wiki-core commit
+  # (validated locally for this workflow) and the likec4 version. Bump
+  # deliberately, with a local dry-run.
+  LWC_SHA: 5c42e0496ec5b7bf195a72e11636c0aa1e522c3a
+  LIKEC4_VERSION: 1.59.2
 
 jobs:
   # ── Stage 1: generate the graph + render the page ────────────────────
@@ -54,14 +60,19 @@ jobs:
         run: |
           git clone --depth 1 --filter=blob:none --sparse \
             https://git.rezus.cloud/tibrez/llm-wiki-core.git "$TOOLS_DIR"
-          cd "$TOOLS_DIR" && git sparse-checkout set .github/actions/repo-map
+          cd "$TOOLS_DIR" \
+            && git fetch --depth 1 origin "$LWC_SHA" \
+            && git checkout --quiet FETCH_HEAD \
+            && git sparse-checkout set .github/actions/repo-map
+          [ "$(git -C "$TOOLS_DIR" rev-parse HEAD)" = "$LWC_SHA" ] \
+            || { echo "tool pin mismatch"; exit 1; }
 
       - name: Setup Node.js 22 + LikeC4 + graphviz
         uses: actions/setup-node@v4
         with:
           node-version: "22"
       - run: |
-          npm install -g likec4
+          npm install -g "likec4@${LIKEC4_VERSION}"
           sudo apt-get update -qq && sudo apt-get install -y -qq graphviz > /dev/null
           dot -V
 
@@ -133,7 +144,10 @@ jobs:
         run: |
           git clone --depth 1 --filter=blob:none --sparse \
             https://git.rezus.cloud/tibrez/llm-wiki-core.git "$TOOLS_DIR"
-          cd "$TOOLS_DIR" && git sparse-checkout set .github/actions/repo-map
+          cd "$TOOLS_DIR" \
+            && git fetch --depth 1 origin "$LWC_SHA" \
+            && git checkout --quiet FETCH_HEAD \
+            && git sparse-checkout set .github/actions/repo-map
 
       - name: Push Architecture.md to harmostes.wiki
         env:

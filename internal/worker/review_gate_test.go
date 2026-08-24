@@ -322,3 +322,34 @@ func testDeps(st *fakeStatus) Deps {
 }
 
 var _ = review.DecisionProceed // keep the review import for the envelope type assertions
+
+func TestEmitGateTransitionDeduplicatesWaiting(t *testing.T) {
+	var emitted []string
+	w := &capturingWriter{kinds: &emitted}
+	armed := &v1alpha1.ReviewReadyStatus{
+		LastDecision: "waiting",
+		LastReason:   "ci red at head",
+	}
+	// same waiting state → non-event
+	emitGateTransition(t.Context(), w, "wf", armed, review.Result{
+		Evaluation: review.Evaluation{Decision: review.DecisionWaiting, Reason: "ci red at head"},
+	}, "git.rezus.cloud/tibrez/rhesadox", 1566)
+	if len(emitted) != 0 {
+		t.Fatalf("repeated waiting must not emit, got %v", emitted)
+	}
+	// proceed → one event (plus armed if sha changed)
+	emitGateTransition(t.Context(), w, "wf", armed, review.Result{
+		Evaluation: review.Evaluation{Decision: review.DecisionProceed, Reason: "label present"},
+		NewArmedSha: "abc",
+	}, "git.rezus.cloud/tibrez/rhesadox", 1566)
+	if len(emitted) == 0 || emitted[len(emitted)-1] != "gate.proceed" {
+		t.Fatalf("proceed must emit gate.proceed, got %v", emitted)
+	}
+}
+
+type capturingWriter struct{ kinds *[]string }
+
+func (c *capturingWriter) Emit(_ context.Context, kind, _ string, _ any) error {
+	*c.kinds = append(*c.kinds, kind)
+	return nil
+}

@@ -108,6 +108,7 @@ func (r *WorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		// here too prevents a stale wake from re-arming every poll cycle.
 		delete(wf.Annotations, "harmostes.dev/trigger-pr")
 		delete(wf.Annotations, "harmostes.dev/trigger-action")
+		delete(wf.Annotations, "harmostes.dev/trigger-title")
 		if err := r.Patch(ctx, &wf, client.MergeFrom(base)); err != nil {
 			logger.Error(err, "clear webhook trigger annotation")
 		}

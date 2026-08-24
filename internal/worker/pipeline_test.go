@@ -1,6 +1,8 @@
 package worker
 
 import (
+	"time"
+
 	"context"
 	"os"
 	"path/filepath"
@@ -47,7 +49,13 @@ type fakeDapr struct{ published []string }
 
 func (f *fakeDapr) GetState(_ context.Context, _, _ string) (string, error) { return "", nil }
 func (f *fakeDapr) SaveState(_ context.Context, _, _, _ string) error       { return nil }
-func (f *fakeDapr) DeleteState(_ context.Context, _, _ string) error        { return nil }
+func (f *fakeDapr) SaveStateTTL(_ context.Context, _, _, _ string, _ time.Duration) error {
+	return nil
+}
+func (f *fakeDapr) GetBulkState(_ context.Context, _ string, _ []string) (map[string]string, error) {
+	return map[string]string{}, nil
+}
+func (f *fakeDapr) DeleteState(_ context.Context, _, _ string) error { return nil }
 func (f *fakeDapr) GetSecret(_ context.Context, _, _ string) (map[string]string, error) {
 	return nil, nil
 }

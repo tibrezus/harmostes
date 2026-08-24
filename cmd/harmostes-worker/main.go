@@ -41,6 +41,7 @@ import (
 	"github.com/tibrezus/harmostes/internal/graph"
 	"github.com/tibrezus/harmostes/internal/k8s"
 	"github.com/tibrezus/harmostes/internal/observability"
+	"github.com/tibrezus/harmostes/internal/timeline"
 	"github.com/tibrezus/harmostes/internal/worker"
 	"github.com/tibrezus/harmostes/version"
 )
@@ -132,7 +133,9 @@ func main() {
 	// (HARMOSTES_TRIGGER_*), which the consumer set from the TriggerEvent
 	// payload — nothing else to wire.
 	if wf.Spec.ReviewReady != nil {
-		env := worker.RunReviewGate(ctx, k8s.StatusPatcher{Client: cl, Namespace: namespace}, logf, &wf)
+		gateTL := timeline.NewGateWriter(dapr.Tracing(dapr.New(os.Getenv("DAPR_HTTP_ENDPOINT"))),
+			envOr("HARMOSTES_STATE_STORE", "statestore"), wf.Name, subjectFromEnv())
+		env := worker.RunReviewGateWithTimeline(ctx, k8s.StatusPatcher{Client: cl, Namespace: namespace}, logf, &wf, gateTL)
 		if env == nil {
 			logf("review-ready: not proceeding this cycle — exiting (waiting/standdown recorded in status)")
 			flushTelemetry()
@@ -200,9 +203,29 @@ func main() {
 		Model:    wf.Spec.Agent.Model,
 		Skill:    wf.Spec.Agent.Skill,
 	}
+	// Timeline evidence (ADR-0005 evidence layer): one writer per run; the
+	// Attempt CR stays the canonical index. Nil (no attempt / no Dapr) = skip.
+	var runTL *timeline.DaprWriter
+	if attemptName := os.Getenv("HARMOSTES_ATTEMPT"); attemptName != "" && deps.Dapr != nil {
+		runTL = timeline.NewWriter(deps.Dapr, deps.DaprStateStore, attemptName, workflow, runID, subjectFromEnv())
+		_ = runTL.SaveSubject(ctx)
+		_ = runTL.Emit(ctx, timeline.KindRunStarted, "", map[string]any{"source": source})
+	}
+
+	seenTurns := 0
 	sessionWriter := func(sctx context.Context, session agent.SessionRecord) error {
 		if deps.Dapr == nil {
 			return nil
+		}
+		if runTL != nil {
+			for i := seenTurns; i < len(session.Turns); i++ {
+				t := session.Turns[i]
+				runTL.Emit(sctx, timeline.KindAgentTurn, "agent", map[string]any{
+					"turn": i, "label": t.Label, "green": t.Gate != nil && t.Gate.Green,
+					"tokensIn": t.Usage.Input, "tokensOut": t.Usage.Output,
+				})
+			}
+			seenTurns = len(session.Turns)
 		}
 		key := fmt.Sprintf("%s:%s:session", workflow, runID)
 		b, err := json.Marshal(session)
@@ -212,6 +235,11 @@ func main() {
 		return deps.Dapr.SaveState(sctx, deps.DaprStateStore, key, string(b))
 	}
 	toolPublisher := func(pctx context.Context, wfName, rid string, tool agent.ToolCall) {
+		if runTL != nil {
+			runTL.Emit(pctx, timeline.KindAgentTool, "agent", map[string]any{
+				"tool": tool.Name, "success": tool.Success,
+			})
+		}
 		if deps.Dapr == nil {
 			return
 		}
@@ -287,6 +315,7 @@ func main() {
 		ToolPublisher:  toolPublisher,
 		SessionMeta:    sessionMeta,
 	}
+	graphDeps.Timeline = runTL
 	result, gErr := graph.ExecuteGraph(graphCtx, execGraph, wf.Name, graphDeps,
 		graph.WithStateStore(deps.DaprStateStore),
 		graph.WithPubSub(deps.DaprPubSub),
@@ -297,6 +326,7 @@ func main() {
 		),
 		graph.WithBindings(wf.Spec.Bindings),
 		graph.WithRunID(runID),
+		graph.WithTimeline(runTL),
 		graph.WithWorkflowContext(graph.WorkflowContext{
 			Name:           wf.Name,
 			Namespace:      namespace,
@@ -311,6 +341,12 @@ func main() {
 			ExtraEnv:       extraEnv,
 		}),
 	)
+
+	if runTL != nil {
+		_ = runTL.Emit(ctx, timeline.KindRunCompleted, "", map[string]any{
+			"status": result.Status, "message": result.Message, "source": source,
+		})
+	}
 
 	// Patch Workflow status from the graph result (mirrors the declarative
 	// pipeline's status patching at each phase boundary).
@@ -596,4 +632,24 @@ func waitForDapr(endpoint string) {
 		time.Sleep(time.Second)
 	}
 	logf("warn: Dapr sidecar not ready at %s after 30s — proceeding without events/state", endpoint)
+}
+
+// subjectFromEnv builds the timeline Subject from the Trigger Envelope env:
+// what triggered this run and the human anchor to orient by.
+func subjectFromEnv() timeline.Subject {
+	s := timeline.Subject{}
+	if pr := os.Getenv("HARMOSTES_TRIGGER_PR"); pr != "" {
+		s.Kind = "pr"
+		repo := os.Getenv("HARMOSTES_TRIGGER_REPO")
+		if repo != "" {
+			s.Ref = repo + "#" + pr
+		} else {
+			s.Ref = "#" + pr
+		}
+		s.SHA = os.Getenv("HARMOSTES_TRIGGER_SHA")
+	}
+	if t := os.Getenv("HARMOSTES_TRIGGER_TITLE"); t != "" {
+		s.Title = t
+	}
+	return s
 }

@@ -229,20 +229,18 @@ func (r *DaprReader) Attempt(ctx context.Context, attempt string, runs []string,
 			if err != nil {
 				return nil, err
 			}
-			got := 0
 			for i := 0; i < probeBatch; i++ {
 				v, ok := vals[keys[i]]
 				if !ok || v == "" {
 					continue
 				}
-				got++
 				var ev Event
 				if err := json.Unmarshal([]byte(v), &ev); err == nil {
 					events = append(events, ev)
 				}
 			}
-			if got < probeBatch {
-				break // frontier reached
+			if len(vals) == 0 {
+				break // frontier: an entirely empty batch (holes don't stop us)
 			}
 		}
 	}
@@ -263,20 +261,18 @@ func (r *DaprReader) GateEvents(ctx context.Context, attempt string, f Filter) (
 		if err != nil {
 			return nil, err
 		}
-		got := 0
 		for i := 0; i < probeBatch; i++ {
 			v, ok := vals[keys[i]]
 			if !ok || v == "" {
 				continue
 			}
-			got++
 			var ev Event
 			if err := json.Unmarshal([]byte(v), &ev); err == nil {
 				events = append(events, ev)
 			}
 		}
-		if got < probeBatch {
-			break
+		if len(vals) == 0 {
+			break // frontier: an entirely empty batch
 		}
 	}
 	events = applyFilter(events, f)

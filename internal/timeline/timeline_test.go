@@ -191,3 +191,35 @@ func TestReaderReadsAllAcrossBatches(t *testing.T) {
 		t.Fatalf("reader off-by-one/batch truncation: wrote %d, read %d", n, len(events))
 	}
 }
+
+func TestGateEventsAndHoles(t *testing.T) {
+	fd := newFakeDapr()
+	gw := NewGateWriter(fd, "s", "wf", "attempt-g2", Subject{Kind: "pr", Ref: "r#2"})
+	_ = gw.Emit(t.Context(), KindGateArmed, "", nil)
+	_ = gw.Emit(t.Context(), KindGateProceed, "", nil)
+	r := NewReader(fd, "s")
+	events, err := r.GateEvents(t.Context(), "attempt-g2", Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 || events[0].Kind != KindGateArmed {
+		t.Fatalf("gate events: %+v", events)
+	}
+
+	// Hole: delete the middle event of an attempt run — the walk must not
+	// stop at the hole.
+	w := NewWriter(fd, "s", "attempt-h", "wf", "run-9", Subject{})
+	for i := 0; i < 4; i++ {
+		_ = w.Emit(t.Context(), KindNodeStarted, "n", nil)
+	}
+	fd.mu.Lock()
+	delete(fd.vals, "timeline/attempt-h/run-9/000002") // TTL-expired hole
+	fd.mu.Unlock()
+	events, err = r.Attempt(t.Context(), "attempt-h", []string{"run-9"}, Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 3 {
+		t.Fatalf("hole truncated the walk: got %d events, want 3", len(events))
+	}
+}

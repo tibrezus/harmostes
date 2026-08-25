@@ -159,7 +159,7 @@ func reviewGate(ctx context.Context, deps Deps, wf *v1alpha1.Workflow) *review.E
 	}
 
 	deps.log()("review-ready: %s pr=%d — %s", result.Decision, pr, result.Reason)
-	emitGateTransition(ctx, deps.TL, wf.Name, armed, result, repo, pr)
+	emitGateTransition(ctx, deps.TL, armed, result, repo, pr)
 	if result.Decision == review.DecisionProceed {
 		return result.Envelope
 	}
@@ -169,7 +169,7 @@ func reviewGate(ctx context.Context, deps Deps, wf *v1alpha1.Workflow) *review.E
 // emitGateTransition records state CHANGES only: a re-evaluation that repeats
 // the previous waiting decision+reason (the armed poll, ~every 5 min) is a
 // non-event.
-func emitGateTransition(ctx context.Context, tl timeline.Writer, wfName string, armed *v1alpha1.ReviewReadyStatus, result review.Result, repo string, pr int) {
+func emitGateTransition(ctx context.Context, tl timeline.Writer, armed *v1alpha1.ReviewReadyStatus, result review.Result, repo string, pr int) {
 	if tl == nil {
 		return
 	}

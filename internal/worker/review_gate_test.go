@@ -331,14 +331,14 @@ func TestEmitGateTransitionDeduplicatesWaiting(t *testing.T) {
 		LastReason:   "ci red at head",
 	}
 	// same waiting state → non-event
-	emitGateTransition(t.Context(), w, "wf", armed, review.Result{
+	emitGateTransition(t.Context(), w, armed, review.Result{
 		Evaluation: review.Evaluation{Decision: review.DecisionWaiting, Reason: "ci red at head"},
 	}, "git.rezus.cloud/tibrez/rhesadox", 1566)
 	if len(emitted) != 0 {
 		t.Fatalf("repeated waiting must not emit, got %v", emitted)
 	}
 	// proceed → one event (plus armed if sha changed)
-	emitGateTransition(t.Context(), w, "wf", armed, review.Result{
+	emitGateTransition(t.Context(), w, armed, review.Result{
 		Evaluation:  review.Evaluation{Decision: review.DecisionProceed, Reason: "label present"},
 		NewArmedSha: "abc",
 	}, "git.rezus.cloud/tibrez/rhesadox", 1566)

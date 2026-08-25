@@ -3,6 +3,7 @@ package ui
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
@@ -253,4 +254,24 @@ func TestStampOwnerLabel(t *testing.T) {
 			t.Errorf("owner = %q, want alice (must replace spoofed value)", wf.Labels[v1alpha1.OwnerLabel])
 		}
 	})
+}
+
+// The global filter topbar was removed (#245): no ds-topbar on any page, and
+// the identity badge + theme toggle live in the page header instead.
+func TestLayoutHasNoGlobalTopbar(t *testing.T) {
+	s := newAttemptTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/timeline", nil)
+	req.Header.Set("X-Authentik-Username", "alice")
+	rec := httptest.NewRecorder()
+	s.Routes().ServeHTTP(rec, req)
+	body := rec.Body.String()
+	if strings.Contains(body, "ds-topbar") {
+		t.Error("global topbar still rendered")
+	}
+	if !strings.Contains(body, "page-header-right") {
+		t.Error("identity/theme cluster missing from page header")
+	}
+	if !strings.Contains(body, "navParam") {
+		t.Error("navParam helper missing")
+	}
 }

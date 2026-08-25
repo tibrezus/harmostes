@@ -14,10 +14,24 @@
 	{{- else}}
 	<div class="metrics-section">
 		<h2 class="metrics-section-title">Token Usage</h2>
-		<p class="metrics-section-desc">
-			{{- if $wf}}Workflow: <code>{{$wf}}</code> · {{end}}
-			Range: {{$range}}
-		</p>
+		<div class="metrics-toolbar">
+			<p class="metrics-section-desc">
+				{{- if $wf}}Workflow: <code>{{$wf}}</code> · {{end}}
+				Range: {{$range}}
+			</p>
+			<select class="inline-filter" onchange="navParam('workflow', this.value)" aria-label="Workflow">
+				<option value="">— all workflows —</option>
+				{{- range .Workflows}}
+				<option value="{{.}}" {{if eq $wf .}}selected{{end}}>{{.}}</option>
+				{{- end}}
+			</select>
+			<select class="inline-filter" onchange="navParam('range', this.value)" aria-label="Time range">
+				<option value="15m" {{if eq $range "15m"}}selected{{end}}>15m</option>
+				<option value="1h" {{if eq $range "1h"}}selected{{end}}>1h</option>
+				<option value="6h" {{if eq $range "6h"}}selected{{end}}>6h</option>
+				<option value="24h" {{if eq $range "24h"}}selected{{end}}>24h</option>
+			</select>
+		</div>
 		<div id="metrics-histogram" class="metrics-histogram"></div>
 	</div>
 	{{- end}}

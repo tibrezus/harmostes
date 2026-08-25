@@ -4,24 +4,37 @@
 	<div class="ds-section">
 		<div class="ds-empty-state">
 			<span class="ds-empty-title">No workflow selected</span>
-			<p class="ds-empty-text">Select a workflow in the top bar — the timeline shows its execution runtime: gate transitions, node boundaries, plugin output, agent turns.</p>
-		</div>
-	</div>
-	{{else if not .Groups}}
-	<div class="ds-section">
-		<div class="ds-empty-state">
-			<span class="ds-empty-title">No timeline events yet</span>
-			<p class="ds-empty-text">Evidence events land here as <code>{{.WorkflowName}}</code> runs (kernel ≥ 1.2.0-62). Older runs predate the evidence layer.</p>
+			<p class="ds-empty-text">The timeline shows one workflow's execution runtime: gate transitions, node boundaries, plugin output, agent turns. Pick a workflow, or jump from the <a href="/workflows" class="ds-link">workflows hub</a>.</p>
+			{{- if .Workflows}}
+			<p class="ds-empty-text">
+				<select class="inline-filter" onchange="navParam('workflow', this.value)" aria-label="Workflow">
+					<option value="">— select workflow —</option>
+					{{- range .Workflows}}
+					<option value="{{.}}">{{.}}</option>
+					{{- end}}
+				</select>
+			</p>
+			{{- end}}
 		</div>
 	</div>
 	{{else}}
 	<div class="ds-section">
 		<div class="tl-toolbar">
-			<code class="tl-toolbar-wf">{{.WorkflowName}}</code>
+			<select class="inline-filter" onchange="navParam('workflow', this.value)" aria-label="Workflow">
+				{{- range .Workflows}}
+				<option value="{{.}}" {{if eq $.WorkflowName .}}selected{{end}}>{{.}}</option>
+				{{- end}}
+			</select>
 			<span class="ds-card-meta">attempts newest first · events in run order</span>
 			<span class="tl-toolbar-live"><span id="tl-live-dot" class="ds-status-dot ds-status-dot--warning" title="live tail connected"></span> live</span>
 		</div>
 
+		{{if not .Groups}}
+		<div class="ds-empty-state">
+			<span class="ds-empty-title">No timeline events yet</span>
+			<p class="ds-empty-text">Evidence events land here as <code>{{.WorkflowName}}</code> runs (kernel ≥ 1.2.0-62). Older runs predate the evidence layer.</p>
+		</div>
+		{{else}}
 		{{range $gi, $g := .Groups}}
 		<section class="tl-group">
 			<div class="tl-band">
@@ -64,6 +77,7 @@
 				</tbody>
 			</table>
 		</section>
+		{{end}}
 		{{end}}
 	</div>
 	{{end}}

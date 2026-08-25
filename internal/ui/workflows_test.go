@@ -630,3 +630,56 @@ func TestHandleWorkflowCreate_ScopeDefaultsApply(t *testing.T) {
 		t.Errorf("label default not applied: %v", cfg["label"])
 	}
 }
+
+// #245: the workflows page is the navigation hub — one dense row per
+// workflow, CR name primary (unique — slugs can collide across hosts),
+// quick actions presetting ?workflow=.
+func TestWorkflowListHubTable(t *testing.T) {
+	mkWf := func(name, tmpl, repo string) *v1alpha1.Workflow {
+		return &v1alpha1.Workflow{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: "test-ns",
+				Labels:    map[string]string{v1alpha1.OwnerLabel: "alice"},
+			},
+			Spec: v1alpha1.WorkflowSpec{
+				TemplateRef: tmpl,
+				Source:      v1alpha1.SourceSpec{Repo: repo},
+			},
+		}
+	}
+	wfs := []*v1alpha1.Workflow{
+		mkWf("pr-review-harmostes", "pr-review", "github.com/tibrezus/harmostes"),
+		mkWf("pr-review-rhesadox", "pr-review", "git.rezus.cloud/tibrez/rhesadox"),
+		mkWf("signoz", "sync", "github.com/rezuscloud/signoz"),
+	}
+	s := newAttemptTestServer(t, wfs[0], wfs[1], wfs[2])
+	req := httptest.NewRequest(http.MethodGet, "/workflows", nil)
+	req = req.WithContext(withTestIdentity(req.Context()))
+	rec := httptest.NewRecorder()
+	s.handleWorkflowList(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	// The hub table, one row per unique CR name.
+	for _, want := range []string{"wf-table", "wf-row", "pr-review-harmostes", "pr-review-rhesadox", "signoz"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("missing %q", want)
+		}
+	}
+	// Quick actions preset the workflow context.
+	for _, href := range []string{
+		`href="/timeline?workflow=pr-review-harmostes"`,
+		`href="/sessions?workflow=pr-review-harmostes"`,
+		`href="/workflows/pr-review-harmostes"`,
+	} {
+		if !strings.Contains(body, href) {
+			t.Errorf("missing quick action %q", href)
+		}
+	}
+	// Template grouping: one pr-review group carrying both instances.
+	if got := strings.Count(body, "gate-group-title"); got != 2 {
+		t.Errorf("gate-group-title count = %d, want 2 (pr-review, sync)", got)
+	}
+}

@@ -4,11 +4,12 @@
 </div>
 <div class="sessions-view">
 	<div class="sessions-header">
-		{{- if $wf}}
-		<p class="sessions-filter">Workflow: <code>{{$wf}}</code></p>
-		{{- else}}
-		<p class="sessions-filter">All workflows</p>
-		{{- end}}
+		<select class="inline-filter" onchange="navParam('workflow', this.value)" aria-label="Workflow">
+			<option value="">— all workflows —</option>
+			{{- range .Workflows}}
+			<option value="{{.}}" {{if eq $wf .}}selected{{end}}>{{.}}</option>
+			{{- end}}
+		</select>
 	</div>
 	<table class="ds-table sessions-table">
 		<thead>

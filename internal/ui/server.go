@@ -277,23 +277,12 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, page string, dat
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
-	// Load workflow names for the top-bar selector (best-effort — errors are
-	// non-fatal; the dropdown just renders empty).
-	var navWorkflows []v1alpha1.Workflow
-	if owner := identityFromContext(r.Context()).Username; owner != "" {
-		if wfs, err := s.listWorkflows(r, owner); err == nil {
-			navWorkflows = wfs
-		}
-	}
-
 	layout := s.templates.Lookup("layout.html")
 	if err := layout.Execute(w, map[string]any{
-		"Page":         pageTitle(page),
-		"PageKey":      pageKey(page),
-		"Content":      template.HTML(buf.String()),
-		"User":         user,
-		"NavWorkflows": navWorkflows,
-		"Query":        r.URL.Query(),
+		"Page":    pageTitle(page),
+		"PageKey": pageKey(page),
+		"Content": template.HTML(buf.String()),
+		"User":    user,
 	}); err != nil {
 		s.logger.Error("render layout", "page", page, "err", err)
 	}

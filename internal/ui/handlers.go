@@ -95,6 +95,21 @@ func (s *Server) handleWorkflowList(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// workflowNames lists the owner's workflow names, sorted — feeds the inline
+// workflow selects on the consuming pages (timeline, sessions, metrics).
+func (s *Server) workflowNames(r *http.Request, owner string) []string {
+	workflows, err := s.listWorkflows(r, owner)
+	if err != nil {
+		return nil
+	}
+	names := make([]string, 0, len(workflows))
+	for _, wf := range workflows {
+		names = append(names, wf.Name)
+	}
+	sort.Strings(names)
+	return names
+}
+
 // handleWorkflowDetail renders a single workflow with its run history.
 func (s *Server) handleWorkflowDetail(w http.ResponseWriter, r *http.Request) {
 	owner := identityFromContext(r.Context()).Username

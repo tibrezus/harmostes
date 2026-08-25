@@ -102,14 +102,25 @@ func main() {
 
 	// Wire the Dapr client for reading session transcripts from the worker's
 	// state store. Optional — the session viewer shows "not available" when nil.
-	if endpoint := os.Getenv("DAPR_HTTP_ENDPOINT"); endpoint != "" {
+	// The injector sets DAPR_HTTP_PORT (not ENDPOINT) on Kubernetes — fall
+	// back to the sidecar on localhost, else the UI silently runs unwired
+	// (the "not available" state masquerading as data absence, #229).
+	daprEndpoint := os.Getenv("DAPR_HTTP_ENDPOINT")
+	if daprEndpoint == "" {
+		if port := os.Getenv("DAPR_HTTP_PORT"); port != "" {
+			daprEndpoint = "http://localhost:" + port
+		} else {
+			daprEndpoint = "http://localhost:3500"
+		}
+	}
+	{
 		store := os.Getenv("HARMOSTES_STATE_STORE")
 		if store == "" {
 			store = "statestore"
 		}
-		server.SetDaprClient(ui.NewDaprClient(dapr.New(endpoint)))
-		server.SetTimelineReader(timeline.NewReader(dapr.New(endpoint), store))
-		logger.Info("Dapr client wired for session viewer + timeline", "endpoint", endpoint)
+		server.SetDaprClient(ui.NewDaprClient(dapr.New(daprEndpoint)))
+		server.SetTimelineReader(timeline.NewReader(dapr.New(daprEndpoint), store))
+		logger.Info("Dapr client wired for session viewer + timeline", "endpoint", daprEndpoint)
 	}
 
 	// Wire the SigNoz client for querying agent metrics (token usage, durations,

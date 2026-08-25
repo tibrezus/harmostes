@@ -13,12 +13,14 @@ import (
 
 // fakeAPI stubs the gate's API surface for decision-logic tests.
 type fakeAPI struct {
-	pr       *PullRequest
-	prErr    error
-	required []string
-	reqErr   error
-	states   map[string]string
-	ctxErr   error
+	pr          *PullRequest
+	prErr       error
+	required    []string
+	reqErr      error
+	states      map[string]string
+	ctxErr      error
+	comments    []IssueComment
+	commentsErr error
 }
 
 func (f *fakeAPI) GetPullRequest(ctx context.Context, repo string, n int) (*PullRequest, error) {
@@ -29,6 +31,9 @@ func (f *fakeAPI) RequiredContexts(ctx context.Context, repo, branch string) ([]
 }
 func (f *fakeAPI) ContextStates(ctx context.Context, repo, sha string) (map[string]string, error) {
 	return f.states, f.ctxErr
+}
+func (f *fakeAPI) ListComments(ctx context.Context, repo string, n int) ([]IssueComment, error) {
+	return f.comments, f.commentsErr
 }
 
 var base = Params{
@@ -108,10 +113,61 @@ func TestWaitingMissingContext(t *testing.T) {
 }
 
 func TestStanddownLabelAbsent(t *testing.T) {
-	api := &fakeAPI{pr: openPR("full-pipeline"), required: []string{"a"}, states: map[string]string{"a": "success"}}
+	// The consumed case: the deploy plugin removed the label AFTER posting
+	// the verdict — the trailer is the durable consume signal.
+	api := &fakeAPI{pr: openPR("full-pipeline"), required: []string{"a"}, states: map[string]string{"a": "success"},
+		comments: []IssueComment{{Body: "## Adversarial Review\n…\n<!-- pr-review: APPROVE @ abc123 -->"}}}
 	r := Evaluate(context.Background(), api, base)
 	if r.Decision != DecisionStanddown || r.NewArmedSha != "" {
 		t.Fatalf("want standdown+disarm, got %s", r.Decision)
+	}
+}
+
+func TestLabelAbsentNoVerdictStaysArmed(t *testing.T) {
+	// #237 live regression: an 'unlabeled' wake racing a newer 'labeled'
+	// arm (label rm+add cycles) or a wake lost to a host outage observes
+	// label-absent at a stale instant while the request is still pending.
+	// Disarming here lost the review permanently (rhesadox #1635: gate
+	// stood down "label absent" with the label present and CI green).
+	api := &fakeAPI{pr: openPR("full-pipeline"), required: []string{"a"}, states: map[string]string{"a": "success"}}
+	r := Evaluate(context.Background(), api, base)
+	if r.Decision != DecisionWaiting || r.NewArmedSha != "abc123" {
+		t.Fatalf("want waiting+armed@abc123, got %s sha=%s (%s)", r.Decision, r.NewArmedSha, r.Reason)
+	}
+	// Already-armed clock is preserved (the horizon keeps ticking from the
+	// original arm, not restarted by the ambiguity).
+	p := base
+	p.ArmedSha = "abc123"
+	p.ArmedAt = base.Now.Add(-1 * time.Hour)
+	r = Evaluate(context.Background(), api, p)
+	if r.Decision != DecisionWaiting || !r.NewArmedAt.Equal(p.ArmedAt) {
+		t.Fatalf("want waiting with preserved ArmedAt, got %s at=%v", r.Decision, r.NewArmedAt)
+	}
+}
+
+func TestLabelAbsentNoVerdictHorizonStandsDown(t *testing.T) {
+	// The stay-armed recovery is bounded: past the horizon the gate stands
+	// down instead of waiting forever on a label that never returns.
+	api := &fakeAPI{pr: openPR("full-pipeline"), required: []string{"a"}, states: map[string]string{"a": "success"}}
+	p := base
+	p.ArmedSha = "abc123"
+	p.ArmedAt = base.Now.Add(-7 * time.Hour) // horizon is 6h
+	r := Evaluate(context.Background(), api, p)
+	if r.Decision != DecisionStanddown || r.NewArmedSha != "" {
+		t.Fatalf("want standdown past horizon, got %s sha=%s", r.Decision, r.NewArmedSha)
+	}
+}
+
+func TestLabelAbsentVerdictCheckFailsStaysArmed(t *testing.T) {
+	// Transient comments-fetch failure: keep armed (retry next cycle),
+	// never disarm on an API hiccup.
+	api := &fakeAPI{pr: openPR("full-pipeline"), required: []string{"a"}, states: map[string]string{"a": "success"},
+		commentsErr: fmt.Errorf("HTTP 503")}
+	p := base
+	p.ArmedSha = "def456" // previously armed at an older head
+	r := Evaluate(context.Background(), api, p)
+	if r.Decision != DecisionWaiting || r.NewArmedSha != "def456" {
+		t.Fatalf("want waiting keeping armed sha, got %s sha=%s", r.Decision, r.NewArmedSha)
 	}
 }
 
@@ -337,6 +393,44 @@ func TestRESTGitHubNoProtection(t *testing.T) {
 	ctxs, err := api.RequiredContexts(context.Background(), "o/r", "main")
 	if err != nil || len(ctxs) != 0 {
 		t.Fatalf("404 protection must mean no required contexts: %v %v", ctxs, err)
+	}
+}
+
+func TestRESTListCommentsShapes(t *testing.T) {
+	// Both host kinds expose issue comments at the same path shape; the
+	// gate scans them for the verdict trailer (the consume signal, #237).
+	for _, tc := range []struct {
+		name, repo, path string
+		number          int
+	}{
+		{"forgejo", "git.rezus.cloud/tibrez/rhesadox", "/api/v1/repos/tibrez/rhesadox/issues/1566/comments", 1566},
+		{"github", "tibrezus/harmostes", "/repos/tibrezus/harmostes/issues/237/comments", 237},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				if req.URL.Path != tc.path {
+					http.NotFound(w, req)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode([]map[string]string{
+					{"body": "unrelated comment"},
+					{"body": "review…\n<!-- pr-review: COMMENT @ abc123 -->"},
+				})
+			}))
+			defer srv.Close()
+			api := &RESTAPI{Client: srv.Client()}
+			// BaseOverride must be the API base; derive it per host kind.
+			if tc.name == "forgejo" {
+				api.BaseOverride = srv.URL + "/api/v1"
+			} else {
+				api.BaseOverride = srv.URL
+			}
+			cs, err := api.ListComments(context.Background(), tc.repo, tc.number)
+			if err != nil || len(cs) != 2 || !hasVerdict(cs) {
+				t.Fatalf("ListComments: %+v err=%v", cs, err)
+			}
+		})
 	}
 }
 

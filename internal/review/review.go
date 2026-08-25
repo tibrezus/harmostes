@@ -17,8 +17,13 @@
 //	waiting    — CI pending (or red: a red-CI verdict is noise — the dev
 //	             already sees red CI), gate stays armed; the next push
 //	             (synchronize) re-arms at the new head.
-//	standdown  — label removed, PR closed/merged, or horizon exceeded:
-//	             disarm (silent non-event).
+//	standdown  — PR closed/merged, horizon exceeded, or the label removed
+//	             AFTER a verdict was posted (the post-review consume: the
+//	             trailer in the PR comments is the durable signal). A label
+//	             absent WITHOUT a verdict keeps the gate armed (lost-ingress
+//	             recovery, #237): the removal may have been observed at a
+//	             stale instant (label rm+add race, wake lost to an outage)
+//	             and the next evaluation re-derives the truth from the host.
 package review
 
 import (
@@ -66,6 +71,7 @@ type API interface {
 	GetPullRequest(ctx context.Context, repo string, number int) (*PullRequest, error)
 	RequiredContexts(ctx context.Context, repo, branch string) ([]string, error)
 	ContextStates(ctx context.Context, repo, sha string) (map[string]string, error)
+	ListComments(ctx context.Context, repo string, number int) ([]IssueComment, error)
 }
 
 // PullRequest is the normalized PR view the gate needs.
@@ -236,6 +242,28 @@ func (a *RESTAPI) GetPullRequest(ctx context.Context, repo string, number int) (
 		pr.Labels = append(pr.Labels, l.Name)
 	}
 	return pr, nil
+}
+
+// IssueComment is the minimal issue/PR comment view the gate needs: the
+// body, scanned for the verdict trailer.
+type IssueComment struct {
+	Body string `json:"body"`
+}
+
+// ListComments fetches a PR's conversation comments. Both host kinds expose
+// issue comments at the same path shape; page 1 with a generous page size is
+// enough — the gate only scans for the verdict trailer (the consume signal),
+// and verdicts are posted as fresh comments.
+func (a *RESTAPI) ListComments(ctx context.Context, repo string, number int) ([]IssueComment, error) {
+	host, err := ResolveHost(repo)
+	if err != nil {
+		return nil, err
+	}
+	var out []IssueComment
+	if err := a.get(ctx, host, fmt.Sprintf("/repos/%s/issues/%d/comments?per_page=100", host.RepoPath, number), "application/json", &out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // RequiredContexts reads the repo's merge rules and returns the contexts
@@ -475,10 +503,34 @@ func Evaluate(ctx context.Context, api API, p Params) Result {
 	}
 
 	if !hasLabel(pr.Labels, p.Label) {
-		// The label is the only ingress; its absence disarms. (The deploy
-		// plugin removes the label after posting a verdict — this is also
-		// the post-review cleanup path.)
-		return Result{Evaluation: standdown("label absent"), NewArmedSha: ""}
+		// Label absent is a real stand-down ONLY once a verdict exists: the
+		// deploy plugin removes the label after posting the verdict trailer
+		// — that trailer is the durable consume signal. Without a verdict the
+		// absence is ambiguous: this evaluation runs on one instantaneous PR
+		// fetch, and an 'unlabeled' wake racing a newer 'labeled' arm (label
+		// rm+add cycles from the trigger helpers) or a wake lost to a host API
+		// outage can observe label-absent while the label is actually present
+		// — observed live on rhesadox #1635: standdown "label absent" while
+		// the label was present and all contexts green, and nothing woke the
+		// gate again (the schedule tick only re-evaluates the ARMED state).
+		// Stay armed and wait: the next tick re-fetches the PR and converges
+		// (label present → the normal path; horizon exceeded → standdown).
+		comments, err := api.ListComments(ctx, p.Repo, p.PR)
+		if err != nil {
+			keepSha := p.ArmedSha
+			if keepSha == "" {
+				keepSha = pr.HeadSHA
+			}
+			return Result{Evaluation: waiting("label absent; verdict check failed: " + err.Error()), NewArmedSha: keepSha, NewArmedAt: armTime(p.ArmedAt, now)}
+		}
+		if hasVerdict(comments) {
+			return Result{Evaluation: standdown("label absent (verdict posted — consumed)"), NewArmedSha: ""}
+		}
+		armedAt := armTime(p.ArmedAt, now)
+		if now.Sub(armedAt) > p.Horizon {
+			return Result{Evaluation: standdown("horizon exceeded (label absent, no verdict; pending > " + p.Horizon.String() + ")"), NewArmedSha: ""}
+		}
+		return Result{Evaluation: waiting("label absent, no verdict — ingress may be lost, staying armed"), NewArmedSha: pr.HeadSHA, NewArmedAt: armedAt}
 	}
 
 	// Head moved since arming: re-arm at the new head (reset the horizon).
@@ -554,6 +606,20 @@ func proceed(p Params, pr *PullRequest, required, green []string) Result {
 func waiting(reason string) Evaluation { return Evaluation{Decision: DecisionWaiting, Reason: reason} }
 func standdown(reason string) Evaluation {
 	return Evaluation{Decision: DecisionStanddown, Reason: reason}
+}
+
+// hasVerdict reports whether any conversation comment carries a pr-review
+// verdict trailer (the skill's output contract — the merge currency). A
+// verdict at ANY sha counts: a fresh review request re-adds the label (a new
+// 'labeled' wake), so verdict-present + label-absent is always the
+// post-review cleanup, never a pending request.
+func hasVerdict(comments []IssueComment) bool {
+	for _, c := range comments {
+		if strings.Contains(c.Body, "<!-- pr-review: ") {
+			return true
+		}
+	}
+	return false
 }
 
 func hasLabel(labels []string, want string) bool {

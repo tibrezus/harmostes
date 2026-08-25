@@ -432,9 +432,11 @@ func (e *GraphExecutor) Execute(ctx context.Context, graph v1alpha1.GraphSpec, p
 		}
 
 		if e.timeline != nil {
-			_ = e.timeline.Emit(ctx, timeline.KindNodeStarted, nodeID, map[string]any{
+			if err := e.timeline.Emit(ctx, timeline.KindNodeStarted, nodeID, map[string]any{
 				"type": node.Type,
-			})
+			}); err != nil {
+				e.log("warn: timeline emit node.started %s: %v", nodeID, err)
+			}
 		}
 		nodeResult, execErr := exec.Execute(execCtx, node, env)
 		durationMs := time.Since(startTime).Milliseconds()
@@ -463,7 +465,9 @@ func (e *GraphExecutor) Execute(ctx context.Context, graph v1alpha1.GraphSpec, p
 			if fb := nodeResult.Feedback; fb != "" {
 				payload["feedback"] = truncateForTimeline(fb, 200)
 			}
-			_ = e.timeline.Emit(ctx, timeline.KindNodeCompleted, nodeID, payload)
+			if err := e.timeline.Emit(ctx, timeline.KindNodeCompleted, nodeID, payload); err != nil {
+				e.log("warn: timeline emit node.completed %s: %v", nodeID, err)
+			}
 		}
 		completedEnv := e.synthesizeEnvelope(nodeID, node.Type, nodeResult)
 		// Trust enforcement (ADR-0004): a non-deterministic node cannot

@@ -271,9 +271,9 @@ func logBridge(logf func(format string, args ...any)) agent.Logger {
 	}
 }
 
-// Redact strips credential-bearing URLs (user:pass@host and token query
-// params) from text destined for persistence — the #115 leak class. Shared
-// with the timeline tail capture.
+// Redact strips HTTP basic-auth credentials (user:pass@host) from text
+// destined for persistence — the #115 leak class. Shared with the timeline
+// tail capture.
 func Redact(s string) string { return credURLRe.ReplaceAllString(s, "${1}") }
 
 var credURLRe = regexp.MustCompile(`(https?://)[^\s/@:]+:[^\s/@]+@`)

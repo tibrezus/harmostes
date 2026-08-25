@@ -2,6 +2,7 @@ package graph
 
 import (
 	"context"
+	"log/slog"
 	"strings"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -53,12 +54,15 @@ func (e *PluginExecutor) Execute(ctx context.Context, node v1alpha1.NodeSpec, en
 	pluginEnv := envToPluginEnv(env, "plugin", specJSON)
 	res, out, runErr := worker.RunPlugin(ctx, command, args, pluginEnv, env.ExtraEnv)
 	if e.tl != nil {
-		_ = e.tl.Emit(ctx, timeline.KindPluginTail, node.ID, map[string]any{
+		if err := e.tl.Emit(ctx, timeline.KindPluginTail, node.ID, map[string]any{
 			"plugin": cfg.Name,
 			// Redacted before persistence: tails are run evidence, and the
 			// combined output can echo credential-bearing URLs (#115 class).
 			"tail": tailLines(worker.Redact(out), 20),
-		})
+		}); err != nil {
+			// Evidence loss must be visible in process logs, not only tracing.
+			slog.Warn("timeline emit plugin.tail failed", "node", node.ID, "err", err)
+		}
 	}
 
 	span.SetAttributes(

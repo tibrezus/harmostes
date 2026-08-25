@@ -207,7 +207,7 @@ func (s *Server) renderPoolRun(w http.ResponseWriter, r *http.Request, wf v1alph
 		s.renderError(w, r, "Failed to load run: "+err.Error())
 		return
 	}
-	owned := false
+	var record *v1alpha1.RunRecord
 	for _, att := range atts.Items {
 		// Restore the Job-era Gate 2 workflow dimension: the owning attempt
 		// must belong to the workflow in the URL (attempts carry the same
@@ -217,15 +217,16 @@ func (s *Server) renderPoolRun(w http.ResponseWriter, r *http.Request, wf v1alph
 		}
 		for _, run := range att.Status.Runs {
 			if run.Name == runName {
-				owned = true
+				r := run
+				record = &r
 				break
 			}
 		}
-		if owned {
+		if record != nil {
 			break
 		}
 	}
-	if !owned {
+	if record == nil {
 		http.NotFound(w, r)
 		return
 	}
@@ -233,7 +234,10 @@ func (s *Server) renderPoolRun(w http.ResponseWriter, r *http.Request, wf v1alph
 	var pod corev1.Pod
 	if err := s.k8sClient.Get(r.Context(), client.ObjectKey{Namespace: s.namespace, Name: runName}, &pod); err != nil {
 		if errors.IsNotFound(err) {
-			http.NotFound(w, r)
+			// Pool pods are recycled by design; the run still happened.
+			// Render what the Attempt recorded instead of a bare 404 —
+			// the session transcript (state store) outlives the pod.
+			s.renderRecycledPoolRun(w, r, wf, *record)
 			return
 		}
 		s.logger.Error("get pool pod for run detail", "pod", runName, "err", err)
@@ -267,6 +271,44 @@ func (s *Server) renderPoolRun(w http.ResponseWriter, r *http.Request, wf v1alph
 		}
 	}
 	s.render(w, r, "pages/run_detail.html", data)
+}
+
+// renderRecycledPoolRun serves run detail from the Attempt's RunRecord when
+// the worker-pool pod no longer exists (pods are recycled by design, so every
+// historical run ends up here). Timing and phase come from the record; worker
+// logs are honestly marked unavailable and the user is pointed at the session
+// transcript, which persists in the state store.
+func (s *Server) renderRecycledPoolRun(w http.ResponseWriter, r *http.Request, wf v1alpha1.Workflow, record v1alpha1.RunRecord) {
+	job := batchv1.Job{}
+	job.Name = record.Name
+	if !record.StartedAt.IsZero() {
+		job.Status.StartTime = &record.StartedAt
+	}
+	if !record.EndedAt.IsZero() {
+		job.Status.CompletionTime = &record.EndedAt
+	}
+	data := runDetailData{
+		Workflow:  wf,
+		Job:       job,
+		PodName:   record.Name,
+		PodPhase:  record.Phase,
+		Duration:  recordDuration(record),
+		HasLogs:   false,
+		LogsError: "Worker-pool pods are recycled once replaced — logs are only available while the pod exists. The session transcript (from the attempt page) persists.",
+	}
+	s.render(w, r, "pages/run_detail.html", data)
+}
+
+// recordDuration spans a RunRecord's timestamps.
+func recordDuration(record v1alpha1.RunRecord) string {
+	if record.StartedAt.IsZero() {
+		return "—"
+	}
+	end := time.Now()
+	if !record.EndedAt.IsZero() {
+		end = record.EndedAt.Time
+	}
+	return formatDuration(end.Sub(record.StartedAt.Time))
 }
 
 // podDuration returns the pod's active span: start → now or container finish.

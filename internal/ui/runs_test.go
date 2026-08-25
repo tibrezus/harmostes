@@ -647,3 +647,51 @@ func TestHandleRunDetail_PoolRunWrongWorkflow(t *testing.T) {
 		t.Errorf("status = %d, want %d (run owned by another workflow's attempt)", rec.Code, http.StatusNotFound)
 	}
 }
+
+func TestHandleRunDetail_PoolRunPodRecycled(t *testing.T) {
+	// Pool pods are recycled by design. A run whose pod is gone must render
+	// its recorded facts + an honest logs-unavailable notice — not a 404.
+	wf := &v1alpha1.Workflow{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "alice-wf", Namespace: "harmostes",
+			Labels: map[string]string{v1alpha1.OwnerLabel: "alice"},
+		},
+	}
+	att := &v1alpha1.Attempt{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "attempt-alice-1", Namespace: "harmostes",
+			Labels: map[string]string{
+				v1alpha1.OwnerLabel:    "alice",
+				v1alpha1.WorkflowLabel: "alice-wf",
+			},
+		},
+		Status: v1alpha1.AttemptStatus{
+			Runs: []v1alpha1.RunRecord{{
+				Name:      "pool-pod-gone",
+				Phase:     "succeeded",
+				StartedAt: metav1.Now(),
+				EndedAt:   metav1.Now(),
+			}},
+		},
+	}
+	s := runsTestServer(wf, att) // no pod object
+
+	req := httptest.NewRequest(http.MethodGet, "/workflows/alice-wf/runs/pool-pod-gone", nil)
+	req.SetPathValue("name", "alice-wf")
+	req.SetPathValue("job", "pool-pod-gone")
+	req = req.WithContext(withIdentity(req.Context(), &Identity{Username: "alice"}))
+
+	rec := httptest.NewRecorder()
+	s.handleRunDetail(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !contains(body, "recycled") {
+		t.Error("expected the recycled-pod notice")
+	}
+	if !contains(body, "pool-pod-gone") {
+		t.Error("expected the run name from the record")
+	}
+}

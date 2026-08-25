@@ -28,6 +28,9 @@
 			{{if $s.Green}}<span class="ds-status-badge ds-status-badge--positive">✓ Green</span>
 			{{else}}<span class="ds-status-badge ds-status-badge--negative">✗ Failed</span>
 			{{end}}
+			{{if $.HasPiSession}}
+			<a href="/attempts/{{$.AttemptName}}/runs/{{$.RunName}}/pi-session" class="ds-btn ds-btn--secondary ds-btn--xs" title="Download the agent's exact pi session — forkable into a local pi">⎇ Fork session</a>
+			{{end}}
 		</div>
 		<div class="ds-card-meta">
 			{{if $s.Model}}<span>Model: <code>{{$s.Model}}</code></span>{{end}}
@@ -37,6 +40,14 @@
 		<div class="ds-card-meta">
 			<span>Tokens: {{$s.TotalIn}} in / {{$s.TotalOut}} out{{if gt $s.TotalCost 0.0}} / ${{printf "%.4f" $s.TotalCost}}{{end}}</span>
 		</div>
+		{{if $.HasPiSession}}
+		<details class="pi-fork-hint">
+			<summary>Continue this session in a terminal</summary>
+			<p class="ds-empty-text">The download is pi's native session file — the exact conversation, tool calls and context. Fork it and the agent picks up where this run ended:</p>
+			<pre><code>pi --fork pi-session-{{$.RunName}}.jsonl --model {{$s.Model}} --tools read,bash,grep</code></pre>
+			<p class="ds-empty-text">Runs anywhere pi is installed. Forking never touches harmostes; the stored session is read-only.</p>
+		</details>
+		{{end}}
 	</div>
 
 	<!-- Turns -->

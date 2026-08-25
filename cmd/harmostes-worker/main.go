@@ -256,11 +256,20 @@ func main() {
 	}
 
 	// Inject session callbacks into the agent runner.
+	// SessionRoot keeps pi's native session file per run (#243): the exact
+	// conversation, forkable later (pi --fork). Default on; "off" disables.
+	piSessions := envDefault("HARMOSTES_PI_SESSIONS", "/tmp/harmostes-pi-sessions")
+	if piSessions != "off" {
+		_ = os.MkdirAll(piSessions, 0o755)
+	} else {
+		piSessions = ""
+	}
 	deps.Agent = worker.RPCAgentRunner{
 		Opts: agent.RPCOptions{
-			Args:    worker.PiArgs(wf.Spec.Agent),
-			Workdir: workdir,
-			Env:     os.Environ(),
+			Args:        worker.PiArgs(wf.Spec.Agent),
+			Workdir:     workdir,
+			Env:         os.Environ(),
+			SessionRoot: piSessions,
 			Log: func(ev agent.Event) {
 				logfFn("agent: %s %s", ev.Type, ev.ToolName)
 			},
@@ -268,6 +277,13 @@ func main() {
 		SessionWriter: sessionWriter,
 		ToolPublisher: toolPublisher,
 		SessionMeta:   sessionMeta,
+		// Upload the forkable session alongside the transcript record —
+		// best-effort, the run already succeeded.
+		SessionFiles: func(fctx context.Context, files []string) {
+			if err := worker.SavePiSession(fctx, deps.Dapr, deps.DaprStateStore, workflow, runID, files); err != nil {
+				logfFn("pi session upload failed: %v", err)
+			}
+		},
 	}
 
 	// ── Single execution path: graph executor ────────────────────────────
@@ -654,4 +670,11 @@ func subjectFromEnv() timeline.Subject {
 		s.Title = t
 	}
 	return s
+}
+
+func envDefault(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
 }

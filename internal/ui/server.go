@@ -136,6 +136,7 @@ func (s *Server) Routes() http.Handler {
 	pages.HandleFunc("GET /attempts", s.handleAttemptList)
 	pages.HandleFunc("GET /attempts/{name}", s.handleAttemptDetail)
 	pages.HandleFunc("GET /attempts/{name}/runs/{job}/session", s.handleAttemptSession)
+	pages.HandleFunc("GET /attempts/{name}/runs/{job}/pi-session", s.handleAttemptPiSession)
 
 	// Workflows — read-only reference catalog (config is GitOps YAML)
 	pages.HandleFunc("GET /workflows", s.handleWorkflowList)

@@ -33,9 +33,9 @@
 				<svg class="ds-sidebar-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0a8 8 0 100 16A8 8 0 008 0zM7 14.93A6 6 0 011.07 9H4a4 4 0 003 3.87v2.06zM7 7H1.07A6 6 0 017 1.07V4a4 4 0 00-3 3h3v0zm2-5.93A6 6 0 0114.93 7H12a4 4 0 00-3-3.87V1.07zM9 9h5.93A6 6 0 019 14.93V12a4 4 0 003-3H9z"></path></svg>
 				Map
 			</a>
-			<a href="/flows" class="ds-sidebar-link {{if eq .PageKey "flows"}}ds-sidebar-link--active{{end}}" title="Execution timelines — every run's phases">
-				<svg class="ds-sidebar-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M0 2h16v2H0V2zm0 5h16v2H0V7zm0 5h16v2H0v-2z"></path></svg>
-				Flows
+			<a href="/timeline" class="ds-sidebar-link {{if eq .PageKey "timeline"}}ds-sidebar-link--active{{end}}" title="Execution runtime — gate transitions, node boundaries, plugin output, agent turns">
+				<svg class="ds-sidebar-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M2 2h2v2H2V2zm4 0h2v2H6V2zm4 0h2v2h-2V2zM2 6h2v2H2V6zm4 0h2v2H6V6zm4 0h2v2h-2V6zM2 10h2v2H2v-2zm4 0h2v2H6v-2zm4 0h2v2h-2v-2z"></path></svg>
+				Timeline
 			</a>
 			<a href="/metrics" class="ds-sidebar-link {{if eq .PageKey "metrics"}}ds-sidebar-link--active{{end}}">
 				<svg class="ds-sidebar-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M1 12h2v2H1v-2zm4-4h2v6H5V8zm4-4h2v10H9V4zm4-2h2v12h-2V2z"></path></svg>
@@ -45,10 +45,6 @@
 			<a href="/sessions" class="ds-sidebar-link {{if eq .PageKey "sessions"}}ds-sidebar-link--active{{end}}" title="Agent conversation transcripts (messages, tool calls)">
 				<svg class="ds-sidebar-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M2 2h12v10H4l-2 2V2zm2 2v6h8V4H4z"></path></svg>
 				Sessions
-			</a>
-			<a href="/live" class="ds-sidebar-link {{if eq .PageKey "live"}}ds-sidebar-link--active{{end}}">
-				<svg class="ds-sidebar-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M2 1h12v14H2V1zm2 2v10h8V3H4zm1 2h6v1H5V5zm0 3h6v1H5V8zm0 3h4v1H5v-1z"></path></svg>
-				Live
 			</a>
 			<div class="ds-sidebar-divider"></div>
 			<a href="/workflows" class="ds-sidebar-link {{if eq .PageKey "workflows"}}ds-sidebar-link--active{{end}}">
@@ -134,9 +130,7 @@
 {{- if eq .PageKey "metrics"}}
 <script src="/static/js/metrics.js?v={{assetVersion}}"></script>
 {{- end}}
-{{- if eq .PageKey "live"}}
-<script src="/static/js/live.js?v={{assetVersion}}"></script>
-{{- end}}
+
 <script>
 function topbarFilters() {
 	return {

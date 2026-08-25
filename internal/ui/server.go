@@ -26,6 +26,7 @@ import (
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
 	"github.com/tibrezus/harmostes/internal/rbac"
+	"github.com/tibrezus/harmostes/internal/timeline"
 )
 
 // template-embed-v2: forces Go build cache to re-embed updated templates
@@ -44,16 +45,17 @@ type logFetchFunc func(ctx context.Context, namespace, podName, container string
 
 // Server is the harmostes-ui HTTP server.
 type Server struct {
-	k8sClient  client.Client
-	logFetch   logFetchFunc
-	namespace  string
-	logger     *slog.Logger
-	templates  *template.Template
-	hub        *EventHub
-	nodePolicy rbac.NodePolicy
-	platforms  *platformRegistry // display config for git platforms (plug-and-play)
-	dapr       DaprClient        // optional: reads session transcripts from worker state store
-	signoz     *SignozClient     // optional: queries SigNoz API for metrics
+	k8sClient      client.Client
+	logFetch       logFetchFunc
+	namespace      string
+	logger         *slog.Logger
+	templates      *template.Template
+	hub            *EventHub
+	nodePolicy     rbac.NodePolicy
+	platforms      *platformRegistry // display config for git platforms (plug-and-play)
+	dapr           DaprClient        // optional: reads session transcripts from worker state store
+	timelineReader timeline.Reader   // optional: reads execution evidence (nil = empty timeline)
+	signoz         *SignozClient     // optional: queries SigNoz API for metrics
 }
 
 // New creates a Server with parsed templates and the given k8s client.
@@ -86,6 +88,11 @@ func New(k8sClient client.Client, namespace string, logger *slog.Logger, kubeCli
 // SetDaprClient injects a Dapr client for reading session transcripts
 // from the worker's state store. Optional — the session viewer shows
 // "not available" when nil.
+// SetTimelineReader injects the evidence-layer reader for the Timeline page.
+func (s *Server) SetTimelineReader(r timeline.Reader) {
+	s.timelineReader = r
+}
+
 func (s *Server) SetDaprClient(d DaprClient) {
 	s.dapr = d
 }
@@ -122,10 +129,9 @@ func (s *Server) Routes() http.Handler {
 
 	// Hubble-style views (milestone #7)
 	pages.HandleFunc("GET /map", s.handleMapView)
-	pages.HandleFunc("GET /flows", s.handleFlowsView)
+	pages.HandleFunc("GET /timeline", s.handleTimelineView)
 	pages.HandleFunc("GET /metrics", s.handleMetricsView)
 	pages.HandleFunc("GET /sessions", s.handleSessionsView)
-	pages.HandleFunc("GET /live", s.handleLiveView)
 
 	// Observability-first: Attempts (execution history timeline)
 	pages.HandleFunc("GET /attempts", s.handleAttemptList)
@@ -159,7 +165,7 @@ func (s *Server) Routes() http.Handler {
 	pages.HandleFunc("GET /api/pipelines/{name}/events", s.handlePipelineSSE)
 
 	// Flows view: global SSE stream (all workflows or filtered by ?workflow=)
-	pages.HandleFunc("GET /api/flows/events", s.handleFlowsSSE)
+	pages.HandleFunc("GET /api/timeline/events", s.handleTimelineSSE)
 
 	// Metrics view: token usage from SigNoz API
 	pages.HandleFunc("GET /api/metrics", s.handleMetricsAPI)
@@ -199,6 +205,14 @@ func parseTemplates() (*template.Template, error) {
 				return vals[0]
 			}
 			return ""
+		},
+		// kindClass maps a timeline event kind to a CSS-safe class suffix.
+		"kindClass": func(kind string) string {
+			k := strings.ReplaceAll(strings.ReplaceAll(kind, ".", "-"), "_", "-")
+			if len(k) > 24 {
+				k = k[:24]
+			}
+			return k
 		},
 		"queryHas": func(q url.Values, key string) bool {
 			_, ok := q[key]
@@ -385,14 +399,12 @@ func pageTitle(page string) string {
 	switch page {
 	case "pages/map.html":
 		return "Map"
-	case "pages/flows.html":
-		return "Flows"
+	case "pages/timeline.html":
+		return "Timeline"
 	case "pages/metrics.html":
 		return "Metrics"
 	case "pages/sessions.html":
 		return "Sessions"
-	case "pages/live.html":
-		return "Live"
 	case "pages/attempts.html":
 		return "Attempts"
 	case "pages/attempt_detail.html":
@@ -425,14 +437,12 @@ func pageKey(page string) string {
 	switch {
 	case strings.HasPrefix(page, "pages/map"):
 		return "map"
-	case strings.HasPrefix(page, "pages/flows"):
-		return "flows"
+	case strings.HasPrefix(page, "pages/timeline"):
+		return "timeline"
 	case strings.HasPrefix(page, "pages/metrics"):
 		return "metrics"
 	case strings.HasPrefix(page, "pages/sessions"):
 		return "sessions"
-	case strings.HasPrefix(page, "pages/live"):
-		return "live"
 	case strings.HasPrefix(page, "pages/attempts"):
 		return "attempts"
 	case strings.HasPrefix(page, "pages/attempt_detail"):

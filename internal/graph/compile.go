@@ -28,10 +28,15 @@ func CompileWorkflow(wf *v1alpha1.Workflow) v1alpha1.GraphSpec {
 		ConfigMap: wf.Spec.Deploy.Plugin.ConfigMap,
 	})
 
+	prepareLabel := wf.Spec.Prepare.Plugin.Name
+	if prepareLabel == "" {
+		prepareLabel = "prepare"
+	}
 	nodes := []v1alpha1.NodeSpec{
 		{
 			ID:     "prepare",
 			Type:   "plugin",
+			Label:  prepareLabel, // real component name for the map/canvas
 			Config: prepareCfg,
 		},
 	}
@@ -57,16 +62,26 @@ func CompileWorkflow(wf *v1alpha1.Workflow) v1alpha1.GraphSpec {
 			},
 			Scope: wikiLintScope(wf.Name),
 		})
+		agentLabel := "agent"
+		if wf.Spec.Agent.Model != "" {
+			agentLabel = "agent · " + wf.Spec.Agent.Model
+		}
 		nodes = append(nodes, v1alpha1.NodeSpec{
 			ID:     "agent",
 			Type:   "agent",
+			Label:  agentLabel,
 			Config: agentCfg,
 		})
 	}
 
+	deployLabel := wf.Spec.Deploy.Plugin.Name
+	if deployLabel == "" {
+		deployLabel = "deploy"
+	}
 	nodes = append(nodes, v1alpha1.NodeSpec{
 		ID:     "deploy",
 		Type:   "plugin",
+		Label:  deployLabel,
 		Config: deployCfg,
 	})
 

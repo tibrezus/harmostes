@@ -132,6 +132,15 @@ func TestSubjectFromEnv(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			// Hermetic: blank every trigger var first — inside a worker pod
+			// the real env carries them and would leak into "no trigger".
+			for _, k := range []string{
+				"HARMOSTES_TRIGGER_PR", "HARMOSTES_TRIGGER_REPO",
+				"HARMOSTES_TRIGGER_SHA", "HARMOSTES_TRIGGER_REVISION",
+				"HARMOSTES_TRIGGER_TITLE",
+			} {
+				t.Setenv(k, "")
+			}
 			for k, v := range tc.env {
 				t.Setenv(k, v)
 			}

@@ -14,6 +14,7 @@
 		<thead>
 			<tr>
 				<th class="ds-table-th">Workflow</th>
+				<th class="ds-table-th">Subject</th>
 				<th class="ds-table-th">Run</th>
 				<th class="ds-table-th">Status</th>
 				<th class="ds-table-th">Started</th>
@@ -24,6 +25,7 @@
 			{{- range .Sessions}}
 			<tr class="sessions-row">
 				<td class="ds-table-td sessions-wf">{{.Workflow}}</td>
+				<td class="ds-table-td">{{if .Subject}}<code>{{.Subject}}</code>{{else}}<span class="ds-card-meta">—</span>{{end}}</td>
 				<td class="ds-table-td sessions-run">{{.Run}}</td>
 				<td class="ds-table-td sessions-status">
 					{{if eq .Phase "succeeded"}}<span class="ds-status-dot ds-status-dot--positive"></span> {{.Phase}}
@@ -39,7 +41,7 @@
 			{{- end}}
 			{{- if not .Sessions}}
 			<tr class="sessions-empty">
-				<td colspan="5">
+				<td colspan="6">
 					<div class="ds-empty-state">
 						<div class="ds-empty-text">
 							<p class="ds-empty-title">No sessions</p>

@@ -19,6 +19,7 @@ type sessionEntry struct {
 	Phase      string    `json:"phase"`
 	StartedAt  time.Time `json:"startedAt"`
 	SessionURL string    `json:"sessionUrl"`
+	Subject    string    `json:"subject,omitempty"` // what this session was about (timeline Subject.Ref)
 }
 
 // handleSessionsView lists all agent session transcripts (from Attempt
@@ -38,6 +39,26 @@ func (s *Server) handleSessionsView(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Orientation: resolve the Subject index for these attempts (bulk get).
+	var names []string
+	for _, att := range attemptList.Items {
+		names = append(names, att.Name)
+	}
+	var subjects map[string]string // attempt → Subject.Ref
+	if s.timelineReader != nil {
+		subs, err := s.timelineReader.Subjects(r.Context(), names)
+		if err != nil {
+			s.logger.Warn("subjects bulk-get failed", "err", err)
+		} else {
+			subjects = make(map[string]string, len(subs))
+			for a, sub := range subs {
+				if sub.Ref != "" {
+					subjects[a] = sub.Ref
+				}
+			}
+		}
+	}
+
 	var entries []sessionEntry
 	for _, att := range attemptList.Items {
 		wfName := att.Labels["harmostes.dev/workflow"]
@@ -49,14 +70,16 @@ func (s *Server) handleSessionsView(w http.ResponseWriter, r *http.Request) {
 		}
 
 		for _, run := range att.Status.Runs {
-			entries = append(entries, sessionEntry{
+			entry := sessionEntry{
 				Workflow:   wfName,
 				Run:        run.Name,
 				Attempt:    att.Name,
 				Phase:      run.Phase,
 				StartedAt:  run.StartedAt.Time,
 				SessionURL: fmt.Sprintf("/attempts/%s/runs/%s/session", att.Name, run.Name),
-			})
+				Subject:    subjects[att.Name],
+			}
+			entries = append(entries, entry)
 		}
 	}
 

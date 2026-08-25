@@ -229,18 +229,25 @@ func (r *DaprReader) Attempt(ctx context.Context, attempt string, runs []string,
 			if err != nil {
 				return nil, err
 			}
+			got := 0
 			for i := 0; i < probeBatch; i++ {
 				v, ok := vals[keys[i]]
 				if !ok || v == "" {
 					continue
 				}
+				got++
 				var ev Event
 				if err := json.Unmarshal([]byte(v), &ev); err == nil {
 					events = append(events, ev)
 				}
 			}
-			if len(vals) == 0 {
-				break // frontier: an entirely empty batch (holes don't stop us)
+			// Frontier: stop when a batch yields NO data-bearing entries.
+			// Some backends return probed-but-missing keys as present-empty
+			// entries, so len(vals)==0 would never fire (live: infinite
+			// probe loop on the UI sidecar). Data-bearing hits advance the
+			// walk; holes (TTL-expired) don't stop it.
+			if got == 0 {
+				break
 			}
 		}
 	}
@@ -261,18 +268,20 @@ func (r *DaprReader) GateEvents(ctx context.Context, attempt string, f Filter) (
 		if err != nil {
 			return nil, err
 		}
+		got := 0
 		for i := 0; i < probeBatch; i++ {
 			v, ok := vals[keys[i]]
 			if !ok || v == "" {
 				continue
 			}
+			got++
 			var ev Event
 			if err := json.Unmarshal([]byte(v), &ev); err == nil {
 				events = append(events, ev)
 			}
 		}
-		if len(vals) == 0 {
-			break // frontier: an entirely empty batch
+		if got == 0 {
+			break // frontier: no data-bearing entries in this batch
 		}
 	}
 	events = applyFilter(events, f)

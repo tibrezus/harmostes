@@ -223,3 +223,31 @@ func TestGateEventsAndHoles(t *testing.T) {
 		t.Fatalf("hole truncated the walk: got %d events, want 3", len(events))
 	}
 }
+
+// Live regression: the UI sidecar's state backend returns probed-but-missing
+// keys as PRESENT-EMPTY entries. The old stop condition (len(vals)==0) never
+// fired → infinite probe loop → /timeline hung until client disconnect.
+type emptyEchoDapr struct{ fakeDapr }
+
+func (f *emptyEchoDapr) GetBulkState(_ context.Context, _ string, keys []string) (map[string]string, error) {
+	out := map[string]string{}
+	for _, k := range keys {
+		out[k] = "" // present, no data — the pathological shape
+	}
+	return out, nil
+}
+
+func TestReaderStopsWhenBackendReturnsEmptyEntries(t *testing.T) {
+	fd := &emptyEchoDapr{fakeDapr{vals: map[string]string{}, ttls: map[string]time.Duration{}}}
+	done := make(chan struct{})
+	go func() {
+		_, _ = NewReader(fd, "s").Attempt(t.Context(), "a", []string{"r"}, Filter{})
+		close(done)
+	}()
+	select {
+	case <-done:
+		// loop terminated — good
+	case <-time.After(2 * time.Second):
+		t.Fatal("reader infinite-loops when backend returns present-empty entries")
+	}
+}

@@ -401,7 +401,7 @@ func TestRESTListCommentsShapes(t *testing.T) {
 	// gate scans them for the verdict trailer (the consume signal, #237).
 	for _, tc := range []struct {
 		name, repo, path string
-		number          int
+		number           int
 	}{
 		{"forgejo", "git.rezus.cloud/tibrez/rhesadox", "/api/v1/repos/tibrez/rhesadox/issues/1566/comments", 1566},
 		{"github", "tibrezus/harmostes", "/repos/tibrezus/harmostes/issues/237/comments", 237},

@@ -13,12 +13,21 @@ import (
 
 // fakeAPI stubs the gate's API surface for decision-logic tests.
 type fakeAPI struct {
-	pr       *PullRequest
-	prErr    error
-	required []string
-	reqErr   error
-	states   map[string]string
-	ctxErr   error
+	pr          *PullRequest
+	prErr       error
+	required    []string
+	reqErr      error
+	states      map[string]string
+	ctxErr      error
+	comments    []fakeComment
+	commentsErr error
+}
+
+// fakeComment pairs an IssueComment with its host-side updated_at (the
+// field the real API filters on via `since`).
+type fakeComment struct {
+	IssueComment
+	updatedAt time.Time
 }
 
 func (f *fakeAPI) GetPullRequest(ctx context.Context, repo string, n int) (*PullRequest, error) {
@@ -29,6 +38,21 @@ func (f *fakeAPI) RequiredContexts(ctx context.Context, repo, branch string) ([]
 }
 func (f *fakeAPI) ContextStates(ctx context.Context, repo, sha string) (map[string]string, error) {
 	return f.states, f.ctxErr
+}
+func (f *fakeAPI) ListComments(ctx context.Context, repo string, n int, since time.Time) ([]IssueComment, error) {
+	if f.commentsErr != nil {
+		return nil, f.commentsErr
+	}
+	// Emulate the hosts' `since` filter (updated_at ≥ since) so the window
+	// semantics are exercised, not just the scan.
+	var out []IssueComment
+	for _, c := range f.comments {
+		if !c.updatedAt.IsZero() && c.updatedAt.Before(since) {
+			continue
+		}
+		out = append(out, c.IssueComment)
+	}
+	return out, nil
 }
 
 var base = Params{
@@ -108,10 +132,96 @@ func TestWaitingMissingContext(t *testing.T) {
 }
 
 func TestStanddownLabelAbsent(t *testing.T) {
-	api := &fakeAPI{pr: openPR("full-pipeline"), required: []string{"a"}, states: map[string]string{"a": "success"}}
+	// The consumed case: the deploy plugin removed the label AFTER posting
+	// the verdict — the trailer is the durable consume signal.
+	api := &fakeAPI{pr: openPR("full-pipeline"), required: []string{"a"}, states: map[string]string{"a": "success"},
+		comments: []fakeComment{{IssueComment: IssueComment{Body: "## Adversarial Review\n…\n<!-- pr-review: APPROVE @ abc123 -->"}, updatedAt: base.Now}}}
 	r := Evaluate(context.Background(), api, base)
 	if r.Decision != DecisionStanddown || r.NewArmedSha != "" {
 		t.Fatalf("want standdown+disarm, got %s", r.Decision)
+	}
+}
+
+func TestLabelAbsentNoVerdictStaysArmed(t *testing.T) {
+	// #237 live regression: an 'unlabeled' wake racing a newer 'labeled'
+	// arm (label rm+add cycles) or a wake lost to a host outage observes
+	// label-absent at a stale instant while the request is still pending.
+	// Disarming here lost the review permanently (rhesadox #1635: gate
+	// stood down "label absent" with the label present and CI green).
+	api := &fakeAPI{pr: openPR("full-pipeline"), required: []string{"a"}, states: map[string]string{"a": "success"}}
+	r := Evaluate(context.Background(), api, base)
+	if r.Decision != DecisionWaiting || r.NewArmedSha != "abc123" {
+		t.Fatalf("want waiting+armed@abc123, got %s sha=%s (%s)", r.Decision, r.NewArmedSha, r.Reason)
+	}
+	// Already-armed clock is preserved (the horizon keeps ticking from the
+	// original arm, not restarted by the ambiguity).
+	p := base
+	p.ArmedSha = "abc123"
+	p.ArmedAt = base.Now.Add(-1 * time.Hour)
+	r = Evaluate(context.Background(), api, p)
+	if r.Decision != DecisionWaiting || !r.NewArmedAt.Equal(p.ArmedAt) {
+		t.Fatalf("want waiting with preserved ArmedAt, got %s at=%v", r.Decision, r.NewArmedAt)
+	}
+}
+
+func TestLabelAbsentNoVerdictHorizonStandsDown(t *testing.T) {
+	// The stay-armed recovery is bounded: past the horizon the gate stands
+	// down instead of waiting forever on a label that never returns.
+	api := &fakeAPI{pr: openPR("full-pipeline"), required: []string{"a"}, states: map[string]string{"a": "success"}}
+	p := base
+	p.ArmedSha = "abc123"
+	p.ArmedAt = base.Now.Add(-7 * time.Hour) // horizon is 6h
+	r := Evaluate(context.Background(), api, p)
+	if r.Decision != DecisionStanddown || r.NewArmedSha != "" {
+		t.Fatalf("want standdown past horizon, got %s sha=%s", r.Decision, r.NewArmedSha)
+	}
+}
+
+func TestVerdictWindowFreshConsumeOnly(t *testing.T) {
+	// #238 review MAJOR: the verdict scan is TIME-WINDOWED. An OLD verdict
+	// (posted before this arm — a prior review cycle on the same PR) must
+	// NOT consume a fresh request; the current cycle's verdict (inside the
+	// window) must. Ordering (oldest-first hosts) is irrelevant by
+	// construction — the window, not the page, decides.
+	old := &fakeAPI{pr: openPR("full-pipeline"), required: []string{"a"}, states: map[string]string{"a": "success"},
+		comments: []fakeComment{{IssueComment: IssueComment{Body: "<!-- pr-review: APPROVE @ dead000 -->"}, updatedAt: base.Now.Add(-2 * time.Hour)}}}
+	r := Evaluate(context.Background(), old, base)
+	if r.Decision != DecisionWaiting || r.NewArmedSha != "abc123" {
+		t.Fatalf("old verdict must not consume: got %s sha=%s (%s)", r.Decision, r.NewArmedSha, r.Reason)
+	}
+	fresh := &fakeAPI{pr: openPR("full-pipeline"), required: []string{"a"}, states: map[string]string{"a": "success"},
+		comments: []fakeComment{{IssueComment: IssueComment{Body: "old noise"}, updatedAt: base.Now.Add(-2 * time.Hour)},
+			{IssueComment: IssueComment{Body: "<!-- pr-review: COMMENT @ abc123 -->"}, updatedAt: base.Now.Add(-1 * time.Minute)}}}
+	r = Evaluate(context.Background(), fresh, base)
+	if r.Decision != DecisionStanddown || r.NewArmedSha != "" {
+		t.Fatalf("fresh verdict must consume: got %s sha=%s", r.Decision, r.NewArmedSha)
+	}
+}
+
+func TestLabelAbsentHeadMovedDuringAmbiguityResetsHorizon(t *testing.T) {
+	// #238 review MINOR: the ambiguity branch now matches the label-present
+	// head-moved path — a head that moved during the window inherits a fresh
+	// horizon clock, not the stale armed clock.
+	api := &fakeAPI{pr: &PullRequest{State: "open", HeadSHA: "newsha", Base: "main", Labels: []string{"other"}}}
+	p := base
+	p.ArmedSha = "abc123"
+	p.ArmedAt = base.Now.Add(-5 * time.Hour) // near the 6h horizon
+	r := Evaluate(context.Background(), api, p)
+	if r.Decision != DecisionWaiting || !r.NewArmedAt.Equal(p.Now) {
+		t.Fatalf("head move during ambiguity must reset the clock: got %s at=%v", r.Decision, r.NewArmedAt)
+	}
+}
+
+func TestLabelAbsentVerdictCheckFailsStaysArmed(t *testing.T) {
+	// Transient comments-fetch failure: keep armed (retry next cycle),
+	// never disarm on an API hiccup.
+	api := &fakeAPI{pr: openPR("full-pipeline"), required: []string{"a"}, states: map[string]string{"a": "success"},
+		commentsErr: fmt.Errorf("HTTP 503")}
+	p := base
+	p.ArmedSha = "def456" // previously armed at an older head
+	r := Evaluate(context.Background(), api, p)
+	if r.Decision != DecisionWaiting || r.NewArmedSha != "def456" {
+		t.Fatalf("want waiting keeping armed sha, got %s sha=%s", r.Decision, r.NewArmedSha)
 	}
 }
 
@@ -337,6 +447,66 @@ func TestRESTGitHubNoProtection(t *testing.T) {
 	ctxs, err := api.RequiredContexts(context.Background(), "o/r", "main")
 	if err != nil || len(ctxs) != 0 {
 		t.Fatalf("404 protection must mean no required contexts: %v %v", ctxs, err)
+	}
+}
+
+func TestRESTListCommentsShapes(t *testing.T) {
+	// Both host kinds expose issue comments at the same path shape; the
+	// gate scans them for the verdict trailer (the consume signal, #237).
+	for _, tc := range []struct {
+		name, repo, path string
+		number           int
+	}{
+		{"forgejo", "git.rezus.cloud/tibrez/rhesadox", "/api/v1/repos/tibrez/rhesadox/issues/1566/comments", 1566},
+		{"github", "tibrezus/harmostes", "/repos/tibrezus/harmostes/issues/237/comments", 237},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				if req.URL.Path != tc.path {
+					http.NotFound(w, req)
+					return
+				}
+				// The request MUST carry the since window — without it the
+				// hosts' oldest-first, page-1-only response hides a fresh
+				// verdict behind 100 stale comments on a busy PR (#238
+				// review MAJOR).
+				sinceQ := req.URL.Query().Get("since")
+				if sinceQ == "" {
+					t.Errorf("request missing since param: %s", req.URL.RawQuery)
+				}
+				if _, err := time.Parse(time.RFC3339, sinceQ); err != nil {
+					t.Errorf("since not RFC3339: %q", sinceQ)
+				}
+				// Server-side `since` filter (updated_at ≥ since) over a
+				// >100-comment PR: 140 stale, 10 fresh — the verdict rides
+				// LAST in the filtered response, the position page-1-only
+				// fetching would never reach without the window.
+				since, _ := time.Parse(time.RFC3339, sinceQ)
+				out := []map[string]string{}
+				for i := 0; i < 140; i++ {
+					out = append(out, map[string]string{"body": fmt.Sprintf("stale comment %d", i)})
+				}
+				for i := 0; i < 9; i++ {
+					out = append(out, map[string]string{"body": fmt.Sprintf("fresh comment %d", i)})
+				}
+				out = append(out, map[string]string{"body": "review…\n<!-- pr-review: COMMENT @ abc123 -->"})
+				_ = since
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(out)
+			}))
+			defer srv.Close()
+			api := &RESTAPI{Client: srv.Client()}
+			// BaseOverride must be the API base; derive it per host kind.
+			if tc.name == "forgejo" {
+				api.BaseOverride = srv.URL + "/api/v1"
+			} else {
+				api.BaseOverride = srv.URL
+			}
+			cs, err := api.ListComments(context.Background(), tc.repo, tc.number, time.Now().Add(-time.Hour))
+			if err != nil || len(cs) != 150 || !hasVerdict(cs) {
+				t.Fatalf("ListComments: %d comments, verdict=%v err=%v", len(cs), hasVerdict(cs), err)
+			}
+		})
 	}
 }
 

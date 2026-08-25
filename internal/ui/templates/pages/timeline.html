@@ -93,7 +93,7 @@
 			row.innerHTML =
 				'<td class="tl-time">' + t.toTimeString().slice(0, 8) + '</td>' +
 				'<td class="tl-kind kind-live">' + esc(kind) + '</td>' +
-				'<td class="tl-node"><code>' + esc(ev.node || '') + '</code></td>' +
+				'<td class="tl-node">' + (ev.node ? '<code>' + esc(ev.node) + '</code>' : '<span class="ds-card-meta">—</span>') + '</td>' +
 				'<td class="tl-detail"><span class="tl-summary">' +
 				esc(ev.node || ev.message || '') + '</span></td>';
 			target.appendChild(row);

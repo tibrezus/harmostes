@@ -339,7 +339,7 @@ func TestEmitGateTransitionDeduplicatesWaiting(t *testing.T) {
 	}
 	// proceed → one event (plus armed if sha changed)
 	emitGateTransition(t.Context(), w, "wf", armed, review.Result{
-		Evaluation: review.Evaluation{Decision: review.DecisionProceed, Reason: "label present"},
+		Evaluation:  review.Evaluation{Decision: review.DecisionProceed, Reason: "label present"},
 		NewArmedSha: "abc",
 	}, "git.rezus.cloud/tibrez/rhesadox", 1566)
 	if len(emitted) == 0 || emitted[len(emitted)-1] != "gate.proceed" {

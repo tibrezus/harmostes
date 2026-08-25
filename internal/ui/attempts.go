@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -110,6 +111,23 @@ type runSummary struct {
 	Phase     string
 }
 
+// agentEnabledFor resolves whether a workflow runs an agent, matching the
+// kernel's rule (compile.go, pipeline.go): Agent.Enabled == nil means
+// agent-capable. Template-delegated workflows (the live pr-review shape)
+// carry no Enabled on the instance — template defaults are applied first so
+// an explicit template disable still wins.
+func (s *Server) agentEnabledFor(ctx context.Context, wf *v1alpha1.Workflow) bool {
+	if wf.Spec.TemplateRef != "" {
+		var tmpl v1alpha1.WorkflowTemplate
+		if err := s.k8sClient.Get(ctx, client.ObjectKey{Namespace: s.namespace, Name: wf.Spec.TemplateRef}, &tmpl); err == nil {
+			merged := wf.DeepCopy()
+			v1alpha1.ApplyTemplateDefaults(merged, &tmpl)
+			wf = merged
+		}
+	}
+	return wf.Spec.Agent.Enabled == nil || *wf.Spec.Agent.Enabled
+}
+
 // handleAttemptDetail renders one Attempt's full detail: objective, runs
 // timeline, node result envelopes, and evidence references.
 func (s *Server) handleAttemptDetail(w http.ResponseWriter, r *http.Request) {
@@ -155,9 +173,7 @@ func (s *Server) handleAttemptDetail(w http.ResponseWriter, r *http.Request) {
 	agentEnabled := false
 	var wf v1alpha1.Workflow
 	if err := s.k8sClient.Get(r.Context(), client.ObjectKey{Namespace: s.namespace, Name: workflowCRName(att.Spec.WorkflowRef)}, &wf); err == nil {
-		if wf.Spec.Agent.Enabled != nil {
-			agentEnabled = *wf.Spec.Agent.Enabled
-		}
+		agentEnabled = s.agentEnabledFor(r.Context(), &wf)
 	}
 
 	data := attemptDetailData{
@@ -335,12 +351,12 @@ func (s *Server) handleAttemptSession(w http.ResponseWriter, r *http.Request) {
 
 	// Determine whether the workflow uses an agent. Deterministic workflows
 	// (agent disabled) have no session, so the empty state should reflect that.
+	// Resolution matches the kernel: nil Enabled on instance and template
+	// means agent-capable (template-delegated pr-review shape).
 	deterministic := true
 	var wf v1alpha1.Workflow
 	if err := s.k8sClient.Get(r.Context(), client.ObjectKey{Namespace: s.namespace, Name: wfName}, &wf); err == nil {
-		if wf.Spec.Agent.Enabled != nil && *wf.Spec.Agent.Enabled {
-			deterministic = false
-		}
+		deterministic = !s.agentEnabledFor(r.Context(), &wf)
 	}
 
 	data := attemptSessionData{

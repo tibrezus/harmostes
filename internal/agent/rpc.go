@@ -29,6 +29,11 @@ type RPC struct {
 	done    chan struct{} // closed by Abort to stop the reader goroutine
 	closeMu sync.Mutex
 	closed  bool
+
+	// seenAgentMsgs counts messages already accounted by a previous
+	// agent_end snapshot. Warm sessions re-send the whole conversation on
+	// every agent_end; only messages beyond this index belong to this turn.
+	seenAgentMsgs int
 }
 
 // RPCOptions configures the pi subprocess.
@@ -173,6 +178,7 @@ func (r *RPC) Prompt(ctx context.Context, message, label string) (Event, int, Us
 				endTool()
 			case pijsonl.EvAgentEnd:
 				endTool()
+				absorbAgentEnd(ev.Raw, r, &usage, &capture)
 				return ev, tools, usage, capture, nil
 			}
 		}
@@ -277,4 +283,78 @@ func (w *lineLogWriter) Write(p []byte) (int, error) {
 		}
 	}
 	return len(p), nil
+}
+
+// agentEndMessage is one conversation message inside pi's agent_end snapshot.
+// In the spawn shape harmostes drives (exec over pipes), pi's RPC stream does
+// not emit message boundary events (message_start/message_end) at all — the
+// agent_end snapshot is then the ONLY carrier of per-message usage and the
+// final assistant text. (Live-proven against pi 0.84.3: message_end present
+// when shell-driven, absent when exec-driven; agent_end.messages identical in
+// both.)
+type agentEndMessage struct {
+	Role  string `json:"role"`
+	Usage *struct {
+		Input      int `json:"input"`
+		Output     int `json:"output"`
+		CacheRead  int `json:"cacheRead"`
+		CacheWrite int `json:"cacheWrite"`
+		Cost       *struct {
+			Total float64 `json:"total"`
+		} `json:"cost"`
+	} `json:"usage"`
+	Content []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	} `json:"content"`
+}
+
+// absorbAgentEnd folds the agent_end conversation snapshot into the turn's
+// usage and capture. It is additive-safe with the message_end path: when
+// boundary events already supplied usage and response (shell-driven shape),
+// the snapshot only advances the warm-session watermark. When they did not
+// (exec-driven shape), the snapshot is the source of truth: per-assistant
+// usage is summed over the turn's delta (messages beyond the watermark) and
+// the last assistant text becomes the captured response.
+func absorbAgentEnd(raw json.RawMessage, r *RPC, usage *Usage, capture *TurnCapture) {
+	var payload struct {
+		Messages []agentEndMessage `json:"messages"`
+	}
+	if json.Unmarshal(raw, &payload) != nil || len(payload.Messages) <= r.seenAgentMsgs {
+		return
+	}
+	turn := payload.Messages[r.seenAgentMsgs:]
+	if usage.Input == 0 && usage.Output == 0 {
+		for _, m := range turn {
+			if m.Role != "assistant" || m.Usage == nil {
+				continue
+			}
+			cost := 0.0
+			if m.Usage.Cost != nil {
+				cost = m.Usage.Cost.Total
+			}
+			usage.add(Usage{
+				Input:      m.Usage.Input,
+				Output:     m.Usage.Output,
+				CacheRead:  m.Usage.CacheRead,
+				CacheWrite: m.Usage.CacheWrite,
+				Cost:       cost,
+			})
+		}
+	}
+	if capture.Response == "" {
+	loops:
+		for i := len(turn) - 1; i >= 0; i-- {
+			if turn[i].Role != "assistant" {
+				continue
+			}
+			for _, c := range turn[i].Content {
+				if c.Type == "text" && c.Text != "" {
+					capture.Response = c.Text
+					break loops
+				}
+			}
+		}
+	}
+	r.seenAgentMsgs = len(payload.Messages)
 }

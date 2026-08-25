@@ -333,3 +333,85 @@ func (d *stubSessionDapr) GetStateFromStore(_ context.Context, _, key string, va
 	_ = json.Unmarshal(b, value)
 	return true, nil
 }
+
+// #239: template-delegated workflows (nil Agent.Enabled on instance AND
+// template — the live pr-review shape) must resolve agent-capable, matching
+// the kernel's tri-state rule. The UI previously collapsed nil → false,
+// hiding the Session link and mislabeling the empty state "deterministic".
+func TestTemplateDelegatedAgentResolution(t *testing.T) {
+	enabled := true
+	disabled := false
+
+	// Instance nil, template nil → agent-capable (kernel rule).
+	wfNil := &v1alpha1.Workflow{
+		ObjectMeta: metav1.ObjectMeta{Name: "wf-a", Namespace: "test-ns", Labels: map[string]string{v1alpha1.OwnerLabel: "alice"}},
+		Spec:       v1alpha1.WorkflowSpec{TemplateRef: "tmpl"},
+	}
+	tmplNil := &v1alpha1.WorkflowTemplate{
+		ObjectMeta: metav1.ObjectMeta{Name: "tmpl", Namespace: "test-ns"},
+		Spec:       v1alpha1.WorkflowTemplateSpec{},
+	}
+	// Instance nil, template explicitly false → deterministic.
+	tmplOff := &v1alpha1.WorkflowTemplate{
+		ObjectMeta: metav1.ObjectMeta{Name: "tmpl", Namespace: "test-ns"},
+		Spec:       v1alpha1.WorkflowTemplateSpec{Agent: v1alpha1.AgentSpec{Enabled: &disabled}},
+	}
+	// Instance explicitly true (template absent) → agent-capable.
+	wfOn := &v1alpha1.Workflow{
+		ObjectMeta: metav1.ObjectMeta{Name: "wf-b", Namespace: "test-ns", Labels: map[string]string{v1alpha1.OwnerLabel: "alice"}},
+		Spec:       v1alpha1.WorkflowSpec{Agent: v1alpha1.AgentSpec{Enabled: &enabled}},
+	}
+
+	s := newAttemptTestServer(t, wfNil, tmplNil, wfOn)
+	if !s.agentEnabledFor(t.Context(), wfNil) {
+		t.Error("nil instance + nil template must resolve agent-capable (kernel tri-state)")
+	}
+	s2 := newAttemptTestServer(t, wfNil, tmplOff)
+	if s2.agentEnabledFor(t.Context(), wfNil) {
+		t.Error("nil instance + template disabled must resolve deterministic")
+	}
+	if !s.agentEnabledFor(t.Context(), wfOn) {
+		t.Error("explicit instance enable must resolve agent-capable")
+	}
+}
+
+// The session page's deterministic flag follows the same resolution: a
+// template-delegated workflow with no session record must show the neutral
+// "transcript not available" state, never "deterministic workflow".
+func TestSessionPageTemplateDelegatedNotDeterministic(t *testing.T) {
+	wf := &v1alpha1.Workflow{
+		ObjectMeta: metav1.ObjectMeta{Name: "pr-review-x", Namespace: "test-ns", Labels: map[string]string{v1alpha1.OwnerLabel: "alice"}},
+		Spec:       v1alpha1.WorkflowSpec{TemplateRef: "pr-review"},
+	}
+	tmpl := &v1alpha1.WorkflowTemplate{
+		ObjectMeta: metav1.ObjectMeta{Name: "pr-review", Namespace: "test-ns"},
+		Spec:       v1alpha1.WorkflowTemplateSpec{Agent: v1alpha1.AgentSpec{Model: "litellm/zai/glm-5.3", Skill: "/skills/pr-review/SKILL.md"}},
+	}
+	att := &v1alpha1.Attempt{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "attempt-pr-review-x-1", Namespace: "test-ns",
+			Labels: map[string]string{v1alpha1.OwnerLabel: "alice"},
+		},
+		Spec:   v1alpha1.AttemptSpec{WorkflowRef: "test-ns/pr-review-x", Owner: "alice"},
+		Status: v1alpha1.AttemptStatus{Runs: []v1alpha1.RunRecord{{Name: "pool-pod-1", Phase: "skipped"}}},
+	}
+	srv := newAttemptTestServer(t, wf, tmpl, att)
+	srv.logger = slog.Default()
+
+	req := httptest.NewRequest("GET", "/attempts/attempt-pr-review-x-1/runs/pool-pod-1/session", nil)
+	req = req.WithContext(withTestIdentity(req.Context()))
+	req.SetPathValue("name", "attempt-pr-review-x-1")
+	req.SetPathValue("job", "pool-pod-1")
+	rec := httptest.NewRecorder()
+	srv.handleAttemptSession(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, "deterministic workflow") {
+		t.Error("template-delegated workflow mislabeled as deterministic")
+	}
+	if !strings.Contains(body, "Session transcript not available") {
+		t.Error("expected the neutral no-record state")
+	}
+}

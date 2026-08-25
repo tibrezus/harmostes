@@ -57,3 +57,26 @@ type Event struct {
 	// not parsed above (e.g. message_end usage data). Not JSON-serialized.
 	Raw json.RawMessage `json:"-"`
 }
+
+// UnmarshalJSON tolerates a non-string "message". Most events carry a plain
+// string, but message_start/message_end/message_update carry the full message
+// OBJECT — without this, those lines fail to unmarshal into Event and the RPC
+// reader silently drops them (live incident #239: usage survived pi but died
+// at this struct). Object messages are left out of Message; Raw keeps them.
+func (e *Event) UnmarshalJSON(b []byte) error {
+	type plain Event // avoid recursion
+	aux := struct {
+		Message json.RawMessage `json:"message"`
+		*plain
+	}{plain: (*plain)(e)}
+	if err := json.Unmarshal(b, &aux); err != nil {
+		return err
+	}
+	if len(aux.Message) > 0 {
+		var s string
+		if json.Unmarshal(aux.Message, &s) == nil {
+			e.Message = s
+		}
+	}
+	return nil
+}

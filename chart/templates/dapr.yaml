@@ -17,6 +17,15 @@ spec:
       value: {{ .Values.dapr.valkeyHost }}
     - name: redisDB
       value: {{ quote .Values.dapr.valkeyDB }}
+    # Flat keyspace shared by every harmostes app-id (worker writes evidence,
+    # UI reads it). The default keyPrefix ("app") would namespace keys per
+    # sidecar app-id — harmostes-worker-pool||k vs harmostes-ui||k — making
+    # cross-app state invisible (live: /timeline saw present-empty for keys
+    # the worker had written). "none" also drops TTL-bound markers in flight
+    # once (skip/dedup re-arm at worst); timeline evidence is TTL-ephemeral
+    # anyway.
+    - name: keyPrefix
+      value: "none"
 ---
 apiVersion: dapr.io/v1alpha1
 kind: Component

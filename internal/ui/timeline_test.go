@@ -152,6 +152,9 @@ func TestGroupTimelineLayersAttemptsAndRunOrder(t *testing.T) {
 		{At: base.Add(-2 * time.Minute), Kind: timeline.KindGateArmed, Attempt: "attempt-new", AttemptURL: "/attempts/attempt-new", Ref: "git.example/o/r#2", Title: "second"},
 		{At: base.Add(-3 * time.Minute), Kind: timeline.KindRunStarted, Attempt: "attempt-new", AttemptURL: "/attempts/attempt-new"},
 		{At: base.Add(-1 * time.Hour), Kind: timeline.KindNodeCompleted, Attempt: "attempt-old", Node: "prepare", AttemptURL: "/attempts/attempt-old", Ref: "git.example/o/r#1", Title: "first"},
+		// same attempt, older carrier with a stale title — the band must
+		// keep the NEWEST carrier's orientation, not this one
+		{At: base.Add(-90 * time.Minute), Kind: timeline.KindNodeStarted, Attempt: "attempt-old", Node: "prepare", AttemptURL: "/attempts/attempt-old", Ref: "git.example/o/r#1", Title: "stale older title"},
 	}
 	groups := groupTimeline(rows)
 	if len(groups) != 2 {
@@ -172,6 +175,9 @@ func TestGroupTimelineLayersAttemptsAndRunOrder(t *testing.T) {
 	}
 	if !g.FirstAt.Equal(base.Add(-3*time.Minute)) || !g.LastAt.Equal(base.Add(-1*time.Minute)) {
 		t.Fatalf("range wrong: first=%v last=%v", g.FirstAt, g.LastAt)
+	}
+	if groups[1].Title != "first" {
+		t.Fatalf("orientation must come from the most recent carrier, got %q", groups[1].Title)
 	}
 	if groupTimeline(nil) != nil {
 		t.Fatal("nil input must yield nil groups")

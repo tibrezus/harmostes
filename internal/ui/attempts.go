@@ -150,10 +150,11 @@ func (s *Server) handleAttemptDetail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Fetch the Workflow to determine whether the agent is enabled.
-	// This controls whether the Session link is shown for runs.
+	// This controls whether the Session link is shown for runs. The ref is
+	// platform-prefixed ("ns/name"); the CR is addressed by its bare name.
 	agentEnabled := false
 	var wf v1alpha1.Workflow
-	if err := s.k8sClient.Get(r.Context(), client.ObjectKey{Namespace: s.namespace, Name: att.Spec.WorkflowRef}, &wf); err == nil {
+	if err := s.k8sClient.Get(r.Context(), client.ObjectKey{Namespace: s.namespace, Name: workflowCRName(att.Spec.WorkflowRef)}, &wf); err == nil {
 		if wf.Spec.Agent.Enabled != nil {
 			agentEnabled = *wf.Spec.Agent.Enabled
 		}
@@ -245,7 +246,10 @@ func (s *Server) handleAttemptSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	wfName := att.Spec.WorkflowRef
+	// The session writer keys state by the bare workflow name (the worker's
+	// wfCtx.Name), and session.html back-links to /workflows/{name}/… —
+	// both break on the raw platform-prefixed ref.
+	wfName := workflowCRName(att.Spec.WorkflowRef)
 
 	// Read the session from the worker's Dapr state store.
 	// Key format: {workflow}:{runID}:session

@@ -79,7 +79,9 @@ func groupTimeline(rows []timelineRow) []timelineGroup {
 			order = append(order, r.Attempt)
 		}
 		g.FirstAt = r.At // last assignment in the walk = oldest event
-		if r.Ref != "" { // orientation from the most recent carrying event
+		if r.Ref != "" && g.Ref == "" {
+			// Orientation from the most recent carrying event: rows arrive
+			// newest-first, so the first carrier seen is the latest.
 			g.Ref, g.Title, g.SHA = r.Ref, r.Title, r.SHA
 		}
 		g.Rows = append(g.Rows, r)

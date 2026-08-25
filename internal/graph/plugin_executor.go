@@ -55,7 +55,9 @@ func (e *PluginExecutor) Execute(ctx context.Context, node v1alpha1.NodeSpec, en
 	if e.tl != nil {
 		_ = e.tl.Emit(ctx, timeline.KindPluginTail, node.ID, map[string]any{
 			"plugin": cfg.Name,
-			"tail":   tailLines(out, 20),
+			// Redacted before persistence: tails are run evidence, and the
+			// combined output can echo credential-bearing URLs (#115 class).
+			"tail": tailLines(worker.Redact(out), 20),
 		})
 	}
 

@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/tibrezus/harmostes/internal/dapr"
@@ -108,13 +109,22 @@ func NewWriter(client dapr.Client, store, attempt, workflow, run string, subject
 	}
 }
 
-// NewGateWriter returns a Writer for gate lifecycle events of one workflow
-// (keyed timeline/gate/<workflow>/<seq> — gate cycles precede attempt runs).
-func NewGateWriter(client dapr.Client, store, workflow string, subject Subject) *DaprWriter {
+// NewGateWriter returns a Writer for gate lifecycle events. Each wake gets
+// its own keyspace under the Attempt it belongs to (keyed
+// timeline/<attempt>/gate/<seq>) — one worker process per wake, so seq is
+// collision-free, and the Attempt CR's run list already enables discovery.
+// When the wake carries no Attempt (manual dispatch), a time-unique
+// namespace is used instead (rare, diagnostic-only; not enumerated by the
+// Reader).
+func NewGateWriter(client dapr.Client, store, workflow, attempt string, subject Subject) *DaprWriter {
+	ns := attempt
+	if ns == "" {
+		ns = "gate- orphan/" + workflow + "/" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	}
 	return &DaprWriter{
 		client: client, store: store,
 		workflow: workflow, subject: subject,
-		ttl: GateTTL, prefixOverride: "gate/" + workflow,
+		ttl: GateTTL, prefixOverride: ns + "/gate",
 	}
 }
 
@@ -238,13 +248,14 @@ func (r *DaprReader) Attempt(ctx context.Context, attempt string, runs []string,
 	return events, nil
 }
 
-// GateEvents implements Reader: probe timeline/gate/<workflow>/<seq>.
-func (r *DaprReader) GateEvents(ctx context.Context, workflow string, f Filter) ([]Event, error) {
+// GateEvents implements Reader: probe timeline/<attempt>/gate/<seq> for one
+// Attempt's gate cycles.
+func (r *DaprReader) GateEvents(ctx context.Context, attempt string, f Filter) ([]Event, error) {
 	var events []Event
 	for base := 0; ; base += probeBatch {
 		keys := make([]string, probeBatch)
 		for i := range keys {
-			keys[i] = fmt.Sprintf("%sgate/%s/%06d", KeyPrefix, workflow, base+i)
+			keys[i] = fmt.Sprintf("%s%s/gate/%06d", KeyPrefix, attempt, base+i)
 		}
 		vals, err := r.client.GetBulkState(ctx, r.store, keys)
 		if err != nil {

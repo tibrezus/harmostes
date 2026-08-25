@@ -225,3 +225,54 @@ func TestExecute_EnvelopeCountMatchesExecutedNodes(t *testing.T) {
 		t.Errorf("expected 2 envelopes (one per node), got %d: %+v", len(result.NodeEnvelopes), result.NodeEnvelopes)
 	}
 }
+
+// captureTL records every Emit — the fake at the emission seam.
+type captureTL struct{ events []captureTLItem }
+type captureTLItem struct {
+	Kind, Node string
+	Payload    map[string]any
+}
+
+func (c *captureTL) Emit(_ context.Context, kind, node string, payload any) error {
+	m, _ := payload.(map[string]any)
+	c.events = append(c.events, captureTLItem{Kind: kind, Node: node, Payload: m})
+	return nil
+}
+
+func TestTimelineEmissions(t *testing.T) {
+	tl := &captureTL{}
+	g := v1alpha1.GraphSpec{
+		Nodes: []v1alpha1.NodeSpec{{ID: "n1", Type: "noop"}},
+	}
+	reg := NewRegistry()
+	reg.Register(noopExecutor{})
+	exec := NewGraphExecutor(reg, nil, WithTimeline(tl))
+	res, err := exec.Execute(t.Context(), g, "wf")
+	if err != nil || res.Status != StatusGreen {
+		t.Fatalf("graph failed: %v status=%s", err, res.Status)
+	}
+	var started, completed int
+	for _, e := range tl.events {
+		switch e.Kind {
+		case "node.started":
+			started++
+		case "node.completed":
+			completed++
+			if e.Payload["status"] != string(StatusGreen) {
+				t.Fatalf("completed payload status = %v, want green", e.Payload["status"])
+			}
+		}
+	}
+	if started != 1 || completed != 1 {
+		t.Fatalf("want 1 started + 1 completed, got %d/%d", started, completed)
+	}
+}
+
+type noopExecutor struct{}
+
+func (noopExecutor) Type() string { return "noop" }
+func (noopExecutor) Execute(_ context.Context, _ v1alpha1.NodeSpec, _ NodeEnv) (NodeResult, error) {
+	return NodeResult{Status: StatusGreen}, nil
+}
+func (noopExecutor) Deterministic() bool    { return true }
+func (noopExecutor) ExecutionClass() string { return "deterministic" }

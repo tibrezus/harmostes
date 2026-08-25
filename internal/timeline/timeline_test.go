@@ -90,13 +90,13 @@ func TestWriterKeyShapeAndOrder(t *testing.T) {
 
 func TestGateWriterNamespaceAndTTL(t *testing.T) {
 	fd := newFakeDapr()
-	w := NewGateWriter(fd, "statestore", "pr-review-rhesadox", Subject{Kind: "pr", Ref: "x#1"})
+	w := NewGateWriter(fd, "statestore", "pr-review-rhesadox", "attempt-g", Subject{Kind: "pr", Ref: "x#1"})
 	if err := w.Emit(t.Context(), KindGateArmed, "", nil); err != nil {
 		t.Fatal(err)
 	}
 	fd.mu.Lock()
 	defer fd.mu.Unlock()
-	key := "timeline/gate/pr-review-rhesadox/000001"
+	key := "timeline/attempt-g/gate/000001"
 	if _, ok := fd.vals[key]; !ok {
 		t.Fatalf("expected gate key %s", key)
 	}

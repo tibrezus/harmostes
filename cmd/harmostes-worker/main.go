@@ -24,7 +24,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -134,7 +133,7 @@ func main() {
 	// payload — nothing else to wire.
 	if wf.Spec.ReviewReady != nil {
 		gateTL := timeline.NewGateWriter(dapr.Tracing(dapr.New(os.Getenv("DAPR_HTTP_ENDPOINT"))),
-			envOr("HARMOSTES_STATE_STORE", "statestore"), wf.Name, subjectFromEnv())
+			envOr("HARMOSTES_STATE_STORE", "statestore"), wf.Name, os.Getenv("HARMOSTES_ATTEMPT"), subjectFromEnv())
 		env := worker.RunReviewGateWithTimeline(ctx, k8s.StatusPatcher{Client: cl, Namespace: namespace}, logf, &wf, gateTL)
 		if env == nil {
 			logf("review-ready: not proceeding this cycle — exiting (waiting/standdown recorded in status)")
@@ -600,20 +599,11 @@ func tokenizeGitURL(url, token string) string {
 	return strings.Replace(url, "https://", "https://x-access-token:"+token+"@", 1)
 }
 
-// credURLRe matches HTTP basic-auth credentials (user:token@) embedded anywhere
-// in a string — a clean URL or buried in plugin output / an error message.
-// Plugins like rig-emit embed the git token in clone URLs; without redaction it
-// leaks to structured logs (→ SigNoz) and into Attempt status. Ports
-// (host:443) and username-only URLs (user@host) do not match.
-var credURLRe = regexp.MustCompile(`(https?://)[^\s/@:]+:[^\s/@]+@`)
-
 // redact strips embedded HTTP basic-auth credentials from a URL or arbitrary
 // string (plugin output, error messages, pipeline results) before it is logged
 // or recorded in Attempt status. Applied at the logf / fatal /
 // recordAttemptOutcome choke points so no token can reach logs or history.
-func redact(s string) string {
-	return credURLRe.ReplaceAllString(s, "${1}")
-}
+func redact(s string) string { return worker.Redact(s) }
 
 // waitForDapr polls the sidecar healthz up to ~15s; proceeds regardless (Dapr is
 // best-effort — the pipeline runs even without it, just without events/state).
@@ -640,13 +630,25 @@ func subjectFromEnv() timeline.Subject {
 	s := timeline.Subject{}
 	if pr := os.Getenv("HARMOSTES_TRIGGER_PR"); pr != "" {
 		s.Kind = "pr"
-		repo := os.Getenv("HARMOSTES_TRIGGER_REPO")
-		if repo != "" {
-			s.Ref = repo + "#" + pr
+		if repo := os.Getenv("HARMOSTES_TRIGGER_REPO"); repo != "" {
+			// consumer env carries the bare number; the gate's full envelope
+			// exports "REPO" + "PR" separately.
+			if strings.Contains(pr, "#") {
+				s.Ref = pr // pointer form "host/owner/name#N" (annotation fallback)
+			} else {
+				s.Ref = repo + "#" + pr
+			}
+		} else if strings.Contains(pr, "#") {
+			s.Ref = pr
 		} else {
 			s.Ref = "#" + pr
 		}
+		// SHA: the gate's envelope SHA on proceed; the wake revision otherwise
+		// (the head that triggered this cycle).
 		s.SHA = os.Getenv("HARMOSTES_TRIGGER_SHA")
+		if s.SHA == "" {
+			s.SHA = os.Getenv("HARMOSTES_TRIGGER_REVISION")
+		}
 	}
 	if t := os.Getenv("HARMOSTES_TRIGGER_TITLE"); t != "" {
 		s.Title = t

@@ -221,3 +221,52 @@ func TestTimelineViewRendersGroupedTable(t *testing.T) {
 		t.Error("duplicated Timeline section title")
 	}
 }
+
+// The global filter topbar is gone (#245): pages own their filters. The
+// timeline empty state carries an inline workflow select fed by the handler,
+// and never mentions the removed top bar.
+func TestTimelineEmptyStateInlineSelect(t *testing.T) {
+	s := newAttemptTestServer(t, &v1alpha1.Workflow{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "pr-review-x", Namespace: "test-ns",
+			Labels: map[string]string{v1alpha1.OwnerLabel: "alice"},
+		},
+	})
+	s.timelineReader = &fakeTimelineReader{attempts: map[string][]timeline.Event{}, gates: map[string][]timeline.Event{}}
+
+	req := httptest.NewRequest(http.MethodGet, "/timeline", nil)
+	req = req.WithContext(withTestIdentity(req.Context()))
+	rec := httptest.NewRecorder()
+	s.handleTimelineView(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, "top bar") {
+		t.Error("empty state still references the removed top bar")
+	}
+	if !strings.Contains(body, "select workflow") {
+		t.Error("empty state missing the inline workflow select")
+	}
+}
+
+// With a workflow selected, the toolbar select marks the active option.
+func TestTimelineToolbarSelectMarksActive(t *testing.T) {
+	s := newAttemptTestServer(t, &v1alpha1.Workflow{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "pr-review-x", Namespace: "test-ns",
+			Labels: map[string]string{v1alpha1.OwnerLabel: "alice"},
+		},
+	})
+	s.timelineReader = &fakeTimelineReader{attempts: map[string][]timeline.Event{}, gates: map[string][]timeline.Event{}}
+
+	req := httptest.NewRequest(http.MethodGet, "/timeline?workflow=pr-review-x", nil)
+	req = req.WithContext(withTestIdentity(req.Context()))
+	rec := httptest.NewRecorder()
+	s.handleTimelineView(rec, req)
+	body := rec.Body.String()
+	if !strings.Contains(body, `navParam('workflow'`) {
+		t.Error("toolbar missing the inline workflow select")
+	}
+}

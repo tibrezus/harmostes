@@ -3,7 +3,10 @@ package ui
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
 )
@@ -253,4 +256,51 @@ func TestStampOwnerLabel(t *testing.T) {
 			t.Errorf("owner = %q, want alice (must replace spoofed value)", wf.Labels[v1alpha1.OwnerLabel])
 		}
 	})
+}
+
+// The global filter topbar was removed (#245): no ds-topbar on any page, and
+// the identity badge + theme toggle live in the page header instead.
+func TestLayoutHasNoGlobalTopbar(t *testing.T) {
+	s := newAttemptTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/timeline", nil)
+	req.Header.Set("X-Authentik-Username", "alice")
+	rec := httptest.NewRecorder()
+	s.Routes().ServeHTTP(rec, req)
+	body := rec.Body.String()
+	if strings.Contains(body, "ds-topbar") {
+		t.Error("global topbar still rendered")
+	}
+	if !strings.Contains(body, "page-header-right") {
+		t.Error("identity/theme cluster missing from page header")
+	}
+	if !strings.Contains(body, "navParam") {
+		t.Error("navParam helper missing")
+	}
+}
+
+// The metrics page owns its filters inline (#245): workflow + range selects
+// in the section toolbar, active options marked.
+func TestMetricsInlineFilters(t *testing.T) {
+	s := newAttemptTestServer(t,
+		&v1alpha1.Workflow{
+			ObjectMeta: metav1.ObjectMeta{Name: "pr-review-x", Namespace: "test-ns", Labels: map[string]string{v1alpha1.OwnerLabel: "alice"}},
+		},
+	)
+	s.signoz = &SignozClient{baseURL: "http://signoz.test"} // configured branch renders the toolbar
+	req := httptest.NewRequest(http.MethodGet, "/metrics?workflow=pr-review-x&range=6h", nil)
+	req = req.WithContext(withTestIdentity(req.Context()))
+	rec := httptest.NewRecorder()
+	s.handleMetricsView(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		`navParam('workflow'`, `navParam('range'`,
+		`value="pr-review-x" selected`, `value="6h" selected`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("metrics page missing %q", want)
+		}
+	}
 }

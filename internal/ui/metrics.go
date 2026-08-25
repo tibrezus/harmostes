@@ -26,6 +26,7 @@ func (s *Server) handleMetricsView(w http.ResponseWriter, r *http.Request) {
 
 	s.render(w, r, "pages/metrics.html", map[string]any{
 		"WorkflowName": workflowName,
+		"Workflows":    s.workflowNames(r, identityFromContext(r.Context()).Username),
 		"TimeRange":    timeRange,
 		"Configured":   configured,
 	})

@@ -1,5 +1,5 @@
 {{- /* layout.html — base layout for harmostes-ui.
-     Data: { Page: string, PageKey: string, Content: any, User: *Identity, NavWorkflows: []Workflow, Query: url.Values }
+     Data: { Page: string, PageKey: string, Content: any, User: *Identity }
      The page template is selected by the "Page" field and executed with "Content".
 */ -}}
 <!DOCTYPE html>
@@ -67,55 +67,21 @@
 
 	<!-- Main content -->
 	<main class="app-main">
-		<!-- Top bar: global filters -->
-		<div class="ds-topbar" x-data="topbarFilters()">
-			<div class="ds-topbar-group">
-				<label class="ds-topbar-label" for="wf-select">Workflow</label>
-				<select id="wf-select" class="ds-topbar-select" @change="navigate($event)">
-					<option value="">— all —</option>
-					{{- range .NavWorkflows}}
-					<option value="{{.Name}}" {{if eq (queryGet $.Query "workflow") .Name}}selected{{end}}>{{.Name}}</option>
-					{{- end}}
-				</select>
-			</div>
-			<div class="ds-topbar-group">
-				<label class="ds-topbar-label">Status</label>
-				<div class="ds-topbar-checkboxes">
-					<label class="ds-topbar-check"><input type="checkbox" value="green" {{if not (queryHas $.Query "status")}}checked{{end}} @change="toggleStatus('green', $event)"> <span>Green</span></label>
-					<label class="ds-topbar-check"><input type="checkbox" value="failed" {{if not (queryHas $.Query "status")}}checked{{end}} @change="toggleStatus('failed', $event)"> <span>Failed</span></label>
-					<label class="ds-topbar-check"><input type="checkbox" value="running" {{if not (queryHas $.Query "status")}}checked{{end}} @change="toggleStatus('running', $event)"> <span>Running</span></label>
-				</div>
-			</div>
-			<div class="ds-topbar-group">
-				<label class="ds-topbar-label" for="range-select">Time</label>
-				<select id="range-select" class="ds-topbar-select" @change="navigate($event, 'range')">
-					<option value="15m" {{if eq (queryGet $.Query "range") "15m"}}selected{{end}}>15m</option>
-					<option value="1h" {{if or (not (queryHas $.Query "range")) (eq (queryGet $.Query "range") "1h")}}selected{{end}}>1h</option>
-					<option value="6h" {{if eq (queryGet $.Query "range") "6h"}}selected{{end}}>6h</option>
-					<option value="24h" {{if eq (queryGet $.Query "range") "24h"}}selected{{end}}>24h</option>
-				</select>
-			</div>
-			{{- if eq .PageKey "map"}}
-			<div class="ds-topbar-group">
-				<label class="ds-topbar-check"><input type="checkbox" {{if eq (queryGet $.Query "templates") "1"}}checked{{end}} @change="toggleParam('templates', $event.checked)"> <span class="ds-topbar-label">Templates</span></label>
-			</div>
-			{{- end}}
-			<div class="ds-topbar-spacer"></div>
-			{{- if .User}}
-			<span class="user-badge">
-				<span class="ds-status-dot ds-status-dot--positive"></span>
-				<span class="user-badge-name">{{.User.Username}}</span>
-			</span>
-			{{- end}}
-			<button class="theme-toggle" onclick="document.documentElement.classList.toggle('dark'); localStorage.setItem('harmostes-theme', document.documentElement.classList.contains('dark') ? 'dark' : 'light');">
-				<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1a7 7 0 100 14A7 7 0 008 1zm0 2a5 5 0 110 10V3z"></path></svg>
-			</button>
-		</div>
-
 		<!-- Page content -->
 		<div class="ds-page-content">
 			<div class="page-header">
 				<span class="page-title">{{.Page}}</span>
+				<span class="page-header-right">
+					{{- if .User}}
+					<span class="user-badge">
+						<span class="ds-status-dot ds-status-dot--positive"></span>
+						<span class="user-badge-name">{{.User.Username}}</span>
+					</span>
+					{{- end}}
+					<button class="theme-toggle" onclick="document.documentElement.classList.toggle('dark'); localStorage.setItem('harmostes-theme', document.documentElement.classList.contains('dark') ? 'dark' : 'light');" title="Toggle Mac / NeXT theme">
+						<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1a7 7 0 100 14A7 7 0 008 1zm0 2a5 5 0 110 10V3z"></path></svg>
+					</button>
+				</span>
 			</div>
 			{{.Content}}
 		</div>
@@ -132,34 +98,12 @@
 {{- end}}
 
 <script>
-function topbarFilters() {
-	return {
-		navigate(ev, key) {
-			const url = new URL(window.location);
-			if (key === 'range') {
-				url.searchParams.set('range', ev.target.value);
-			} else {
-				if (ev.target.value) {
-					url.searchParams.set('workflow', ev.target.value);
-				} else {
-					url.searchParams.delete('workflow');
-				}
-			}
-			window.location = url;
-		},
-		toggleStatus(val, ev) {
-			// Status filter is visual only (Phase 4 will wire it to SSE filtering)
-		},
-		toggleParam(key, checked) {
-			const url = new URL(window.location);
-			if (checked) {
-				url.searchParams.set(key, '1');
-			} else {
-				url.searchParams.delete(key);
-			}
-			window.location = url;
-		}
-	};
+// navParam sets one query param (or removes it when value is empty) and
+// navigates — used by the per-page workflow/range selects.
+function navParam(key, value) {
+	var u = new URL(window.location);
+	if (value) { u.searchParams.set(key, value); } else { u.searchParams.delete(key); }
+	window.location = u;
 }
 </script>
 </body>

@@ -109,6 +109,7 @@ func (s *Server) handleTimelineView(w http.ResponseWriter, r *http.Request) {
 
 	s.render(w, r, "pages/timeline.html", map[string]any{
 		"WorkflowName": workflowName,
+		"Workflows":    s.workflowNames(r, owner),
 		"Groups":       groupTimeline(rows),
 	})
 }

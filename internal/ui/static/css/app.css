@@ -62,69 +62,6 @@ code, pre {
 }
 
 /* ===== Top bar (global filters) ===== */
-.ds-topbar {
-	display: flex;
-	align-items: center;
-	gap: 1.25rem;
-	padding: 0.5rem 1rem;
-	border-bottom: 1px solid var(--border);
-	background: var(--bg-strong);
-	flex-wrap: wrap;
-}
-
-.ds-topbar-group {
-	display: flex;
-	align-items: center;
-	gap: 0.375rem;
-}
-
-.ds-topbar-label {
-	font-family: var(--font-display);
-	font-size: 0.6875rem;
-	text-transform: uppercase;
-	color: var(--fg-muted);
-}
-
-.ds-topbar-select {
-	font-family: var(--font-mono);
-	font-size: 0.8125rem;
-	background: var(--bg);
-	color: var(--fg);
-	border: 1px solid var(--border);
-	padding: 0.25rem 0.5rem;
-	cursor: pointer;
-}
-
-.dark .ds-topbar-select {
-	border-color: var(--color-next-bevel-hi);
-	border-right-color: var(--color-next-bevel-lo);
-	border-bottom-color: var(--color-next-bevel-lo);
-	border-width: 2px;
-}
-
-.ds-topbar-checkboxes {
-	display: flex;
-	gap: 0.5rem;
-}
-
-.ds-topbar-check {
-	display: flex;
-	align-items: center;
-	gap: 0.25rem;
-	font-family: var(--font-mono);
-	font-size: 0.75rem;
-	color: var(--fg);
-	cursor: pointer;
-}
-
-.ds-topbar-check input {
-	accent-color: var(--accent);
-}
-
-.ds-topbar-spacer {
-	flex: 1;
-}
-
 /* ===== Sidebar divider ===== */
 .ds-sidebar-divider {
 	height: 1px;
@@ -177,50 +114,12 @@ code, pre {
 }
 
 /* ===== Workflow cards grid ===== */
-.wf-grid {
-	display: grid;
-	grid-template-columns: repeat(auto-fill, minmax(20rem, 1fr));
-	gap: 0.75rem;
-}
 
-.wf-card {
-	background: var(--bg-alt);
-	padding: 1rem;
-	border-bottom: 3px solid var(--border);
-	transition: border-color 0.15s ease;
-}
 
-.wf-card:hover {
-	border-bottom-color: var(--accent);
-}
 
-.wf-card-header {
-	display: flex;
-	align-items: flex-start;
-	justify-content: space-between;
-	margin-bottom: 0.5rem;
-}
 
-.wf-card-name {
-	font-family: var(--font-mono);
-	font-size: 1.0625rem;
-	color: var(--fg);
-}
 
-.wf-card-meta {
-	font-family: var(--font-body);
-	font-size: 0.8125rem;
-	color: var(--fg-muted);
-}
 
-.wf-card-row {
-	display: flex;
-	gap: 0.5rem;
-	align-items: center;
-	font-size: 0.8125rem;
-	color: var(--fg-muted);
-	margin-top: 0.25rem;
-}
 
 /* ===== Status badge ===== */
 .status-badge {
@@ -465,26 +364,7 @@ code, pre {
 }
 
 /* Workflow card gate badge — the template is visible at a glance */
-.wf-card-name-wrap {
-	display: flex;
-	align-items: center;
-	gap: 0.375rem;
-	flex: 1;
-	min-width: 0;
-}
 
-.wf-card-gate-badge {
-	display: inline-block;
-	font-family: var(--font-mono);
-	font-size: 0.625rem;
-	line-height: 1;
-	padding: 0.25rem 0.375rem;
-	background: var(--bg-muted);
-	color: var(--fg-muted);
-	text-transform: lowercase;
-	letter-spacing: 0.02em;
-	flex-shrink: 0;
-}
 
 /* ===== Gate selector (workflow creation form) ===== */
 
@@ -841,7 +721,6 @@ code, pre {
 }
 
 /* ===== NeXT beveled borders (dark mode only) ===== */
-.dark .wf-card,
 .dark .detail-section,
 .dark .wf-detail-section,
 .dark .ds-pipeline-node,
@@ -1875,4 +1754,71 @@ code, pre {
 	line-height: 1.25;
 	max-height: 18rem;
 	overflow: auto;
+}
+
+/* ===== Workflows hub ===== */
+/* Dense table replaces the card grid: one row per workflow, CR name primary
+   (unique), quick actions inline. Density is respect — the workflows page is
+   the navigation hub. */
+.wf-table .ds-table-th { font-family: var(--font-display); font-size: 0.6875rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--fg-muted); text-align: left; padding: 0.375rem 0.75rem; border-bottom: 1px solid var(--border); }
+.wf-table .ds-table-td { padding: 0.4375rem 0.75rem; border-bottom: 1px solid var(--border); font-family: var(--font-mono); font-size: 0.8125rem; }
+
+.wf-row:hover { background: var(--bg-alt); }
+
+.wf-status { white-space: nowrap; }
+.wf-status .ds-status-dot { margin-right: 0.375rem; }
+
+.wf-name code { font-size: 0.875rem; }
+
+.wf-slug-badge {
+	font-family: var(--font-display);
+	font-size: 0.5625rem;
+	text-transform: uppercase;
+	letter-spacing: 0.08em;
+	color: var(--accent);
+	border: 1px solid var(--border);
+	padding: 0.0625rem 0.375rem;
+	margin-left: 0.5rem;
+	white-space: nowrap;
+}
+
+.wf-target, .wf-target .wf-target-meta { max-width: 26rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.wf-last-run { white-space: nowrap; color: var(--fg-muted); font-size: 0.75rem; }
+
+.wf-actions { text-align: right; white-space: nowrap; }
+.wf-actions .ds-btn { margin-left: 0.25rem; }
+.wf-actions-th { width: 1%; }
+
+/* Page header row: title left, identity + theme right (the global filter
+   topbar is gone — pages own their filters inline). */
+.page-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 1rem;
+}
+
+.page-header-right {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.75rem;
+}
+
+/* Inline filter selects on consuming pages (timeline, sessions, metrics). */
+.inline-filter {
+	font-family: var(--font-mono);
+	font-size: 0.8125rem;
+	color: var(--fg);
+	background: var(--bg-alt);
+	border: 1px solid var(--border);
+	padding: 0.25rem 0.375rem;
+}
+
+.metrics-toolbar {
+	display: flex;
+	align-items: center;
+	gap: 0.75rem;
+	flex-wrap: wrap;
+	margin-bottom: 0.75rem;
 }

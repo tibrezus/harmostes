@@ -95,6 +95,7 @@ func (s *Server) handleSessionsView(w http.ResponseWriter, r *http.Request) {
 
 	s.render(w, r, "pages/sessions.html", map[string]any{
 		"WorkflowName": workflowFilter,
+		"Workflows":    s.workflowNames(r, owner),
 		"Sessions":     entries,
 	})
 }

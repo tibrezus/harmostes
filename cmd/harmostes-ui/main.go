@@ -35,6 +35,7 @@ import (
 	"github.com/tibrezus/harmostes/internal/dapr"
 	"github.com/tibrezus/harmostes/internal/k8s"
 	"github.com/tibrezus/harmostes/internal/rbac"
+	"github.com/tibrezus/harmostes/internal/timeline"
 	"github.com/tibrezus/harmostes/internal/ui"
 	"github.com/tibrezus/harmostes/version"
 )
@@ -102,8 +103,13 @@ func main() {
 	// Wire the Dapr client for reading session transcripts from the worker's
 	// state store. Optional — the session viewer shows "not available" when nil.
 	if endpoint := os.Getenv("DAPR_HTTP_ENDPOINT"); endpoint != "" {
+		store := os.Getenv("HARMOSTES_STATE_STORE")
+		if store == "" {
+			store = "statestore"
+		}
 		server.SetDaprClient(ui.NewDaprClient(dapr.New(endpoint)))
-		logger.Info("Dapr client wired for session viewer", "endpoint", endpoint)
+		server.SetTimelineReader(timeline.NewReader(dapr.New(endpoint), store))
+		logger.Info("Dapr client wired for session viewer + timeline", "endpoint", endpoint)
 	}
 
 	// Wire the SigNoz client for querying agent metrics (token usage, durations,

@@ -24,6 +24,7 @@
 			{{- range .Sessions}}
 			<tr class="sessions-row">
 				<td class="ds-table-td sessions-wf">{{.Workflow}}</td>
+				<td class="ds-table-td">{{if .Subject}}<code>{{.Subject}}</code>{{else}}<span class="ds-card-meta">—</span>{{end}}</td>
 				<td class="ds-table-td sessions-run">{{.Run}}</td>
 				<td class="ds-table-td sessions-status">
 					{{if eq .Phase "succeeded"}}<span class="ds-status-dot ds-status-dot--positive"></span> {{.Phase}}

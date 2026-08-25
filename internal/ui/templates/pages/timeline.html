@@ -1,0 +1,79 @@
+{{define "pages/timeline.html"}}
+<div class="page-content">
+	{{if not .WorkflowName}}
+	<div class="ds-section">
+		<div class="ds-empty-state">
+			<span class="ds-empty-title">No workflow selected</span>
+			<p class="ds-empty-text">Select a workflow in the top bar — the timeline shows its execution runtime: gate transitions, node boundaries, plugin output, agent turns.</p>
+		</div>
+	</div>
+	{{else if not .Rows}}
+	<div class="ds-section">
+		<div class="ds-empty-state">
+			<span class="ds-empty-title">No timeline events yet</span>
+			<p class="ds-empty-text">Evidence events land here as <code>{{.WorkflowName}}</code> runs (kernel ≥ 1.2.0-62). Older runs predate the evidence layer.</p>
+		</div>
+	</div>
+	{{else}}
+	<div class="ds-section">
+		<div class="ds-section-header">
+			<h2 class="ds-section-title">Timeline</h2>
+			<span class="ds-card-meta"><code>{{.WorkflowName}}</code> · newest first · <span id="tl-live-dot" class="ds-status-dot ds-status-dot--warning" title="live tail connected"></span> live</span>
+		</div>
+		<div class="ds-timeline">
+			{{range .Rows}}
+			<div class="ds-timeline-row" data-ts="{{.At}}">
+				<div class="ds-timeline-time">{{.At.Format "15:04:05"}}</div>
+				<div class="ds-timeline-kind kind-{{.Kind | kindClass}}">{{.Kind}}</div>
+				<div class="ds-timeline-body">
+					{{if .Node}}<code class="ds-timeline-node">{{.Node}}</code>{{end}}
+					{{if .Summary}}<span class="ds-timeline-summary">{{.Summary}}</span>{{end}}
+					{{if .Tail}}
+					<details class="ds-timeline-tail">
+						<summary>output ({{len .Tail}})</summary>
+						<pre>{{range .Tail}}{{.}}
+{{end}}</pre>
+					</details>
+					{{end}}
+				</div>
+				{{if .Ref}}
+				<div class="ds-timeline-subject" title="{{.Title}}{{if .SHA}} @ {{.SHA}}{{end}}">
+					<span class="ds-status-badge">{{.Ref}}</span>
+					{{if .Title}}<span class="ds-card-meta">{{.Title}}</span>{{end}}
+				</div>
+				{{end}}
+				{{if .AttemptURL}}<a class="ds-link ds-timeline-attempt" href="{{.AttemptURL}}">attempt</a>{{end}}
+			</div>
+			{{end}}
+		</div>
+	</div>
+	{{end}}
+</div>
+<script>
+(function () {
+	'use strict';
+	// Live tail: append lifecycle events as new rows (newest first).
+	var wf = new URLSearchParams(window.location.search).get('workflow') || '';
+	var url = '/api/timeline/events' + (wf ? '?workflow=' + encodeURIComponent(wf) : '');
+	var list = document.querySelector('.ds-timeline');
+	if (!list || !window.EventSource) return;
+	var es = new EventSource(url);
+	es.onmessage = function (e) {
+		try {
+			var ev = JSON.parse(e.data);
+			var row = document.createElement('div');
+			row.className = 'ds-timeline-row ds-timeline-row--live';
+			var t = ev.timestamp ? new Date(ev.timestamp) : new Date();
+			var kind = ev.event || ev.type || 'event';
+			row.innerHTML =
+				'<div class="ds-timeline-time">' + t.toTimeString().slice(0, 8) + '</div>' +
+				'<div class="ds-timeline-kind kind-live">' + kind + '</div>' +
+				'<div class="ds-timeline-body"><span class="ds-timeline-summary">' +
+				(ev.node || ev.message || '') + '</span></div>';
+			list.insertBefore(row, list.firstChild);
+			while (list.children.length > 200) list.removeChild(list.lastChild);
+		} catch (err) { /* ignore malformed */ }
+	};
+})();
+</script>
+{{end}}

@@ -14,7 +14,6 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"strings"
 
 	"github.com/tibrezus/harmostes/version"
@@ -197,15 +196,7 @@ func parseTemplates() (*template.Template, error) {
 			}
 			return s
 		},
-		// queryGet returns the first value of a URL query parameter, or "" if
-		// the parameter is absent. url.Values is map[string][]string, so
-		// template indexing returns a []string which can't be compared with eq.
-		"queryGet": func(q url.Values, key string) string {
-			if vals := q[key]; len(vals) > 0 {
-				return vals[0]
-			}
-			return ""
-		},
+
 		// kindClass maps a timeline event kind to a CSS-safe class suffix.
 		"kindClass": func(kind string) string {
 			k := strings.ReplaceAll(strings.ReplaceAll(kind, ".", "-"), "_", "-")
@@ -213,10 +204,6 @@ func parseTemplates() (*template.Template, error) {
 				k = k[:24]
 			}
 			return k
-		},
-		"queryHas": func(q url.Values, key string) bool {
-			_, ok := q[key]
-			return ok
 		},
 		// workflowTargetSlug extracts the target repo slug from a Workflow CR
 		// for display on the workflow card. The full CR name already encodes

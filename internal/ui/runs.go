@@ -209,6 +209,12 @@ func (s *Server) renderPoolRun(w http.ResponseWriter, r *http.Request, wf v1alph
 	}
 	owned := false
 	for _, att := range atts.Items {
+		// Restore the Job-era Gate 2 workflow dimension: the owning attempt
+		// must belong to the workflow in the URL (attempts carry the same
+		// harmostes.dev/workflow label Jobs did).
+		if att.Labels[v1alpha1.WorkflowLabel] != wf.Name {
+			continue
+		}
 		for _, run := range att.Status.Runs {
 			if run.Name == runName {
 				owned = true

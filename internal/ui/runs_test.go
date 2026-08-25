@@ -620,3 +620,30 @@ func TestHandleRunDetail_PoolRunOwnershipIsolation(t *testing.T) {
 		t.Errorf("status = %d, want %d (run not in any of alice's attempts)", rec.Code, http.StatusNotFound)
 	}
 }
+
+func TestHandleRunDetail_PoolRunWrongWorkflow(t *testing.T) {
+	// The run is listed by alice's attempt for workflow B; requesting it at
+	// /workflows/A/... must 404 (workflow dimension of the ownership gate).
+	wfA := &v1alpha1.Workflow{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "wf-a", Namespace: "harmostes",
+			Labels: map[string]string{v1alpha1.OwnerLabel: "alice"},
+		},
+	}
+	att := makePoolAttempt("attempt-b-1", "alice", "wf-b", "pool-pod-1")
+	pod := makePod("pool-pod-1", "", corev1.PodRunning)
+
+	s := runsTestServer(wfA, att, pod)
+
+	req := httptest.NewRequest(http.MethodGet, "/workflows/wf-a/runs/pool-pod-1", nil)
+	req.SetPathValue("name", "wf-a")
+	req.SetPathValue("job", "pool-pod-1")
+	req = req.WithContext(withIdentity(req.Context(), &Identity{Username: "alice"}))
+
+	rec := httptest.NewRecorder()
+	s.handleRunDetail(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want %d (run owned by another workflow's attempt)", rec.Code, http.StatusNotFound)
+	}
+}

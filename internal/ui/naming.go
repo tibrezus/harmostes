@@ -87,6 +87,19 @@ func repoSlug(repoURL string) string {
 	return base
 }
 
+// workflowCRName strips the platform prefix from an Attempt's WorkflowRef
+// ("harmostes/pr-review-rhesadox" → "pr-review-rhesadox"). Attempt refs are
+// platform-qualified but UI routes, state keys and CR lookups all address the
+// Workflow by its bare name; a raw ref in an href produces an unroutable
+// extra path segment. (The kernel's ref parser lives in
+// internal/attempt/lifecycle.go ownerName — same format, two readers.)
+func workflowCRName(workflowRef string) string {
+	if i := strings.LastIndex(workflowRef, "/"); i >= 0 {
+		return workflowRef[i+1:]
+	}
+	return workflowRef
+}
+
 // deterministicWorkflowName builds the canonical name: {gate}-{slug}.
 //
 // Returns "" if either argument is empty.

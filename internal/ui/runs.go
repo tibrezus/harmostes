@@ -3,6 +3,7 @@ package ui
 import (
 	"net/http"
 	"strings"
+	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -58,11 +59,13 @@ func (s *Server) handleRunDetail(w http.ResponseWriter, r *http.Request) {
 
 	// Gate 2: the Job must exist and belong to this workflow.
 	var job batchv1.Job
-	if err := s.k8sClient.Get(r.Context(), client.ObjectKey{Namespace: s.namespace, Name: jobName}, &job); err != nil {
-		if errors.IsNotFound(err) {
-			http.NotFound(w, r)
-			return
-		}
+	err := s.k8sClient.Get(r.Context(), client.ObjectKey{Namespace: s.namespace, Name: jobName}, &job)
+	if errors.IsNotFound(err) {
+		// Worker-pool era: runs are shared pool pods, not per-run Jobs.
+		s.renderPoolRun(w, r, wf, jobName)
+		return
+	}
+	if err != nil {
 		s.logger.Error("get job for run detail", "job", jobName, "err", err)
 		s.renderError(w, r, "Failed to load run: "+err.Error())
 		return
@@ -188,4 +191,103 @@ func formatLogs(raw string) string {
 		b.WriteByte('\n')
 	}
 	return b.String()
+}
+
+// renderPoolRun serves run detail for worker-pool runs. Pool pods are shared
+// across workflows (and therefore potentially across owners), so the Job-era
+// workflow-label check proves nothing here. Ownership is established through
+// the Attempt chain instead: the requesting user must own an Attempt that
+// lists this run, which is exactly how the UI linked here in the first place.
+func (s *Server) renderPoolRun(w http.ResponseWriter, r *http.Request, wf v1alpha1.Workflow, runName string) {
+	owner := identityFromContext(r.Context()).Username
+
+	var atts v1alpha1.AttemptList
+	if err := s.k8sClient.List(r.Context(), &atts, client.InNamespace(s.namespace), client.MatchingLabels{v1alpha1.OwnerLabel: owner}); err != nil {
+		s.logger.Error("list attempts for pool run", "err", err)
+		s.renderError(w, r, "Failed to load run: "+err.Error())
+		return
+	}
+	owned := false
+	for _, att := range atts.Items {
+		// Restore the Job-era Gate 2 workflow dimension: the owning attempt
+		// must belong to the workflow in the URL (attempts carry the same
+		// harmostes.dev/workflow label Jobs did).
+		if att.Labels[v1alpha1.WorkflowLabel] != wf.Name {
+			continue
+		}
+		for _, run := range att.Status.Runs {
+			if run.Name == runName {
+				owned = true
+				break
+			}
+		}
+		if owned {
+			break
+		}
+	}
+	if !owned {
+		http.NotFound(w, r)
+		return
+	}
+
+	var pod corev1.Pod
+	if err := s.k8sClient.Get(r.Context(), client.ObjectKey{Namespace: s.namespace, Name: runName}, &pod); err != nil {
+		if errors.IsNotFound(err) {
+			http.NotFound(w, r)
+			return
+		}
+		s.logger.Error("get pool pod for run detail", "pod", runName, "err", err)
+		s.renderError(w, r, "Failed to load run: "+err.Error())
+		return
+	}
+
+	// Synthesize the Job view fields from the pod so run_detail.html renders
+	// one surface for both eras. Timing and identity come from the pod itself.
+	job := batchv1.Job{}
+	job.Name = pod.Name
+	if pod.Status.StartTime != nil {
+		job.Status.StartTime = pod.Status.StartTime
+	}
+	data := runDetailData{
+		Workflow: wf,
+		Job:      job,
+		PodName:  pod.Name,
+		PodPhase: string(pod.Status.Phase),
+		ExitCode: podExitCode(pod),
+		Duration: podDuration(pod),
+		HasLogs:  s.logFetch != nil,
+	}
+	if s.logFetch != nil {
+		logs, err := s.logFetch(r.Context(), s.namespace, pod.Name, "worker")
+		if err != nil {
+			s.logger.Error("fetch pool pod logs", "pod", pod.Name, "err", err)
+			data.LogsError = "Failed to fetch logs: " + err.Error()
+		} else {
+			data.Logs = formatLogs(logs)
+		}
+	}
+	s.render(w, r, "pages/run_detail.html", data)
+}
+
+// podDuration returns the pod's active span: start → now or container finish.
+func podDuration(pod corev1.Pod) string {
+	if pod.Status.StartTime == nil {
+		return "—"
+	}
+	end := time.Now()
+	if f := podFinishTime(pod); !f.IsZero() {
+		end = f
+	}
+	return formatDuration(end.Sub(pod.Status.StartTime.Time))
+}
+
+// podFinishTime returns the latest container finish time of a pod, or zero.
+func podFinishTime(pod corev1.Pod) time.Time {
+	var latest time.Time
+	for _, cs := range pod.Status.ContainerStatuses {
+		if cs.State.Terminated != nil && cs.State.Terminated.FinishedAt.After(latest) {
+			latest = cs.State.Terminated.FinishedAt.Time
+		}
+	}
+	return latest
 }

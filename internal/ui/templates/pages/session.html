@@ -35,7 +35,7 @@
 			{{if $s.StartedAt}}<span> · {{$s.StartedAt}}</span>{{end}}
 		</div>
 		<div class="ds-card-meta">
-			<span>Tokens: {{$s.TotalIn}} in / {{$s.TotalOut}} out{{if gt $s.TotalCost 0}} / ${{printf "%.4f" $s.TotalCost}}{{end}}</span>
+			<span>Tokens: {{$s.TotalIn}} in / {{$s.TotalOut}} out{{if gt $s.TotalCost 0.0}} / ${{printf "%.4f" $s.TotalCost}}{{end}}</span>
 		</div>
 	</div>
 

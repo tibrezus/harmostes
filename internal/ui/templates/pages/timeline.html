@@ -7,7 +7,7 @@
 			<p class="ds-empty-text">Select a workflow in the top bar — the timeline shows its execution runtime: gate transitions, node boundaries, plugin output, agent turns.</p>
 		</div>
 	</div>
-	{{else if not .Rows}}
+	{{else if not .Groups}}
 	<div class="ds-section">
 		<div class="ds-empty-state">
 			<span class="ds-empty-title">No timeline events yet</span>
@@ -16,47 +16,67 @@
 	</div>
 	{{else}}
 	<div class="ds-section">
-		<div class="ds-section-header">
-			<h2 class="ds-section-title">Timeline</h2>
-			<span class="ds-card-meta"><code>{{.WorkflowName}}</code> · newest first · <span id="tl-live-dot" class="ds-status-dot ds-status-dot--warning" title="live tail connected"></span> live</span>
+		<div class="tl-toolbar">
+			<code class="tl-toolbar-wf">{{.WorkflowName}}</code>
+			<span class="ds-card-meta">attempts newest first · events in run order</span>
+			<span class="tl-toolbar-live"><span id="tl-live-dot" class="ds-status-dot ds-status-dot--warning" title="live tail connected"></span> live</span>
 		</div>
-		<div class="ds-timeline">
-			{{range .Rows}}
-			<div class="ds-timeline-row" data-ts="{{.At}}">
-				<div class="ds-timeline-time">{{.At.Format "15:04:05"}}</div>
-				<div class="ds-timeline-kind kind-{{.Kind | kindClass}}">{{.Kind}}</div>
-				<div class="ds-timeline-body">
-					{{if .Node}}<code class="ds-timeline-node">{{.Node}}</code>{{end}}
-					{{if .Summary}}<span class="ds-timeline-summary">{{.Summary}}</span>{{end}}
-					{{if .Tail}}
-					<details class="ds-timeline-tail">
-						<summary>output ({{len .Tail}})</summary>
-						<pre>{{range .Tail}}{{.}}
-{{end}}</pre>
-					</details>
-					{{end}}
+
+		{{range $gi, $g := .Groups}}
+		<section class="tl-group">
+			<div class="tl-band">
+				<div class="tl-band-id">
+					<code class="tl-band-attempt" title="{{$g.Attempt}}">{{$g.ShortName}}</code>
+					<a class="ds-link tl-band-link" href="{{$g.AttemptURL}}">attempt →</a>
 				</div>
-				{{if .Ref}}
-				<div class="ds-timeline-subject" title="{{.Title}}{{if .SHA}} @ {{.SHA}}{{end}}">
-					<span class="ds-status-badge">{{.Ref}}</span>
-					{{if .Title}}<span class="ds-card-meta">{{.Title}}</span>{{end}}
+				{{if $g.Ref}}
+				<div class="tl-band-subject">
+					<span class="ds-status-badge tl-band-ref">{{$g.Ref}}</span>
+					{{if $g.Title}}<span class="tl-band-title" title="{{$g.Title}} · {{$g.SHA}}">{{$g.Title}}</span>{{end}}
 				</div>
 				{{end}}
-				{{if .AttemptURL}}<a class="ds-link ds-timeline-attempt" href="{{.AttemptURL}}">attempt</a>{{end}}
+				<div class="tl-band-range">
+					<span class="tl-ts">{{$g.FirstAt.Format "15:04:05"}}</span>
+					<span class="tl-range-sep">→</span>
+					<span class="tl-ts">{{$g.LastAt.Format "15:04:05"}}</span>
+					{{if not (eq ($g.FirstAt.Format "2006-01-02") ($g.LastAt.Format "2006-01-02"))}}<span class="ds-card-meta">{{$g.LastAt.Format "Jan 02"}}</span>{{end}}
+				</div>
 			</div>
-			{{end}}
-		</div>
+			<table class="ds-table tl-table">
+				<tbody {{if eq $gi 0}}id="tl-live-target"{{end}}>
+					{{range $g.Rows}}
+					<tr class="tl-row" data-ts="{{.At}}">
+						<td class="tl-time">{{.At.Format "15:04:05"}}</td>
+						<td class="tl-kind kind-{{.Kind | kindClass}}">{{.Kind}}</td>
+						<td class="tl-node">{{if .Node}}<code>{{.Node}}</code>{{else}}<span class="ds-card-meta">—</span>{{end}}</td>
+						<td class="tl-detail">
+							{{if .Summary}}<span class="tl-summary">{{.Summary}}</span>{{end}}
+							{{if .Tail}}
+							<details class="tl-tail">
+								<summary>output ({{len .Tail}})</summary>
+								<pre>{{range .Tail}}{{.}}
+{{end}}</pre>
+							</details>
+							{{end}}
+						</td>
+					</tr>
+					{{end}}
+				</tbody>
+			</table>
+		</section>
+		{{end}}
 	</div>
 	{{end}}
 </div>
 <script>
 (function () {
 	'use strict';
-	// Live tail: append lifecycle events as new rows (newest first).
+	// Live tail: append lifecycle events to the newest attempt's table
+	// (run order: new events land at the bottom, under their band).
 	var wf = new URLSearchParams(window.location.search).get('workflow') || '';
 	var url = '/api/timeline/events' + (wf ? '?workflow=' + encodeURIComponent(wf) : '');
-	var list = document.querySelector('.ds-timeline');
-	if (!list || !window.EventSource) return;
+	var target = document.getElementById('tl-live-target');
+	if (!target || !window.EventSource) return;
 	var es = new EventSource(url);
 	function esc(s) {
 		var d = document.createElement('div');
@@ -66,17 +86,18 @@
 	es.onmessage = function (e) {
 		try {
 			var ev = JSON.parse(e.data);
-			var row = document.createElement('div');
-			row.className = 'ds-timeline-row ds-timeline-row--live';
+			var row = document.createElement('tr');
+			row.className = 'tl-row tl-row--live';
 			var t = ev.timestamp ? new Date(ev.timestamp) : new Date();
 			var kind = ev.event || ev.type || 'event';
 			row.innerHTML =
-				'<div class="ds-timeline-time">' + t.toTimeString().slice(0, 8) + '</div>' +
-				'<div class="ds-timeline-kind kind-live">' + esc(kind) + '</div>' +
-				'<div class="ds-timeline-body"><span class="ds-timeline-summary">' +
-				esc(ev.node || ev.message || '') + '</span></div>';
-			list.insertBefore(row, list.firstChild);
-			while (list.children.length > 200) list.removeChild(list.lastChild);
+				'<td class="tl-time">' + t.toTimeString().slice(0, 8) + '</td>' +
+				'<td class="tl-kind kind-live">' + esc(kind) + '</td>' +
+				'<td class="tl-node">' + (ev.node ? '<code>' + esc(ev.node) + '</code>' : '<span class="ds-card-meta">—</span>') + '</td>' +
+				'<td class="tl-detail"><span class="tl-summary">' +
+				esc(ev.node || ev.message || '') + '</span></td>';
+			target.appendChild(row);
+			while (target.children.length > 200) target.removeChild(target.firstChild);
 		} catch (err) { /* ignore malformed */ }
 	};
 })();

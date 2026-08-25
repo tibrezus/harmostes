@@ -2,6 +2,9 @@ package ui
 
 import (
 	"context"
+	"encoding/json"
+	"log/slog"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -201,4 +204,132 @@ func TestAttemptSession_AgentWorkflowNotFoundState(t *testing.T) {
 	if !strings.Contains(body, "not available") {
 		t.Errorf("expected 'not available' message for agent workflow with no session, got: %s", body)
 	}
+}
+
+func TestWorkflowCRNameStripsPlatform(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"harmostes/pr-review-rhesadox", "pr-review-rhesadox"},
+		{"pr-review-rhesadox", "pr-review-rhesadox"},
+		{"", ""},
+	}
+	for _, c := range cases {
+		if got := workflowCRName(c.in); got != c.want {
+			t.Errorf("workflowCRName(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// Production refs are platform-prefixed (controller writes ns + "/" + name);
+// these fixtures reproduce the live shape so regressions in the strip can't
+// hide behind bare-name fixtures (review finding on #234).
+func TestAttemptDetail_PrefixedWorkflowRef(t *testing.T) {
+	wf := &v1alpha1.Workflow{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "pr-review-x", Namespace: "test-ns",
+			Labels: map[string]string{v1alpha1.OwnerLabel: "alice"},
+		},
+		Spec: v1alpha1.WorkflowSpec{
+			Agent: v1alpha1.AgentSpec{Enabled: boolPtr(true)},
+		},
+	}
+	att := &v1alpha1.Attempt{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "attempt-pr-review-x-1", Namespace: "test-ns",
+			Labels: map[string]string{v1alpha1.OwnerLabel: "alice"},
+		},
+		Spec: v1alpha1.AttemptSpec{
+			WorkflowRef: "test-ns/pr-review-x", // prefixed, as the controller writes it
+			Owner:       "alice",
+		},
+		Status: v1alpha1.AttemptStatus{
+			Phase: "succeeded",
+			Runs:  []v1alpha1.RunRecord{{Name: "worker-pool-pod-xyz"}},
+		},
+	}
+
+	srv := newAttemptTestServer(t, wf, att)
+
+	// Detail page: the agentEnabled Get must resolve the bare CR name —
+	// with the raw ref the Get fails and the Session link never renders.
+	req := httptest.NewRequest("GET", "/attempts/attempt-pr-review-x-1", nil)
+	req = req.WithContext(withTestIdentity(context.Background()))
+	req.SetPathValue("name", "attempt-pr-review-x-1")
+	rec := httptest.NewRecorder()
+	srv.handleAttemptDetail(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "/attempts/attempt-pr-review-x-1/runs/worker-pool-pod-xyz/session") {
+		t.Error("Session link missing: agentEnabled Get failed on prefixed ref")
+	}
+	// Run links and header link must carry the bare CR name.
+	if !strings.Contains(body, `href="/workflows/pr-review-x/runs/worker-pool-pod-xyz"`) {
+		t.Error("run link not stripped of platform prefix")
+	}
+	if strings.Contains(body, `href="/workflows/test-ns/`) {
+		t.Error("header link still carries the platform prefix")
+	}
+
+	// Session page: dapr is nil here so the no-record branch renders —
+	// the deterministic empty state prints the workflow name; it must be
+	// the bare CR name, never the prefixed ref.
+	req = httptest.NewRequest("GET", "/attempts/attempt-pr-review-x-1/runs/worker-pool-pod-xyz/session", nil)
+	req = req.WithContext(withTestIdentity(context.Background()))
+	req.SetPathValue("name", "attempt-pr-review-x-1")
+	req.SetPathValue("job", "worker-pool-pod-xyz")
+	rec = httptest.NewRecorder()
+	srv.handleAttemptSession(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("session status = %d, body: %s", rec.Code, rec.Body.String())
+	}
+	sessBody := rec.Body.String()
+	if strings.Contains(sessBody, "test-ns/pr-review-x") {
+		t.Error("session page leaks the platform-prefixed ref")
+	}
+
+	// With a session present the back-to-run link must use the bare name:
+	// stub the state store to return one and assert the href.
+	srv.logger = slog.Default() // render logs execution errors
+	srv.dapr = &stubSessionDapr{key: "pr-review-x:worker-pool-pod-xyz:session"}
+	req = httptest.NewRequest("GET", "/attempts/attempt-pr-review-x-1/runs/worker-pool-pod-xyz/session", nil)
+	req = req.WithContext(withTestIdentity(context.Background()))
+	req.SetPathValue("name", "attempt-pr-review-x-1")
+	req.SetPathValue("job", "worker-pool-pod-xyz")
+	rec = httptest.NewRecorder()
+	srv.handleAttemptSession(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("session status = %d, body: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `href="/workflows/pr-review-x/runs/worker-pool-pod-xyz"`) {
+		t.Error("session back-link not stripped of platform prefix")
+	}
+	// The writer keys sessions by the bare name; the stub only answers that
+	// key, so a hit also proves the read key matches the writer's.
+	if srv.dapr.(*stubSessionDapr).misses != 0 {
+		t.Errorf("read used the wrong key: %d misses against the bare-name key", srv.dapr.(*stubSessionDapr).misses)
+	}
+}
+
+// stubSessionDapr answers exactly one state key (the bare-name session key)
+// and counts reads against any other key.
+type stubSessionDapr struct {
+	DaprClient // embed: only GetStateFromStore is expected on this page
+	key        string
+	misses     int
+}
+
+func (d *stubSessionDapr) GetStateFromStore(_ context.Context, _, key string, value any) (bool, error) {
+	if key != d.key {
+		d.misses++
+		return false, nil
+	}
+	// Marshal-then-unmarshal keeps the stub honest about the target type.
+	b, _ := json.Marshal(map[string]any{
+		"workflow": "pr-review-x", "runId": "worker-pool-pod-xyz",
+		"model": "test-model", "skill": "pr-review",
+		"startedAt": "2026-08-25T10:00:00Z", "endedAt": "2026-08-25T10:05:00Z",
+	})
+	_ = json.Unmarshal(b, value)
+	return true, nil
 }

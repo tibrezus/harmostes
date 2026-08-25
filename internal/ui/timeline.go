@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -40,7 +41,66 @@ type timelineRow struct {
 	AttemptURL string
 }
 
-// handleTimelineView renders the merged event stream for one workflow.
+// timelineGroup is one Attempt's slice of the stream: a band header (attempt
+// identity, Subject orientation, time range) plus its events in run order.
+type timelineGroup struct {
+	Attempt    string
+	AttemptURL string
+	ShortName  string // attempt- prefix stripped
+	Ref        string // Subject.Ref of the most recent event carrying one
+	Title      string
+	SHA        string
+	FirstAt    time.Time
+	LastAt     time.Time
+	Rows       []timelineRow // chronological: run narrative reads top to bottom
+}
+
+// groupTimeline folds the newest-first flat stream into per-attempt groups:
+// attempts newest-first (their latest event decides), events within an attempt
+// oldest-first (a run reads started → nodes → tails → completed).
+func groupTimeline(rows []timelineRow) []timelineGroup {
+	if len(rows) == 0 {
+		return nil
+	}
+	// rows are newest-first; walk to assign per-attempt order indexes.
+	var order []string
+	byAttempt := map[string]*timelineGroup{}
+	for i := range rows {
+		r := rows[i]
+		g, ok := byAttempt[r.Attempt]
+		if !ok {
+			g = &timelineGroup{
+				Attempt:    r.Attempt,
+				AttemptURL: r.AttemptURL,
+				ShortName:  strings.TrimPrefix(r.Attempt, "attempt-"),
+				LastAt:     r.At,
+			}
+			byAttempt[r.Attempt] = g
+			order = append(order, r.Attempt)
+		}
+		g.FirstAt = r.At // last assignment in the walk = oldest event
+		if r.Ref != "" && g.Ref == "" {
+			// Orientation from the most recent carrying event: rows arrive
+			// newest-first, so the first carrier seen is the latest.
+			g.Ref, g.Title, g.SHA = r.Ref, r.Title, r.SHA
+		}
+		g.Rows = append(g.Rows, r)
+	}
+	// Reverse per-group rows: input is newest-first, output oldest-first.
+	groups := make([]timelineGroup, 0, len(order))
+	for _, name := range order {
+		g := byAttempt[name]
+		rs := g.Rows
+		for i, j := 0, len(rs)-1; i < j; i, j = i+1, j-1 {
+			rs[i], rs[j] = rs[j], rs[i]
+		}
+		groups = append(groups, *g)
+	}
+	return groups
+}
+
+// handleTimelineView renders the merged event stream for one workflow,
+// folded into per-attempt groups.
 func (s *Server) handleTimelineView(w http.ResponseWriter, r *http.Request) {
 	owner := identityFromContext(r.Context()).Username
 	workflowName := r.URL.Query().Get("workflow")
@@ -49,7 +109,7 @@ func (s *Server) handleTimelineView(w http.ResponseWriter, r *http.Request) {
 
 	s.render(w, r, "pages/timeline.html", map[string]any{
 		"WorkflowName": workflowName,
-		"Rows":         rows,
+		"Groups":       groupTimeline(rows),
 	})
 }
 

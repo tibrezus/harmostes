@@ -55,8 +55,9 @@ func (s *Server) handleTimelineView(w http.ResponseWriter, r *http.Request) {
 
 // loadTimeline merges evidence events across a workflow's recent Attempts.
 func (s *Server) loadTimeline(ctx context.Context, owner, workflowFilter string) []timelineRow {
-	if s.timelineReader == nil {
-		return nil
+	if s.timelineReader == nil || workflowFilter == "" {
+		return nil // no evidence store, or no workflow selected (page renders
+		// the empty state; don't pay probe round-trips for discarded rows)
 	}
 
 	var attemptList v1alpha1.AttemptList

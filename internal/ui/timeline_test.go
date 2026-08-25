@@ -6,6 +6,9 @@ import (
 	"testing"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
 	"github.com/tibrezus/harmostes/internal/timeline"
 )
 
@@ -68,5 +71,72 @@ func TestEventTailExtractsPluginLines(t *testing.T) {
 	}
 	if eventTail(mkEvent(time.Now(), timeline.KindRunStarted, "", nil)) != nil {
 		t.Fatal("non-tail kinds must return nil")
+	}
+}
+
+// The central merge: run events + gate events from multiple attempts,
+// newest-first, capped at 200 — through a fake Reader (this is the test
+// whose absence let the GateEvents gap through).
+func TestLoadTimelineMergesRunsGateAndOrders(t *testing.T) {
+	s := newAttemptTestServer(t,
+		&v1alpha1.Attempt{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "attempt-new", Namespace: "test-ns",
+				Labels: map[string]string{v1alpha1.OwnerLabel: "alice", "harmostes.dev/workflow": "wf"},
+			},
+		},
+		&v1alpha1.Attempt{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "attempt-old", Namespace: "test-ns",
+				Labels: map[string]string{v1alpha1.OwnerLabel: "alice", "harmostes.dev/workflow": "wf"},
+			},
+		},
+		&v1alpha1.Attempt{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "attempt-other", Namespace: "test-ns",
+				Labels: map[string]string{v1alpha1.OwnerLabel: "alice", "harmostes.dev/workflow": "other"},
+			},
+		},
+	)
+	base := time.Now()
+	s.timelineReader = &fakeTimelineReader{
+		attempts: map[string][]timeline.Event{
+			"attempt-new": {mkEvent(base.Add(-1*time.Minute), timeline.KindRunStarted, "", nil)},
+			"attempt-old": {mkEvent(base.Add(-2*time.Hour), timeline.KindNodeCompleted, "prepare", map[string]any{"status": "green"})},
+		},
+		gates: map[string][]timeline.Event{
+			"attempt-new": {mkEvent(base.Add(-3*time.Minute), timeline.KindGateArmed, "", nil)},
+		},
+	}
+
+	rows := s.loadTimeline(t.Context(), "alice", "wf")
+	if len(rows) != 3 {
+		t.Fatalf("rows = %d, want 3 (gate + run from new, node from old)", len(rows))
+	}
+	if rows[0].Kind != timeline.KindRunStarted {
+		t.Fatalf("newest first: rows[0] = %s", rows[0].Kind)
+	}
+	if rows[1].Kind != timeline.KindGateArmed || rows[1].Attempt != "attempt-new" {
+		t.Fatalf("gate merge: rows[1] = %+v", rows[1])
+	}
+	if rows[2].Attempt != "attempt-old" {
+		t.Fatalf("multi-attempt merge: rows[2] = %+v", rows[2])
+	}
+	if rows[0].Ref != "github.com/tibrezus/harmostes#228" || rows[0].Title != "T" {
+		t.Fatalf("subject orientation missing: %+v", rows[0])
+	}
+}
+
+func TestLoadTimelineNoWorkflowIsFree(t *testing.T) {
+	s := newAttemptTestServer(t)
+	s.timelineReader = &fakeTimelineReader{
+		attempts: map[string][]timeline.Event{},
+		gates:    map[string][]timeline.Event{},
+	}
+	if rows := s.loadTimeline(t.Context(), "alice", ""); rows != nil {
+		t.Fatalf("no-workflow load must return nil without probing, got %d rows", len(rows))
+	}
+	if rows := s.loadTimeline(t.Context(), "alice", "wf"); rows != nil {
+		t.Fatalf("no attempts → nil, got %d rows", len(rows))
 	}
 }

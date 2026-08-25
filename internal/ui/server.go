@@ -399,14 +399,12 @@ func pageTitle(page string) string {
 	switch page {
 	case "pages/map.html":
 		return "Map"
-	case "pages/flows.html":
-		return "Flows"
+	case "pages/timeline.html":
+		return "Timeline"
 	case "pages/metrics.html":
 		return "Metrics"
 	case "pages/sessions.html":
 		return "Sessions"
-	case "pages/live.html":
-		return "Live"
 	case "pages/attempts.html":
 		return "Attempts"
 	case "pages/attempt_detail.html":
@@ -439,14 +437,12 @@ func pageKey(page string) string {
 	switch {
 	case strings.HasPrefix(page, "pages/map"):
 		return "map"
-	case strings.HasPrefix(page, "pages/flows"):
-		return "flows"
+	case strings.HasPrefix(page, "pages/timeline"):
+		return "timeline"
 	case strings.HasPrefix(page, "pages/metrics"):
 		return "metrics"
 	case strings.HasPrefix(page, "pages/sessions"):
 		return "sessions"
-	case strings.HasPrefix(page, "pages/live"):
-		return "live"
 	case strings.HasPrefix(page, "pages/attempts"):
 		return "attempts"
 	case strings.HasPrefix(page, "pages/attempt_detail"):

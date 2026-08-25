@@ -17,6 +17,8 @@ import (
 	"fmt"
 	"sort"
 
+	"github.com/tibrezus/harmostes/internal/timeline"
+
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
 	"github.com/tibrezus/harmostes/internal/agent"
 	"github.com/tibrezus/harmostes/internal/dapr"
@@ -170,6 +172,11 @@ type Dependencies struct {
 	SessionWriter agent.SessionWriter // optional
 	ToolPublisher agent.ToolPublisher // optional
 	SessionMeta   agent.SessionMeta   // identity metadata
+
+	// Timeline (evidence layer of the Canonical Orchestration History): when
+	// non-nil, node boundary events and plugin output tails are appended per
+	// run. Nil-safe — consumers without Dapr skip evidence silently.
+	Timeline timeline.Writer `json:"-"` // optional
 }
 
 // AgentRunner runs the agent task→gate→feedback loop. This mirrors
@@ -191,7 +198,9 @@ type TaskResolver interface {
 // in subsequent phases by calling Register on the returned registry.
 func NewDefaultRegistry(deps Dependencies) *Registry {
 	r := NewRegistry()
-	r.Register(NewPluginExecutor(deps.PluginResolver))
+	pluginExec := NewPluginExecutor(deps.PluginResolver)
+	pluginExec.tl = deps.Timeline
+	r.Register(pluginExec)
 	r.Register(NewGateExecutor(deps.PluginResolver))
 	agentExec := NewAgentExecutor(deps.AgentRunner, deps.TaskResolver, deps.PluginResolver, deps.DaprClient, deps.StateStore)
 	agentExec.sessionWr = deps.SessionWriter

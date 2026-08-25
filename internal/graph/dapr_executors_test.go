@@ -1,6 +1,8 @@
 package graph
 
 import (
+	"time"
+
 	"context"
 	"encoding/json"
 	"errors"
@@ -45,6 +47,20 @@ func (f *fakeDaprClient) SaveState(_ context.Context, store, key, value string) 
 	}
 	f.state[f.stateKey(store, key)] = value
 	return nil
+}
+
+func (f *fakeDaprClient) SaveStateTTL(ctx context.Context, store, key, value string, _ time.Duration) error {
+	return f.SaveState(ctx, store, key, value)
+}
+
+func (f *fakeDaprClient) GetBulkState(_ context.Context, _ string, keys []string) (map[string]string, error) {
+	out := map[string]string{}
+	for _, k := range keys {
+		if v, ok := f.state[k]; ok {
+			out[k] = v
+		}
+	}
+	return out, nil
 }
 
 func (f *fakeDaprClient) DeleteState(_ context.Context, store, key string) error {

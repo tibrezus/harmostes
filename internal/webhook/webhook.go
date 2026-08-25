@@ -32,6 +32,7 @@ const (
 	// TriggerActionAnnotation carries the consolidated event action
 	// (labeled, unlabeled, synchronize, opened, reopened, closed, …).
 	TriggerActionAnnotation = "harmostes.dev/trigger-action"
+	TriggerTitleAnnotation  = "harmostes.dev/trigger-title"
 )
 
 // Handler is an HTTP handler for git push events.
@@ -73,6 +74,7 @@ type PullRequestEvent struct {
 	PullRequest struct {
 		Number int    `json:"number"`
 		State  string `json:"state"`
+		Title  string `json:"title"`
 		Head   struct {
 			Sha string `json:"sha"`
 		} `json:"head"`
@@ -271,6 +273,9 @@ func (h *Handler) servePullRequest(w http.ResponseWriter, req *http.Request, wf 
 	}
 	wf.Annotations[TriggerRevisionAnnotation] = pre.PullRequest.Head.Sha
 	wf.Annotations[TriggerPRAnnotation] = fmt.Sprintf("%s#%d", repo, prNum)
+	if pre.PullRequest.Title != "" {
+		wf.Annotations[TriggerTitleAnnotation] = pre.PullRequest.Title
+	}
 	wf.Annotations[TriggerActionAnnotation] = pre.Action
 
 	if err := h.Patch(req.Context(), wf, client.MergeFrom(base)); err != nil {

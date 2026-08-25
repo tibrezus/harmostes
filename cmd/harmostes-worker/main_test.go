@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"github.com/tibrezus/harmostes/internal/timeline"
 	"testing"
 	"time"
 
@@ -91,5 +92,53 @@ func TestRedactStripsMultipleCredentials(t *testing.T) {
 	want := "src https://git.rezus.cloud/a.git fork https://github.com/b.git"
 	if got := redact(in); got != want {
 		t.Errorf("redact multiple:\n got %q\nwant %q", got, want)
+	}
+}
+
+func TestSubjectFromEnv(t *testing.T) {
+	cases := []struct {
+		name string
+		env  map[string]string
+		want timeline.Subject
+	}{
+		{
+			name: "pointer form (annotation fallback / bare env)",
+			env:  map[string]string{"HARMOSTES_TRIGGER_PR": "git.rezus.cloud/tibrez/rhesadox#1566", "HARMOSTES_TRIGGER_TITLE": "CI-tiering"},
+			want: timeline.Subject{Kind: "pr", Ref: "git.rezus.cloud/tibrez/rhesadox#1566", Title: "CI-tiering"},
+		},
+		{
+			name: "number + repo (gate envelope exports)",
+			env: map[string]string{
+				"HARMOSTES_TRIGGER_PR":   "1566",
+				"HARMOSTES_TRIGGER_REPO": "git.rezus.cloud/tibrez/rhesadox",
+				"HARMOSTES_TRIGGER_SHA":  "4c01cc4f",
+			},
+			want: timeline.Subject{Kind: "pr", Ref: "git.rezus.cloud/tibrez/rhesadox#1566", SHA: "4c01cc4f"},
+		},
+		{
+			name: "sha falls back to wake revision",
+			env: map[string]string{
+				"HARMOSTES_TRIGGER_PR":       "1566",
+				"HARMOSTES_TRIGGER_REPO":     "git.rezus.cloud/tibrez/rhesadox",
+				"HARMOSTES_TRIGGER_REVISION": "ebdbcb32",
+			},
+			want: timeline.Subject{Kind: "pr", Ref: "git.rezus.cloud/tibrez/rhesadox#1566", SHA: "ebdbcb32"},
+		},
+		{
+			name: "no trigger",
+			env:  map[string]string{},
+			want: timeline.Subject{},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			got := subjectFromEnv()
+			if got != tc.want {
+				t.Fatalf("subjectFromEnv() = %+v, want %+v", got, tc.want)
+			}
+		})
 	}
 }

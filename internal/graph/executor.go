@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -21,6 +22,8 @@ import (
 	"github.com/tibrezus/harmostes/internal/claim"
 	"github.com/tibrezus/harmostes/internal/dapr"
 	"github.com/tibrezus/harmostes/internal/observability"
+	"github.com/tibrezus/harmostes/internal/timeline"
+	"github.com/tibrezus/harmostes/internal/worker"
 )
 
 // MaxIterations guards against infinite loops in cyclic graphs where maxRetries
@@ -105,6 +108,9 @@ type GraphExecutor struct {
 	pubsub     string
 	log        func(format string, args ...any)
 
+	// timeline appends node-boundary evidence per run (optional, nil-safe).
+	timeline timeline.Writer
+
 	// Provenance (G8): stamped on all lifecycle events.
 	triggeredBy   string
 	triggerSource string
@@ -147,6 +153,11 @@ type WorkflowContext struct {
 
 // GraphExecutorOption configures a GraphExecutor.
 type GraphExecutorOption func(*GraphExecutor)
+
+// WithTimeline injects the evidence-layer writer for node boundary events.
+func WithTimeline(w timeline.Writer) GraphExecutorOption {
+	return func(e *GraphExecutor) { e.timeline = w }
+}
 
 // WithStateStore overrides the default state store component name.
 func WithStateStore(name string) GraphExecutorOption {
@@ -422,6 +433,13 @@ func (e *GraphExecutor) Execute(ctx context.Context, graph v1alpha1.GraphSpec, p
 			}
 		}
 
+		if e.timeline != nil {
+			if err := e.timeline.Emit(ctx, timeline.KindNodeStarted, nodeID, map[string]any{
+				"type": node.Type,
+			}); err != nil {
+				e.log("warn: timeline emit node.started %s: %v", nodeID, err)
+			}
+		}
 		nodeResult, execErr := exec.Execute(execCtx, node, env)
 		durationMs := time.Since(startTime).Milliseconds()
 		if execErr != nil {
@@ -440,6 +458,21 @@ func (e *GraphExecutor) Execute(ctx context.Context, graph v1alpha1.GraphSpec, p
 		}
 
 		result.NodeResults[nodeID] = nodeResult
+		if e.timeline != nil {
+			payload := map[string]any{
+				"type":       node.Type,
+				"status":     string(nodeResult.Status),
+				"durationMs": durationMs,
+			}
+			if fb := nodeResult.Feedback; fb != "" {
+				// Same #115-class redaction as the plugin tail: feedback is
+				// plugin combined output bound for a durable sink.
+				payload["feedback"] = truncateForTimeline(worker.Redact(fb), 200)
+			}
+			if err := e.timeline.Emit(ctx, timeline.KindNodeCompleted, nodeID, payload); err != nil {
+				e.log("warn: timeline emit node.completed %s: %v", nodeID, err)
+			}
+		}
 		completedEnv := e.synthesizeEnvelope(nodeID, node.Type, nodeResult)
 		// Trust enforcement (ADR-0004): a non-deterministic node cannot
 		// self-validate its own claims — demote any self-asserted validated
@@ -761,4 +794,16 @@ func ExecuteGraph(ctx context.Context, graph v1alpha1.GraphSpec, pipelineName st
 	registry := NewDefaultRegistry(deps)
 	exec := NewGraphExecutor(registry, deps.DaprClient, opts...)
 	return exec.Execute(ctx, graph, pipelineName)
+}
+
+// truncateForTimeline keeps payloads small: evidence rows, not log dumps.
+func truncateForTimeline(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	cut := n
+	for cut > 0 && !utf8.RuneStart(s[cut]) { // don't split a rune
+		cut--
+	}
+	return s[:cut] + "…"
 }

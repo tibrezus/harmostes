@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -30,6 +31,12 @@ type Client interface {
 	GetState(ctx context.Context, store, key string) (string, error)
 	// SaveState writes a single key.
 	SaveState(ctx context.Context, store, key, value string) error
+	// SaveStateTTL writes a single key with a per-key expiry (Dapr
+	// ttlInSeconds metadata; 0 = no expiry).
+	SaveStateTTL(ctx context.Context, store, key, value string, ttl time.Duration) error
+	// GetBulkState returns the values for keys that exist (absent keys are
+	// omitted from the map, not errors).
+	GetBulkState(ctx context.Context, store string, keys []string) (map[string]string, error)
 	// DeleteState removes a key (idempotent).
 	DeleteState(ctx context.Context, store, key string) error
 	// Publish sends a JSON payload on a pub/sub topic (best-effort; returns nil on
@@ -96,7 +103,19 @@ func (c *HTTPClient) GetState(ctx context.Context, store, key string) (string, e
 }
 
 func (c *HTTPClient) SaveState(ctx context.Context, store, key, value string) error {
-	body, err := json.Marshal([]map[string]any{{"key": key, "value": value}})
+	return c.SaveStateTTL(ctx, store, key, value, 0)
+}
+
+// SaveStateTTL writes a key with an optional per-key expiry via Dapr's
+// ttlInSeconds metadata.
+func (c *HTTPClient) SaveStateTTL(ctx context.Context, store, key, value string, ttl time.Duration) error {
+	item := map[string]any{"key": key, "value": value}
+	if ttl > 0 {
+		item["metadata"] = map[string]string{
+			"ttlInSeconds": fmt.Sprintf("%d", int(ttl.Seconds())),
+		}
+	}
+	body, err := json.Marshal([]map[string]any{item})
 	if err != nil {
 		return err
 	}
@@ -116,6 +135,48 @@ func (c *HTTPClient) SaveState(ctx context.Context, store, key, value string) er
 		return fmt.Errorf("dapr save-state: %s", resp.Status)
 	}
 	return nil
+}
+
+// GetBulkState returns the values for the keys that exist. Absent keys are
+// omitted from the result map.
+func (c *HTTPClient) GetBulkState(ctx context.Context, store string, keys []string) (map[string]string, error) {
+	body, err := json.Marshal(map[string]any{"keys": keys})
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		fmt.Sprintf("%s/v1.0/state/%s/bulk", c.BaseURL, store), bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	inject(ctx, req)
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("dapr get-bulk-state: %s", resp.Status)
+	}
+	var items []struct {
+		Key  string          `json:"key"`
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
+		return nil, err
+	}
+	out := make(map[string]string, len(items))
+	for _, it := range items {
+		// Dapr returns data as raw JSON; string values come back quoted.
+		var s string
+		if json.Unmarshal(it.Data, &s) == nil {
+			out[it.Key] = s
+		} else {
+			out[it.Key] = string(it.Data)
+		}
+	}
+	return out, nil
 }
 
 func (c *HTTPClient) DeleteState(ctx context.Context, store, key string) error {
@@ -241,6 +302,33 @@ func (t *tracingClient) SaveState(ctx context.Context, store, key, value string)
 		attribute.String("dapr.store", store),
 		attribute.String("dapr.key", key),
 	)
+}
+
+func (t *tracingClient) SaveStateTTL(ctx context.Context, store, key, value string, ttl time.Duration) error {
+	return t.run(ctx, "state.save", func(ctx context.Context) error {
+		return t.inner.SaveStateTTL(ctx, store, key, value, ttl)
+	},
+		attribute.String("rpc.system", "dapr"),
+		attribute.String("rpc.method", "state.save"),
+		attribute.String("dapr.store", store),
+		attribute.String("dapr.key", key),
+		attribute.Float64("dapr.ttl_seconds", ttl.Seconds()),
+	)
+}
+
+func (t *tracingClient) GetBulkState(ctx context.Context, store string, keys []string) (map[string]string, error) {
+	var v map[string]string
+	err := t.run(ctx, "state.get.bulk", func(ctx context.Context) error {
+		var e error
+		v, e = t.inner.GetBulkState(ctx, store, keys)
+		return e
+	},
+		attribute.String("rpc.system", "dapr"),
+		attribute.String("rpc.method", "state.get.bulk"),
+		attribute.String("dapr.store", store),
+		attribute.Int("dapr.keys", len(keys)),
+	)
+	return v, err
 }
 
 func (t *tracingClient) DeleteState(ctx context.Context, store, key string) error {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"testing"
+	"time"
 )
 
 // mockDaprClient is a test double for dapr.Client that allows overriding behavior
@@ -27,6 +28,21 @@ func (m *mockDaprClient) SaveState(ctx context.Context, store, key, value string
 		return m.saveStateFunc(ctx, store, key, value)
 	}
 	return nil
+}
+
+func (m *mockDaprClient) SaveStateTTL(ctx context.Context, store, key, value string, _ time.Duration) error {
+	return m.SaveState(ctx, store, key, value)
+}
+
+func (m *mockDaprClient) GetBulkState(ctx context.Context, store string, keys []string) (map[string]string, error) {
+	out := make(map[string]string, len(keys))
+	for _, k := range keys {
+		v, err := m.GetState(ctx, store, k)
+		if err == nil && v != "" {
+			out[k] = v
+		}
+	}
+	return out, nil
 }
 
 func (m *mockDaprClient) DeleteState(ctx context.Context, store, key string) error {

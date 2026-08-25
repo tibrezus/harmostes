@@ -14,6 +14,7 @@ import (
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
 	"github.com/tibrezus/harmostes/internal/review"
+	"github.com/tibrezus/harmostes/internal/timeline"
 )
 
 // newReviewAPI is the seam the tests swap for a server-pinned API.
@@ -36,7 +37,14 @@ var newReviewAPI = func() review.API {
 // down, or gate not configured). The caller exits before provisioning when
 // nil is returned for a gated workflow.
 func RunReviewGate(ctx context.Context, status StatusPatcher, logFn func(string, ...any), wf *v1alpha1.Workflow) *review.Envelope {
-	deps := Deps{Status: status, Log: logFn}
+	return RunReviewGateWithTimeline(ctx, status, logFn, wf, nil)
+}
+
+// RunReviewGateWithTimeline also appends gate lifecycle transitions to the
+// timeline evidence layer (armed / waiting / proceed / standdown — state
+// CHANGES only, not every armed-poll re-evaluation).
+func RunReviewGateWithTimeline(ctx context.Context, status StatusPatcher, logFn func(string, ...any), wf *v1alpha1.Workflow, tl timeline.Writer) *review.Envelope {
+	deps := Deps{Status: status, Log: logFn, TL: tl}
 	return reviewGate(ctx, deps, wf)
 }
 
@@ -151,10 +159,39 @@ func reviewGate(ctx context.Context, deps Deps, wf *v1alpha1.Workflow) *review.E
 	}
 
 	deps.log()("review-ready: %s pr=%d — %s", result.Decision, pr, result.Reason)
+	emitGateTransition(ctx, deps.TL, armed, result, repo, pr)
 	if result.Decision == review.DecisionProceed {
 		return result.Envelope
 	}
 	return nil
+}
+
+// emitGateTransition records state CHANGES only: a re-evaluation that repeats
+// the previous waiting decision+reason (the armed poll, ~every 5 min) is a
+// non-event.
+func emitGateTransition(ctx context.Context, tl timeline.Writer, armed *v1alpha1.ReviewReadyStatus, result review.Result, repo string, pr int) {
+	if tl == nil {
+		return
+	}
+	kind := ""
+	switch result.Decision {
+	case review.DecisionProceed:
+		kind = timeline.KindGateProceed
+	case review.DecisionStanddown:
+		kind = timeline.KindGateStanddown
+	case review.DecisionWaiting:
+		kind = timeline.KindGateWaiting
+		if armed != nil && armed.LastDecision == string(review.DecisionWaiting) && armed.LastReason == result.Reason {
+			return // same waiting state — not a transition
+		}
+	}
+	if kind == "" {
+		return
+	}
+	if result.NewArmedSha != "" && (armed == nil || armed.ArmedSha != result.NewArmedSha) {
+		_ = tl.Emit(ctx, timeline.KindGateArmed, "", map[string]any{"pr": pr, "repo": repo, "sha": result.NewArmedSha})
+	}
+	_ = tl.Emit(ctx, kind, "", map[string]any{"reason": result.Reason, "pr": pr, "repo": repo})
 }
 
 // wakeRevision returns the wake event's trigger-revision (env first — the

@@ -2,12 +2,15 @@ package graph
 
 import (
 	"context"
+	"log/slog"
+	"strings"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
 	"github.com/tibrezus/harmostes/internal/observability"
+	"github.com/tibrezus/harmostes/internal/timeline"
 	"github.com/tibrezus/harmostes/internal/worker"
 )
 
@@ -15,6 +18,7 @@ import (
 // It wraps the existing worker.RunPlugin + worker.PluginResolver infrastructure.
 type PluginExecutor struct {
 	resolver worker.PluginResolver
+	tl       timeline.Writer // optional: plugin output tails as evidence
 }
 
 // NewPluginExecutor creates a plugin node executor.
@@ -49,6 +53,17 @@ func (e *PluginExecutor) Execute(ctx context.Context, node v1alpha1.NodeSpec, en
 	specJSON := string(node.Config)
 	pluginEnv := envToPluginEnv(env, "plugin", specJSON)
 	res, out, runErr := worker.RunPlugin(ctx, command, args, pluginEnv, env.ExtraEnv)
+	if e.tl != nil {
+		if err := e.tl.Emit(ctx, timeline.KindPluginTail, node.ID, map[string]any{
+			"plugin": cfg.Name,
+			// Redacted before persistence: tails are run evidence, and the
+			// combined output can echo credential-bearing URLs (#115 class).
+			"tail": tailLines(worker.Redact(out), 20),
+		}); err != nil {
+			// Evidence loss must be visible in process logs, not only tracing.
+			slog.Warn("timeline emit plugin.tail failed", "node", node.ID, "err", err)
+		}
+	}
 
 	span.SetAttributes(
 		attribute.String("harmostes.plugin.name", cfg.Name),
@@ -120,4 +135,21 @@ func envToPluginEnv(env NodeEnv, phase, specJSON string) worker.PluginEnv {
 		WorkspaceDir:   env.WorkspaceDir,
 		Shadow:         env.Shadow,
 	}
+}
+
+// tailLines returns the last n non-empty lines of a combined output stream —
+// what the plugin printed while working, kept as run evidence.
+func tailLines(s string, n int) []string {
+	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	out := make([]string, 0, n)
+	for _, l := range lines {
+		if strings.TrimSpace(l) == "" {
+			continue
+		}
+		out = append(out, l)
+		if len(out) > n {
+			out = out[1:]
+		}
+	}
+	return out
 }

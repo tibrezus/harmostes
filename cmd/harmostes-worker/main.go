@@ -24,7 +24,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -41,6 +40,7 @@ import (
 	"github.com/tibrezus/harmostes/internal/graph"
 	"github.com/tibrezus/harmostes/internal/k8s"
 	"github.com/tibrezus/harmostes/internal/observability"
+	"github.com/tibrezus/harmostes/internal/timeline"
 	"github.com/tibrezus/harmostes/internal/worker"
 	"github.com/tibrezus/harmostes/version"
 )
@@ -132,7 +132,9 @@ func main() {
 	// (HARMOSTES_TRIGGER_*), which the consumer set from the TriggerEvent
 	// payload — nothing else to wire.
 	if wf.Spec.ReviewReady != nil {
-		env := worker.RunReviewGate(ctx, k8s.StatusPatcher{Client: cl, Namespace: namespace}, logf, &wf)
+		gateTL := timeline.NewGateWriter(dapr.Tracing(dapr.New(os.Getenv("DAPR_HTTP_ENDPOINT"))),
+			envOr("HARMOSTES_STATE_STORE", "statestore"), wf.Name, os.Getenv("HARMOSTES_ATTEMPT"), subjectFromEnv())
+		env := worker.RunReviewGateWithTimeline(ctx, k8s.StatusPatcher{Client: cl, Namespace: namespace}, logf, &wf, gateTL)
 		if env == nil {
 			logf("review-ready: not proceeding this cycle — exiting (waiting/standdown recorded in status)")
 			flushTelemetry()
@@ -200,9 +202,29 @@ func main() {
 		Model:    wf.Spec.Agent.Model,
 		Skill:    wf.Spec.Agent.Skill,
 	}
+	// Timeline evidence (ADR-0005 evidence layer): one writer per run; the
+	// Attempt CR stays the canonical index. Nil (no attempt / no Dapr) = skip.
+	var runTL *timeline.DaprWriter
+	if attemptName := os.Getenv("HARMOSTES_ATTEMPT"); attemptName != "" && deps.Dapr != nil {
+		runTL = timeline.NewWriter(deps.Dapr, deps.DaprStateStore, attemptName, workflow, runID, subjectFromEnv())
+		_ = runTL.SaveSubject(ctx)
+		_ = runTL.Emit(ctx, timeline.KindRunStarted, "", map[string]any{"source": source})
+	}
+
+	seenTurns := 0
 	sessionWriter := func(sctx context.Context, session agent.SessionRecord) error {
 		if deps.Dapr == nil {
 			return nil
+		}
+		if runTL != nil {
+			for i := seenTurns; i < len(session.Turns); i++ {
+				t := session.Turns[i]
+				runTL.Emit(sctx, timeline.KindAgentTurn, "agent", map[string]any{
+					"turn": i, "label": t.Label, "green": t.Gate != nil && t.Gate.Green,
+					"tokensIn": t.Usage.Input, "tokensOut": t.Usage.Output,
+				})
+			}
+			seenTurns = len(session.Turns)
 		}
 		key := fmt.Sprintf("%s:%s:session", workflow, runID)
 		b, err := json.Marshal(session)
@@ -212,6 +234,11 @@ func main() {
 		return deps.Dapr.SaveState(sctx, deps.DaprStateStore, key, string(b))
 	}
 	toolPublisher := func(pctx context.Context, wfName, rid string, tool agent.ToolCall) {
+		if runTL != nil {
+			runTL.Emit(pctx, timeline.KindAgentTool, "agent", map[string]any{
+				"tool": tool.Name, "success": tool.Success,
+			})
+		}
 		if deps.Dapr == nil {
 			return
 		}
@@ -287,6 +314,7 @@ func main() {
 		ToolPublisher:  toolPublisher,
 		SessionMeta:    sessionMeta,
 	}
+	graphDeps.Timeline = runTL
 	result, gErr := graph.ExecuteGraph(graphCtx, execGraph, wf.Name, graphDeps,
 		graph.WithStateStore(deps.DaprStateStore),
 		graph.WithPubSub(deps.DaprPubSub),
@@ -297,6 +325,7 @@ func main() {
 		),
 		graph.WithBindings(wf.Spec.Bindings),
 		graph.WithRunID(runID),
+		graph.WithTimeline(runTL),
 		graph.WithWorkflowContext(graph.WorkflowContext{
 			Name:           wf.Name,
 			Namespace:      namespace,
@@ -311,6 +340,12 @@ func main() {
 			ExtraEnv:       extraEnv,
 		}),
 	)
+
+	if runTL != nil {
+		_ = runTL.Emit(ctx, timeline.KindRunCompleted, "", map[string]any{
+			"status": result.Status, "message": result.Message, "source": source,
+		})
+	}
 
 	// Patch Workflow status from the graph result (mirrors the declarative
 	// pipeline's status patching at each phase boundary).
@@ -564,20 +599,11 @@ func tokenizeGitURL(url, token string) string {
 	return strings.Replace(url, "https://", "https://x-access-token:"+token+"@", 1)
 }
 
-// credURLRe matches HTTP basic-auth credentials (user:token@) embedded anywhere
-// in a string — a clean URL or buried in plugin output / an error message.
-// Plugins like rig-emit embed the git token in clone URLs; without redaction it
-// leaks to structured logs (→ SigNoz) and into Attempt status. Ports
-// (host:443) and username-only URLs (user@host) do not match.
-var credURLRe = regexp.MustCompile(`(https?://)[^\s/@:]+:[^\s/@]+@`)
-
 // redact strips embedded HTTP basic-auth credentials from a URL or arbitrary
 // string (plugin output, error messages, pipeline results) before it is logged
 // or recorded in Attempt status. Applied at the logf / fatal /
 // recordAttemptOutcome choke points so no token can reach logs or history.
-func redact(s string) string {
-	return credURLRe.ReplaceAllString(s, "${1}")
-}
+func redact(s string) string { return worker.Redact(s) }
 
 // waitForDapr polls the sidecar healthz up to ~15s; proceeds regardless (Dapr is
 // best-effort — the pipeline runs even without it, just without events/state).
@@ -596,4 +622,36 @@ func waitForDapr(endpoint string) {
 		time.Sleep(time.Second)
 	}
 	logf("warn: Dapr sidecar not ready at %s after 30s — proceeding without events/state", endpoint)
+}
+
+// subjectFromEnv builds the timeline Subject from the Trigger Envelope env:
+// what triggered this run and the human anchor to orient by.
+func subjectFromEnv() timeline.Subject {
+	s := timeline.Subject{}
+	if pr := os.Getenv("HARMOSTES_TRIGGER_PR"); pr != "" {
+		s.Kind = "pr"
+		if repo := os.Getenv("HARMOSTES_TRIGGER_REPO"); repo != "" {
+			// consumer env carries the bare number; the gate's full envelope
+			// exports "REPO" + "PR" separately.
+			if strings.Contains(pr, "#") {
+				s.Ref = pr // pointer form "host/owner/name#N" (annotation fallback)
+			} else {
+				s.Ref = repo + "#" + pr
+			}
+		} else if strings.Contains(pr, "#") {
+			s.Ref = pr
+		} else {
+			s.Ref = "#" + pr
+		}
+		// SHA: the gate's envelope SHA on proceed; the wake revision otherwise
+		// (the head that triggered this cycle).
+		s.SHA = os.Getenv("HARMOSTES_TRIGGER_SHA")
+		if s.SHA == "" {
+			s.SHA = os.Getenv("HARMOSTES_TRIGGER_REVISION")
+		}
+	}
+	if t := os.Getenv("HARMOSTES_TRIGGER_TITLE"); t != "" {
+		s.Title = t
+	}
+	return s
 }

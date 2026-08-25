@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/tibrezus/harmostes/internal/timeline"
+
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
@@ -52,6 +54,8 @@ type Deps struct {
 	Log            func(format string, args ...any)
 	DaprStateStore string // default "statestore"
 	DaprPubSub     string // default "pubsub"
+	// TL appends gate transitions to the timeline evidence layer (optional).
+	TL timeline.Writer
 }
 
 // Options for one run.

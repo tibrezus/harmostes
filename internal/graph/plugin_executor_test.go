@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
@@ -15,9 +17,8 @@ func TestPluginExecutorGreen(t *testing.T) {
 	// Create a script that exits 0 and prints JSON result
 	dir := t.TempDir()
 	script := filepath.Join(dir, "success.sh")
-	if err := os.WriteFile(script, []byte(`#!/bin/sh
-echo '{"artifact":"out.txt","changed":true}'
-`), 0755); err != nil {
+	scriptBody := "#!/bin/sh\necho '{\"status\":\"ok\",\"artifact\":\"out.txt\",\"changed\":true}'\n"
+	if err := os.WriteFile(script, []byte(scriptBody), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -169,5 +170,51 @@ echo '{"changed":true,"artifact":"rig.json","event":{"rig_hash":"sha256:xyz","co
 	}
 	if components, ok := result.Outputs["components"].(float64); !ok || components != 42 {
 		t.Errorf("components = %v, want 42", result.Outputs["components"])
+	}
+}
+
+// fakeTL captures emissions; fakeResolver serves a script whose output
+// carries a credential URL — proving redaction happens at the seam.
+type fakeTL struct{ items []captureTLItem }
+
+func (f *fakeTL) Emit(_ context.Context, kind, node string, payload any) error {
+	m, _ := payload.(map[string]any)
+	f.items = append(f.items, captureTLItem{Kind: kind, Node: node, Payload: m})
+	return nil
+}
+
+type scriptResolver struct{ command string }
+
+func (r scriptResolver) Resolve(_ context.Context, _ v1alpha1.PluginRef, _ string) (string, []string, error) {
+	return r.command, nil, nil
+}
+
+func TestPluginTailEmissionRedacts(t *testing.T) {
+	dir := t.TempDir()
+	script := dir + "/p.sh"
+	scriptBody := "#!/bin/sh\necho line1\necho cloning https://user:secret@host/x.git\necho last\n"
+	if err := os.WriteFile(script, []byte(scriptBody), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tl := &fakeTL{}
+	e := NewPluginExecutor(scriptResolver{script})
+	e.tl = tl
+	res, err := e.Execute(t.Context(), v1alpha1.NodeSpec{ID: "n", Type: "plugin", Config: []byte(`{"name":"p"}`)}, NodeEnv{Workdir: dir})
+	if err != nil || res.Status != StatusGreen {
+		t.Fatalf("execute: %v %s", err, res.Status)
+	}
+	var tail []string
+	for _, it := range tl.items {
+		if it.Kind == "plugin.tail" {
+			tail, _ = it.Payload["tail"].([]string)
+		}
+	}
+	if len(tail) == 0 {
+		t.Fatal("no plugin.tail emitted")
+	}
+	for _, l := range tail {
+		if strings.Contains(fmt.Sprint(l), "secret") {
+			t.Fatalf("credential leaked into tail: %v", l)
+		}
 	}
 }

@@ -57,6 +57,17 @@ const maxSlugLen = 40
 // The slug is the final path component, lowercased, with a .git suffix
 // stripped. Organisation prefixes are dropped — the slug identifies the
 // *repo*, not the owner (owners vary, repos are the stable target).
+// workflowCRName strips the platform prefix from an Attempt's WorkflowRef
+// ("harmostes/pr-review-rhesadox" → "pr-review-rhesadox"). Attempt refs are
+// platform-qualified but UI routes address Workflow CRs by bare name; a raw
+// ref in an href produces an un routable extra path segment.
+func workflowCRName(workflowRef string) string {
+	if i := strings.LastIndex(workflowRef, "/"); i >= 0 {
+		return workflowRef[i+1:]
+	}
+	return workflowRef
+}
+
 func repoSlug(repoURL string) string {
 	repoURL = strings.TrimSpace(repoURL)
 	if repoURL == "" {

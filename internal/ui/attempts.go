@@ -95,6 +95,7 @@ type attemptDetailData struct {
 	TargetedState  string
 	Phase          string
 	Message        string
+	WorkflowLink   string // platform prefix stripped — routable CR name
 	Runs           []runSummary
 	NodeResults    []v1alpha1.NodeResultEnvelope
 	Evidence       []v1alpha1.EvidenceReference
@@ -160,6 +161,7 @@ func (s *Server) handleAttemptDetail(w http.ResponseWriter, r *http.Request) {
 
 	data := attemptDetailData{
 		Name:           att.Name,
+		WorkflowLink:   workflowCRName(att.Spec.WorkflowRef),
 		WorkflowRef:    att.Spec.WorkflowRef,
 		ObjectiveKind:  att.Spec.Objective.Kind,
 		PrimarySubject: att.Spec.Objective.PrimarySubject.Object,

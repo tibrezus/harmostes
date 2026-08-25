@@ -202,3 +202,16 @@ func TestAttemptSession_AgentWorkflowNotFoundState(t *testing.T) {
 		t.Errorf("expected 'not available' message for agent workflow with no session, got: %s", body)
 	}
 }
+
+func TestWorkflowCRNameStripsPlatform(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"harmostes/pr-review-rhesadox", "pr-review-rhesadox"},
+		{"pr-review-rhesadox", "pr-review-rhesadox"},
+		{"", ""},
+	}
+	for _, c := range cases {
+		if got := workflowCRName(c.in); got != c.want {
+			t.Errorf("workflowCRName(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}

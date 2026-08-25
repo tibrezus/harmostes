@@ -536,3 +536,87 @@ func (e *fakeErr) Error() string { return e.msg }
 
 // Ensure types are imported (avoid unused import errors if a test references them)
 var _ = types.NamespacedName{}
+
+// Pool-run era: worker-pool runs are shared pods, not per-run Jobs. The
+// fallback must serve the pod (logs, phase) when the requesting user owns an
+// Attempt listing that run — and 404 otherwise (pool pods are shared across
+// owners, so the Attempt chain is the only ownership proof).
+func makePoolAttempt(name, owner, workflow, runName string) *v1alpha1.Attempt {
+	return &v1alpha1.Attempt{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: "harmostes",
+			Labels: map[string]string{
+				v1alpha1.OwnerLabel:    owner,
+				v1alpha1.WorkflowLabel: workflow,
+			},
+		},
+		Status: v1alpha1.AttemptStatus{
+			Runs: []v1alpha1.RunRecord{{Name: runName, Phase: "succeeded"}},
+		},
+	}
+}
+
+func TestHandleRunDetail_PoolRunFallback(t *testing.T) {
+	wf := &v1alpha1.Workflow{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "alice-wf",
+			Namespace: "harmostes",
+			Labels:    map[string]string{v1alpha1.OwnerLabel: "alice"},
+		},
+	}
+	att := makePoolAttempt("attempt-alice-1", "alice", "alice-wf", "pool-pod-1")
+	pod := makePod("pool-pod-1", "", corev1.PodRunning)
+
+	s := runsTestServer(wf, att, pod)
+
+	req := httptest.NewRequest(http.MethodGet, "/workflows/alice-wf/runs/pool-pod-1", nil)
+	req.SetPathValue("name", "alice-wf")
+	req.SetPathValue("job", "pool-pod-1")
+	req = req.WithContext(withIdentity(req.Context(), &Identity{Username: "alice"}))
+
+	rec := httptest.NewRecorder()
+	s.handleRunDetail(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !contains(body, "pool-pod-1") {
+		t.Error("expected pod name in output")
+	}
+	if !contains(body, "Running") {
+		t.Error("expected pod phase in output")
+	}
+	if !contains(body, "workflow started") {
+		t.Error("expected log content from stub")
+	}
+}
+
+func TestHandleRunDetail_PoolRunOwnershipIsolation(t *testing.T) {
+	wf := &v1alpha1.Workflow{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "alice-wf",
+			Namespace: "harmostes",
+			Labels:    map[string]string{v1alpha1.OwnerLabel: "alice"},
+		},
+	}
+	// Bob's attempt references the shared pool pod; Alice must not reach it
+	// through her workflow — no Attempt of hers lists this run.
+	att := makePoolAttempt("attempt-bob-1", "bob", "alice-wf", "pool-pod-1")
+	pod := makePod("pool-pod-1", "", corev1.PodRunning)
+
+	s := runsTestServer(wf, att, pod)
+
+	req := httptest.NewRequest(http.MethodGet, "/workflows/alice-wf/runs/pool-pod-1", nil)
+	req.SetPathValue("name", "alice-wf")
+	req.SetPathValue("job", "pool-pod-1")
+	req = req.WithContext(withIdentity(req.Context(), &Identity{Username: "alice"}))
+
+	rec := httptest.NewRecorder()
+	s.handleRunDetail(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want %d (run not in any of alice's attempts)", rec.Code, http.StatusNotFound)
+	}
+}

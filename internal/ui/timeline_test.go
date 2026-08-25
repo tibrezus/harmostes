@@ -3,6 +3,9 @@ package ui
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -138,5 +141,77 @@ func TestLoadTimelineNoWorkflowIsFree(t *testing.T) {
 	}
 	if rows := s.loadTimeline(t.Context(), "alice", "wf"); rows != nil {
 		t.Fatalf("no attempts → nil, got %d rows", len(rows))
+	}
+}
+
+func TestGroupTimelineLayersAttemptsAndRunOrder(t *testing.T) {
+	base := time.Now()
+	rows := []timelineRow{
+		// newest-first flat stream (as loadTimeline produces)
+		{At: base.Add(-1 * time.Minute), Kind: timeline.KindRunCompleted, Attempt: "attempt-new", AttemptURL: "/attempts/attempt-new", Ref: "git.example/o/r#2", Title: "second"},
+		{At: base.Add(-2 * time.Minute), Kind: timeline.KindGateArmed, Attempt: "attempt-new", AttemptURL: "/attempts/attempt-new", Ref: "git.example/o/r#2", Title: "second"},
+		{At: base.Add(-3 * time.Minute), Kind: timeline.KindRunStarted, Attempt: "attempt-new", AttemptURL: "/attempts/attempt-new"},
+		{At: base.Add(-1 * time.Hour), Kind: timeline.KindNodeCompleted, Attempt: "attempt-old", Node: "prepare", AttemptURL: "/attempts/attempt-old", Ref: "git.example/o/r#1", Title: "first"},
+	}
+	groups := groupTimeline(rows)
+	if len(groups) != 2 {
+		t.Fatalf("groups = %d, want 2", len(groups))
+	}
+	if groups[0].Attempt != "attempt-new" || groups[1].Attempt != "attempt-old" {
+		t.Fatalf("attempts not newest-first: %s, %s", groups[0].Attempt, groups[1].Attempt)
+	}
+	g := groups[0]
+	if g.ShortName != "new" {
+		t.Fatalf("ShortName = %q, want %q", g.ShortName, "new")
+	}
+	if g.Ref != "git.example/o/r#2" || g.Title != "second" {
+		t.Fatalf("orientation not from most recent subject event: %+v", g)
+	}
+	if len(g.Rows) != 3 || g.Rows[0].Kind != timeline.KindRunStarted || g.Rows[2].Kind != timeline.KindRunCompleted {
+		t.Fatalf("events not in run order: %+v", g.Rows)
+	}
+	if !g.FirstAt.Equal(base.Add(-3*time.Minute)) || !g.LastAt.Equal(base.Add(-1*time.Minute)) {
+		t.Fatalf("range wrong: first=%v last=%v", g.FirstAt, g.LastAt)
+	}
+	if groupTimeline(nil) != nil {
+		t.Fatal("nil input must yield nil groups")
+	}
+}
+
+func TestTimelineViewRendersGroupedTable(t *testing.T) {
+	s := newAttemptTestServer(t,
+		&v1alpha1.Attempt{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "attempt-pr-review-x-1", Namespace: "test-ns",
+				Labels: map[string]string{v1alpha1.OwnerLabel: "alice", "harmostes.dev/workflow": "wf"},
+			},
+		},
+	)
+	base := time.Now()
+	s.timelineReader = &fakeTimelineReader{
+		attempts: map[string][]timeline.Event{
+			"attempt-pr-review-x-1": {mkEvent(base.Add(-1*time.Minute), timeline.KindGateStanddown, "", nil)},
+		},
+		gates: map[string][]timeline.Event{},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/timeline?workflow=wf", nil)
+	req = req.WithContext(withTestIdentity(req.Context()))
+	rec := httptest.NewRecorder()
+	s.handleTimelineView(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{"tl-toolbar", "tl-band", "pr-review-x-1", "tl-table", "tl-kind", "gate.standdown", "tl-live-target", "attempt →"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("rendered page missing %q", want)
+		}
+	}
+	// The page header (layout) already says Timeline — the section must not
+	// duplicate the title.
+	if strings.Count(body, "Timeline</") > 0 && strings.Contains(body, ">Timeline</h2") {
+		t.Error("duplicated Timeline section title")
 	}
 }

@@ -41,7 +41,7 @@ func CompileWorkflow(wf *v1alpha1.Workflow) v1alpha1.GraphSpec {
 		},
 	}
 
-	agentEnabled := wf.Spec.Agent.Enabled == nil || *wf.Spec.Agent.Enabled
+	agentEnabled := wf.Spec.Agent.EnabledOrDefault()
 	if agentEnabled {
 		maxFixes := wf.Spec.Agent.MaxFixes
 		if maxFixes == 0 {

@@ -71,7 +71,7 @@ type API interface {
 	GetPullRequest(ctx context.Context, repo string, number int) (*PullRequest, error)
 	RequiredContexts(ctx context.Context, repo, branch string) ([]string, error)
 	ContextStates(ctx context.Context, repo, sha string) (map[string]string, error)
-	ListComments(ctx context.Context, repo string, number int) ([]IssueComment, error)
+	ListComments(ctx context.Context, repo string, number int, since time.Time) ([]IssueComment, error)
 }
 
 // PullRequest is the normalized PR view the gate needs.
@@ -98,6 +98,13 @@ const (
 	HostGitHub  HostKind = "github"
 	HostForgejo HostKind = "forgejo"
 )
+
+// verdictSinceSlack widens the verdict-scan window below the gate's arm
+// time to absorb clock skew between the gate and the git host (both stamp
+// `since` filtering with their own clocks). It must stay well under the
+// gap between distinct review cycles on one PR (label re-add after a
+// consume) so an OLD verdict cannot fall inside a fresh request's window.
+const verdictSinceSlack = 5 * time.Minute
 
 type Host struct {
 	Kind     HostKind
@@ -250,17 +257,25 @@ type IssueComment struct {
 	Body string `json:"body"`
 }
 
-// ListComments fetches a PR's conversation comments. Both host kinds expose
-// issue comments at the same path shape; page 1 with a generous page size is
-// enough — the gate only scans for the verdict trailer (the consume signal),
-// and verdicts are posted as fresh comments.
-func (a *RESTAPI) ListComments(ctx context.Context, repo string, number int) ([]IssueComment, error) {
+// ListComments fetches the PR's conversation comments updated at or after
+// `since`. Both host kinds expose issue comments at the same path shape AND
+// honor the `since` filter (updated_at ≥ since) — which makes the hosts'
+// oldest-first ordering (no sort param exists on GitHub's endpoint;
+// Gitea/Forgejo also order ascending by id) IRRELEVANT: the consume signal
+// (a verdict trailer) is posted after the gate armed, so restricting the
+// window to [since, now] must surface it without walking pages. Callers pass
+// armedAt minus a slack that covers gate↔host clock skew.
+func (a *RESTAPI) ListComments(ctx context.Context, repo string, number int, since time.Time) ([]IssueComment, error) {
 	host, err := ResolveHost(repo)
 	if err != nil {
 		return nil, err
 	}
+	path := fmt.Sprintf("/repos/%s/issues/%d/comments?per_page=100", host.RepoPath, number)
+	if !since.IsZero() {
+		path += "&since=" + since.UTC().Format(time.RFC3339)
+	}
 	var out []IssueComment
-	if err := a.get(ctx, host, fmt.Sprintf("/repos/%s/issues/%d/comments?per_page=100", host.RepoPath, number), "application/json", &out); err != nil {
+	if err := a.get(ctx, host, path, "application/json", &out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -515,7 +530,15 @@ func Evaluate(ctx context.Context, api API, p Params) Result {
 		// gate again (the schedule tick only re-evaluates the ARMED state).
 		// Stay armed and wait: the next tick re-fetches the PR and converges
 		// (label present → the normal path; horizon exceeded → standdown).
-		comments, err := api.ListComments(ctx, p.Repo, p.PR)
+		// The verdict scan is time-windowed (armedAt − slack): a consume
+		// trailer is posted after the gate armed, so [since, now] must carry
+		// it — regardless of the hosts' oldest-first comment ordering (no
+		// sort param exists; page 1 of a >100-comment PR holds the OLDEST
+		// comments, not the fresh verdict). Old verdicts from earlier review
+		// cycles on the same PR fall outside the window and cannot consume a
+		// fresh request.
+		since := armTime(p.ArmedAt, now).Add(-verdictSinceSlack)
+		comments, err := api.ListComments(ctx, p.Repo, p.PR, since)
 		if err != nil {
 			keepSha := p.ArmedSha
 			if keepSha == "" {
@@ -527,6 +550,13 @@ func Evaluate(ctx context.Context, api API, p Params) Result {
 			return Result{Evaluation: standdown("label absent (verdict posted — consumed)"), NewArmedSha: ""}
 		}
 		armedAt := armTime(p.ArmedAt, now)
+		// Head moved during the ambiguity window: reset the horizon clock,
+		// consistent with the label-present head-moved path below — a head
+		// that moved inherits a fresh horizon, not the stale armed clock
+		// (which could stand down prematurely).
+		if p.ArmedSha != "" && p.ArmedSha != pr.HeadSHA {
+			armedAt = now
+		}
 		if now.Sub(armedAt) > p.Horizon {
 			return Result{Evaluation: standdown("horizon exceeded (label absent, no verdict; pending > " + p.Horizon.String() + ")"), NewArmedSha: ""}
 		}

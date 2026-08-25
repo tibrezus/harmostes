@@ -101,16 +101,17 @@ func main() {
 	}
 
 	// Wire the Dapr client for reading session transcripts from the worker's
-	// state store. Optional — the session viewer shows "not available" when nil.
-	if endpoint := os.Getenv("DAPR_HTTP_ENDPOINT"); endpoint != "" {
-		store := os.Getenv("HARMOSTES_STATE_STORE")
-		if store == "" {
-			store = "statestore"
-		}
-		server.SetDaprClient(ui.NewDaprClient(dapr.New(endpoint)))
-		server.SetTimelineReader(timeline.NewReader(dapr.New(endpoint), store))
-		logger.Info("Dapr client wired for session viewer + timeline", "endpoint", endpoint)
+	// state store. resolveDaprEndpoint prefers the explicit DAPR_HTTP_ENDPOINT
+	// and falls back to the injector's DAPR_HTTP_PORT (127.0.0.1 — Go resolves
+	// localhost to ::1 while the sidecar binds v4 only).
+	store := os.Getenv("HARMOSTES_STATE_STORE")
+	if store == "" {
+		store = "statestore"
 	}
+	daprEndpoint := resolveDaprEndpoint()
+	server.SetDaprClient(ui.NewDaprClient(dapr.New(daprEndpoint)))
+	server.SetTimelineReader(timeline.NewReader(dapr.New(daprEndpoint), store))
+	logger.Info("Dapr client wired for session viewer + timeline", "endpoint", daprEndpoint)
 
 	// Wire the SigNoz client for querying agent metrics (token usage, durations,
 	// cost). Optional — the metrics view shows "not configured" when nil.
@@ -170,4 +171,17 @@ func envOr(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// resolveDaprEndpoint returns the Dapr sidecar HTTP endpoint: explicit
+// DAPR_HTTP_ENDPOINT wins; else the injector-provided DAPR_HTTP_PORT on
+// loopback; else the conventional default.
+func resolveDaprEndpoint() string {
+	if e := os.Getenv("DAPR_HTTP_ENDPOINT"); e != "" {
+		return e
+	}
+	if p := os.Getenv("DAPR_HTTP_PORT"); p != "" {
+		return "http://127.0.0.1:" + p
+	}
+	return "http://127.0.0.1:3500"
 }

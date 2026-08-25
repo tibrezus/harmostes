@@ -157,7 +157,7 @@ func Task(ctx context.Context, sess PiSession, gate Gate, task string, maxFixes 
 	// agent.feedback#N for feedback). The turn span is the parent of the tool
 	// spans emitted inside RPC.Prompt, so the trace reads turn → tools. The span
 	// records the message SIZE only — never the body (decision #4).
-	promptTurn := func(label, spanName, message string) (TurnCapture, error) {
+	promptTurn := func(label, spanName, message string) (TurnCapture, Usage, error) {
 		tctx, span := tracer.Start(ctx, spanName)
 		start := time.Now()
 		span.SetAttributes(
@@ -177,11 +177,11 @@ func Task(ctx context.Context, sess PiSession, gate Gate, task string, maxFixes 
 			}
 		}
 
-		return capture, err
+		return capture, turnUsage, err
 	}
 
 	// turn 1 — the task itself
-	capture, err := promptTurn("initial task", "agent.task", task)
+	capture, turnUsage, err := promptTurn("initial task", "agent.task", task)
 	if err != nil {
 		return Result{Usage: usage, Session: finalizeSession(session, usage, false)}, err
 	}
@@ -190,6 +190,7 @@ func Task(ctx context.Context, sess PiSession, gate Gate, task string, maxFixes 
 		Prompt:   task,
 		Response: capture.Response,
 		Tools:    capture.Tools,
+		Usage:    turnUsage,
 	}
 	session.Turns = append(session.Turns, currentTurn)
 	attempts := 0
@@ -213,7 +214,7 @@ func Task(ctx context.Context, sess PiSession, gate Gate, task string, maxFixes 
 			break
 		}
 		fb := buildFeedback(out, attempt)
-		capture, err := promptTurn(fmt.Sprintf("feedback #%d", attempt), fmt.Sprintf("agent.feedback#%d", attempt), fb)
+		capture, fbUsage, err := promptTurn(fmt.Sprintf("feedback #%d", attempt), fmt.Sprintf("agent.feedback#%d", attempt), fb)
 		if err != nil {
 			return Result{Attempts: attempts, Usage: usage, Session: finalizeSession(session, usage, false)}, err
 		}
@@ -222,6 +223,7 @@ func Task(ctx context.Context, sess PiSession, gate Gate, task string, maxFixes 
 			Prompt:   fb,
 			Response: capture.Response,
 			Tools:    capture.Tools,
+			Usage:    fbUsage,
 		})
 	}
 	// final gate after the last fix

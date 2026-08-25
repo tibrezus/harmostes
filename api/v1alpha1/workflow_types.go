@@ -164,6 +164,11 @@ type PrepareSpec struct {
 }
 
 // AgentSpec is the framework-native LLM step (NOT a plugin).
+// EnabledOrDefault is the kernel's agent tri-state: a nil Enabled means
+// agent-capable (compile.go and pipeline.go both branch on this rule; the
+// UI resolves through it too so display can never drift from execution).
+func (a AgentSpec) EnabledOrDefault() bool { return a.Enabled == nil || *a.Enabled }
+
 type AgentSpec struct {
 	Enabled      *bool        `json:"enabled,omitempty"`  // nil/true = run, false = skip (deterministic-only)
 	Model        string       `json:"model"`              // e.g. zai/glm-5.2

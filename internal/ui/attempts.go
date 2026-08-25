@@ -117,15 +117,7 @@ type runSummary struct {
 // carry no Enabled on the instance — template defaults are applied first so
 // an explicit template disable still wins.
 func (s *Server) agentEnabledFor(ctx context.Context, wf *v1alpha1.Workflow) bool {
-	if wf.Spec.TemplateRef != "" {
-		var tmpl v1alpha1.WorkflowTemplate
-		if err := s.k8sClient.Get(ctx, client.ObjectKey{Namespace: s.namespace, Name: wf.Spec.TemplateRef}, &tmpl); err == nil {
-			merged := wf.DeepCopy()
-			v1alpha1.ApplyTemplateDefaults(merged, &tmpl)
-			wf = merged
-		}
-	}
-	return wf.Spec.Agent.Enabled == nil || *wf.Spec.Agent.Enabled
+	return s.resolveWorkflow(ctx, wf).Spec.Agent.EnabledOrDefault()
 }
 
 // handleAttemptDetail renders one Attempt's full detail: objective, runs

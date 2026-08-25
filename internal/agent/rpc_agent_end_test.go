@@ -117,3 +117,31 @@ func mustParse(t *testing.T, line string) Event {
 	}
 	return ev
 }
+
+// Shrinking snapshot (context compaction): the watermark resets so the
+// post-compaction messages are all fresh accounting.
+func TestWarmSessionCompactionResetsWatermark(t *testing.T) {
+	r := feedRPC(t, agentEndTurn1) // 4 messages
+	if _, _, usage, _, err := r.Prompt(context.Background(), "do the thing", "initial task"); err != nil {
+		t.Fatal(err)
+	} else if usage.Input != 946 {
+		t.Fatalf("turn1 usage = %d, want 946", usage.Input)
+	}
+	// Compacted: conversation replaced by a 1-message summary + this turn's
+	// exchange — shorter than the old watermark.
+	agentEndCompacted := `{"type":"agent_end","willRetry":false,"messages":[
+ {"role":"user","content":[{"type":"text","text":"(compacted) again"}]},
+ {"role":"assistant","usage":{"input":50,"output":3,"cost":{"total":0.001}},"content":[{"type":"text","text":"ok3"}]}
+]}`
+	r.events <- mustParse(t, agentEndCompacted)
+	_, _, usage, capture, err := r.Prompt(context.Background(), "again", "feedback #1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usage.Input != 50 || usage.Output != 3 {
+		t.Errorf("post-compaction usage = %d/%d, want 50/3 (watermark reset)", usage.Input, usage.Output)
+	}
+	if capture.Response != "ok3" {
+		t.Errorf("post-compaction response = %q, want ok3", capture.Response)
+	}
+}

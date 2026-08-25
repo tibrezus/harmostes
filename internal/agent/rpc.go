@@ -320,7 +320,18 @@ func absorbAgentEnd(raw json.RawMessage, r *RPC, usage *Usage, capture *TurnCapt
 	var payload struct {
 		Messages []agentEndMessage `json:"messages"`
 	}
-	if json.Unmarshal(raw, &payload) != nil || len(payload.Messages) <= r.seenAgentMsgs {
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		// #239 was silent drops; make the next protocol drift visible.
+		logf(r.log, Event{Type: "agent_end_unparsable", Message: err.Error()})
+		return
+	}
+	if len(payload.Messages) < r.seenAgentMsgs {
+		// Shrinking snapshot (context compaction): the conversation was
+		// replaced by a shorter summary — everything after it is fresh
+		// accounting, so reset the watermark instead of leaving it stale.
+		r.seenAgentMsgs = 0
+	}
+	if len(payload.Messages) <= r.seenAgentMsgs {
 		return
 	}
 	turn := payload.Messages[r.seenAgentMsgs:]

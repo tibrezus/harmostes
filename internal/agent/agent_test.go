@@ -9,7 +9,8 @@ import (
 // fakeSession records the prompts it receives and optionally reports tool calls.
 type fakeSession struct {
 	prompts   []string
-	toolCalls []int // per-prompt tool-call count (cycled if short)
+	toolCalls []int   // per-prompt tool-call count (cycled if short)
+	usages    []Usage // per-prompt usage (cycled if short)
 	aborted   bool
 	idx       int
 }
@@ -20,8 +21,12 @@ func (f *fakeSession) Prompt(_ context.Context, message, _ string) (Event, int, 
 	if f.idx < len(f.toolCalls) {
 		tools = f.toolCalls[f.idx]
 	}
+	usage := Usage{}
+	if f.idx < len(f.usages) {
+		usage = f.usages[f.idx]
+	}
 	f.idx++
-	return Event{Type: "agent_end"}, tools, Usage{}, TurnCapture{}, nil
+	return Event{Type: "agent_end"}, tools, usage, TurnCapture{}, nil
 }
 
 func (f *fakeSession) Abort(_ context.Context) error { f.aborted = true; return nil }
@@ -156,5 +161,33 @@ func TestCmdGateGreenAndFail(t *testing.T) {
 	}
 	if !strings.Contains(out, "boom on stderr") {
 		t.Fatalf("gate output must capture stderr: %q", out)
+	}
+}
+
+// Regression (#241): per-turn usage must land in the TurnRecord, not only in
+// the session total — the viewer displays per-turn tokens, and this exact
+// field shipped zero through two consecutive PRs before the test existed.
+func TestTurnRecordsCarryPerTurnUsage(t *testing.T) {
+	sess := &fakeSession{usages: []Usage{
+		{Input: 100, Output: 5, Cost: 0.01},
+		{Input: 50, Output: 2, Cost: 0.004},
+	}}
+	// first gate fails → one feedback turn → second gate green.
+	gate := &scriptedGate{greens: []bool{false, true}, outputs: []string{"fix it", "ok"}}
+	res, err := Task(context.Background(), sess, gate, "task", 3, nil)
+	if err != nil || !res.Green {
+		t.Fatalf("green task: err=%v green=%v", err, res.Green)
+	}
+	if res.Usage.Input != 150 || res.Usage.Output != 7 {
+		t.Errorf("session total = %d/%d, want 150/7", res.Usage.Input, res.Usage.Output)
+	}
+	if len(res.Session.Turns) != 2 {
+		t.Fatalf("turns = %d, want 2", len(res.Session.Turns))
+	}
+	if res.Session.Turns[0].Usage.Input != 100 || res.Session.Turns[0].Usage.Output != 5 {
+		t.Errorf("turn 0 usage = %+v, want 100/5", res.Session.Turns[0].Usage)
+	}
+	if res.Session.Turns[1].Usage.Input != 50 || res.Session.Turns[1].Usage.Output != 2 {
+		t.Errorf("turn 1 usage = %+v, want 50/2", res.Session.Turns[1].Usage)
 	}
 }

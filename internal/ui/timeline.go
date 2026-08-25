@@ -100,6 +100,14 @@ func (s *Server) loadTimeline(ctx context.Context, owner, workflowFilter string)
 			s.logger.Warn("timeline read failed", "attempt", att.Name, "err", err)
 			continue
 		}
+		// Gate lifecycle events live under the attempt's gate keyspace —
+		// merge them into the same stream (they precede the run's events).
+		gateEvents, err := s.timelineReader.GateEvents(ctx, att.Name, timeline.Filter{})
+		if err != nil {
+			s.logger.Warn("timeline gate read failed", "attempt", att.Name, "err", err)
+		} else {
+			events = append(events, gateEvents...)
+		}
 		for _, ev := range events {
 			rows = append(rows, timelineRow{
 				At:         ev.At,
@@ -208,10 +216,18 @@ func (s *Server) handleTimelineSSE(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, ": connected to timeline stream\n\n")
 	flusher.Flush()
 
+	// Heartbeat: idle streams survive buffering proxies (mirrors the
+	// deleted flows handler and handlePipelineSSE).
+	heartbeat := time.NewTicker(15 * time.Second)
+	defer heartbeat.Stop()
+
 	for {
 		select {
 		case <-r.Context().Done():
 			return
+		case <-heartbeat.C:
+			fmt.Fprintf(w, ": heartbeat\n\n")
+			flusher.Flush()
 		case ev, ok := <-sub.ch:
 			if !ok {
 				return

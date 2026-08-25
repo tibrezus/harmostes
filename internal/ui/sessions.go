@@ -46,7 +46,10 @@ func (s *Server) handleSessionsView(w http.ResponseWriter, r *http.Request) {
 	}
 	var subjects map[string]string // attempt → Subject.Ref
 	if s.timelineReader != nil {
-		if subs, err := s.timelineReader.Subjects(r.Context(), names); err == nil {
+		subs, err := s.timelineReader.Subjects(r.Context(), names)
+		if err != nil {
+			s.logger.Warn("subjects bulk-get failed", "err", err)
+		} else {
 			subjects = make(map[string]string, len(subs))
 			for a, sub := range subs {
 				if sub.Ref != "" {

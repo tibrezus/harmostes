@@ -58,6 +58,11 @@
 	var list = document.querySelector('.ds-timeline');
 	if (!list || !window.EventSource) return;
 	var es = new EventSource(url);
+	function esc(s) {
+		var d = document.createElement('div');
+		d.textContent = s == null ? '' : String(s);
+		return d.innerHTML;
+	}
 	es.onmessage = function (e) {
 		try {
 			var ev = JSON.parse(e.data);
@@ -67,9 +72,9 @@
 			var kind = ev.event || ev.type || 'event';
 			row.innerHTML =
 				'<div class="ds-timeline-time">' + t.toTimeString().slice(0, 8) + '</div>' +
-				'<div class="ds-timeline-kind kind-live">' + kind + '</div>' +
+				'<div class="ds-timeline-kind kind-live">' + esc(kind) + '</div>' +
 				'<div class="ds-timeline-body"><span class="ds-timeline-summary">' +
-				(ev.node || ev.message || '') + '</span></div>';
+				esc(ev.node || ev.message || '') + '</span></div>';
 			list.insertBefore(row, list.firstChild);
 			while (list.children.length > 200) list.removeChild(list.lastChild);
 		} catch (err) { /* ignore malformed */ }

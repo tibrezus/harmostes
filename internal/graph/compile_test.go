@@ -194,3 +194,34 @@ func TestCompileWorkflowTaskRefCarriesResolution(t *testing.T) {
 		t.Fatalf("task ref must carry configmap/key so the resolver can fetch the real text, got %q", cfg.Task)
 	}
 }
+
+// Compiled nodes carry real component names (the map/canvas fidelity fix):
+// plugin names and agent · model, not anonymous prepare/agent/deploy.
+func TestCompileLabelsRealComponents(t *testing.T) {
+	enabled := true
+	wf := &v1alpha1.Workflow{
+		Spec: v1alpha1.WorkflowSpec{
+			Prepare: v1alpha1.PrepareSpec{Plugin: v1alpha1.PluginRef{Name: "workspace"}},
+			Agent: v1alpha1.AgentSpec{
+				Enabled: &enabled,
+				Model:   "litellm/zai/glm-5.3",
+				Gate:    v1alpha1.GateRef{Plugin: v1alpha1.PluginRef{Name: "wiki-lint"}},
+			},
+			Deploy: v1alpha1.DeploySpec{Plugin: v1alpha1.PluginRef{Name: "post-review"}},
+		},
+	}
+	g := CompileWorkflow(wf)
+	labels := map[string]string{}
+	for _, n := range g.Nodes {
+		labels[n.ID] = n.Label
+	}
+	if labels["prepare"] != "workspace" {
+		t.Errorf("prepare label = %q, want workspace", labels["prepare"])
+	}
+	if labels["agent"] != "agent · litellm/zai/glm-5.3" {
+		t.Errorf("agent label = %q", labels["agent"])
+	}
+	if labels["deploy"] != "post-review" {
+		t.Errorf("deploy label = %q, want post-review", labels["deploy"])
+	}
+}

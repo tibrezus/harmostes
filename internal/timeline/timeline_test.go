@@ -173,3 +173,21 @@ func TestFilterLimitKeepsNewest(t *testing.T) {
 		t.Fatalf("limit must keep newest, got %+v", got)
 	}
 }
+
+func TestReaderReadsAllAcrossBatches(t *testing.T) {
+	fd := newFakeDapr()
+	w := NewWriter(fd, "s", "attempt-z", "wf", "run-1", Subject{Kind: "pr", Ref: "r#1"})
+	const n = 100 // crosses the 64-key probe batch
+	for i := 0; i < n; i++ {
+		if err := w.Emit(t.Context(), KindNodeStarted, "n", nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	events, err := NewReader(fd, "s").Attempt(t.Context(), "attempt-z", []string{"run-1"}, Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != n {
+		t.Fatalf("reader off-by-one/batch truncation: wrote %d, read %d", n, len(events))
+	}
+}

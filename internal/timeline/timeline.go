@@ -219,9 +219,11 @@ func (r *DaprReader) Attempt(ctx context.Context, attempt string, runs []string,
 	var events []Event
 	for _, run := range runs {
 		for base := 0; ; base += probeBatch {
+			// Writer sequence numbers are 1-based (Emit increments before the
+			// key is built): probe base+1 … base+probeBatch per batch.
 			keys := make([]string, probeBatch)
 			for i := range keys {
-				keys[i] = fmt.Sprintf("%s%s/%s/%06d", KeyPrefix, attempt, run, base+i)
+				keys[i] = fmt.Sprintf("%s%s/%s/%06d", KeyPrefix, attempt, run, base+i+1)
 			}
 			vals, err := r.client.GetBulkState(ctx, r.store, keys)
 			if err != nil {
@@ -255,7 +257,7 @@ func (r *DaprReader) GateEvents(ctx context.Context, attempt string, f Filter) (
 	for base := 0; ; base += probeBatch {
 		keys := make([]string, probeBatch)
 		for i := range keys {
-			keys[i] = fmt.Sprintf("%s%s/gate/%06d", KeyPrefix, attempt, base+i)
+			keys[i] = fmt.Sprintf("%s%s/gate/%06d", KeyPrefix, attempt, base+i+1)
 		}
 		vals, err := r.client.GetBulkState(ctx, r.store, keys)
 		if err != nil {

@@ -2,6 +2,7 @@ package graph
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
@@ -276,3 +277,25 @@ func (noopExecutor) Execute(_ context.Context, _ v1alpha1.NodeSpec, _ NodeEnv) (
 }
 func (noopExecutor) Deterministic() bool    { return true }
 func (noopExecutor) ExecutionClass() string { return "deterministic" }
+
+func TestNodeFeedbackRedacted(t *testing.T) {
+	tl := &captureTL{}
+	reg := NewRegistry()
+	reg.Register(leakyExecutor{})
+	exec := NewGraphExecutor(reg, nil, WithTimeline(tl))
+	_, _ = exec.Execute(t.Context(), v1alpha1.GraphSpec{Nodes: []v1alpha1.NodeSpec{{ID: "n1", Type: "leaky"}}}, "wf")
+	for _, e := range tl.events {
+		if fb, ok := e.Payload["feedback"].(string); ok && strings.Contains(fb, "secret") {
+			t.Fatalf("credential leaked into node.completed feedback: %q", fb)
+		}
+	}
+}
+
+type leakyExecutor struct{}
+
+func (leakyExecutor) Type() string           { return "leaky" }
+func (leakyExecutor) Deterministic() bool    { return true }
+func (leakyExecutor) ExecutionClass() string { return "deterministic" }
+func (leakyExecutor) Execute(_ context.Context, _ v1alpha1.NodeSpec, _ NodeEnv) (NodeResult, error) {
+	return NodeResult{Status: StatusFailed, Feedback: "cloning https://user:secret@host/x.git failed"}, nil
+}

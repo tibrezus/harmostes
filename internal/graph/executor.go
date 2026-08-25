@@ -22,6 +22,7 @@ import (
 	"github.com/tibrezus/harmostes/internal/dapr"
 	"github.com/tibrezus/harmostes/internal/observability"
 	"github.com/tibrezus/harmostes/internal/timeline"
+	"github.com/tibrezus/harmostes/internal/worker"
 )
 
 // MaxIterations guards against infinite loops in cyclic graphs where maxRetries
@@ -463,7 +464,9 @@ func (e *GraphExecutor) Execute(ctx context.Context, graph v1alpha1.GraphSpec, p
 				"durationMs": durationMs,
 			}
 			if fb := nodeResult.Feedback; fb != "" {
-				payload["feedback"] = truncateForTimeline(fb, 200)
+				// Same #115-class redaction as the plugin tail: feedback is
+				// plugin combined output bound for a durable sink.
+				payload["feedback"] = truncateForTimeline(worker.Redact(fb), 200)
 			}
 			if err := e.timeline.Emit(ctx, timeline.KindNodeCompleted, nodeID, payload); err != nil {
 				e.log("warn: timeline emit node.completed %s: %v", nodeID, err)

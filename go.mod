@@ -3,7 +3,6 @@ module github.com/tibrezus/harmostes
 go 1.25.0
 
 require (
-	github.com/a-h/templ v0.3.1020
 	github.com/cloudevents/sdk-go/v2 v2.16.2
 	github.com/go-logr/logr v1.4.3
 	go.opentelemetry.io/otel v1.44.0

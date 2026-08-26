@@ -13,14 +13,15 @@ import (
 
 // fakeAPI stubs the gate's API surface for decision-logic tests.
 type fakeAPI struct {
-	pr          *PullRequest
-	prErr       error
-	required    []string
-	reqErr      error
-	states      map[string]string
-	ctxErr      error
-	comments    []fakeComment
-	commentsErr error
+	pr           *PullRequest
+	prErr        error
+	labeledPulls []PullRequest
+	required     []string
+	reqErr       error
+	states       map[string]string
+	ctxErr       error
+	comments     []fakeComment
+	commentsErr  error
 }
 
 // fakeComment pairs an IssueComment with its host-side updated_at (the
@@ -32,6 +33,10 @@ type fakeComment struct {
 
 func (f *fakeAPI) GetPullRequest(ctx context.Context, repo string, n int) (*PullRequest, error) {
 	return f.pr, f.prErr
+}
+
+func (f *fakeAPI) ListLabeledOpenPulls(_ context.Context, _, _ string) ([]PullRequest, error) {
+	return f.labeledPulls, nil
 }
 func (f *fakeAPI) RequiredContexts(ctx context.Context, repo, branch string) ([]string, error) {
 	return f.required, f.reqErr
@@ -83,8 +88,11 @@ func TestProceedAllGreen(t *testing.T) {
 	if len(r.Envelope.GreenContexts) != 2 {
 		t.Fatalf("green contexts not carried: %+v", r.Envelope.GreenContexts)
 	}
-	if r.NewArmedSha != "" {
-		t.Fatal("proceed must consume armed state")
+	// Proceed stays armed at the dispatched head (#250 r4): the review runs
+	// async; sweeps re-check the verdict window instead of re-dispatching.
+	// Consume (verdict posted) clears the slot.
+	if r.NewArmedSha != "abc123" {
+		t.Fatalf("proceed must stay armed at the head, got %q", r.NewArmedSha)
 	}
 }
 

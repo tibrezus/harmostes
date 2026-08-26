@@ -69,6 +69,7 @@ type Evaluation struct {
 // stub the transport.
 type API interface {
 	GetPullRequest(ctx context.Context, repo string, number int) (*PullRequest, error)
+	ListLabeledOpenPulls(ctx context.Context, repo, label string) ([]PullRequest, error)
 	RequiredContexts(ctx context.Context, repo, branch string) ([]string, error)
 	ContextStates(ctx context.Context, repo, sha string) (map[string]string, error)
 	ListComments(ctx context.Context, repo string, number int, since time.Time) ([]IssueComment, error)
@@ -76,6 +77,7 @@ type API interface {
 
 // PullRequest is the normalized PR view the gate needs.
 type PullRequest struct {
+	Number  int      `json:"number"`
 	State   string   `json:"state"` // "open" | "closed"
 	HeadSHA string   `json:"headSha"`
 	Base    string   `json:"base"`
@@ -474,6 +476,11 @@ type Params struct {
 	// WakeSHA is the trigger-revision from the wake event (the webhook's
 	// head SHA); used to arm on a fresh wake whose first PR fetch fails.
 	WakeSHA string
+	// Dispatched marks an armed review the gate already proceeded on: the
+	// agent run is (or was) in flight and the verdict hasn't been consumed.
+	// Sweeps must not re-dispatch it — the verdict window is the consume
+	// signal, mirroring the label-absent path.
+	Dispatched bool
 	// DisarmHint is set when the wake event already implies stand-down
 	// (e.g. action=closed).
 	DisarmHint bool
@@ -599,6 +606,23 @@ func Evaluate(ctx context.Context, api API, p Params) Result {
 		}
 	}
 
+	// In-flight discrimination (#250 r2): a dispatched review keeps the
+	// label until the deploy plugin removes it after posting the verdict.
+	// Green+label alone would re-proceed on every sweep — duplicate
+	// dispatch. The verdict window (armedAt − slack) is the durable consume
+	// signal, the same one the label-absent path uses.
+	if p.Dispatched {
+		since := armTime(p.ArmedAt, now).Add(-verdictSinceSlack)
+		comments, err := api.ListComments(ctx, p.Repo, p.PR, since)
+		if err != nil {
+			return Result{Evaluation: waiting("in-flight verdict check failed: " + err.Error()), NewArmedSha: pr.HeadSHA, NewArmedAt: armedAt}
+		}
+		if hasVerdict(comments) {
+			return Result{Evaluation: standdown("verdict posted — consumed"), NewArmedSha: ""}
+		}
+		return Result{Evaluation: waiting("review in flight — dispatched, verdict pending"), NewArmedSha: pr.HeadSHA, NewArmedAt: armedAt}
+	}
+
 	switch {
 	case len(red) > 0:
 		// Red CI is a silent non-event: the dev already sees red CI; a
@@ -627,10 +651,23 @@ func proceed(p Params, pr *PullRequest, required, green []string) Result {
 				GreenContexts:    green,
 			},
 		},
-		NewArmedSha: "", // consumed: the deploy plugin posts the verdict and
-		// removes the label; the next evaluation sees label-absent and
-		// stands down idle.
+		// Stay armed at the dispatched head: the worker runs the review, the
+		// deploy plugin posts the verdict and removes the label. Until the
+		// verdict lands, sweeps re-check the in-flight window (Dispatched)
+		// instead of re-dispatching — the backlog pass made re-dispatch a
+		// every-sweep certainty otherwise. Consume clears the armed slot
+		// (label-absent + verdict, or the in-flight verdict check).
+		NewArmedSha: pr.HeadSHA,
+		NewArmedAt:  armTime(p.ArmedAt, nowFrom(p)),
 	}
+}
+
+// nowFrom centralizes Params.Now defaulting for helpers that need it.
+func nowFrom(p Params) time.Time {
+	if !p.Now.IsZero() {
+		return p.Now
+	}
+	return time.Now()
 }
 
 func waiting(reason string) Evaluation { return Evaluation{Decision: DecisionWaiting, Reason: reason} }
@@ -673,4 +710,53 @@ func stateWord(s string) string {
 		return "closed"
 	}
 	return s
+}
+
+// ListLabeledOpenPulls returns the repo's open PRs carrying the given label,
+// oldest first (Forgejo: sort=oldest; GitHub: sort=created&direction=asc —
+// both stable "least recently touched wins" for a starved backlog). The
+// gate's backlog pass (#249) uses it to arm the oldest starved labeled PR
+// when its armed slot frees up: labels added by
+// hand or automation while the gate was busy produce no further events, so a
+// sweep must discover them.
+func (a *RESTAPI) ListLabeledOpenPulls(ctx context.Context, repo, label string) ([]PullRequest, error) {
+	host, err := ResolveHost(repo)
+	if err != nil {
+		return nil, err
+	}
+	var raw []struct {
+		Number    int    `json:"number"`
+		UpdatedAt string `json:"updated_at"`
+		Labels    []struct {
+			Name string `json:"name"`
+		} `json:"labels"`
+	}
+	// One page of 50 open PRs is far beyond any labeled backlog in practice,
+	// oldest-first so the most-starved PR is first without client-side
+	// sorting. Param dialects differ per host kind (same reasoning as
+	// ListComments): GitHub has no sort=oldest (created|updated|popularity|
+	// long-running + direction=asc) and reads per_page, not limit — the
+	// shared form would return newest-first capped at 30 there, arming the
+	// newest and hiding the starved beyond 30 (#250 r1).
+	q := "state=open&sort=oldest&limit=50"
+	if host.Kind == HostGitHub {
+		q = "state=open&sort=created&direction=asc&per_page=50"
+	}
+	if err := a.get(ctx, host, fmt.Sprintf("/repos/%s/pulls?%s", host.RepoPath, q), "application/json", &raw); err != nil {
+		return nil, err
+	}
+	var out []PullRequest
+	for _, p := range raw {
+		has := false
+		for _, l := range p.Labels {
+			if l.Name == label {
+				has = true
+				break
+			}
+		}
+		if has {
+			out = append(out, PullRequest{Number: p.Number})
+		}
+	}
+	return out, nil
 }

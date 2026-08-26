@@ -290,6 +290,7 @@ spec:
                     armedPR:      { type: integer }
                     armedSha:     { type: string }
                     armedSince:   { type: string, format: date-time }
+                    dispatchedAt:  { type: string, format: date-time }
                     lastDecision: { type: string, enum: [proceed, waiting, standdown, idle] }
                     lastReason:   { type: string }
                 lastRunAt: { type: string }

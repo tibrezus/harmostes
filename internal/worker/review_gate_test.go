@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -78,23 +79,6 @@ func pinReviewAPI(t *testing.T, srv *httptest.Server, forgejo bool) {
 	t.Cleanup(func() { newReviewAPI = prev })
 }
 
-func TestReviewGateIdleCostsNothing(t *testing.T) {
-	clearTriggerEnv(t)
-	// Unarmed, unwoken: no API calls — the review package must not even be
-	// constructed with a server. If it tried to call out, it would fail.
-	os.Setenv("HARMOSTES_FORGEJO_TOKEN", "tok")
-	defer os.Unsetenv("HARMOSTES_FORGEJO_TOKEN")
-	wf := gateWorkflow() // no annotations, no status
-	st := &fakeStatus{}
-	env := reviewGate(context.Background(), testDeps(st), wf)
-	if env != nil {
-		t.Fatal("idle gate must return nil envelope")
-	}
-	if st.last.ReviewReady != nil {
-		t.Fatalf("idle gate must not write status, got %+v", st.last.ReviewReady)
-	}
-}
-
 func TestReviewGateWaitingReturnsNilAtSeam(t *testing.T) {
 	clearTriggerEnv(t)
 	// The production seam: the one-shot main calls RunReviewGate BEFORE any
@@ -147,9 +131,27 @@ func TestReviewGateProceedPassesEnvelope(t *testing.T) {
 	if len(env.GreenContexts) != 1 || env.GreenContexts[0] != "ci / build-test (push)" {
 		t.Fatalf("green contexts = %+v", env.GreenContexts)
 	}
-	// Proceed consumes the armed state.
-	if rr := st.last.ReviewReady; rr == nil || rr.ArmedPR != 0 || rr.LastDecision != "proceed" {
+	// Proceed stays armed with the dispatch marker (#250 r4): the run is
+	// in flight; sweeps wait on the verdict window, consume clears.
+	rr := st.last.ReviewReady
+	if rr == nil || rr.LastDecision != "proceed" || rr.ArmedPR != 42 || rr.ArmedSha != "abc123def456" {
 		t.Fatalf("post-proceed state = %+v", rr)
+	}
+	if rr.DispatchedAt == nil {
+		t.Fatalf("dispatch marker missing: %+v", rr)
+	}
+
+	// proceed → persist → re-sweep end-to-end: the written status feeds
+	// back; the next sweep must WAIT in flight, not re-dispatch.
+	srv2 := verdictServerNoVerdictYet(t)
+	pinReviewAPI(t, srv2, true)
+	wf.Status.ReviewReady = st.last.ReviewReady
+	env2 := reviewGate(context.Background(), testDeps(st), wf)
+	if env2 != nil {
+		t.Fatal("re-sweep after proceed re-dispatched (marker not durable)")
+	}
+	if rr2 := st.last.ReviewReady; rr2.LastDecision != "waiting" || !strings.Contains(rr2.LastReason, "in flight") || rr2.DispatchedAt == nil {
+		t.Fatalf("re-sweep state = %+v", rr2)
 	}
 }
 
@@ -266,6 +268,7 @@ func TestReviewGateUnrelatedPushDoesNotHijackArmed(t *testing.T) {
 }
 
 func TestReviewGateLabelWakeRetargets(t *testing.T) {
+	clearTriggerEnv(t)
 	// A labeled wake on another PR re-targets (newest REQUEST wins).
 	srv := reviewServer(t, "open", []string{"needs-review"},
 		map[string]string{"ci / build-test (push)": "success"}, []string{"ci / build-test (push)"})
@@ -352,4 +355,420 @@ type capturingWriter struct{ kinds *[]string }
 func (c *capturingWriter) Emit(_ context.Context, kind, _ string, _ any) error {
 	*c.kinds = append(*c.kinds, kind)
 	return nil
+}
+
+// stubGateAPI is a minimal review.API for gate tests that don't need HTTP.
+type stubGateAPI struct {
+	labeled    []review.PullRequest
+	labeledErr error
+}
+
+func (s *stubGateAPI) GetPullRequest(context.Context, string, int) (*review.PullRequest, error) {
+	return nil, fmt.Errorf("not stubbed")
+}
+func (s *stubGateAPI) ListLabeledOpenPulls(context.Context, string, string) ([]review.PullRequest, error) {
+	return s.labeled, s.labeledErr
+}
+func (s *stubGateAPI) RequiredContexts(context.Context, string, string) ([]string, error) {
+	return nil, fmt.Errorf("not stubbed")
+}
+func (s *stubGateAPI) ContextStates(context.Context, string, string) (map[string]string, error) {
+	return nil, fmt.Errorf("not stubbed")
+}
+func (s *stubGateAPI) ListComments(context.Context, string, int, time.Time) ([]review.IssueComment, error) {
+	return nil, fmt.Errorf("not stubbed")
+}
+
+// #249: idle is no longer nothing — a backlog pass lists labeled open PRs.
+// Nothing labeled → still nil envelope, still no status write.
+func TestReviewGateIdleWithoutBacklogCostsNothing(t *testing.T) {
+	clearTriggerEnv(t)
+	prev := newReviewAPI
+	newReviewAPI = func() review.API { return &stubGateAPI{} }
+	t.Cleanup(func() { newReviewAPI = prev })
+	st := &fakeStatus{}
+	wf := gateWorkflow()
+	env := reviewGate(context.Background(), testDeps(st), wf)
+	if env != nil {
+		t.Fatal("idle gate with empty backlog must return nil envelope")
+	}
+	if st.last.ReviewReady != nil {
+		t.Fatalf("must not write status, got %+v", st.last.ReviewReady)
+	}
+}
+
+// #249 live incident: labels added while the gate was busy starve — the
+// newest label stole the single armed slot. The backlog pass arms the OLDEST
+// labeled open PR on the next sweep.
+func TestReviewGateBacklogArmsOldestLabeled(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(req.URL.Path, "/pulls"):
+			// oldest-first as the API promises (sort=oldest)
+			json.NewEncoder(w).Encode([]map[string]any{
+				{"number": 7, "labels": []map[string]string{{"name": "needs-review"}}},
+				{"number": 9, "labels": []map[string]string{{"name": "needs-review"}}},
+			})
+		case strings.HasSuffix(req.URL.Path, "/pulls/7"):
+			json.NewEncoder(w).Encode(map[string]any{
+				"state": "open", "head": map[string]string{"sha": "backlog77"},
+				"base":   map[string]string{"ref": "main"},
+				"labels": []map[string]string{{"name": "needs-review"}},
+			})
+		case strings.Contains(req.URL.Path, "/branch_protections/"):
+			json.NewEncoder(w).Encode(map[string]any{"status_check_contexts": []string{"ci / build-test (push)"}})
+		case strings.HasSuffix(req.URL.Path, "/statuses"):
+			json.NewEncoder(w).Encode([]map[string]string{
+				{"context": "ci / build-test (push)", "status": "success"},
+			})
+		default:
+			http.NotFound(w, req)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	st := &fakeStatus{}
+	wf := gateWorkflow() // no trigger, nothing armed
+
+	reviewGate(context.Background(), testDeps(st), wf)
+	rr := st.last.ReviewReady
+	// #7 is green+labeled → the gate must have evaluated IT and proceeded
+	// (proceed clears the armed fields by design; the decision is the
+	// witness). #9 has no route: had the gate picked the newest instead,
+	// evaluation would have errored, not proceeded.
+	if rr == nil || rr.LastDecision != "proceed" {
+		t.Fatalf("backlog must arm the oldest labeled PR #7 and proceed, got %+v", rr)
+	}
+	if !strings.Contains(rr.LastReason, "green") {
+		t.Fatalf("proceed reason wrong: %+v", rr)
+	}
+}
+
+// An armed slot must never consult the backlog: re-evaluation of the armed
+// PR is the sweep's whole job.
+func TestReviewGateArmedSweepDoesNotRetargetToBacklog(t *testing.T) {
+	clearTriggerEnv(t)
+	// PR 42 (armed) is green; the backlog would offer #7. Serving BOTH and
+	// asserting the gate still evaluates 42 proves no hijack.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(req.URL.Path, "/pulls"):
+			json.NewEncoder(w).Encode([]map[string]any{
+				{"number": 7, "labels": []map[string]string{}}, // not labeled: a hijack would stand down, not proceed
+			})
+		case strings.HasSuffix(req.URL.Path, "/pulls/42"):
+			json.NewEncoder(w).Encode(map[string]any{
+				"state": "open", "head": map[string]string{"sha": "abc123def456"},
+				"base":   map[string]string{"ref": "main"},
+				"labels": []map[string]string{{"name": "needs-review"}},
+			})
+		case strings.Contains(req.URL.Path, "/branch_protections/"):
+			json.NewEncoder(w).Encode(map[string]any{"status_check_contexts": []string{"ci / build-test (push)"}})
+		case strings.HasSuffix(req.URL.Path, "/statuses"):
+			json.NewEncoder(w).Encode([]map[string]string{
+				{"context": "ci / build-test (push)", "status": "success"},
+			})
+		default:
+			http.NotFound(w, req)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	st := &fakeStatus{}
+	wf := gateWorkflow()
+	since := metav1.Now()
+	wf.Status.ReviewReady = &v1alpha1.ReviewReadyStatus{ArmedPR: 42, ArmedRepo: "git.rezus.cloud/tibrez/rhesadox", ArmedSha: "abc123def456", ArmedSince: &since, LastDecision: "waiting"}
+
+	reviewGate(context.Background(), testDeps(st), wf)
+	rr := st.last.ReviewReady
+	// #42 green → proceed (armed fields cleared by design). #7 unlabeled:
+	// a backlog hijack would NOT proceed — so proceed proves #42 ran.
+	if rr == nil || rr.LastDecision != "proceed" {
+		t.Fatalf("armed sweep must evaluate PR 42 to proceed, got %+v", rr)
+	}
+}
+
+// GitHub-kind dialect (#250 r1): the backlog list must carry
+// per_page/direction=asc (sort=oldest&limit are Forgejo params — on GitHub
+// the shared form returned newest-first capped at 30, hiding the starved).
+func TestBacklogListGitHubDialect(t *testing.T) {
+	clearTriggerEnv(t)
+	var gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(req.URL.Path, "/pulls") {
+			gotQuery = req.URL.RawQuery
+			json.NewEncoder(w).Encode([]map[string]any{})
+			return
+		}
+		http.NotFound(w, req)
+	}))
+	t.Cleanup(srv.Close)
+	prev := newReviewAPI
+	newReviewAPI = func() review.API {
+		return &review.RESTAPI{Client: srv.Client(), TokenLookup: func(string) string { return "tok" }, BaseOverride: srv.URL}
+	}
+	t.Cleanup(func() { newReviewAPI = prev })
+
+	wf := gateWorkflow()
+	wf.Spec.Config = []byte(`{"repos": ["github.com/tibrezus/harmostes"]}`)
+	st := &fakeStatus{}
+	reviewGate(context.Background(), testDeps(st), wf)
+	for _, want := range []string{"per_page=50", "direction=asc", "sort=created"} {
+		if !strings.Contains(gotQuery, want) {
+			t.Errorf("GitHub backlog query missing %q: %s", want, gotQuery)
+		}
+	}
+	if strings.Contains(gotQuery, "sort=oldest") || strings.Contains(gotQuery, "limit=") {
+		t.Errorf("Forgejo params leaked into GitHub query: %s", gotQuery)
+	}
+}
+
+// Dispatched reviews must not re-dispatch on sweeps (#250 r2): armed with
+// lastDecision=proceed, label present, CI green, NO verdict in the window →
+// waiting ("in flight"), never a second proceed envelope.
+func TestDispatchedReviewNotReDispatched(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(req.URL.Path, "/pulls/42"):
+			json.NewEncoder(w).Encode(map[string]any{
+				"state": "open", "head": map[string]string{"sha": "abc123def456"},
+				"base":   map[string]string{"ref": "main"},
+				"labels": []map[string]string{{"name": "needs-review"}},
+			})
+		case strings.Contains(req.URL.Path, "/branch_protections/"):
+			json.NewEncoder(w).Encode(map[string]any{"status_check_contexts": []string{"ci / build-test (push)"}})
+		case strings.HasSuffix(req.URL.Path, "/statuses"):
+			json.NewEncoder(w).Encode([]map[string]string{
+				{"context": "ci / build-test (push)", "status": "success"},
+			})
+		case strings.Contains(req.URL.Path, "/issues/42/comments"):
+			json.NewEncoder(w).Encode([]map[string]any{}) // no verdict yet
+		default:
+			http.NotFound(w, req)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	st := &fakeStatus{}
+	wf := gateWorkflow()
+	since := metav1.Now()
+	wf.Status.ReviewReady = &v1alpha1.ReviewReadyStatus{
+		ArmedPR: 42, ArmedRepo: "git.rezus.cloud/tibrez/rhesadox",
+		ArmedSha: "abc123def456", ArmedSince: &since,
+		DispatchedAt: &since, LastDecision: "proceed",
+	}
+
+	env := reviewGate(context.Background(), testDeps(st), wf)
+	if env != nil {
+		t.Fatal("dispatched review must not produce a second proceed envelope")
+	}
+	rr := st.last.ReviewReady
+	if rr == nil || rr.LastDecision != "waiting" || !strings.Contains(rr.LastReason, "in flight") {
+		t.Fatalf("expected waiting/in-flight, got %+v", rr)
+	}
+
+	// sweep+2 (#250 r3): the in-flight WAITING evaluation overwrote
+	// lastDecision — feed the written status back and sweep again. The
+	// durable marker (dispatchedAt) must keep suppressing dispatch; a
+	// lastDecision-based marker evaporates here and re-proceeds.
+	for sweep := 0; sweep < 3; sweep++ {
+		wf.Status.ReviewReady = st.last.ReviewReady
+		env := reviewGate(context.Background(), testDeps(st), wf)
+		if env != nil {
+			t.Fatalf("sweep+%d: re-dispatched (marker evaporated): %+v", sweep+2, st.last.ReviewReady)
+		}
+		if rr := st.last.ReviewReady; rr.LastDecision != "waiting" || !strings.Contains(rr.LastReason, "in flight") {
+			t.Fatalf("sweep+%d: expected in-flight waiting, got %+v", sweep+2, rr)
+		}
+	}
+
+	// Verdict lands in the window → consumed → standdown (armed cleared).
+	srv2 := verdictServer(t)
+	pinReviewAPI(t, srv2, true)
+	wf.Status.ReviewReady = st.last.ReviewReady
+	env = reviewGate(context.Background(), testDeps(st), wf)
+	if env != nil {
+		t.Fatal("consumed review must not re-dispatch")
+	}
+	if rr := st.last.ReviewReady; rr == nil || rr.LastDecision != "standdown" || rr.ArmedPR != 0 {
+		t.Fatalf("expected standdown after verdict, got %+v", rr)
+	}
+}
+
+// verdictServer: PR 42 open+labeled+green, one verdict trailer comment since
+// the epoch window.
+func verdictServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(req.URL.Path, "/pulls/42"):
+			json.NewEncoder(w).Encode(map[string]any{
+				"state": "open", "head": map[string]string{"sha": "abc123def456"},
+				"base":   map[string]string{"ref": "main"},
+				"labels": []map[string]string{{"name": "needs-review"}},
+			})
+		case strings.Contains(req.URL.Path, "/branch_protections/"):
+			json.NewEncoder(w).Encode(map[string]any{"status_check_contexts": []string{"ci / build-test (push)"}})
+		case strings.HasSuffix(req.URL.Path, "/statuses"):
+			json.NewEncoder(w).Encode([]map[string]string{
+				{"context": "ci / build-test (push)", "status": "success"},
+			})
+		case strings.Contains(req.URL.Path, "/issues/42/comments"):
+			json.NewEncoder(w).Encode([]map[string]any{
+				{"body": "verdict\n<!-- pr-review: APPROVE @ abc -->"},
+			})
+		default:
+			http.NotFound(w, req)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// A failing backlog listing degrades to idle — never wedges the gate.
+func TestBacklogListErrorDegradesToIdle(t *testing.T) {
+	clearTriggerEnv(t)
+	prev := newReviewAPI
+	newReviewAPI = func() review.API { return &stubGateAPI{labeledErr: fmt.Errorf("boom")} }
+	t.Cleanup(func() { newReviewAPI = prev })
+	st := &fakeStatus{}
+	env := reviewGate(context.Background(), testDeps(st), gateWorkflow())
+	if env != nil {
+		t.Fatal("list error must degrade to nil envelope")
+	}
+	if st.last.ReviewReady != nil {
+		t.Fatalf("no status write expected, got %+v", st.last.ReviewReady)
+	}
+}
+
+// verdictServerNoVerdictYet: PR 42 open+labeled+green, zero comments.
+func verdictServerNoVerdictYet(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(req.URL.Path, "/pulls/42"):
+			json.NewEncoder(w).Encode(map[string]any{
+				"state": "open", "head": map[string]string{"sha": "abc123def456"},
+				"base":   map[string]string{"ref": "main"},
+				"labels": []map[string]string{{"name": "needs-review"}},
+			})
+		case strings.Contains(req.URL.Path, "/branch_protections/"):
+			json.NewEncoder(w).Encode(map[string]any{"status_check_contexts": []string{"ci / build-test (push)"}})
+		case strings.HasSuffix(req.URL.Path, "/statuses"):
+			json.NewEncoder(w).Encode([]map[string]string{
+				{"context": "ci / build-test (push)", "status": "success"},
+			})
+		case strings.Contains(req.URL.Path, "/issues/42/comments"):
+			json.NewEncoder(w).Encode([]map[string]any{})
+		default:
+			http.NotFound(w, req)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// #250 r5: a labeled wake on a DIFFERENT PR while a review is dispatched
+// must retarget with a FRESH slot — the old PR's dispatch marker must not
+// leak, or the new PR waits "in flight" (scanning the wrong PR's comments)
+// for up to a full Horizon.
+func TestReviewGateLabelWakeRetargetsWhileDispatched(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(req.URL.Path, "/pulls/7"):
+			// the NEW PR: labeled, green → must PROCEED on its own merits
+			json.NewEncoder(w).Encode(map[string]any{
+				"state": "open", "head": map[string]string{"sha": "newpr777"},
+				"base":   map[string]string{"ref": "main"},
+				"labels": []map[string]string{{"name": "needs-review"}},
+			})
+		case strings.Contains(req.URL.Path, "/branch_protections/"):
+			json.NewEncoder(w).Encode(map[string]any{"status_check_contexts": []string{"ci / build-test (push)"}})
+		case strings.HasSuffix(req.URL.Path, "/statuses"):
+			json.NewEncoder(w).Encode([]map[string]string{
+				{"context": "ci / build-test (push)", "status": "success"},
+			})
+		default:
+			http.NotFound(w, req)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	st := &fakeStatus{}
+	wf := gateWorkflow()
+	since := metav1.Now()
+	// OLD armed review on #42, dispatched (in flight), still labeled.
+	wf.Status.ReviewReady = &v1alpha1.ReviewReadyStatus{
+		ArmedPR: 42, ArmedRepo: "git.rezus.cloud/tibrez/rhesadox",
+		ArmedSha: "abc123def456", ArmedSince: &since, DispatchedAt: &since,
+	}
+	// Labeled wake for #7.
+	os.Setenv("HARMOSTES_TRIGGER_PR", "git.rezus.cloud/tibrez/rhesadox#7")
+	os.Setenv("HARMOSTES_TRIGGER_ACTION", "labeled")
+	t.Cleanup(func() { os.Unsetenv("HARMOSTES_TRIGGER_PR"); os.Unsetenv("HARMOSTES_TRIGGER_ACTION") })
+
+	env := reviewGate(context.Background(), testDeps(st), wf)
+	if env == nil || env.PR != 7 {
+		t.Fatalf("labeled #7 (green) must proceed on retarget, got env=%+v status=%+v", env, st.last.ReviewReady)
+	}
+	rr := st.last.ReviewReady
+	if rr.ArmedPR != 7 || rr.DispatchedAt == nil {
+		t.Fatalf("retarget must arm #7 with a FRESH dispatch marker, got %+v", rr)
+	}
+	// The stale marker never made #7 wait in flight: it proceeded (env != nil
+	// above) — the r5 bug would have returned nil with waiting/in-flight.
+}
+
+// Dispatched + horizon: a run that dies (outage class) must be released by
+// the horizon standdown — armed slot AND marker cleared, backlog can re-arm.
+func TestDispatchedHorizonReleasesSlot(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(req.URL.Path, "/pulls/42"):
+			json.NewEncoder(w).Encode(map[string]any{
+				"state": "open", "head": map[string]string{"sha": "abc123def456"},
+				"base":   map[string]string{"ref": "main"},
+				"labels": []map[string]string{{"name": "needs-review"}},
+			})
+		case strings.Contains(req.URL.Path, "/branch_protections/"):
+			json.NewEncoder(w).Encode(map[string]any{"status_check_contexts": []string{"ci / build-test (push)"}})
+		case strings.HasSuffix(req.URL.Path, "/statuses"):
+			json.NewEncoder(w).Encode([]map[string]string{
+				{"context": "ci / build-test (push)", "status": "success"},
+			})
+		case strings.Contains(req.URL.Path, "/issues/42/comments"):
+			json.NewEncoder(w).Encode([]map[string]any{})
+		default:
+			http.NotFound(w, req)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	st := &fakeStatus{}
+	wf := gateWorkflow()
+	old := metav1.NewTime(time.Now().Add(-7 * time.Hour)) // beyond the 6h horizon
+	wf.Status.ReviewReady = &v1alpha1.ReviewReadyStatus{
+		ArmedPR: 42, ArmedRepo: "git.rezus.cloud/tibrez/rhesadox",
+		ArmedSha: "abc123def456", ArmedSince: &old, DispatchedAt: &old,
+	}
+	env := reviewGate(context.Background(), testDeps(st), wf)
+	if env != nil {
+		t.Fatal("horizon-exceeded dispatched review must not dispatch")
+	}
+	rr := st.last.ReviewReady
+	if rr == nil || rr.LastDecision != "standdown" || rr.ArmedPR != 0 || rr.DispatchedAt != nil {
+		t.Fatalf("horizon must release slot + marker, got %+v", rr)
+	}
 }

@@ -218,3 +218,32 @@ func TestTracingDisabledNoop(t *testing.T) {
 		t.Fatalf("getstate: %v", err)
 	}
 }
+
+// TestGetStateEscapesKeyInPath (#251): state keys legitimately contain "/"
+// (e.g. "<wf>:<run>:pi-session/data"). Unescaped, the Dapr route splits at
+// the slash and the lookup 404s with ERR_DIRECT_INVOKE (live-proven).
+func TestGetStateEscapesKeyInPath(t *testing.T) {
+	var rawPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rawPath = r.URL.EscapedPath()
+		if r.URL.Path != "/v1.0/state/statestore/wf:run:pi-session/data" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`"gz1:blob"`))
+	}))
+	defer srv.Close()
+
+	got, err := New(srv.URL).GetState(context.Background(), "statestore", "wf:run:pi-session/data")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// the wire path must carry the slash escaped — the split-key failure mode
+	if rawPath != "/v1.0/state/statestore/wf:run:pi-session%2Fdata" {
+		t.Fatalf("key not escaped in path: %s", rawPath)
+	}
+	if got != `"gz1:blob"` {
+		t.Fatalf("got %q", got)
+	}
+}

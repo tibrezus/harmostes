@@ -320,9 +320,12 @@ func SavePiSession(ctx context.Context, dc dapr.Client, store, workflow, run str
 		return err
 	}
 	payload := agent.PiSessionMarker + base64.StdEncoding.EncodeToString(buf.Bytes())
-	// The blob is stored as a JSON string (quoted): every state value in the
-	// store is JSON — the UI's read path json.Unmarshals whatever it finds,
-	// and a bare "gz1:…" would fail its decode (live: download 404).
+	// Store the blob as a JSON string (quoted here): Dapr adds a second
+	// layer on store, and the UI read strips exactly two — HTTPClient.
+	// GetState unwraps one (JSON-string body), GetStateFromStore's
+	// Unmarshal the other. A bare "gz1:…" decodes to a non-JSON body after
+	// the client unwrap and the download 404s (the original #244/#247 bug).
+	// The remaining live 404 was the unescaped "/" in the key URL (#251).
 	payloadJSON, err := json.Marshal(payload)
 	if err != nil {
 		return err

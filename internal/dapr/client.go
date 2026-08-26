@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -73,8 +74,11 @@ func inject(ctx context.Context, req *http.Request) {
 }
 
 func (c *HTTPClient) GetState(ctx context.Context, store, key string) (string, error) {
+	// PathEscape the key: state keys legitimately contain "/" (e.g. the
+	// pi-session blob's "…:pi-session/data"). Unescaped, Dapr's route
+	// splits at the slash and the lookup 404s (live: ERR_DIRECT_INVOKE).
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		fmt.Sprintf("%s/v1.0/state/%s/%s", c.BaseURL, store, key), nil)
+		fmt.Sprintf("%s/v1.0/state/%s/%s", c.BaseURL, store, url.PathEscape(key)), nil)
 	if err != nil {
 		return "", err
 	}

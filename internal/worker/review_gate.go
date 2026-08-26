@@ -124,9 +124,14 @@ func reviewGate(ctx context.Context, deps Deps, wf *v1alpha1.Workflow) *review.E
 	if armed != nil && trigPR != "" && armed.ArmedPR != 0 && (armed.ArmedRepo != repo || armed.ArmedPR != pr) {
 		switch action {
 		case "labeled", "unlabeled", "label_updated":
-			// request-shaped: re-target (reset the armed head)
+			// request-shaped: re-target (reset the armed head AND the
+			// dispatch marker — it belongs to the OLD armed PR's review;
+			// carried across, Evaluate would scan the NEW PR's comments
+			// for a verdict that only ever posts on the old one, and the
+			// new PR waits "in flight" up to a full Horizon).
 			params.ArmedSha = ""
 			params.ArmedAt = time.Time{}
+			params.Dispatched = false
 		default:
 			// push-shaped on another PR: ignore — keep the armed review
 			deps.log()("review-ready: wake for pr=%d (%s) while armed on pr=%d — ignored, armed review preserved", pr, action, armed.ArmedPR)
@@ -247,22 +252,7 @@ func scopeRepos(wf *v1alpha1.Workflow) []string {
 }
 
 func repoInScope(wf *v1alpha1.Workflow, repo string) bool {
-	scope := scopeRepos(wf)
-	for _, r := range scope {
-		if r == repo {
-			return true
-		}
-	}
-	if len(scope) == 0 {
-		return false
-	}
-	var cfg struct {
-		Repos []string `json:"repos"`
-	}
-	if err := json.Unmarshal(wf.Spec.Config, &cfg); err != nil {
-		return false
-	}
-	for _, r := range cfg.Repos {
+	for _, r := range scopeRepos(wf) {
 		if r == repo {
 			return true
 		}

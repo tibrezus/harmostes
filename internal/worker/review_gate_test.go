@@ -674,3 +674,56 @@ func verdictServerNoVerdictYet(t *testing.T) *httptest.Server {
 	t.Cleanup(srv.Close)
 	return srv
 }
+
+// #250 r5: a labeled wake on a DIFFERENT PR while a review is dispatched
+// must retarget with a FRESH slot — the old PR's dispatch marker must not
+// leak, or the new PR waits "in flight" (scanning the wrong PR's comments)
+// for up to a full Horizon.
+func TestReviewGateLabelWakeRetargetsWhileDispatched(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(req.URL.Path, "/pulls/7"):
+			// the NEW PR: labeled, green → must PROCEED on its own merits
+			json.NewEncoder(w).Encode(map[string]any{
+				"state": "open", "head": map[string]string{"sha": "newpr777"},
+				"base":   map[string]string{"ref": "main"},
+				"labels": []map[string]string{{"name": "needs-review"}},
+			})
+		case strings.Contains(req.URL.Path, "/branch_protections/"):
+			json.NewEncoder(w).Encode(map[string]any{"status_check_contexts": []string{"ci / build-test (push)"}})
+		case strings.HasSuffix(req.URL.Path, "/statuses"):
+			json.NewEncoder(w).Encode([]map[string]string{
+				{"context": "ci / build-test (push)", "status": "success"},
+			})
+		default:
+			http.NotFound(w, req)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	st := &fakeStatus{}
+	wf := gateWorkflow()
+	since := metav1.Now()
+	// OLD armed review on #42, dispatched (in flight), still labeled.
+	wf.Status.ReviewReady = &v1alpha1.ReviewReadyStatus{
+		ArmedPR: 42, ArmedRepo: "git.rezus.cloud/tibrez/rhesadox",
+		ArmedSha: "abc123def456", ArmedSince: &since, DispatchedAt: &since,
+	}
+	// Labeled wake for #7.
+	os.Setenv("HARMOSTES_TRIGGER_PR", "git.rezus.cloud/tibrez/rhesadox#7")
+	os.Setenv("HARMOSTES_TRIGGER_ACTION", "labeled")
+	t.Cleanup(func() { os.Unsetenv("HARMOSTES_TRIGGER_PR"); os.Unsetenv("HARMOSTES_TRIGGER_ACTION") })
+
+	env := reviewGate(context.Background(), testDeps(st), wf)
+	if env == nil || env.PR != 7 {
+		t.Fatalf("labeled #7 (green) must proceed on retarget, got env=%+v status=%+v", env, st.last.ReviewReady)
+	}
+	rr := st.last.ReviewReady
+	if rr.ArmedPR != 7 || rr.DispatchedAt == nil {
+		t.Fatalf("retarget must arm #7 with a FRESH dispatch marker, got %+v", rr)
+	}
+	// The stale marker never made #7 wait in flight: it proceeded (env != nil
+	// above) — the r5 bug would have returned nil with waiting/in-flight.
+}

@@ -243,7 +243,10 @@ func TestGetStateEscapesKeyInPath(t *testing.T) {
 	if rawPath != "/v1.0/state/statestore/wf:run:pi-session%2Fdata" {
 		t.Fatalf("key not escaped in path: %s", rawPath)
 	}
-	if got != `"gz1:blob"` {
+	// GetState unwraps one JSON-string layer (client.go:100–105): a body of
+	// "gz1:blob" (quoted) is returned bare — same contract this PR pins in
+	// the UI shape-tolerance test.
+	if got != "gz1:blob" {
 		t.Fatalf("got %q", got)
 	}
 }

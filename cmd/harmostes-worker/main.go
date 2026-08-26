@@ -260,7 +260,12 @@ func main() {
 	// conversation, forkable later (pi --fork). Default on; "off" disables.
 	piSessions := envDefault("HARMOSTES_PI_SESSIONS", "/tmp/harmostes-pi-sessions")
 	if piSessions != "off" {
-		_ = os.MkdirAll(piSessions, 0o755)
+		if err := os.MkdirAll(piSessions, 0o755); err != nil {
+			// Not fatal: runs proceed, pi sessions just don't persist —
+			// but say so, or "off" and "broken" look identical (#243 r1).
+			logf("pi session root unavailable, persistence off: %v", err)
+			piSessions = ""
+		}
 	} else {
 		piSessions = ""
 	}

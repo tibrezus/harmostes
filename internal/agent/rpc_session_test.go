@@ -23,7 +23,9 @@ func TestRPCSessionPersistenceArgs(t *testing.T) {
 	argsOut := filepath.Join(dir, "argv")
 
 	fake := filepath.Join(dir, "fake-pi")
-	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"" + argsOut + "\"\n" +
+	// argv is written atomically (tmp + mv) so a concurrent reader never
+	// sees a partial spawn line.
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"" + argsOut + ".tmp\" && mv \"" + argsOut + ".tmp\" \"" + argsOut + "\"\n" +
 		"while [ $# -gt 0 ]; do\n" +
 		"  if [ \"$1\" = \"--session-dir\" ]; then echo '{\"fake\":1}' > \"$2/session.jsonl\"; fi\n" +
 		"  shift\ndone\nexit 0\n"
@@ -36,19 +38,7 @@ func TestRPCSessionPersistenceArgs(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer rpc.Abort(context.Background())
-	// give the fake a moment to write argv
-	var argv []byte
-	for i := 0; i < 100; i++ {
-		argv, _ = os.ReadFile(argsOut)
-		if len(argv) > 0 {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	args := string(argv)
-	if args == "" {
-		t.Fatal("fake pi argv not recorded")
-	}
+	args := readArgv(t, argsOut)
 	if strings.Contains(args, "--no-session") {
 		t.Error("--no-session must never be passed when persisting sessions")
 	}
@@ -63,7 +53,11 @@ func TestRPCSessionPersistenceArgs(t *testing.T) {
 		t.Errorf("SessionFiles() = %v, want the file the fake wrote", files)
 	}
 
-	// SessionRoot empty → no session flags, SessionFiles nil.
+	// SessionRoot empty → historical behavior preserved: --no-session IS
+	// passed (non-opting callers like cmd/harmostes-agent write no session
+	// files anywhere), SessionFiles nil. Clear the argv recorder first so
+	// readArgv waits for THIS spawn, not rpc1's line.
+	_ = os.Remove(argsOut)
 	rpc2, err := NewRPC(context.Background(), RPCOptions{PiPath: fake})
 	if err != nil {
 		t.Fatal(err)
@@ -72,4 +66,21 @@ func TestRPCSessionPersistenceArgs(t *testing.T) {
 	if got := rpc2.SessionFiles(); got != nil {
 		t.Errorf("SessionFiles() without root = %v, want nil", got)
 	}
+	argv2 := readArgv(t, argsOut)
+	if !strings.Contains(argv2, "--no-session") {
+		t.Errorf("SessionRoot empty must pass --no-session, got: %s", argv2)
+	}
+}
+
+func readArgv(t *testing.T, path string) string {
+	t.Helper()
+	for i := 0; i < 100; i++ {
+		argv, _ := os.ReadFile(path)
+		if len(argv) > 0 {
+			return string(argv)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("fake pi argv not recorded")
+	return ""
 }

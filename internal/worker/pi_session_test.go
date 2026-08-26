@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -41,9 +42,22 @@ func TestSavePiSessionRoundTripAndRedaction(t *testing.T) {
 	if err := SavePiSession(context.Background(), dc, "statestore", "pr-review-x", "run-1", []string{old, newest}); err != nil {
 		t.Fatal(err)
 	}
-	payload, ok := dc.saved["pr-review-x:run-1:pi-session"]
+	// Metadata key: tiny JSON, the O(1) availability probe's target.
+	metaRaw, ok := dc.saved["pr-review-x:run-1:pi-session"]
 	if !ok {
-		t.Fatal("pi-session key not saved")
+		t.Fatal("metadata key not saved")
+	}
+	var meta PiSessionMeta
+	if err := json.Unmarshal([]byte(metaRaw), &meta); err != nil {
+		t.Fatalf("metadata not JSON: %v", err)
+	}
+	if meta.Bytes != len(secret) {
+		t.Errorf("meta.Bytes = %d, want %d", meta.Bytes, len(secret))
+	}
+	// Data key: the gz1 blob, never probed by availability checks.
+	payload, ok := dc.saved["pr-review-x:run-1:pi-session/data"]
+	if !ok {
+		t.Fatal("data key not saved")
 	}
 	if !strings.HasPrefix(payload, agent.PiSessionMarker) {
 		t.Fatalf("payload missing %s marker", agent.PiSessionMarker)

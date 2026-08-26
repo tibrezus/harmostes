@@ -482,7 +482,16 @@ type piSessionDapr struct {
 }
 
 func (d *piSessionDapr) GetStateFromStore(_ context.Context, _, key string, value any) (bool, error) {
-	if strings.HasSuffix(key, ":pi-session") {
+	// metadata key: the O(1) probe target
+	if strings.HasSuffix(key, ":pi-session") && !strings.HasSuffix(key, ":pi-session/data") {
+		b, _ := json.Marshal(map[string]any{"bytes": 10, "savedAt": "2026-08-26T00:00:00Z"})
+		if err := json.Unmarshal(b, value); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	// data key: the gz1 blob
+	if strings.HasSuffix(key, ":pi-session/data") {
 		if s, ok := value.(*string); ok {
 			*s = d.payload
 			return true, nil

@@ -86,15 +86,25 @@ func NewRPC(ctx context.Context, opts RPCOptions) (*RPC, error) {
 	if pi == "" {
 		pi = "pi"
 	}
+	// Persistence is opt-in via SessionRoot (#243). Callers that don't opt
+	// in keep the historical --no-session behavior: pi writes no session
+	// file anywhere (cmd/harmostes-agent relies on exactly that).
 	args := append([]string{"--mode", "rpc"}, opts.Args...)
-	// Native session persistence (#243): a fresh session dir per RPC plus a
-	// unique session id. The id guarantees a NEW session per spawn — a reused
-	// id would silently continue an old conversation — and the fresh dir makes
-	// the file findable without racing concurrent runs on one pod.
+	if opts.SessionRoot == "" {
+		args = append(args, "--no-session")
+	}
+	// Opted in: a fresh session dir per RPC plus a unique session id. The id
+	// guarantees a NEW session per spawn — a reused id would silently
+	// continue an old conversation — and the fresh dir makes the file
+	// findable without racing concurrent runs on one pod.
 	sessionDir := ""
 	if opts.SessionRoot != "" {
 		dir, err := os.MkdirTemp(opts.SessionRoot, "run-")
-		if err == nil {
+		if err != nil {
+			// Observable degradation (#243 r1): a failed mkdir would
+			// otherwise be indistinguishable from persistence being off.
+			logf(opts.Log, Event{Type: "session_dir_error", Message: err.Error()})
+		} else {
 			sessionDir = dir
 			args = append(args,
 				"--session-dir", dir,

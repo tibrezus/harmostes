@@ -355,11 +355,15 @@ func (s *Server) handleAttemptSession(w http.ResponseWriter, r *http.Request) {
 
 	// Forkable pi session availability (#243): the button only renders when
 	// the worker actually uploaded one (kernel ≥ 1.2.0-70 era runs have none).
+	// Probe the tiny metadata key, never the blob (O(1) vs up to ~27 MB).
 	hasPiSession := false
 	if s.dapr != nil {
-		var piPayload string
+		var meta struct {
+			Bytes   int    `json:"bytes"`
+			SavedAt string `json:"savedAt"`
+		}
 		if found2, _ := s.dapr.GetStateFromStore(r.Context(), "statestore",
-			fmt.Sprintf("%s:%s:pi-session", wfName, jobName), &piPayload); found2 {
+			fmt.Sprintf("%s:%s:pi-session", wfName, jobName), &meta); found2 {
 			hasPiSession = true
 		}
 	}
@@ -397,7 +401,7 @@ func (s *Server) handleAttemptPiSession(w http.ResponseWriter, r *http.Request) 
 	wfName := workflowCRName(att.Spec.WorkflowRef)
 	var payload string
 	found, err := s.dapr.GetStateFromStore(r.Context(), "statestore",
-		fmt.Sprintf("%s:%s:pi-session", wfName, jobName), &payload)
+		fmt.Sprintf("%s:%s:pi-session/data", wfName, jobName), &payload)
 	if err != nil || !found {
 		http.NotFound(w, r)
 		return

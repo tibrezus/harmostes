@@ -269,13 +269,26 @@ func (r RPCAgentRunner) Run(ctx context.Context, task string, gate agent.Gate, m
 // ~1-3 MiB; beyond this something is wrong, not interesting.
 const maxPiSession = 20 << 20
 
-// SavePiSession uploads the newest pi session file for a run to the state
-// store under "<workflow>:<run>:pi-session", redacted (the #115 leak class),
-// gzip+base64 wrapped with a "gz1:" marker. The marker lets the UI decode
-// without sniffing and leaves room for future encodings. Best-effort: errors
-// are returned, callers log and move on — a missing fork is never a run
-// failure. On success the local file is removed (pool pods are long-lived;
-// /tmp would otherwise accumulate).
+// PiSession keys: the data blob lives under "<wf>:<run>:pi-session/data"
+// (gzip+base64, up to ~27 MB encoded); a tiny JSON metadata key under
+// "<wf>:<run>:pi-session" marks availability so the UI's probe is O(1),
+// never a full-blob fetch (#243 r1). Metadata is written AFTER the blob:
+// if it exists, the data is there.
+const (
+	piSessionDataSuffix = "/data"
+)
+
+// PiSessionMeta is the metadata payload stored beside a session blob.
+type PiSessionMeta struct {
+	Bytes   int    `json:"bytes"`   // raw (pre-compression) size
+	SavedAt string `json:"savedAt"` // RFC3339
+}
+
+// SavePiSession uploads the newest pi session file for a run: redacted (the
+// #115 leak class), gzip+base64 wrapped with the agent.PiSessionMarker.
+// Best-effort: errors are returned, callers log and move on — a missing
+// fork is never a run failure. On success the local file is removed (pool
+// pods are long-lived; /tmp would otherwise accumulate).
 func SavePiSession(ctx context.Context, dc dapr.Client, store, workflow, run string, files []string) error {
 	if dc == nil || len(files) == 0 {
 		return nil
@@ -297,9 +310,13 @@ func SavePiSession(ctx context.Context, dc dapr.Client, store, workflow, run str
 		return err
 	}
 	payload := agent.PiSessionMarker + base64.StdEncoding.EncodeToString(buf.Bytes())
-	key := fmt.Sprintf("%s:%s:pi-session", workflow, run)
-	if err := dc.SaveState(ctx, store, key, payload); err != nil {
+	base := fmt.Sprintf("%s:%s:pi-session", workflow, run)
+	if err := dc.SaveState(ctx, store, base+piSessionDataSuffix, payload); err != nil {
 		return err
+	}
+	meta, _ := json.Marshal(PiSessionMeta{Bytes: len(raw), SavedAt: time.Now().UTC().Format(time.RFC3339)})
+	if err := dc.SaveState(ctx, store, base, string(meta)); err != nil {
+		return err // blob already stored; a missing metadata key just hides the button
 	}
 	_ = os.Remove(file)
 	return nil

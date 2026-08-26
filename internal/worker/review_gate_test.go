@@ -268,6 +268,7 @@ func TestReviewGateUnrelatedPushDoesNotHijackArmed(t *testing.T) {
 }
 
 func TestReviewGateLabelWakeRetargets(t *testing.T) {
+	clearTriggerEnv(t)
 	// A labeled wake on another PR re-targets (newest REQUEST wins).
 	srv := reviewServer(t, "open", []string{"needs-review"},
 		map[string]string{"ci / build-test (push)": "success"}, []string{"ci / build-test (push)"})
@@ -726,4 +727,48 @@ func TestReviewGateLabelWakeRetargetsWhileDispatched(t *testing.T) {
 	}
 	// The stale marker never made #7 wait in flight: it proceeded (env != nil
 	// above) — the r5 bug would have returned nil with waiting/in-flight.
+}
+
+// Dispatched + horizon: a run that dies (outage class) must be released by
+// the horizon standdown — armed slot AND marker cleared, backlog can re-arm.
+func TestDispatchedHorizonReleasesSlot(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(req.URL.Path, "/pulls/42"):
+			json.NewEncoder(w).Encode(map[string]any{
+				"state": "open", "head": map[string]string{"sha": "abc123def456"},
+				"base":   map[string]string{"ref": "main"},
+				"labels": []map[string]string{{"name": "needs-review"}},
+			})
+		case strings.Contains(req.URL.Path, "/branch_protections/"):
+			json.NewEncoder(w).Encode(map[string]any{"status_check_contexts": []string{"ci / build-test (push)"}})
+		case strings.HasSuffix(req.URL.Path, "/statuses"):
+			json.NewEncoder(w).Encode([]map[string]string{
+				{"context": "ci / build-test (push)", "status": "success"},
+			})
+		case strings.Contains(req.URL.Path, "/issues/42/comments"):
+			json.NewEncoder(w).Encode([]map[string]any{})
+		default:
+			http.NotFound(w, req)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	st := &fakeStatus{}
+	wf := gateWorkflow()
+	old := metav1.NewTime(time.Now().Add(-7 * time.Hour)) // beyond the 6h horizon
+	wf.Status.ReviewReady = &v1alpha1.ReviewReadyStatus{
+		ArmedPR: 42, ArmedRepo: "git.rezus.cloud/tibrez/rhesadox",
+		ArmedSha: "abc123def456", ArmedSince: &old, DispatchedAt: &old,
+	}
+	env := reviewGate(context.Background(), testDeps(st), wf)
+	if env != nil {
+		t.Fatal("horizon-exceeded dispatched review must not dispatch")
+	}
+	rr := st.last.ReviewReady
+	if rr == nil || rr.LastDecision != "standdown" || rr.ArmedPR != 0 || rr.DispatchedAt != nil {
+		t.Fatalf("horizon must release slot + marker, got %+v", rr)
+	}
 }

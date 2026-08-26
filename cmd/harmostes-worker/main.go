@@ -258,9 +258,9 @@ func main() {
 	// Inject session callbacks into the agent runner.
 	// SessionRoot keeps pi's native session file per run (#243): the exact
 	// conversation, forkable later (pi --fork). Default on; "off" disables.
-	piSessions := envDefault("HARMOSTES_PI_SESSIONS", "/tmp/harmostes-pi-sessions")
+	piSessions := envOr("HARMOSTES_PI_SESSIONS", "/tmp/harmostes-pi-sessions")
 	if piSessions != "off" {
-		if err := os.MkdirAll(piSessions, 0o755); err != nil {
+		if err := os.MkdirAll(piSessions, 0o700); err != nil {
 			// Not fatal: runs proceed, pi sessions just don't persist —
 			// but say so, or "off" and "broken" look identical (#243 r1).
 			logf("pi session root unavailable, persistence off: %v", err)
@@ -675,11 +675,4 @@ func subjectFromEnv() timeline.Subject {
 		s.Title = t
 	}
 	return s
-}
-
-func envDefault(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return def
 }

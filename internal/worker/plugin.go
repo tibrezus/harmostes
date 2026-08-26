@@ -294,6 +294,10 @@ func SavePiSession(ctx context.Context, dc dapr.Client, store, workflow, run str
 		return nil
 	}
 	file := files[len(files)-1] // newest (SessionFiles sorts oldest-first)
+	// The local file holds the UNREDACTED conversation (redaction happens
+	// at upload). Remove it on every exit after the read attempt — a failed
+	// or oversized upload must not leave raw transcripts on the pod.
+	defer func() { _ = os.Remove(file) }()
 	raw, err := os.ReadFile(file)
 	if err != nil {
 		return err
@@ -318,7 +322,6 @@ func SavePiSession(ctx context.Context, dc dapr.Client, store, workflow, run str
 	if err := dc.SaveState(ctx, store, base, string(meta)); err != nil {
 		return err // blob already stored; a missing metadata key just hides the button
 	}
-	_ = os.Remove(file)
 	return nil
 }
 

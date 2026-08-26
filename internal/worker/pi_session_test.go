@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tibrezus/harmostes/internal/agent"
 	"github.com/tibrezus/harmostes/internal/dapr"
@@ -103,4 +104,69 @@ func TestSavePiSessionCapsSize(t *testing.T) {
 	if len(dc.saved) != 0 {
 		t.Fatal("nothing should be saved for an oversized session")
 	}
+}
+
+// Run wiring composition (#244 r2): RPCAgentRunner.Run must pass the files pi
+// wrote to the SessionFiles hook, after pi has exited (flush-at-exit). The
+// fake pi speaks just enough JSONL: it answers a prompt with agent_end and
+// writes the session file pi would.
+func TestRPCAgentRunnerSessionFilesWiring(t *testing.T) {
+	dir := t.TempDir()
+	root := filepath.Join(dir, "sessions")
+	_ = os.MkdirAll(root, 0o700)
+
+	fake := filepath.Join(dir, "fake-pi")
+	script := `#!/bin/sh
+# write the session file pi would (any --session-dir arg wins)
+prev=""
+for a in "$@"; do
+  if [ "$prev" = "--session-dir" ]; then echo '{"fake":"session"}' > "$a/pi.jsonl"; fi
+  prev="$a"
+done
+# answer prompts with agent_end until stdin closes
+while IFS= read -r line; do
+  case "$line" in *prompt*) printf '%s\n' '{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"ok"}]}]}'
+  esac
+done
+exit 0
+`
+	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	greenGate := &fixedGate{green: true}
+	var hooked []string
+	hookDone := make(chan struct{})
+	r := RPCAgentRunner{
+		Opts: agent.RPCOptions{PiPath: fake, SessionRoot: root},
+		SessionFiles: func(_ context.Context, files []string) {
+			hooked = files
+			close(hookDone)
+		},
+	}
+	go func() {
+		_, _ = r.Run(context.Background(), "do thing", greenGate, 1, nil)
+	}()
+	select {
+	case <-hookDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("SessionFiles hook never fired")
+	}
+	if len(hooked) == 0 {
+		t.Fatal("hook received no files — pi session never persisted")
+	}
+	raw, err := os.ReadFile(hooked[len(hooked)-1])
+	if err != nil {
+		t.Fatalf("hooked file unreadable: %v", err)
+	}
+	if !strings.Contains(string(raw), "fake") {
+		t.Fatalf("hooked file is not the fake session: %s", raw)
+	}
+}
+
+// fixedGate is an agent.Gate with a fixed outcome.
+type fixedGate struct{ green bool }
+
+func (g *fixedGate) Run(context.Context) (bool, string, error) {
+	return g.green, "ok", nil
 }

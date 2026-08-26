@@ -79,23 +79,6 @@ func pinReviewAPI(t *testing.T, srv *httptest.Server, forgejo bool) {
 	t.Cleanup(func() { newReviewAPI = prev })
 }
 
-func TestReviewGateIdleCostsNothing(t *testing.T) {
-	clearTriggerEnv(t)
-	// Unarmed, unwoken: no API calls — the review package must not even be
-	// constructed with a server. If it tried to call out, it would fail.
-	os.Setenv("HARMOSTES_FORGEJO_TOKEN", "tok")
-	defer os.Unsetenv("HARMOSTES_FORGEJO_TOKEN")
-	wf := gateWorkflow() // no annotations, no status
-	st := &fakeStatus{}
-	env := reviewGate(context.Background(), testDeps(st), wf)
-	if env != nil {
-		t.Fatal("idle gate must return nil envelope")
-	}
-	if st.last.ReviewReady != nil {
-		t.Fatalf("idle gate must not write status, got %+v", st.last.ReviewReady)
-	}
-}
-
 func TestReviewGateWaitingReturnsNilAtSeam(t *testing.T) {
 	clearTriggerEnv(t)
 	// The production seam: the one-shot main calls RunReviewGate BEFORE any

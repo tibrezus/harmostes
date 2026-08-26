@@ -694,10 +694,18 @@ func (a *RESTAPI) ListLabeledOpenPulls(ctx context.Context, repo, label string) 
 			Name string `json:"name"`
 		} `json:"labels"`
 	}
-	// One page of 50 open PRs is far beyond any labeled backlog in practice;
-	// oldest-first (`sort=oldest`) puts the most-starved PR in front without
-	// client-side sorting of every page.
-	if err := a.get(ctx, host, fmt.Sprintf("/repos/%s/pulls?state=open&sort=oldest&limit=50", host.RepoPath), "application/json", &raw); err != nil {
+	// One page of 50 open PRs is far beyond any labeled backlog in practice,
+	// oldest-first so the most-starved PR is first without client-side
+	// sorting. Param dialects differ per host kind (same reasoning as
+	// ListComments): GitHub has no sort=oldest (created|updated|popularity|
+	// long-running + direction=asc) and reads per_page, not limit — the
+	// shared form would return newest-first capped at 30 there, arming the
+	// newest and hiding the starved beyond 30 (#250 r1).
+	q := "state=open&sort=oldest&limit=50"
+	if host.Kind == HostGitHub {
+		q = "state=open&sort=created&direction=asc&per_page=50"
+	}
+	if err := a.get(ctx, host, fmt.Sprintf("/repos/%s/pulls?%s", host.RepoPath, q), "application/json", &raw); err != nil {
 		return nil, err
 	}
 	var out []PullRequest

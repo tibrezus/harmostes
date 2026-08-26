@@ -297,10 +297,13 @@ func metaTime(t *time.Time) *metav1.Time {
 	return &m
 }
 
-// oldestLabeledOpen scans the workflow's scope repos for open PRs carrying
-// the review label and returns the oldest-updated one (host-sorted oldest
-// first). API-shaped failures degrade to "nothing found" — a broken listing
-// must not wedge the gate, the next sweep retries.
+// oldestLabeledOpen returns the oldest labeled open PR of the FIRST scope
+// repo (config order) that has one. Per-repo oldest (host API sorts
+// oldest-first); cross-repo ordering is config order, not updated_at — with
+// the single-repo scopes this instance runs, the distinction is moot, and
+// the comment says what the code does. API-shaped failures degrade to
+// "nothing found" — a broken listing must not wedge the gate, the next sweep
+// retries.
 func oldestLabeledOpen(ctx context.Context, deps Deps, wf *v1alpha1.Workflow) (string, int) {
 	api := newReviewAPI()
 	rrCfg := wf.Spec.ReviewReady

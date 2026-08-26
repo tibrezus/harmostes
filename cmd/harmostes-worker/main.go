@@ -256,11 +256,25 @@ func main() {
 	}
 
 	// Inject session callbacks into the agent runner.
+	// SessionRoot keeps pi's native session file per run (#243): the exact
+	// conversation, forkable later (pi --fork). Default on; "off" disables.
+	piSessions := envOr("HARMOSTES_PI_SESSIONS", "/tmp/harmostes-pi-sessions")
+	if piSessions != "off" {
+		if err := os.MkdirAll(piSessions, 0o700); err != nil {
+			// Not fatal: runs proceed, pi sessions just don't persist —
+			// but say so, or "off" and "broken" look identical (#243 r1).
+			logf("pi session root unavailable, persistence off: %v", err)
+			piSessions = ""
+		}
+	} else {
+		piSessions = ""
+	}
 	deps.Agent = worker.RPCAgentRunner{
 		Opts: agent.RPCOptions{
-			Args:    worker.PiArgs(wf.Spec.Agent),
-			Workdir: workdir,
-			Env:     os.Environ(),
+			Args:        worker.PiArgs(wf.Spec.Agent),
+			Workdir:     workdir,
+			Env:         os.Environ(),
+			SessionRoot: piSessions,
 			Log: func(ev agent.Event) {
 				logfFn("agent: %s %s", ev.Type, ev.ToolName)
 			},
@@ -268,6 +282,13 @@ func main() {
 		SessionWriter: sessionWriter,
 		ToolPublisher: toolPublisher,
 		SessionMeta:   sessionMeta,
+		// Upload the forkable session alongside the transcript record —
+		// best-effort, the run already succeeded.
+		SessionFiles: func(fctx context.Context, files []string) {
+			if err := worker.SavePiSession(fctx, deps.Dapr, deps.DaprStateStore, workflow, runID, files); err != nil {
+				logfFn("pi session upload failed: %v", err)
+			}
+		},
 	}
 
 	// ── Single execution path: graph executor ────────────────────────────

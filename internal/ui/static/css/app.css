@@ -1821,4 +1821,32 @@ code, pre {
 	gap: 0.75rem;
 	flex-wrap: wrap;
 	margin-bottom: 0.75rem;
+
+/* ===== Session viewer: fork hint ===== */
+.pi-fork-hint {
+	margin-top: 0.75rem;
+	border-top: 1px solid var(--border);
+	padding-top: 0.625rem;
+}
+
+.pi-fork-hint summary {
+	cursor: pointer;
+	font-family: var(--font-display);
+	font-size: 0.625rem;
+	text-transform: uppercase;
+	letter-spacing: 0.08em;
+	color: var(--fg-muted);
+}
+
+.pi-fork-hint summary:hover { color: var(--accent); }
+
+.pi-fork-hint pre {
+	margin: 0.5rem 0;
+	padding: 0.5rem 0.75rem;
+	background: var(--bg-alt);
+	border: 1px solid var(--border);
+	font-family: var(--font-mono);
+	font-size: 0.875rem;
+	line-height: 1.25;
+	overflow-x: auto;
 }

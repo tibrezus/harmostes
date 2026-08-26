@@ -9,10 +9,14 @@ package worker
 
 import (
 	"bufio"
+	"bytes"
+	"compress/gzip"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -23,6 +27,7 @@ import (
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
 	"github.com/tibrezus/harmostes/internal/agent"
+	"github.com/tibrezus/harmostes/internal/dapr"
 	"github.com/tibrezus/harmostes/internal/observability"
 )
 
@@ -223,6 +228,11 @@ type RPCAgentRunner struct {
 	SessionWriter agent.SessionWriter // optional: persists session to Dapr state
 	ToolPublisher agent.ToolPublisher // optional: publishes per-tool pub/sub events
 	SessionMeta   agent.SessionMeta   // identity metadata for the session record
+
+	// SessionFiles, when set, receives the pi session files the RPC wrote,
+	// after the pi process has exited (files are flushed at exit). Used to
+	// upload the forkable native session for the UI (#243).
+	SessionFiles func(ctx context.Context, files []string)
 }
 
 func (r RPCAgentRunner) Run(ctx context.Context, task string, gate agent.Gate, maxFixes int, log agent.Logger, opts ...agent.TaskOption) (agent.Result, error) {
@@ -240,7 +250,85 @@ func (r RPCAgentRunner) Run(ctx context.Context, task string, gate agent.Gate, m
 		allOpts = append(allOpts, agent.WithToolPublisher(r.ToolPublisher))
 	}
 	allOpts = append(allOpts, opts...)
-	return agent.Task(ctx, rpc, gate, task, maxFixes, log, allOpts...)
+	res, err := agent.Task(ctx, rpc, gate, task, maxFixes, log, allOpts...)
+	// Stop pi before reading its session file (flushed at exit); Abort is
+	// idempotent so the caller-side contract is unchanged.
+	_ = rpc.Abort(context.WithoutCancel(ctx))
+	if r.SessionFiles != nil {
+		files := rpc.SessionFiles()
+		if len(files) > 0 {
+			// WithoutCancel: a timed-out or aborted run still gets its
+			// session uploaded — those are exactly the runs worth forking.
+			r.SessionFiles(context.WithoutCancel(ctx), files)
+		}
+	}
+	return res, err
+}
+
+// maxPiSession caps a persisted pi session: 20 MiB raw — a review session is
+// ~1-3 MiB; beyond this something is wrong, not interesting.
+const maxPiSession = 20 << 20
+
+// PiSession keys: the data blob lives under "<wf>:<run>:pi-session/data"
+// (gzip+base64, up to ~27 MB encoded); a tiny JSON metadata key under
+// "<wf>:<run>:pi-session" marks availability so the UI's probe is O(1),
+// never a full-blob fetch (#243 r1). Metadata is written AFTER the blob:
+// if it exists, the data is there.
+const (
+	piSessionDataSuffix = "/data"
+)
+
+// PiSessionMeta is the metadata payload stored beside a session blob.
+type PiSessionMeta struct {
+	Bytes   int    `json:"bytes"`   // raw (pre-compression) size
+	SavedAt string `json:"savedAt"` // RFC3339
+}
+
+// SavePiSession uploads the newest pi session file for a run: redacted (the
+// #115 leak class), gzip+base64 wrapped with the agent.PiSessionMarker.
+// Best-effort: errors are returned, callers log and move on — a missing
+// fork is never a run failure. On success the local file is removed (pool
+// pods are long-lived; /tmp would otherwise accumulate).
+func SavePiSession(ctx context.Context, dc dapr.Client, store, workflow, run string, files []string) error {
+	if dc == nil || len(files) == 0 {
+		return nil
+	}
+	file := files[len(files)-1] // newest (SessionFiles sorts oldest-first)
+	// The local file holds the UNREDACTED conversation (redaction happens
+	// at upload). Remove it on every exit after the read attempt — a failed
+	// or oversized upload must not leave raw transcripts on the pod.
+	defer func() { _ = os.Remove(file) }()
+	if st, err := os.Stat(file); err == nil && st.Size() > maxPiSession {
+		// Cap check BEFORE reading: an anomalous multi-GB file must not be
+		// materialized in worker memory (an OOM here kills the worker after
+		// a successful run but before the run record is written).
+		return fmt.Errorf("pi session %s is %d bytes (cap %d), skipping upload", file, st.Size(), maxPiSession)
+	}
+	raw, err := os.ReadFile(file)
+	if err != nil {
+		return err
+	}
+	if len(raw) > maxPiSession {
+		return fmt.Errorf("pi session %s is %d bytes (cap %d), skipping upload", file, len(raw), maxPiSession)
+	}
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	if _, err := gz.Write([]byte(Redact(string(raw)))); err != nil {
+		return err
+	}
+	if err := gz.Close(); err != nil {
+		return err
+	}
+	payload := agent.PiSessionMarker + base64.StdEncoding.EncodeToString(buf.Bytes())
+	base := fmt.Sprintf("%s:%s:pi-session", workflow, run)
+	if err := dc.SaveState(ctx, store, base+piSessionDataSuffix, payload); err != nil {
+		return err
+	}
+	meta, _ := json.Marshal(PiSessionMeta{Bytes: len(raw), SavedAt: time.Now().UTC().Format(time.RFC3339)})
+	if err := dc.SaveState(ctx, store, base, string(meta)); err != nil {
+		return err // blob already stored; a missing metadata key just hides the button
+	}
+	return nil
 }
 
 // PiArgs builds the pi --mode rpc extra args from a Workflow's agent spec.

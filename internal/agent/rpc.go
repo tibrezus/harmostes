@@ -3,12 +3,20 @@ package agent
 import (
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
+	"time"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -34,6 +42,25 @@ type RPC struct {
 	// agent_end snapshot. Warm sessions re-send the whole conversation on
 	// every agent_end; only messages beyond this index belong to this turn.
 	seenAgentMsgs int
+
+	// sessionDir is the per-RPC pi session directory (empty when SessionRoot
+	// was not configured). Exactly one *.jsonl lands in it per spawn.
+	sessionDir string
+}
+
+// SessionFiles returns the pi session files this RPC wrote, oldest first.
+// Empty when session persistence is off or pi wrote nothing (crash, abort
+// before first flush). Callers should read them after Abort.
+func (r *RPC) SessionFiles() []string {
+	if r.sessionDir == "" {
+		return nil
+	}
+	matches, err := filepath.Glob(filepath.Join(r.sessionDir, "*.jsonl"))
+	if err != nil {
+		return nil
+	}
+	sort.Strings(matches)
+	return matches
 }
 
 // RPCOptions configures the pi subprocess.
@@ -43,6 +70,13 @@ type RPCOptions struct {
 	Workdir string   // agent working directory (the repo under work)
 	Env     []string // environment (must include the model API key, e.g. LITELLM_API_KEY)
 	Log     Logger
+
+	// SessionRoot, when set, makes every RPC persist its pi session as a
+	// native session file: pi runs with --session-dir <fresh dir under
+	// SessionRoot> and a unique --session-id, so the conversation survives
+	// the process and can be forked later (pi --fork <file>). Empty disables
+	// persistence (pi still sessions, but in its default location).
+	SessionRoot string
 }
 
 // NewRPC starts a pi --mode rpc subprocess and begins reading its event stream.
@@ -52,7 +86,36 @@ func NewRPC(ctx context.Context, opts RPCOptions) (*RPC, error) {
 	if pi == "" {
 		pi = "pi"
 	}
-	args := append([]string{"--mode", "rpc", "--no-session"}, opts.Args...)
+	// Persistence is opt-in via SessionRoot (#243). Callers that don't opt
+	// in keep the historical --no-session behavior: pi writes no session
+	// file anywhere (cmd/harmostes-agent relies on exactly that).
+	args := append([]string{"--mode", "rpc"}, opts.Args...)
+	if opts.SessionRoot == "" {
+		args = append(args, "--no-session")
+	}
+	// Opted in: a fresh session dir per RPC plus a unique session id. The id
+	// guarantees a NEW session per spawn — a reused id would silently
+	// continue an old conversation — and the fresh dir makes the file
+	// findable without racing concurrent runs on one pod.
+	sessionDir := ""
+	if opts.SessionRoot != "" {
+		dir, err := os.MkdirTemp(opts.SessionRoot, "run-")
+		if err != nil {
+			// Observable degradation (#243 r1): a failed mkdir would
+			// otherwise be indistinguishable from persistence being off.
+			logf(opts.Log, Event{Type: "session_dir_error", Message: err.Error()})
+			// pi persists sessions by DEFAULT — without this the raw,
+			// unredacted conversation lands in pi's own session dir,
+			// undiscoverable by SessionFiles() and never cleaned (#244 r3).
+			args = append(args, "--no-session")
+		} else {
+			sessionDir = dir
+			args = append(args,
+				"--session-dir", dir,
+				"--session-id", fmt.Sprintf("harmostes-%d", time.Now().UnixNano()),
+			)
+		}
+	}
 	cmd := exec.CommandContext(ctx, pi, args...)
 	cmd.Dir = opts.Workdir
 	cmd.Env = opts.Env
@@ -71,12 +134,13 @@ func NewRPC(ctx context.Context, opts RPCOptions) (*RPC, error) {
 		return nil, err
 	}
 	r := &RPC{
-		cmd:    cmd,
-		stdin:  stdin,
-		stdout: stdout,
-		log:    opts.Log,
-		events: make(chan Event, 128),
-		done:   make(chan struct{}),
+		cmd:        cmd,
+		stdin:      stdin,
+		stdout:     stdout,
+		log:        opts.Log,
+		events:     make(chan Event, 128),
+		done:       make(chan struct{}),
+		sessionDir: sessionDir,
 	}
 	go r.readLoop()
 	return r, nil
@@ -368,4 +432,28 @@ func absorbAgentEnd(raw json.RawMessage, r *RPC, usage *Usage, capture *TurnCapt
 		}
 	}
 	r.seenAgentMsgs = len(payload.Messages)
+}
+
+// PiSessionMarker prefixes every persisted pi-session payload ("gz1:" =
+// gzip + base64). LoadPiSession refuses unknown markers — encodings never
+// silently reinterpret.
+const PiSessionMarker = "gz1:"
+
+// LoadPiSession decodes what worker.SavePiSession stored ("gz1:" marker,
+// base64, gzip). Lives beside the pi spawn code it round-trips with; the
+// marker check refuses unknown encodings rather than misreading them.
+func LoadPiSession(payload string) ([]byte, error) {
+	if !strings.HasPrefix(payload, PiSessionMarker) {
+		return nil, fmt.Errorf("pi session payload has unknown encoding (prefix %q)", payload[:min(16, len(payload))])
+	}
+	compressed, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(payload, PiSessionMarker))
+	if err != nil {
+		return nil, err
+	}
+	zr, err := gzip.NewReader(bytes.NewReader(compressed))
+	if err != nil {
+		return nil, err
+	}
+	defer zr.Close()
+	return io.ReadAll(io.LimitReader(zr, 20<<20))
 }

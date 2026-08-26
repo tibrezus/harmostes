@@ -1,7 +1,10 @@
 package ui
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -321,7 +324,11 @@ type stubSessionDapr struct {
 
 func (d *stubSessionDapr) GetStateFromStore(_ context.Context, _, key string, value any) (bool, error) {
 	if key != d.key {
-		d.misses++
+		// The pi-session availability probe (#243) is an expected second key;
+		// only other keys count as misses (wrong transcript key).
+		if !strings.HasSuffix(key, ":pi-session") {
+			d.misses++
+		}
 		return false, nil
 	}
 	// Marshal-then-unmarshal keeps the stub honest about the target type.
@@ -413,5 +420,142 @@ func TestSessionPageTemplateDelegatedNotDeterministic(t *testing.T) {
 	}
 	if !strings.Contains(body, "Session transcript not available") {
 		t.Error("expected the neutral no-record state")
+	}
+}
+
+// #243: the forkable pi session download. Owner-gated, gz1-decoded, sensible
+// filename; 404 when the run predates session persistence.
+func TestPiSessionDownload(t *testing.T) {
+	wf := &v1alpha1.Workflow{
+		ObjectMeta: metav1.ObjectMeta{Name: "pr-review-x", Namespace: "test-ns", Labels: map[string]string{v1alpha1.OwnerLabel: "alice"}},
+	}
+	att := &v1alpha1.Attempt{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "attempt-pr-review-x-1", Namespace: "test-ns",
+			Labels: map[string]string{v1alpha1.OwnerLabel: "alice"},
+		},
+		Spec:   v1alpha1.AttemptSpec{WorkflowRef: "test-ns/pr-review-x", Owner: "alice"},
+		Status: v1alpha1.AttemptStatus{Runs: []v1alpha1.RunRecord{{Name: "pool-pod-1"}}},
+	}
+	srv := newAttemptTestServer(t, wf, att)
+	srv.logger = slog.Default()
+
+	get := func(user string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("GET", "/x", nil)
+		req = req.WithContext(withIdentity(req.Context(), &Identity{Username: user}))
+		req.SetPathValue("name", "attempt-pr-review-x-1")
+		req.SetPathValue("job", "pool-pod-1")
+		rec := httptest.NewRecorder()
+		srv.handleAttemptPiSession(rec, req)
+		return rec
+	}
+
+	// No stored session → 404.
+	if rec := get("alice"); rec.Code != http.StatusNotFound {
+		t.Fatalf("absent session: code=%d, want 404", rec.Code)
+	}
+	// Cross-owner → 404 (before any state read).
+	if rec := get("bob"); rec.Code != http.StatusNotFound {
+		t.Fatalf("cross-owner: code=%d, want 404", rec.Code)
+	}
+
+	// Store a real payload through the worker's encoder (round-trip contract).
+	srv.dapr = &piSessionDapr{payload: mustPiPayload(t, `{"type":"message_end","ok":true}`)}
+	rec := get("alice")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("present session: code=%d", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/x-ndjson; charset=utf-8" {
+		t.Errorf("content-type = %q", ct)
+	}
+	if cd := rec.Header().Get("Content-Disposition"); !strings.Contains(cd, `filename="pi-session-pool-pod-1.jsonl"`) {
+		t.Errorf("content-disposition = %q", cd)
+	}
+	if !strings.Contains(rec.Body.String(), `"ok":true`) {
+		t.Error("decoded body wrong")
+	}
+}
+
+type piSessionDapr struct {
+	DaprClient
+	payload string
+}
+
+func (d *piSessionDapr) GetStateFromStore(_ context.Context, _, key string, value any) (bool, error) {
+	// metadata key: the O(1) probe target
+	if strings.HasSuffix(key, ":pi-session") && !strings.HasSuffix(key, ":pi-session/data") {
+		b, _ := json.Marshal(map[string]any{"bytes": 10, "savedAt": "2026-08-26T00:00:00Z"})
+		if err := json.Unmarshal(b, value); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	// data key: the gz1 blob
+	if strings.HasSuffix(key, ":pi-session/data") {
+		if s, ok := value.(*string); ok {
+			*s = d.payload
+			return true, nil
+		}
+		return false, nil
+	}
+	// transcript key: hydrate whatever struct the handler passed
+	b, _ := json.Marshal(map[string]any{
+		"workflow": "pr-review-x", "runId": "pool-pod-1",
+		"model": "litellm/zai/glm-5.3", "green": true,
+		"turns": []map[string]any{{"label": "initial task", "response": "done"}},
+	})
+	if err := json.Unmarshal(b, value); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func mustPiPayload(t *testing.T, body string) string {
+	t.Helper()
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	if _, err := gz.Write([]byte(body)); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return "gz1:" + base64.StdEncoding.EncodeToString(buf.Bytes())
+}
+
+// The session page reveals the fork button exactly when a session exists.
+func TestSessionPageForkButtonVisibility(t *testing.T) {
+	wf := &v1alpha1.Workflow{
+		ObjectMeta: metav1.ObjectMeta{Name: "pr-review-x", Namespace: "test-ns", Labels: map[string]string{v1alpha1.OwnerLabel: "alice"}},
+	}
+	att := &v1alpha1.Attempt{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "attempt-pr-review-x-1", Namespace: "test-ns",
+			Labels: map[string]string{v1alpha1.OwnerLabel: "alice"},
+		},
+		Spec:   v1alpha1.AttemptSpec{WorkflowRef: "test-ns/pr-review-x", Owner: "alice"},
+		Status: v1alpha1.AttemptStatus{Runs: []v1alpha1.RunRecord{{Name: "pool-pod-1", Phase: "succeeded"}}},
+	}
+
+	render := func(daprSet *piSessionDapr) string {
+		srv := newAttemptTestServer(t, wf, att)
+		srv.logger = slog.Default()
+		if daprSet != nil {
+			srv.dapr = daprSet
+		}
+		req := httptest.NewRequest("GET", "/x", nil)
+		req = req.WithContext(withTestIdentity(req.Context()))
+		req.SetPathValue("name", "attempt-pr-review-x-1")
+		req.SetPathValue("job", "pool-pod-1")
+		rec := httptest.NewRecorder()
+		srv.handleAttemptSession(rec, req)
+		return rec.Body.String()
+	}
+
+	if strings.Contains(render(nil), "Fork session") {
+		t.Error("fork button rendered without a stored session")
+	}
+	if body := render(&piSessionDapr{payload: mustPiPayload(t, "{}")}); !strings.Contains(body, "Fork session") {
+		t.Error("fork button missing when a session exists")
 	}
 }

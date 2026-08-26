@@ -10,6 +10,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
+	"github.com/tibrezus/harmostes/internal/agent"
 )
 
 // attemptListData is the template data for the attempt list page.
@@ -194,6 +195,7 @@ type attemptSessionData struct {
 	RunName       string
 	Session       *agentSessionView
 	Deterministic bool
+	HasPiSession  bool
 }
 
 // agentSessionView is the session record adapted for template rendering.
@@ -351,12 +353,71 @@ func (s *Server) handleAttemptSession(w http.ResponseWriter, r *http.Request) {
 		deterministic = !s.agentEnabledFor(r.Context(), &wf)
 	}
 
+	// Forkable pi session availability (#243): the button only renders when
+	// the worker actually uploaded one (kernel ≥ 1.2.0-70 era runs have none).
+	// Probe the tiny metadata key, never the blob (O(1) vs up to ~27 MB).
+	hasPiSession := false
+	if s.dapr != nil {
+		var meta struct {
+			Bytes   int    `json:"bytes"`
+			SavedAt string `json:"savedAt"`
+		}
+		found2, err2 := s.dapr.GetStateFromStore(r.Context(), "statestore",
+			fmt.Sprintf("%s:%s:pi-session", wfName, jobName), &meta)
+		if err2 != nil {
+			// A state-store outage silently hides the Fork button otherwise —
+			// indistinguishable from "no session" (#244 r3).
+			s.logger.Error("pi session availability probe failed", "err", err2)
+		} else if found2 {
+			hasPiSession = true
+		}
+	}
+
 	data := attemptSessionData{
 		AttemptName:   attName,
 		WorkflowRef:   wfName,
 		RunName:       jobName,
 		Session:       sessionView,
 		Deterministic: deterministic,
+		HasPiSession:  hasPiSession,
 	}
 	s.render(w, r, "pages/session.html", data)
+}
+
+// handleAttemptPiSession serves the forkable native pi session file
+// (worker.SavePiSession payload: redacted, gz1-wrapped). Auth chain mirrors
+// the session page: attempt owner only.
+func (s *Server) handleAttemptPiSession(w http.ResponseWriter, r *http.Request) {
+	attName := r.PathValue("name")
+	jobName := r.PathValue("job")
+	att, err := s.getAttempt(r, attName)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	if att.Labels[v1alpha1.OwnerLabel] != identityFromContext(r.Context()).Username {
+		http.NotFound(w, r)
+		return
+	}
+	if s.dapr == nil {
+		http.NotFound(w, r)
+		return
+	}
+	wfName := workflowCRName(att.Spec.WorkflowRef)
+	var payload string
+	found, err := s.dapr.GetStateFromStore(r.Context(), "statestore",
+		fmt.Sprintf("%s:%s:pi-session/data", wfName, jobName), &payload)
+	if err != nil || !found {
+		http.NotFound(w, r)
+		return
+	}
+	raw, err := agent.LoadPiSession(payload)
+	if err != nil {
+		s.renderError(w, r, "Failed to decode pi session: "+err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/x-ndjson; charset=utf-8")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="pi-session-%s.jsonl"`, jobName))
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	_, _ = w.Write(raw)
 }

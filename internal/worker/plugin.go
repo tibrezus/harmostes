@@ -320,8 +320,15 @@ func SavePiSession(ctx context.Context, dc dapr.Client, store, workflow, run str
 		return err
 	}
 	payload := agent.PiSessionMarker + base64.StdEncoding.EncodeToString(buf.Bytes())
+	// The blob is stored as a JSON string (quoted): every state value in the
+	// store is JSON — the UI's read path json.Unmarshals whatever it finds,
+	// and a bare "gz1:…" would fail its decode (live: download 404).
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
 	base := fmt.Sprintf("%s:%s:pi-session", workflow, run)
-	if err := dc.SaveState(ctx, store, base+piSessionDataSuffix, payload); err != nil {
+	if err := dc.SaveState(ctx, store, base+piSessionDataSuffix, string(payloadJSON)); err != nil {
 		return err
 	}
 	meta, _ := json.Marshal(PiSessionMeta{Bytes: len(raw), SavedAt: time.Now().UTC().Format(time.RFC3339)})

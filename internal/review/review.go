@@ -476,6 +476,11 @@ type Params struct {
 	// WakeSHA is the trigger-revision from the wake event (the webhook's
 	// head SHA); used to arm on a fresh wake whose first PR fetch fails.
 	WakeSHA string
+	// Dispatched marks an armed review the gate already proceeded on: the
+	// agent run is (or was) in flight and the verdict hasn't been consumed.
+	// Sweeps must not re-dispatch it — the verdict window is the consume
+	// signal, mirroring the label-absent path.
+	Dispatched bool
 	// DisarmHint is set when the wake event already implies stand-down
 	// (e.g. action=closed).
 	DisarmHint bool
@@ -601,6 +606,23 @@ func Evaluate(ctx context.Context, api API, p Params) Result {
 		}
 	}
 
+	// In-flight discrimination (#250 r2): a dispatched review keeps the
+	// label until the deploy plugin removes it after posting the verdict.
+	// Green+label alone would re-proceed on every sweep — duplicate
+	// dispatch. The verdict window (armedAt − slack) is the durable consume
+	// signal, the same one the label-absent path uses.
+	if p.Dispatched {
+		since := armTime(p.ArmedAt, now).Add(-verdictSinceSlack)
+		comments, err := api.ListComments(ctx, p.Repo, p.PR, since)
+		if err != nil {
+			return Result{Evaluation: waiting("in-flight verdict check failed: " + err.Error()), NewArmedSha: pr.HeadSHA, NewArmedAt: armedAt}
+		}
+		if hasVerdict(comments) {
+			return Result{Evaluation: standdown("verdict posted — consumed"), NewArmedSha: ""}
+		}
+		return Result{Evaluation: waiting("review in flight — dispatched, verdict pending"), NewArmedSha: pr.HeadSHA, NewArmedAt: armedAt}
+	}
+
 	switch {
 	case len(red) > 0:
 		// Red CI is a silent non-event: the dev already sees red CI; a
@@ -678,8 +700,10 @@ func stateWord(s string) string {
 }
 
 // ListLabeledOpenPulls returns the repo's open PRs carrying the given label,
-// oldest-updated first. The gate's backlog pass (#249) uses it to arm the
-// oldest starved labeled PR when its armed slot frees up: labels added by
+// oldest first (Forgejo: sort=oldest; GitHub: sort=created&direction=asc —
+// both stable "least recently touched wins" for a starved backlog). The
+// gate's backlog pass (#249) uses it to arm the oldest starved labeled PR
+// when its armed slot frees up: labels added by
 // hand or automation while the gate was busy produce no further events, so a
 // sweep must discover them.
 func (a *RESTAPI) ListLabeledOpenPulls(ctx context.Context, repo, label string) ([]PullRequest, error) {

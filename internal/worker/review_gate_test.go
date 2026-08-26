@@ -340,14 +340,15 @@ func (c *capturingWriter) Emit(_ context.Context, kind, _ string, _ any) error {
 
 // stubGateAPI is a minimal review.API for gate tests that don't need HTTP.
 type stubGateAPI struct {
-	labeled []review.PullRequest
+	labeled    []review.PullRequest
+	labeledErr error
 }
 
 func (s *stubGateAPI) GetPullRequest(context.Context, string, int) (*review.PullRequest, error) {
 	return nil, fmt.Errorf("not stubbed")
 }
 func (s *stubGateAPI) ListLabeledOpenPulls(context.Context, string, string) ([]review.PullRequest, error) {
-	return s.labeled, nil
+	return s.labeled, s.labeledErr
 }
 func (s *stubGateAPI) RequiredContexts(context.Context, string, string) ([]string, error) {
 	return nil, fmt.Errorf("not stubbed")
@@ -468,5 +469,146 @@ func TestReviewGateArmedSweepDoesNotRetargetToBacklog(t *testing.T) {
 	// a backlog hijack would NOT proceed — so proceed proves #42 ran.
 	if rr == nil || rr.LastDecision != "proceed" {
 		t.Fatalf("armed sweep must evaluate PR 42 to proceed, got %+v", rr)
+	}
+}
+
+// GitHub-kind dialect (#250 r1): the backlog list must carry
+// per_page/direction=asc (sort=oldest&limit are Forgejo params — on GitHub
+// the shared form returned newest-first capped at 30, hiding the starved).
+func TestBacklogListGitHubDialect(t *testing.T) {
+	clearTriggerEnv(t)
+	var gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(req.URL.Path, "/pulls") {
+			gotQuery = req.URL.RawQuery
+			json.NewEncoder(w).Encode([]map[string]any{})
+			return
+		}
+		http.NotFound(w, req)
+	}))
+	t.Cleanup(srv.Close)
+	prev := newReviewAPI
+	newReviewAPI = func() review.API {
+		return &review.RESTAPI{Client: srv.Client(), TokenLookup: func(string) string { return "tok" }, BaseOverride: srv.URL}
+	}
+	t.Cleanup(func() { newReviewAPI = prev })
+
+	wf := gateWorkflow()
+	wf.Spec.Config = []byte(`{"repos": ["github.com/tibrezus/harmostes"]}`)
+	st := &fakeStatus{}
+	reviewGate(context.Background(), testDeps(st), wf)
+	for _, want := range []string{"per_page=50", "direction=asc", "sort=created"} {
+		if !strings.Contains(gotQuery, want) {
+			t.Errorf("GitHub backlog query missing %q: %s", want, gotQuery)
+		}
+	}
+	if strings.Contains(gotQuery, "sort=oldest") || strings.Contains(gotQuery, "limit=") {
+		t.Errorf("Forgejo params leaked into GitHub query: %s", gotQuery)
+	}
+}
+
+// Dispatched reviews must not re-dispatch on sweeps (#250 r2): armed with
+// lastDecision=proceed, label present, CI green, NO verdict in the window →
+// waiting ("in flight"), never a second proceed envelope.
+func TestDispatchedReviewNotReDispatched(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(req.URL.Path, "/pulls/42"):
+			json.NewEncoder(w).Encode(map[string]any{
+				"state": "open", "head": map[string]string{"sha": "abc123def456"},
+				"base":   map[string]string{"ref": "main"},
+				"labels": []map[string]string{{"name": "needs-review"}},
+			})
+		case strings.Contains(req.URL.Path, "/branch_protections/"):
+			json.NewEncoder(w).Encode(map[string]any{"status_check_contexts": []string{"ci / build-test (push)"}})
+		case strings.HasSuffix(req.URL.Path, "/statuses"):
+			json.NewEncoder(w).Encode([]map[string]string{
+				{"context": "ci / build-test (push)", "status": "success"},
+			})
+		case strings.Contains(req.URL.Path, "/issues/42/comments"):
+			json.NewEncoder(w).Encode([]map[string]any{}) // no verdict yet
+		default:
+			http.NotFound(w, req)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	st := &fakeStatus{}
+	wf := gateWorkflow()
+	since := metav1.Now()
+	wf.Status.ReviewReady = &v1alpha1.ReviewReadyStatus{
+		ArmedPR: 42, ArmedRepo: "git.rezus.cloud/tibrez/rhesadox",
+		ArmedSha: "abc123def456", ArmedSince: &since, LastDecision: "proceed",
+	}
+
+	env := reviewGate(context.Background(), testDeps(st), wf)
+	if env != nil {
+		t.Fatal("dispatched review must not produce a second proceed envelope")
+	}
+	rr := st.last.ReviewReady
+	if rr == nil || rr.LastDecision != "waiting" || !strings.Contains(rr.LastReason, "in flight") {
+		t.Fatalf("expected waiting/in-flight, got %+v", rr)
+	}
+
+	// Verdict lands in the window → consumed → standdown (armed cleared).
+	srv2 := verdictServer(t)
+	pinReviewAPI(t, srv2, true)
+	wf.Status.ReviewReady.LastDecision = "proceed"
+	env = reviewGate(context.Background(), testDeps(st), wf)
+	if env != nil {
+		t.Fatal("consumed review must not re-dispatch")
+	}
+	if rr := st.last.ReviewReady; rr == nil || rr.LastDecision != "standdown" || rr.ArmedPR != 0 {
+		t.Fatalf("expected standdown after verdict, got %+v", rr)
+	}
+}
+
+// verdictServer: PR 42 open+labeled+green, one verdict trailer comment since
+// the epoch window.
+func verdictServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(req.URL.Path, "/pulls/42"):
+			json.NewEncoder(w).Encode(map[string]any{
+				"state": "open", "head": map[string]string{"sha": "abc123def456"},
+				"base":   map[string]string{"ref": "main"},
+				"labels": []map[string]string{{"name": "needs-review"}},
+			})
+		case strings.Contains(req.URL.Path, "/branch_protections/"):
+			json.NewEncoder(w).Encode(map[string]any{"status_check_contexts": []string{"ci / build-test (push)"}})
+		case strings.HasSuffix(req.URL.Path, "/statuses"):
+			json.NewEncoder(w).Encode([]map[string]string{
+				{"context": "ci / build-test (push)", "status": "success"},
+			})
+		case strings.Contains(req.URL.Path, "/issues/42/comments"):
+			json.NewEncoder(w).Encode([]map[string]any{
+				{"body": "verdict\n<!-- pr-review: APPROVE @ abc -->"},
+			})
+		default:
+			http.NotFound(w, req)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// A failing backlog listing degrades to idle — never wedges the gate.
+func TestBacklogListErrorDegradesToIdle(t *testing.T) {
+	clearTriggerEnv(t)
+	prev := newReviewAPI
+	newReviewAPI = func() review.API { return &stubGateAPI{labeledErr: fmt.Errorf("boom")} }
+	t.Cleanup(func() { newReviewAPI = prev })
+	st := &fakeStatus{}
+	env := reviewGate(context.Background(), testDeps(st), gateWorkflow())
+	if env != nil {
+		t.Fatal("list error must degrade to nil envelope")
+	}
+	if st.last.ReviewReady != nil {
+		t.Fatalf("no status write expected, got %+v", st.last.ReviewReady)
 	}
 }

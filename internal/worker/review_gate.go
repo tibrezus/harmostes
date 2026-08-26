@@ -28,8 +28,9 @@ var newReviewAPI = func() review.API {
 // down, or gate not configured / nothing armed).
 //
 // The gate's armed state lives on the Workflow status (persisted via the
-// status patcher): unarmed workflows cost zero API calls; armed ones cost
-// one PR fetch (+ protection/contexts while the label is present).
+// status patcher). Cost per sweep: armed → one PR fetch (+ protection,
+// contexts, and a verdict-window comment scan while dispatched); unarmed →
+// one cheap list call per scope repo (the #249 backlog pass).
 // RunReviewGate is the PRODUCTION seam: the one-shot worker calls it after
 // template resolution and BEFORE graph execution (the pipeline.Run path is
 // legacy — production has routed through graph.ExecuteGraph since #177).
@@ -108,6 +109,9 @@ func reviewGate(ctx context.Context, deps Deps, wf *v1alpha1.Workflow) *review.E
 		if armed.ArmedSince != nil {
 			params.ArmedAt = armed.ArmedSince.Time
 		}
+		// A previous proceed means the agent run is (or was) in flight;
+		// sweeps re-check for its verdict instead of re-dispatching.
+		params.Dispatched = armed.LastDecision == string(review.DecisionProceed)
 	}
 	// A wake event targeting a DIFFERENT PR than the armed one re-targets
 	// the gate ONLY when the wake is request-shaped (a label was touched —

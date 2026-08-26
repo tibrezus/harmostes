@@ -55,10 +55,15 @@ func TestSavePiSessionRoundTripAndRedaction(t *testing.T) {
 	if meta.Bytes != len(secret) {
 		t.Errorf("meta.Bytes = %d, want %d", meta.Bytes, len(secret))
 	}
-	// Data key: the gz1 blob, never probed by availability checks.
-	payload, ok := dc.saved["pr-review-x:run-1:pi-session/data"]
+	// Data key: the gz1 blob stored as a JSON string, never probed by
+	// availability checks.
+	payloadJSON, ok := dc.saved["pr-review-x:run-1:pi-session/data"]
 	if !ok {
 		t.Fatal("data key not saved")
+	}
+	var payload string
+	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
+		t.Fatalf("data value is not a JSON string (UI read path would 404): %v", err)
 	}
 	if !strings.HasPrefix(payload, agent.PiSessionMarker) {
 		t.Fatalf("payload missing %s marker", agent.PiSessionMarker)

@@ -1,5 +1,7 @@
 # harmostes
 
+<!-- pi-session download verification placeholder (#251) -->
+
 > ἁρμοστής — *one who fits things together.*
 
 A **Kubernetes-native orchestration platform** for workflows that combine

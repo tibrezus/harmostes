@@ -651,10 +651,23 @@ func proceed(p Params, pr *PullRequest, required, green []string) Result {
 				GreenContexts:    green,
 			},
 		},
-		NewArmedSha: "", // consumed: the deploy plugin posts the verdict and
-		// removes the label; the next evaluation sees label-absent and
-		// stands down idle.
+		// Stay armed at the dispatched head: the worker runs the review, the
+		// deploy plugin posts the verdict and removes the label. Until the
+		// verdict lands, sweeps re-check the in-flight window (Dispatched)
+		// instead of re-dispatching — the backlog pass made re-dispatch a
+		// every-sweep certainty otherwise. Consume clears the armed slot
+		// (label-absent + verdict, or the in-flight verdict check).
+		NewArmedSha: pr.HeadSHA,
+		NewArmedAt:  armTime(p.ArmedAt, nowFrom(p)),
 	}
+}
+
+// nowFrom centralizes Params.Now defaulting for helpers that need it.
+func nowFrom(p Params) time.Time {
+	if !p.Now.IsZero() {
+		return p.Now
+	}
+	return time.Now()
 }
 
 func waiting(reason string) Evaluation { return Evaluation{Decision: DecisionWaiting, Reason: reason} }

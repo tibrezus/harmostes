@@ -131,9 +131,27 @@ func TestReviewGateProceedPassesEnvelope(t *testing.T) {
 	if len(env.GreenContexts) != 1 || env.GreenContexts[0] != "ci / build-test (push)" {
 		t.Fatalf("green contexts = %+v", env.GreenContexts)
 	}
-	// Proceed consumes the armed state.
-	if rr := st.last.ReviewReady; rr == nil || rr.ArmedPR != 0 || rr.LastDecision != "proceed" {
+	// Proceed stays armed with the dispatch marker (#250 r4): the run is
+	// in flight; sweeps wait on the verdict window, consume clears.
+	rr := st.last.ReviewReady
+	if rr == nil || rr.LastDecision != "proceed" || rr.ArmedPR != 42 || rr.ArmedSha != "abc123def456" {
 		t.Fatalf("post-proceed state = %+v", rr)
+	}
+	if rr.DispatchedAt == nil {
+		t.Fatalf("dispatch marker missing: %+v", rr)
+	}
+
+	// proceed → persist → re-sweep end-to-end: the written status feeds
+	// back; the next sweep must WAIT in flight, not re-dispatch.
+	srv2 := verdictServerNoVerdictYet(t)
+	pinReviewAPI(t, srv2, true)
+	wf.Status.ReviewReady = st.last.ReviewReady
+	env2 := reviewGate(context.Background(), testDeps(st), wf)
+	if env2 != nil {
+		t.Fatal("re-sweep after proceed re-dispatched (marker not durable)")
+	}
+	if rr2 := st.last.ReviewReady; rr2.LastDecision != "waiting" || !strings.Contains(rr2.LastReason, "in flight") || rr2.DispatchedAt == nil {
+		t.Fatalf("re-sweep state = %+v", rr2)
 	}
 }
 
@@ -627,4 +645,32 @@ func TestBacklogListErrorDegradesToIdle(t *testing.T) {
 	if st.last.ReviewReady != nil {
 		t.Fatalf("no status write expected, got %+v", st.last.ReviewReady)
 	}
+}
+
+// verdictServerNoVerdictYet: PR 42 open+labeled+green, zero comments.
+func verdictServerNoVerdictYet(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(req.URL.Path, "/pulls/42"):
+			json.NewEncoder(w).Encode(map[string]any{
+				"state": "open", "head": map[string]string{"sha": "abc123def456"},
+				"base":   map[string]string{"ref": "main"},
+				"labels": []map[string]string{{"name": "needs-review"}},
+			})
+		case strings.Contains(req.URL.Path, "/branch_protections/"):
+			json.NewEncoder(w).Encode(map[string]any{"status_check_contexts": []string{"ci / build-test (push)"}})
+		case strings.HasSuffix(req.URL.Path, "/statuses"):
+			json.NewEncoder(w).Encode([]map[string]string{
+				{"context": "ci / build-test (push)", "status": "success"},
+			})
+		case strings.Contains(req.URL.Path, "/issues/42/comments"):
+			json.NewEncoder(w).Encode([]map[string]any{})
+		default:
+			http.NotFound(w, req)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
 }

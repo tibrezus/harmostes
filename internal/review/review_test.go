@@ -88,8 +88,11 @@ func TestProceedAllGreen(t *testing.T) {
 	if len(r.Envelope.GreenContexts) != 2 {
 		t.Fatalf("green contexts not carried: %+v", r.Envelope.GreenContexts)
 	}
-	if r.NewArmedSha != "" {
-		t.Fatal("proceed must consume armed state")
+	// Proceed stays armed at the dispatched head (#250 r4): the review runs
+	// async; sweeps re-check the verdict window instead of re-dispatching.
+	// Consume (verdict posted) clears the slot.
+	if r.NewArmedSha != "abc123" {
+		t.Fatalf("proceed must stay armed at the head, got %q", r.NewArmedSha)
 	}
 }
 

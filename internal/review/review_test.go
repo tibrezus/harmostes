@@ -13,14 +13,15 @@ import (
 
 // fakeAPI stubs the gate's API surface for decision-logic tests.
 type fakeAPI struct {
-	pr          *PullRequest
-	prErr       error
-	required    []string
-	reqErr      error
-	states      map[string]string
-	ctxErr      error
-	comments    []fakeComment
-	commentsErr error
+	pr           *PullRequest
+	prErr        error
+	labeledPulls []PullRequest
+	required     []string
+	reqErr       error
+	states       map[string]string
+	ctxErr       error
+	comments     []fakeComment
+	commentsErr  error
 }
 
 // fakeComment pairs an IssueComment with its host-side updated_at (the
@@ -32,6 +33,10 @@ type fakeComment struct {
 
 func (f *fakeAPI) GetPullRequest(ctx context.Context, repo string, n int) (*PullRequest, error) {
 	return f.pr, f.prErr
+}
+
+func (f *fakeAPI) ListLabeledOpenPulls(_ context.Context, _, _ string) ([]PullRequest, error) {
+	return f.labeledPulls, nil
 }
 func (f *fakeAPI) RequiredContexts(ctx context.Context, repo, branch string) ([]string, error) {
 	return f.required, f.reqErr

@@ -68,23 +68,31 @@ func reviewGate(ctx context.Context, deps Deps, wf *v1alpha1.Workflow) *review.E
 		action = wf.Annotations["harmostes.dev/trigger-action"]
 	}
 
-	// Nothing armed, no wake event: idle — the old path would have polled
-	// every open PR of every repo; here we do nothing at all.
-	if trigPR == "" && (armed == nil || armed.ArmedPR == 0) {
-		return nil
-	}
-
 	var repo string
 	var pr int
-	if trigPR != "" {
+	switch {
+	case trigPR != "":
 		r, n, err := parsePRPointer(trigPR)
 		if err != nil {
 			deps.log()("review-ready: bad trigger annotation %q: %v", trigPR, err)
 			return nil
 		}
 		repo, pr = r, n
-	} else {
+	case armed != nil && armed.ArmedPR != 0:
 		repo, pr = armed.ArmedRepo, armed.ArmedPR
+	default:
+		// Nothing armed, no wake event: backlog pass (#249). A label added
+		// while the gate was busy on another PR produces no further event —
+		// the newest label stole the single armed slot and the older labeled
+		// PRs starve. Discover the oldest labeled open PR across the scope
+		// and arm it; evaluation stays single-flight, only arming becomes
+		// queue-aware.
+		r, n := oldestLabeledOpen(ctx, deps, wf)
+		if n == 0 {
+			return nil // nothing labeled anywhere in scope — genuinely idle
+		}
+		repo, pr = r, n
+		deps.log()("review-ready: backlog pass arming pr=%d (%s)", pr, repo)
 	}
 
 	params := review.Params{
@@ -207,8 +215,28 @@ func wakeRevision(wf *v1alpha1.Workflow) string {
 // The config stores either "host/owner/name" or bare "owner/name" (GitHub);
 // both forms must match the annotation's normalized "host/owner/name".
 // An empty/missing config accepts nothing (fail closed).
-func repoInScope(wf *v1alpha1.Workflow, repo string) bool {
+// scopeRepos lists the configured repos verbatim (spec.config.repos).
+func scopeRepos(wf *v1alpha1.Workflow) []string {
 	if len(wf.Spec.Config) == 0 {
+		return nil
+	}
+	var cfg struct {
+		Repos []string `json:"repos"`
+	}
+	if err := json.Unmarshal(wf.Spec.Config, &cfg); err != nil {
+		return nil
+	}
+	return cfg.Repos
+}
+
+func repoInScope(wf *v1alpha1.Workflow, repo string) bool {
+	scope := scopeRepos(wf)
+	for _, r := range scope {
+		if r == repo {
+			return true
+		}
+	}
+	if len(scope) == 0 {
 		return false
 	}
 	var cfg struct {
@@ -267,4 +295,28 @@ func metaTime(t *time.Time) *metav1.Time {
 	}
 	m := metav1.NewTime(*t)
 	return &m
+}
+
+// oldestLabeledOpen scans the workflow's scope repos for open PRs carrying
+// the review label and returns the oldest-updated one (host-sorted oldest
+// first). API-shaped failures degrade to "nothing found" — a broken listing
+// must not wedge the gate, the next sweep retries.
+func oldestLabeledOpen(ctx context.Context, deps Deps, wf *v1alpha1.Workflow) (string, int) {
+	api := newReviewAPI()
+	rrCfg := wf.Spec.ReviewReady
+	if rrCfg == nil {
+		rrCfg = &v1alpha1.ReviewReadySpec{}
+	}
+	label := rrCfg.EffectiveLabel()
+	for _, repo := range scopeRepos(wf) {
+		prs, err := api.ListLabeledOpenPulls(ctx, repo, label)
+		if err != nil {
+			deps.log()("review-ready: backlog list failed for %s: %v", repo, err)
+			continue
+		}
+		if len(prs) > 0 {
+			return repo, prs[0].Number
+		}
+	}
+	return "", 0
 }

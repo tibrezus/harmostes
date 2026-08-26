@@ -69,6 +69,7 @@ type Evaluation struct {
 // stub the transport.
 type API interface {
 	GetPullRequest(ctx context.Context, repo string, number int) (*PullRequest, error)
+	ListLabeledOpenPulls(ctx context.Context, repo, label string) ([]PullRequest, error)
 	RequiredContexts(ctx context.Context, repo, branch string) ([]string, error)
 	ContextStates(ctx context.Context, repo, sha string) (map[string]string, error)
 	ListComments(ctx context.Context, repo string, number int, since time.Time) ([]IssueComment, error)
@@ -76,6 +77,7 @@ type API interface {
 
 // PullRequest is the normalized PR view the gate needs.
 type PullRequest struct {
+	Number  int      `json:"number"`
 	State   string   `json:"state"` // "open" | "closed"
 	HeadSHA string   `json:"headSha"`
 	Base    string   `json:"base"`
@@ -673,4 +675,43 @@ func stateWord(s string) string {
 		return "closed"
 	}
 	return s
+}
+
+// ListLabeledOpenPulls returns the repo's open PRs carrying the given label,
+// oldest-updated first. The gate's backlog pass (#249) uses it to arm the
+// oldest starved labeled PR when its armed slot frees up: labels added by
+// hand or automation while the gate was busy produce no further events, so a
+// sweep must discover them.
+func (a *RESTAPI) ListLabeledOpenPulls(ctx context.Context, repo, label string) ([]PullRequest, error) {
+	host, err := ResolveHost(repo)
+	if err != nil {
+		return nil, err
+	}
+	var raw []struct {
+		Number    int    `json:"number"`
+		UpdatedAt string `json:"updated_at"`
+		Labels    []struct {
+			Name string `json:"name"`
+		} `json:"labels"`
+	}
+	// One page of 50 open PRs is far beyond any labeled backlog in practice;
+	// oldest-first (`sort=oldest`) puts the most-starved PR in front without
+	// client-side sorting of every page.
+	if err := a.get(ctx, host, fmt.Sprintf("/repos/%s/pulls?state=open&sort=oldest&limit=50", host.RepoPath), "application/json", &raw); err != nil {
+		return nil, err
+	}
+	var out []PullRequest
+	for _, p := range raw {
+		has := false
+		for _, l := range p.Labels {
+			if l.Name == label {
+				has = true
+				break
+			}
+		}
+		if has {
+			out = append(out, PullRequest{Number: p.Number})
+		}
+	}
+	return out, nil
 }

@@ -104,6 +104,10 @@ func NewRPC(ctx context.Context, opts RPCOptions) (*RPC, error) {
 			// Observable degradation (#243 r1): a failed mkdir would
 			// otherwise be indistinguishable from persistence being off.
 			logf(opts.Log, Event{Type: "session_dir_error", Message: err.Error()})
+			// pi persists sessions by DEFAULT — without this the raw,
+			// unredacted conversation lands in pi's own session dir,
+			// undiscoverable by SessionFiles() and never cleaned (#244 r3).
+			args = append(args, "--no-session")
 		} else {
 			sessionDir = dir
 			args = append(args,

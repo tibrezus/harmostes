@@ -298,6 +298,12 @@ func SavePiSession(ctx context.Context, dc dapr.Client, store, workflow, run str
 	// at upload). Remove it on every exit after the read attempt — a failed
 	// or oversized upload must not leave raw transcripts on the pod.
 	defer func() { _ = os.Remove(file) }()
+	if st, err := os.Stat(file); err == nil && st.Size() > maxPiSession {
+		// Cap check BEFORE reading: an anomalous multi-GB file must not be
+		// materialized in worker memory (an OOM here kills the worker after
+		// a successful run but before the run record is written).
+		return fmt.Errorf("pi session %s is %d bytes (cap %d), skipping upload", file, st.Size(), maxPiSession)
+	}
 	raw, err := os.ReadFile(file)
 	if err != nil {
 		return err

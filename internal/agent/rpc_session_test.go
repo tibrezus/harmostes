@@ -84,3 +84,37 @@ func readArgv(t *testing.T, path string) string {
 	t.Fatal("fake pi argv not recorded")
 	return ""
 }
+
+// The MkdirTemp-failure branch (#244 r3): pi persists sessions BY DEFAULT,
+// so when the session dir cannot be created, --no-session must be passed
+// explicitly — otherwise the raw conversation lands in pi's own location,
+// undiscoverable and unremoved.
+func TestRPCSessionDirErrorFallsBackToNoSession(t *testing.T) {
+	dir := t.TempDir()
+	argsOut := filepath.Join(dir, "argv")
+	fake := filepath.Join(dir, "fake-pi")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"" + argsOut + ".tmp\" && mv \"" + argsOut + ".tmp\" \"" + argsOut + "\"\nexit 0\n"
+	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// SessionRoot points at a FILE: MkdirTemp inside it always fails.
+	blocker := filepath.Join(dir, "blocker")
+	if err := os.WriteFile(blocker, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rpc, err := NewRPC(context.Background(), RPCOptions{PiPath: fake, SessionRoot: blocker})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rpc.Abort(context.Background())
+	args := readArgv(t, argsOut)
+	if !strings.Contains(args, "--no-session") {
+		t.Errorf("mkdir failure must pass --no-session (pi persists by default), got: %s", args)
+	}
+	if strings.Contains(args, "--session-dir") {
+		t.Errorf("mkdir failure must not pass --session-dir, got: %s", args)
+	}
+	if got := rpc.SessionFiles(); got != nil {
+		t.Errorf("SessionFiles() after mkdir failure = %v, want nil", got)
+	}
+}

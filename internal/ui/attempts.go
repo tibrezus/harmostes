@@ -362,8 +362,13 @@ func (s *Server) handleAttemptSession(w http.ResponseWriter, r *http.Request) {
 			Bytes   int    `json:"bytes"`
 			SavedAt string `json:"savedAt"`
 		}
-		if found2, _ := s.dapr.GetStateFromStore(r.Context(), "statestore",
-			fmt.Sprintf("%s:%s:pi-session", wfName, jobName), &meta); found2 {
+		found2, err2 := s.dapr.GetStateFromStore(r.Context(), "statestore",
+			fmt.Sprintf("%s:%s:pi-session", wfName, jobName), &meta)
+		if err2 != nil {
+			// A state-store outage silently hides the Fork button otherwise —
+			// indistinguishable from "no session" (#244 r3).
+			s.logger.Error("pi session availability probe failed", "err", err2)
+		} else if found2 {
 			hasPiSession = true
 		}
 	}

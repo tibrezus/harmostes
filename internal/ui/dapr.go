@@ -74,6 +74,9 @@ func (c *daprClient) GetStateFromStore(ctx context.Context, store, key string, v
 	if data == "" {
 		return false, nil
 	}
+	// data arrives with one JSON-string layer already removed by
+	// HTTPClient.GetState (it unwraps JSON-string bodies), so values saved
+	// as `string(json.Marshal(x))` land here as plain JSON text.
 	if err := json.Unmarshal([]byte(data), value); err != nil {
 		return false, fmt.Errorf("unmarshal state %s: %w", key, err)
 	}

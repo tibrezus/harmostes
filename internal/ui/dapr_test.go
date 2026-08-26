@@ -4,8 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"reflect"
 	"testing"
 	"time"
+
+	"github.com/tibrezus/harmostes/internal/dapr"
 )
 
 // mockDaprClient is a test double for dapr.Client that allows overriding behavior
@@ -381,5 +386,45 @@ func TestDaprClient_GetSecret(t *testing.T) {
 	}
 	if err.Error() != "secret store not yet implemented via Dapr; use k8s Secrets API directly" {
 		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+// TestGetStateFromStoreShapeTolerance (#251): pin the two-layer unwrap
+// contract. Values written via SaveState(string(json.Marshal(x))) land
+// string-wrapped at rest; HTTPClient.GetState removes one JSON-string
+// layer, GetStateFromStore's Unmarshal the second — struct and string
+// targets alike must land on clean values.
+func TestGetStateFromStoreShapeTolerance(t *testing.T) {
+	type meta struct {
+		Bytes   int    `json:"bytes"`
+		SavedAt string `json:"savedAt"`
+	}
+	cases := []struct {
+		name   string
+		stored string // raw stored bytes (what the single GET serves)
+		into   any    // target
+		want   any    // expected decoded value
+	}{
+		{"string-wrapped object into struct", `"{\"bytes\":88157,\"savedAt\":\"t\"}"`, &meta{}, meta{Bytes: 88157, SavedAt: "t"}},
+		{"double-wrapped gz1 into string", `"\"gz1:abc\""`, new(string), "gz1:abc"},
+		{"direct object into struct", `{"bytes":1,"savedAt":"x"}`, &meta{}, meta{Bytes: 1, SavedAt: "x"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(tc.stored))
+			}))
+			defer srv.Close()
+			dc := &daprClient{client: dapr.New(srv.URL)}
+			found, err := dc.GetStateFromStore(context.Background(), "statestore", "k", tc.into)
+			if err != nil || !found {
+				t.Fatalf("found=%v err=%v", found, err)
+			}
+			got := reflect.Indirect(reflect.ValueOf(tc.into)).Interface()
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("got %#v want %#v", got, tc.want)
+			}
+		})
 	}
 }

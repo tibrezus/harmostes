@@ -55,8 +55,9 @@ func TestSavePiSessionRoundTripAndRedaction(t *testing.T) {
 	if meta.Bytes != len(secret) {
 		t.Errorf("meta.Bytes = %d, want %d", meta.Bytes, len(secret))
 	}
-	// Data key: the gz1 blob stored as a JSON string, never probed by
-	// availability checks.
+	// Data key: a JSON string at the client interface. Dapr wraps it again
+	// on store; the UI read strips exactly two layers (client GetState
+	// unwrap + GetStateFromStore Unmarshal) to bare gz1: — see #251.
 	payloadJSON, ok := dc.saved["pr-review-x:run-1:pi-session/data"]
 	if !ok {
 		t.Fatal("data key not saved")

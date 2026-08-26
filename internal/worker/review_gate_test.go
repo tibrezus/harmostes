@@ -541,7 +541,8 @@ func TestDispatchedReviewNotReDispatched(t *testing.T) {
 	since := metav1.Now()
 	wf.Status.ReviewReady = &v1alpha1.ReviewReadyStatus{
 		ArmedPR: 42, ArmedRepo: "git.rezus.cloud/tibrez/rhesadox",
-		ArmedSha: "abc123def456", ArmedSince: &since, LastDecision: "proceed",
+		ArmedSha: "abc123def456", ArmedSince: &since,
+		DispatchedAt: &since, LastDecision: "proceed",
 	}
 
 	env := reviewGate(context.Background(), testDeps(st), wf)
@@ -553,10 +554,25 @@ func TestDispatchedReviewNotReDispatched(t *testing.T) {
 		t.Fatalf("expected waiting/in-flight, got %+v", rr)
 	}
 
+	// sweep+2 (#250 r3): the in-flight WAITING evaluation overwrote
+	// lastDecision — feed the written status back and sweep again. The
+	// durable marker (dispatchedAt) must keep suppressing dispatch; a
+	// lastDecision-based marker evaporates here and re-proceeds.
+	for sweep := 0; sweep < 3; sweep++ {
+		wf.Status.ReviewReady = st.last.ReviewReady
+		env := reviewGate(context.Background(), testDeps(st), wf)
+		if env != nil {
+			t.Fatalf("sweep+%d: re-dispatched (marker evaporated): %+v", sweep+2, st.last.ReviewReady)
+		}
+		if rr := st.last.ReviewReady; rr.LastDecision != "waiting" || !strings.Contains(rr.LastReason, "in flight") {
+			t.Fatalf("sweep+%d: expected in-flight waiting, got %+v", sweep+2, rr)
+		}
+	}
+
 	// Verdict lands in the window → consumed → standdown (armed cleared).
 	srv2 := verdictServer(t)
 	pinReviewAPI(t, srv2, true)
-	wf.Status.ReviewReady.LastDecision = "proceed"
+	wf.Status.ReviewReady = st.last.ReviewReady
 	env = reviewGate(context.Background(), testDeps(st), wf)
 	if env != nil {
 		t.Fatal("consumed review must not re-dispatch")

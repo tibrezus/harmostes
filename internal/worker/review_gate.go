@@ -109,9 +109,10 @@ func reviewGate(ctx context.Context, deps Deps, wf *v1alpha1.Workflow) *review.E
 		if armed.ArmedSince != nil {
 			params.ArmedAt = armed.ArmedSince.Time
 		}
-		// A previous proceed means the agent run is (or was) in flight;
-		// sweeps re-check for its verdict instead of re-dispatching.
-		params.Dispatched = armed.LastDecision == string(review.DecisionProceed)
+		// A durable dispatch marker (set at proceed, preserved across
+		// in-flight waiting, cleared on consume) — LastDecision alone is
+		// overwritten by every evaluation and evaporates after one sweep.
+		params.Dispatched = armed.DispatchedAt != nil
 	}
 	// A wake event targeting a DIFFERENT PR than the armed one re-targets
 	// the gate ONLY when the wake is request-shaped (a label was touched —
@@ -152,16 +153,28 @@ func reviewGate(ctx context.Context, deps Deps, wf *v1alpha1.Workflow) *review.E
 	}
 	if err := deps.Status.PatchStatus(ctx, wf.Name, func(s *v1alpha1.WorkflowStatus) {
 		if result.NewArmedSha == "" {
+			// Standdown/idle: armed slot released — any dispatch marker
+			// goes with it (consumed, horizon, closed).
 			s.ReviewReady = &v1alpha1.ReviewReadyStatus{
 				LastDecision: string(result.Decision),
 				LastReason:   result.Reason,
 			}
 		} else {
+			// Armed persists: preserve the dispatch marker across in-flight
+			// waiting (waiting must NOT clear it), set it at proceed.
+			var dispatched *metav1.Time
+			if result.Decision == review.DecisionProceed {
+				now := metav1.Now()
+				dispatched = &now
+			} else if armed != nil {
+				dispatched = armed.DispatchedAt
+			}
 			s.ReviewReady = &v1alpha1.ReviewReadyStatus{
 				ArmedRepo:    repo,
 				ArmedPR:      pr,
 				ArmedSha:     result.NewArmedSha,
 				ArmedSince:   metaTime(since),
+				DispatchedAt: dispatched,
 				LastDecision: string(result.Decision),
 				LastReason:   result.Reason,
 			}

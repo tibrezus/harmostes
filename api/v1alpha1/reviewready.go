@@ -76,6 +76,14 @@ type ReviewReadyStatus struct {
 	// ArmedSince is when the gate armed at ArmedSha (horizon start).
 	ArmedSince *metav1.Time `json:"armedSince,omitempty"`
 
+	// DispatchedAt marks an armed review the gate already proceeded on:
+	// the agent run is (or was) in flight and its verdict is not yet
+	// consumed. Durable across sweeps (unlike LastDecision, which every
+	// evaluation overwrites); cleared on consume (verdict posted) and on
+	// standdown. Sweeps re-check the verdict window instead of
+	// re-dispatching (#250).
+	DispatchedAt *metav1.Time `json:"dispatchedAt,omitempty"`
+
 	// LastDecision is the gate's last outcome: proceed | waiting | standdown | idle.
 	LastDecision string `json:"lastDecision,omitempty"`
 

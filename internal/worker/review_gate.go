@@ -97,12 +97,13 @@ func reviewGate(ctx context.Context, deps Deps, wf *v1alpha1.Workflow) *review.E
 	}
 
 	params := review.Params{
-		Repo:       repo,
-		PR:         pr,
-		Label:      rr.EffectiveLabel(),
-		Horizon:    rr.HorizonDuration(),
-		DisarmHint: action == "closed",
-		WakeSHA:    wakeRevision(wf),
+		Repo:            repo,
+		PR:              pr,
+		Label:           rr.EffectiveLabel(),
+		Horizon:         rr.HorizonDuration(),
+		DispatchTimeout: rr.DispatchTimeoutDuration(),
+		DisarmHint:      action == "closed",
+		WakeSHA:         wakeRevision(wf),
 	}
 	if armed != nil {
 		params.ArmedSha = armed.ArmedSha
@@ -112,7 +113,9 @@ func reviewGate(ctx context.Context, deps Deps, wf *v1alpha1.Workflow) *review.E
 		// A durable dispatch marker (set at proceed, preserved across
 		// in-flight waiting, cleared on consume) — LastDecision alone is
 		// overwritten by every evaluation and evaporates after one sweep.
-		params.Dispatched = armed.DispatchedAt != nil
+		if armed.DispatchedAt != nil {
+			params.DispatchedAt = armed.DispatchedAt.Time
+		}
 	}
 	// A wake event targeting a DIFFERENT PR than the armed one re-targets
 	// the gate ONLY when the wake is request-shaped (a label was touched —
@@ -131,7 +134,7 @@ func reviewGate(ctx context.Context, deps Deps, wf *v1alpha1.Workflow) *review.E
 			// new PR waits "in flight" up to a full Horizon).
 			params.ArmedSha = ""
 			params.ArmedAt = time.Time{}
-			params.Dispatched = false
+			params.DispatchedAt = time.Time{}
 		default:
 			// push-shaped on another PR: ignore — keep the armed review
 			deps.log()("review-ready: wake for pr=%d (%s) while armed on pr=%d — ignored, armed review preserved", pr, action, armed.ArmedPR)

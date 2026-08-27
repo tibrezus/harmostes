@@ -5,6 +5,13 @@ import (
 	"time"
 )
 
+// OneShotRunBound is the hard wall-clock ceiling the worker's one-shot
+// consumer wraps every workflow run in (consumer.go's context.WithTimeout).
+// It is the premise of DispatchTimeout's exactly-once construction: no
+// live run can outlive it, so a dispatch older than DispatchTimeout
+// without a verdict is provably dead. Keep in sync with the consumer.
+const OneShotRunBound = 30 * time.Minute
+
 // ReviewReadySpec configures the event-armed Review-Ready Gate (ADR-0006):
 // the deterministic decision that a Pull Request may enter adversarial
 // review. Git hosts send consolidated pull_request events (GitHub semantics,
@@ -37,6 +44,18 @@ type ReviewReadySpec struct {
 	// (e.g. "6h" — enough for a slow matrix queued behind other work).
 	// On expiry the gate stands down armed; the next label event re-arms.
 	Horizon string `json:"horizon,omitempty"` // duration string; default "6h"
+
+	// DispatchTimeout bounds how long a dispatched review may stay in
+	// flight without a verdict before the gate presumes the run dead and
+	// stands down (the backlog pass re-arms the still-labeled PR on the
+	// next sweep — recovery needs no external label toggle). The bound
+	// must strictly exceed OneShotRunBound plus delivery/queue margin; a
+	// value at or below the run bound is rejected (falls back to the
+	// default) because it would re-dispatch while a run may still be
+	// alive, silently breaking exactly-once. Without it a dead dispatch
+	// (helm-roll kill, wedged worker) is held "in flight" until the full
+	// Horizon (observed live: 6h single-slot deadlock, #248).
+	DispatchTimeout string `json:"dispatchTimeout,omitempty"` // duration string; default "45m"
 }
 
 // HorizonDuration parses Horizon with the default applied.
@@ -48,6 +67,22 @@ func (r *ReviewReadySpec) HorizonDuration() time.Duration {
 		return d
 	}
 	return 6 * time.Hour
+}
+
+// DispatchTimeoutDuration parses DispatchTimeout with the default applied
+// (OneShotRunBound + 15m delivery/queue margin). A configured value must
+// strictly exceed OneShotRunBound; anything else (unparsable, non-positive,
+// or at/below the run bound) degrades to the default — honoring it would
+// break the exactly-once construction silently.
+func (r *ReviewReadySpec) DispatchTimeoutDuration() time.Duration {
+	def := OneShotRunBound + 15*time.Minute
+	if r == nil || r.DispatchTimeout == "" {
+		return def
+	}
+	if d, err := time.ParseDuration(r.DispatchTimeout); err == nil && d > OneShotRunBound {
+		return d
+	}
+	return def
 }
 
 // EffectiveLabel returns Label with the default applied.

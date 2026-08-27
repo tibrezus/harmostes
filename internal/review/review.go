@@ -476,11 +476,18 @@ type Params struct {
 	// WakeSHA is the trigger-revision from the wake event (the webhook's
 	// head SHA); used to arm on a fresh wake whose first PR fetch fails.
 	WakeSHA string
-	// Dispatched marks an armed review the gate already proceeded on: the
-	// agent run is (or was) in flight and the verdict hasn't been consumed.
-	// Sweeps must not re-dispatch it — the verdict window is the consume
-	// signal, mirroring the label-absent path.
-	Dispatched bool
+	// DispatchedAt marks an armed review the gate already proceeded on
+	// (zero → not dispatched): the agent run is (or was) in flight and the
+	// verdict hasn't been consumed. Sweeps must not re-dispatch it — the
+	// verdict window is the consume signal, mirroring the label-absent
+	// path — until DispatchTimeout presumes the run dead (#248: no live
+	// run can outlive the consumer's 30m one-shot bound).
+	DispatchedAt time.Time
+	// DispatchTimeout is the dispatch liveness bound (#248): past it,
+	// a dispatched review without a verdict stands down as presumed dead
+	// and the backlog pass re-arms on the next sweep. Zero disables the
+	// bound (the Horizon remains the release).
+	DispatchTimeout time.Duration
 	// DisarmHint is set when the wake event already implies stand-down
 	// (e.g. action=closed).
 	DisarmHint bool
@@ -606,12 +613,16 @@ func Evaluate(ctx context.Context, api API, p Params) Result {
 		}
 	}
 
-	// In-flight discrimination (#250 r2): a dispatched review keeps the
-	// label until the deploy plugin removes it after posting the verdict.
-	// Green+label alone would re-proceed on every sweep — duplicate
-	// dispatch. The verdict window (armedAt − slack) is the durable consume
-	// signal, the same one the label-absent path uses.
-	if p.Dispatched {
+	// In-flight discrimination (#250 r2) + liveness bound (#248): a
+	// dispatched review keeps the label until the deploy plugin removes it
+	// after posting the verdict. Green+label alone would re-proceed on every
+	// sweep — duplicate dispatch. The verdict window (armedAt − slack) is
+	// the durable consume signal, the same one the label-absent path uses.
+	// Past DispatchTimeout with no verdict the run is provably dead — the
+	// consumer wraps every one-shot run in a 30m context — so the gate
+	// stands down and the backlog pass re-arms the still-labeled PR on the
+	// next sweep (recovery without any external label toggle, #248).
+	if !p.DispatchedAt.IsZero() {
 		since := armTime(p.ArmedAt, now).Add(-verdictSinceSlack)
 		comments, err := api.ListComments(ctx, p.Repo, p.PR, since)
 		if err != nil {
@@ -619,6 +630,9 @@ func Evaluate(ctx context.Context, api API, p Params) Result {
 		}
 		if hasVerdict(comments) {
 			return Result{Evaluation: standdown("verdict posted — consumed"), NewArmedSha: ""}
+		}
+		if p.DispatchTimeout > 0 && now.Sub(p.DispatchedAt) >= p.DispatchTimeout {
+			return Result{Evaluation: standdown(fmt.Sprintf("dispatch presumed dead (no verdict after %s; run bound 30m) — backlog will re-arm", p.DispatchTimeout)), NewArmedSha: ""}
 		}
 		return Result{Evaluation: waiting("review in flight — dispatched, verdict pending"), NewArmedSha: pr.HeadSHA, NewArmedAt: armedAt}
 	}
@@ -653,10 +667,11 @@ func proceed(p Params, pr *PullRequest, required, green []string) Result {
 		},
 		// Stay armed at the dispatched head: the worker runs the review, the
 		// deploy plugin posts the verdict and removes the label. Until the
-		// verdict lands, sweeps re-check the in-flight window (Dispatched)
+		// verdict lands, sweeps re-check the in-flight window (DispatchedAt)
 		// instead of re-dispatching — the backlog pass made re-dispatch a
 		// every-sweep certainty otherwise. Consume clears the armed slot
-		// (label-absent + verdict, or the in-flight verdict check).
+		// (label-absent + verdict, the in-flight verdict check, or the
+		// dispatch liveness bound standing down a dead run).
 		NewArmedSha: pr.HeadSHA,
 		NewArmedAt:  armTime(p.ArmedAt, nowFrom(p)),
 	}

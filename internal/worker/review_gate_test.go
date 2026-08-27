@@ -772,3 +772,80 @@ func TestDispatchedHorizonReleasesSlot(t *testing.T) {
 		t.Fatalf("horizon must release slot + marker, got %+v", rr)
 	}
 }
+
+// #248 acceptance: a dispatch that dies (helm-roll kill, wedged worker,
+// lost run) recovers WITHOUT any external label toggle — the stale marker
+// stands the slot down, and the very next idle sweep's backlog pass (#249)
+// re-arms the still-labeled PR and re-dispatches. Total recovery =
+// DispatchTimeout + one sweep interval.
+func TestDispatchedDeadRunRecoversViaBacklog(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(req.URL.Path, "/pulls/42"):
+			json.NewEncoder(w).Encode(map[string]any{
+				"state": "open", "head": map[string]string{"sha": "abc123def456"},
+				"base":   map[string]string{"ref": "main"},
+				"labels": []map[string]string{{"name": "needs-review"}},
+			})
+		case strings.HasSuffix(req.URL.Path, "/pulls"):
+			// backlog listing: the dead review's label is still on the PR
+			json.NewEncoder(w).Encode([]map[string]any{{
+				"number": 42, "labels": []map[string]string{{"name": "needs-review"}},
+			}})
+		case strings.Contains(req.URL.Path, "/branch_protections/"):
+			json.NewEncoder(w).Encode(map[string]any{"status_check_contexts": []string{"ci / build-test (push)"}})
+		case strings.HasSuffix(req.URL.Path, "/statuses"):
+			json.NewEncoder(w).Encode([]map[string]string{
+				{"context": "ci / build-test (push)", "status": "success"},
+			})
+		case strings.Contains(req.URL.Path, "/issues/42/comments"):
+			json.NewEncoder(w).Encode([]map[string]any{}) // no verdict — the run died
+		default:
+			http.NotFound(w, req)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	st := &fakeStatus{}
+	wf := gateWorkflow()
+	wf.Spec.ReviewReady.DispatchTimeout = "45m"
+	stale := metav1.NewTime(time.Now().Add(-50 * time.Minute)) // past the bound
+	wf.Status.ReviewReady = &v1alpha1.ReviewReadyStatus{
+		ArmedPR: 42, ArmedRepo: "git.rezus.cloud/tibrez/rhesadox",
+		ArmedSha: "abc123def456", ArmedSince: &stale, DispatchedAt: &stale,
+		LastDecision: "waiting", LastReason: "review in flight — dispatched, verdict pending",
+	}
+
+	// Sweep 1: the dead dispatch is presumed dead — standdown, slot+marker released.
+	if env := reviewGate(context.Background(), testDeps(st), wf); env != nil {
+		t.Fatal("a dead dispatch must not produce an envelope")
+	}
+	rr := st.last.ReviewReady
+	if rr == nil || rr.LastDecision != "standdown" || !strings.Contains(rr.LastReason, "presumed dead") {
+		t.Fatalf("sweep 1 must stand down the dead dispatch, got %+v", rr)
+	}
+	if rr.ArmedPR != 0 || rr.DispatchedAt != nil {
+		t.Fatalf("sweep 1 must release slot + marker, got %+v", rr)
+	}
+
+	// Sweep 2 (no trigger, nothing armed): the backlog pass re-arms the
+	// still-labeled PR and the fresh evaluation PROCEEDS — the review
+	// re-runs without any external label toggle.
+	wf2 := gateWorkflow()
+	wf2.Spec.ReviewReady.DispatchTimeout = "45m"
+	wf2.Status.ReviewReady = &v1alpha1.ReviewReadyStatus{
+		LastDecision: "standdown", LastReason: rr.LastReason,
+	}
+	env := reviewGate(context.Background(), testDeps(st), wf2)
+	if env == nil {
+		t.Fatal("sweep 2 must re-dispatch the review (backlog re-arm + proceed)")
+	}
+	if env.PR != 42 || env.HeadSHA != "abc123def456" {
+		t.Fatalf("re-dispatch must target the dead review's PR/head, got %+v", env)
+	}
+	if rr2 := st.last.ReviewReady; rr2 == nil || rr2.DispatchedAt == nil || rr2.ArmedPR != 42 {
+		t.Fatalf("re-dispatch must stamp a fresh marker and re-arm, got %+v", rr2)
+	}
+}

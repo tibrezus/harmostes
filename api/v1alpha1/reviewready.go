@@ -37,6 +37,19 @@ type ReviewReadySpec struct {
 	// (e.g. "6h" — enough for a slow matrix queued behind other work).
 	// On expiry the gate stands down armed; the next label event re-arms.
 	Horizon string `json:"horizon,omitempty"` // duration string; default "6h"
+
+	// DispatchTimeout bounds how long a dispatched review may stay in
+	// flight without a verdict before the gate presumes the run dead and
+	// stands down (the backlog pass re-arms the still-labeled PR on the
+	// next sweep — recovery needs no external label toggle). The bound
+	// must exceed the pipeline's hard runtime ceiling — the consumer wraps
+	// every one-shot run in a 30-minute context — plus delivery/queue
+	// margin. Without it a dead dispatch (helm-roll kill, wedged worker)
+	// is held "in flight" until the full Horizon (observed live: 6h
+	// single-slot deadlock, #248). Exactly-once holds by construction: no
+	// live run can outlive the consumer bound, so a re-dispatch after the
+	// timeout never overlaps a survivor.
+	DispatchTimeout string `json:"dispatchTimeout,omitempty"` // duration string; default "45m"
 }
 
 // HorizonDuration parses Horizon with the default applied.
@@ -48,6 +61,18 @@ func (r *ReviewReadySpec) HorizonDuration() time.Duration {
 		return d
 	}
 	return 6 * time.Hour
+}
+
+// DispatchTimeoutDuration parses DispatchTimeout with the default applied
+// (45m = the consumer's 30m one-shot run bound + delivery/queue margin).
+func (r *ReviewReadySpec) DispatchTimeoutDuration() time.Duration {
+	if r == nil || r.DispatchTimeout == "" {
+		return 45 * time.Minute
+	}
+	if d, err := time.ParseDuration(r.DispatchTimeout); err == nil && d > 0 {
+		return d
+	}
+	return 45 * time.Minute
 }
 
 // EffectiveLabel returns Label with the default applied.

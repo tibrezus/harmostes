@@ -629,3 +629,104 @@ func TestResolveHost(t *testing.T) {
 		t.Error("ResolveHost must reject non-repo paths")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Dispatch liveness (#248): a dispatch marker older than DispatchTimeout
+// with no verdict is provably dead — the consumer wraps every one-shot run
+// in a 30m context, so no live run can outlive the bound. The gate stands
+// down (slot + marker released); the backlog pass re-arms the still-labeled
+// PR on the next sweep. The verdict scan runs FIRST: a late verdict
+// consumes even past the timeout (it outranks the dead presumption).
+// ---------------------------------------------------------------------------
+
+func TestDispatchedInFlightWithinTimeoutWaits(t *testing.T) {
+	api := &fakeAPI{
+		pr:       openPR("needs-review"),
+		required: []string{"ci"},
+		states:   map[string]string{"ci": "success"},
+	}
+	p := base
+	p.DispatchedAt = p.Now.Add(-10 * time.Minute) // fresh dispatch
+	p.DispatchTimeout = 45 * time.Minute
+	res := Evaluate(context.Background(), api, p)
+	if res.Decision != DecisionWaiting || !strings.Contains(res.Reason, "in flight") {
+		t.Fatalf("fresh dispatch must wait in flight, got %s: %s", res.Decision, res.Reason)
+	}
+	if res.NewArmedSha == "" {
+		t.Fatal("in-flight waiting must stay armed")
+	}
+}
+
+func TestDispatchedDeadPresumedStandsDown(t *testing.T) {
+	api := &fakeAPI{
+		pr:       openPR("needs-review"),
+		required: []string{"ci"},
+		states:   map[string]string{"ci": "success"},
+	}
+	p := base
+	p.ArmedSha = "abc123" // armed long enough that horizon is not the trigger
+	p.DispatchedAt = p.Now.Add(-50 * time.Minute)
+	p.DispatchTimeout = 45 * time.Minute
+	res := Evaluate(context.Background(), api, p)
+	if res.Decision != DecisionStanddown {
+		t.Fatalf("stale dispatch must stand down, got %s: %s", res.Decision, res.Reason)
+	}
+	if !strings.Contains(res.Reason, "presumed dead") {
+		t.Fatalf("reason must name the dead-dispatch presumption, got %q", res.Reason)
+	}
+	if res.NewArmedSha != "" {
+		t.Fatal("presumed-dead standdown must release the slot (marker goes with it)")
+	}
+}
+
+func TestDispatchedTimeoutBoundaryStandsDown(t *testing.T) {
+	api := &fakeAPI{
+		pr:       openPR("needs-review"),
+		required: []string{"ci"},
+		states:   map[string]string{"ci": "success"},
+	}
+	p := base
+	p.ArmedSha = "abc123"
+	p.DispatchedAt = p.Now.Add(-45 * time.Minute)
+	p.DispatchTimeout = 45 * time.Minute
+	res := Evaluate(context.Background(), api, p)
+	if res.Decision != DecisionStanddown || !strings.Contains(res.Reason, "presumed dead") {
+		t.Fatalf("at-boundary dispatch is dead (>= convention), got %s: %s", res.Decision, res.Reason)
+	}
+}
+
+func TestDispatchedVerdictBeatsTimeout(t *testing.T) {
+	api := &fakeAPI{
+		pr:       openPR(), // label already removed by the deploy plugin
+		required: []string{"ci"},
+		states:   map[string]string{"ci": "success"},
+		comments: []fakeComment{{
+			IssueComment: IssueComment{Body: "verdict\n<!-- pr-review: APPROVE @ abc123 -->"},
+			updatedAt:    base.Now.Add(-5 * time.Minute),
+		}},
+	}
+	p := base
+	p.ArmedSha = "abc123"
+	p.DispatchedAt = p.Now.Add(-50 * time.Minute) // way past the timeout
+	p.DispatchTimeout = 45 * time.Minute
+	res := Evaluate(context.Background(), api, p)
+	if res.Decision != DecisionStanddown || !strings.Contains(res.Reason, "verdict posted — consumed") {
+		t.Fatalf("a late verdict consumes even past the timeout, got %s: %s", res.Decision, res.Reason)
+	}
+}
+
+func TestDispatchedZeroTimeoutKeepsWaiting(t *testing.T) {
+	api := &fakeAPI{
+		pr:       openPR("needs-review"),
+		required: []string{"ci"},
+		states:   map[string]string{"ci": "success"},
+	}
+	p := base
+	p.ArmedSha = "abc123"
+	p.DispatchedAt = p.Now.Add(-3 * time.Hour) // ancient marker
+	p.DispatchTimeout = 0                      // unconfigured caller: no liveness bound
+	res := Evaluate(context.Background(), api, p)
+	if res.Decision != DecisionWaiting || !strings.Contains(res.Reason, "in flight") {
+		t.Fatalf("zero DispatchTimeout must keep waiting (horizon remains the bound), got %s: %s", res.Decision, res.Reason)
+	}
+}

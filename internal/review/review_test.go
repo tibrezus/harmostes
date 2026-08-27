@@ -697,7 +697,11 @@ func TestDispatchedTimeoutBoundaryStandsDown(t *testing.T) {
 
 func TestDispatchedVerdictBeatsTimeout(t *testing.T) {
 	api := &fakeAPI{
-		pr:       openPR(), // label already removed by the deploy plugin
+		// Label still present: the review posted its verdict but the deploy
+		// plugin's label removal hasn't landed yet — the exact
+		// acceptance-criterion-2 interleaving. The in-flight branch (not the
+		// label-absent one) must consume the verdict and outrank the timeout.
+		pr:       openPR("needs-review"),
 		required: []string{"ci"},
 		states:   map[string]string{"ci": "success"},
 		comments: []fakeComment{{
@@ -710,8 +714,8 @@ func TestDispatchedVerdictBeatsTimeout(t *testing.T) {
 	p.DispatchedAt = p.Now.Add(-50 * time.Minute) // way past the timeout
 	p.DispatchTimeout = 45 * time.Minute
 	res := Evaluate(context.Background(), api, p)
-	if res.Decision != DecisionStanddown || !strings.Contains(res.Reason, "verdict posted — consumed") {
-		t.Fatalf("a late verdict consumes even past the timeout, got %s: %s", res.Decision, res.Reason)
+	if res.Decision != DecisionStanddown || res.Reason != "verdict posted — consumed" {
+		t.Fatalf("a late verdict consumes even past the timeout (exact reason pins the branch), got %s: %q", res.Decision, res.Reason)
 	}
 }
 

@@ -3,6 +3,7 @@ package v1alpha1
 import (
 	"encoding/json"
 	"testing"
+	"time"
 )
 
 func tmplSpec() WorkflowTemplateSpec {
@@ -92,5 +93,34 @@ func TestApplyTemplateDefaultsNilSafety(t *testing.T) {
 	ApplyTemplateDefaults(wf, nil)
 	if wf.Spec.Agent.Model != "" {
 		t.Fatal("nil template must leave spec untouched")
+	}
+}
+
+// The exactly-once floor (#248 review finding 2): a configured
+// dispatchTimeout at or below the one-shot run bound must degrade to the
+// default — honoring it would re-dispatch while a run may still be alive.
+func TestReviewReadyDispatchTimeoutFloor(t *testing.T) {
+	def := OneShotRunBound + 15*time.Minute
+	cases := []struct {
+		cfg  string
+		want time.Duration
+	}{
+		{"", def},                       // unset → default
+		{"garbage", def},                // unparsable → default
+		{"0s", def},                     // non-positive → default
+		{"10m", def},                    // below the run bound → default
+		{OneShotRunBound.String(), def}, // AT the run bound → default
+		{(OneShotRunBound + time.Minute).String(), OneShotRunBound + time.Minute}, // above → honored
+		{"2h", 2 * time.Hour}, // custom above the floor → honored
+	}
+	for _, c := range cases {
+		got := (&ReviewReadySpec{DispatchTimeout: c.cfg}).DispatchTimeoutDuration()
+		if got != c.want {
+			t.Errorf("DispatchTimeoutDuration(%q) = %s, want %s", c.cfg, got, c.want)
+		}
+	}
+	// Nil spec and zero-value spec both take the default.
+	if got := (*ReviewReadySpec)(nil).DispatchTimeoutDuration(); got != def {
+		t.Errorf("nil spec = %s, want %s", got, def)
 	}
 }

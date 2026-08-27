@@ -14,6 +14,7 @@ import (
 
 	cloudevents "github.com/cloudevents/sdk-go/v2"
 
+	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
 	"github.com/tibrezus/harmostes/internal/observability"
 )
 
@@ -195,8 +196,11 @@ func (c *Consumer) handleTrigger(w http.ResponseWriter, r *http.Request) {
 	}
 	defer c.mu.Unlock()
 
-	// Run the workflow (shells out to /proc/self/exe in one-shot mode)
-	runCtx, cancel := context.WithTimeout(r.Context(), 30*time.Minute)
+	// Run the workflow (shells out to /proc/self/exe in one-shot mode).
+	// The hard wall-clock bound on every run — the premise of the review
+	// gate's DispatchTimeout exactly-once construction (#248): no live run
+	// can outlive it. Keep in sync with v1alpha1.OneShotRunBound.
+	runCtx, cancel := context.WithTimeout(r.Context(), v1alpha1.OneShotRunBound)
 	defer cancel()
 
 	if err := c.cfg.RunFunc(runCtx, RunRequest{

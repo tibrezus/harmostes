@@ -23,6 +23,10 @@ on:
         description: Run in snapshot mode (no publish)
         type: boolean
         default: false
+      force:
+        description: Re-publish even if the version tag exists (recovery for a release killed mid-publish — the tag already exists, so the tagExists skip would strand the version)
+        type: boolean
+        default: false
 
 permissions:
   contents: write  # create tags + GitHub Release
@@ -102,7 +106,10 @@ jobs:
   release:
     name: Release
     needs: version
-    if: github.event.inputs.snapshot != 'true' && needs.version.outputs.tagExists == 'false'
+    # force=true bypasses the tagExists skip: the tag was already created
+    # before the failed publish attempt, so the skip would strand the
+    # version (#261) — re-attempt publication for the existing tag instead.
+    if: github.event.inputs.snapshot != 'true' && (needs.version.outputs.tagExists == 'false' || github.event.inputs.force == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:

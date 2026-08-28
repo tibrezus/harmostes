@@ -80,6 +80,7 @@ ui-css-sync:
 		files = sorted(glob.glob('$(DS_SRC)/components/*.html')) or __import__('sys').exit('ui-css-sync: no components/*.html under DS_SRC=$(DS_SRC) - refusing to truncate components.css'); \
 		parts = []; \
 		[parts.extend(re.findall(r'<style>(.*?)</style>', open(f).read(), re.DOTALL)) for f in files]; \
+		parts or __import__('sys').exit('ui-css-sync: ' + str(len(files)) + ' component file(s) under DS_SRC=$(DS_SRC) contain no <style> blocks - refusing to truncate components.css'); \
 		css = '\n\n'.join(p.strip() for p in parts); \
 		open('internal/ui/static/css/components.css', 'w').write('/* Consolidated component styles — extracted from rezuscloud/design-system/components/*.html\n   Do not edit by hand. Regenerate with: make ui-css-sync\n   Source: ' + str(len(parts)) + ' component style blocks */\n\n' + css + '\n'); \
 		print(f'Synced {len(files)} components / {len(parts)} style blocks')"

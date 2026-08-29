@@ -11,7 +11,7 @@
  *   LITELLM_URL      e.g. https://litellm.example.com
  *   LITELLM_API_KEY  the proxy's master key or virtual key
  *
- * Models are referenced as litellm/<model-id>, e.g. litellm/zai/glm-4.7.
+ * Models are referenced as litellm/<model-id>, e.g. litellm/zai/anthropic/glm-5.3-flash.
  * The <model-id> is passed verbatim to LiteLLM's /v1/chat/completions endpoint,
  * which routes it to the correct upstream provider.
  *

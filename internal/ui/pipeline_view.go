@@ -26,7 +26,7 @@ type PipelineNode struct {
 	ID       string             // node ID (prepare, agent, gate, deploy, or custom)
 	Type     string             // node type: prepare, agent, gate, deploy, plugin, branch, custom
 	Label    string             // display label (Silkscreen): PREPARE, AGENT, GATE, DEPLOY
-	Sublabel string             // plugin or model name (VT323): rig-emit, litellm/zai/glm-5.2
+	Sublabel string             // plugin or model name (VT323): rig-emit, litellm/zai/anthropic/glm-5.3-flash
 	Meta     []PipelineNodeMeta // optional metadata rows beneath the node
 }
 

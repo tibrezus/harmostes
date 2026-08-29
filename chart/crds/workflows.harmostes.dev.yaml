@@ -123,7 +123,7 @@ spec:
                   required: [model, taskTemplate, gate]
                   properties:
                     enabled: { type: boolean }                  # nil/true = run, false = skip (deterministic-only)
-                    model: { type: string }                    # zai/glm-5.2
+                    model: { type: string }                    # litellm/zai/anthropic/glm-5.3-flash
                     skill: { type: string }                    # /skills/…/SKILL.md
                     tools: { type: array, items: { type: string } }
                     taskTemplate:                              # the interpretive task

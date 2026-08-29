@@ -7,7 +7,7 @@
 // behaviorally interchangeable:
 //
 //	harmostes-agent task \
-//	  --skill /skills/wiki/SKILL.md --model zai/glm-5.2 --tools read,bash,edit,grep \
+//	  --skill /skills/wiki/SKILL.md --model litellm/zai/anthropic/glm-5.3-flash --tools read,bash,edit,grep \
 //	  --workdir /repo --task-file task.txt \
 //	  --gate "bash gate.sh /repo" \
 //	  [--max-fixes 3] [--log events.jsonl] [--timeout 1800]
@@ -39,7 +39,7 @@ func main() {
 	}
 	fs := flag.NewFlagSet("task", flag.ExitOnError)
 	skill := fs.String("skill", "", "path to SKILL.md")
-	model := fs.String("model", "zai/glm-5.2", "model id")
+	model := fs.String("model", "litellm/zai/anthropic/glm-5.3-flash", "model id")
 	tools := fs.String("tools", "read,bash,edit,grep", "comma-separated tool allowlist")
 	workdir := fs.String("workdir", "", "agent working directory (the repo)")
 	taskFile := fs.String("task-file", "", "file with the initial task prompt")

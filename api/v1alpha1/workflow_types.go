@@ -171,7 +171,7 @@ func (a AgentSpec) EnabledOrDefault() bool { return a.Enabled == nil || *a.Enabl
 
 type AgentSpec struct {
 	Enabled      *bool        `json:"enabled,omitempty"`  // nil/true = run, false = skip (deterministic-only)
-	Model        string       `json:"model"`              // e.g. zai/glm-5.2
+	Model        string       `json:"model"`              // e.g. litellm/zai/anthropic/glm-5.3-flash
 	Skill        string       `json:"skill"`              // path to SKILL.md
 	Tools        []string     `json:"tools,omitempty"`    // tool allowlist
 	TaskTemplate TaskTemplate `json:"taskTemplate"`       // the interpretive task

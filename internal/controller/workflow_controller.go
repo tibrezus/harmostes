@@ -15,6 +15,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -102,16 +103,27 @@ func (r *WorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	// annotation again and schedules another worker — an infinite rapid-fire
 	// loop.
 	if triggerRev := wf.Annotations["harmostes.dev/trigger-revision"]; triggerRev != "" {
-		base := wf.DeepCopy()
-		delete(wf.Annotations, "harmostes.dev/trigger-revision")
-		// The PR pointer rode the TriggerEvent payload (Pr/Action); clearing
-		// here too prevents a stale wake from re-arming every poll cycle.
-		delete(wf.Annotations, "harmostes.dev/trigger-pr")
-		delete(wf.Annotations, "harmostes.dev/trigger-action")
-		delete(wf.Annotations, "harmostes.dev/trigger-title")
-		if err := r.Patch(ctx, &wf, client.MergeFrom(base)); err != nil {
-			logger.Error(err, "clear webhook trigger annotation")
-		}
+		// Lost-update discipline (#257): clear on a FRESH read under a
+		// resourceVersion precondition — the cached copy may predate another
+		// reconcile's writes, and metadata patches replace whole maps.
+		_ = retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+			var fresh v1alpha1.Workflow
+			if err := r.Get(ctx, client.ObjectKeyFromObject(&wf), &fresh); err != nil {
+				return err
+			}
+			if fresh.Annotations["harmostes.dev/trigger-revision"] == "" {
+				return nil // already cleared by the winning reconcile
+			}
+			base := fresh.DeepCopy()
+			delete(fresh.Annotations, "harmostes.dev/trigger-revision")
+			// The PR pointer rode the TriggerEvent payload (Pr/Action); clearing
+			// here too prevents a stale wake from re-arming every poll cycle.
+			delete(fresh.Annotations, "harmostes.dev/trigger-pr")
+			delete(fresh.Annotations, "harmostes.dev/trigger-action")
+			delete(fresh.Annotations, "harmostes.dev/trigger-title")
+			patch := client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})
+			return r.Patch(ctx, &fresh, patch)
+		})
 	}
 
 	// Mark this generation as observed (scheduling happened); the worker records
@@ -180,20 +192,31 @@ func dueReason(wf *v1alpha1.Workflow) string {
 
 // observeGeneration patches status.observedGeneration + a Scheduling condition.
 func (r *WorkflowReconciler) observeGeneration(ctx context.Context, wf *v1alpha1.Workflow) error {
-	base := wf.DeepCopy()
-	wf.Status.ObservedGeneration = wf.Generation
-	// Cooldown anchor: stamp LastRunAt at SCHEDULE time (not just on worker
-	// completion). isDue guards re-scheduling with time.Since(LastRunAt) <
-	// PollInterval. LastRunAt was only ever set by the worker; a worker that
-	// never runs (init-container crash, DNS failure, image pull error) left it
-	// frozen, so isDue returned true every reconcile → rapid-fire triggers
-	// (#118). The worker overwrites this with the actual completion time.
-	wf.Status.LastRunAt = metav1.Now()
-	wf.Status.Conditions = setCondition(wf.Status.Conditions, metav1.Condition{
-		Type: "Scheduled", Status: metav1.ConditionTrue, Reason: "TriggerPublished",
-		Message: "monitor controller published a trigger event", ObservedGeneration: wf.Generation,
+	// Lost-update discipline (#257): read fresh, patch under a
+	// resourceVersion precondition, retry on conflict — the one-shot worker
+	// patches reviewReady concurrently, and a stale conditions-array
+	// replacement must not drop its writes (arrays do not merge).
+	return retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		var fresh v1alpha1.Workflow
+		if err := r.Get(ctx, client.ObjectKeyFromObject(wf), &fresh); err != nil {
+			return err
+		}
+		base := fresh.DeepCopy()
+		fresh.Status.ObservedGeneration = wf.Generation
+		// Cooldown anchor: stamp LastRunAt at SCHEDULE time (not just on worker
+		// completion). isDue guards re-scheduling with time.Since(LastRunAt) <
+		// PollInterval. LastRunAt was only ever set by the worker; a worker that
+		// never runs (init-container crash, DNS failure, image pull error) left it
+		// frozen, so isDue returned true every reconcile → rapid-fire triggers
+		// (#118). The worker overwrites this with the actual completion time.
+		fresh.Status.LastRunAt = metav1.Now()
+		fresh.Status.Conditions = setCondition(fresh.Status.Conditions, metav1.Condition{
+			Type: "Scheduled", Status: metav1.ConditionTrue, Reason: "TriggerPublished",
+			Message: "monitor controller published a trigger event", ObservedGeneration: wf.Generation,
+		})
+		patch := client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})
+		return r.Status().Patch(ctx, &fresh, patch)
 	})
-	return r.Status().Patch(ctx, wf, client.MergeFrom(base))
 }
 
 // SetupWithManager registers the reconciler + its watches.

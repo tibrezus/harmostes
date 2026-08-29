@@ -41,6 +41,9 @@ type Result struct {
 // status in place; the implementation performs the actual status-subresource
 // patch (the worker never writes spec).
 type StatusPatcher interface {
+	// GetStatus reads the workflow's CURRENT status — decisions start from
+	// live state, never the run-start snapshot (#257).
+	GetStatus(ctx context.Context, name string) (*v1alpha1.WorkflowStatus, error)
 	PatchStatus(ctx context.Context, name string, mutate func(*v1alpha1.WorkflowStatus)) error
 }
 

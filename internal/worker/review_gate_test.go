@@ -59,6 +59,17 @@ func clearTriggerEnv(t *testing.T) {
 	}
 }
 
+// seedLive mirrors the run-start snapshot into the live status the gate now
+// reads (#257): decisions come from live state; the snapshot is what the
+// consumer fetched at trigger time. Tests that model a DIVERgence seed
+// st.last explicitly after calling this.
+func seedLive(st *fakeStatus, wf *v1alpha1.Workflow) {
+	if rr := wf.Status.ReviewReady; rr != nil {
+		cp := *rr
+		st.last.ReviewReady = &cp
+	}
+}
+
 func gateWorkflow() *v1alpha1.Workflow {
 	wf := newWorkflow()
 	wf.Spec.ReviewReady = &v1alpha1.ReviewReadySpec{Label: "needs-review", Horizon: "6h"}
@@ -191,6 +202,7 @@ func TestReviewGateReEvaluationWithoutEvent(t *testing.T) {
 		ArmedRepo: "git.rezus.cloud/tibrez/rhesadox", ArmedPR: 42,
 		ArmedSha: "abc123def456", ArmedSince: &since, LastDecision: "waiting",
 	}
+	seedLive(st, wf)
 	env := reviewGate(context.Background(), testDeps(st), wf)
 	if env == nil {
 		t.Fatal("armed+green must proceed without a new event")
@@ -252,6 +264,7 @@ func TestReviewGateUnrelatedPushDoesNotHijackArmed(t *testing.T) {
 		ArmedRepo: "git.rezus.cloud/tibrez/rhesadox", ArmedPR: 1566,
 		ArmedSha: "abc123", ArmedSince: &since, LastDecision: "waiting",
 	}
+	seedLive(st, wf)
 	// push wake for a DIFFERENT pr (env-first path)
 	t.Setenv("HARMOSTES_TRIGGER_PR", "git.rezus.cloud/tibrez/rhesadox#1577")
 	t.Setenv("HARMOSTES_TRIGGER_ACTION", "synchronize")
@@ -260,10 +273,10 @@ func TestReviewGateUnrelatedPushDoesNotHijackArmed(t *testing.T) {
 	if env != nil {
 		t.Fatal("unrelated push must not proceed")
 	}
-	// the gate must not PATCH at all — the armed state on the live CR
-	// (not visible to the fake) is what stays preserved
-	if rr := st.last.ReviewReady; rr != nil {
-		t.Fatalf("unrelated push must not touch status, got %+v", rr)
+	// the gate must not PATCH at all — the live armed state (seeded by
+	// seedLive) is what stays preserved, untouched
+	if st.patches != 0 {
+		t.Fatalf("unrelated push must not touch status, got %d patches: %+v", st.patches, st.last.ReviewReady)
 	}
 }
 
@@ -280,6 +293,7 @@ func TestReviewGateLabelWakeRetargets(t *testing.T) {
 		ArmedRepo: "git.rezus.cloud/tibrez/rhesadox", ArmedPR: 1566,
 		ArmedSha: "abc123", ArmedSince: &since, LastDecision: "waiting",
 	}
+	seedLive(st, wf)
 	wf.Annotations = map[string]string{
 		"harmostes.dev/trigger-pr":     "git.rezus.cloud/tibrez/rhesadox#42",
 		"harmostes.dev/trigger-action": "labeled",
@@ -481,6 +495,7 @@ func TestReviewGateArmedSweepDoesNotRetargetToBacklog(t *testing.T) {
 	wf := gateWorkflow()
 	since := metav1.Now()
 	wf.Status.ReviewReady = &v1alpha1.ReviewReadyStatus{ArmedPR: 42, ArmedRepo: "git.rezus.cloud/tibrez/rhesadox", ArmedSha: "abc123def456", ArmedSince: &since, LastDecision: "waiting"}
+	seedLive(st, wf)
 
 	reviewGate(context.Background(), testDeps(st), wf)
 	rr := st.last.ReviewReady
@@ -563,6 +578,7 @@ func TestDispatchedReviewNotReDispatched(t *testing.T) {
 		ArmedSha: "abc123def456", ArmedSince: &since,
 		DispatchedAt: &since, LastDecision: "proceed",
 	}
+	seedLive(st, wf)
 
 	env := reviewGate(context.Background(), testDeps(st), wf)
 	if env != nil {
@@ -712,6 +728,7 @@ func TestReviewGateLabelWakeRetargetsWhileDispatched(t *testing.T) {
 		ArmedPR: 42, ArmedRepo: "git.rezus.cloud/tibrez/rhesadox",
 		ArmedSha: "abc123def456", ArmedSince: &since, DispatchedAt: &since,
 	}
+	seedLive(st, wf)
 	// Labeled wake for #7.
 	os.Setenv("HARMOSTES_TRIGGER_PR", "git.rezus.cloud/tibrez/rhesadox#7")
 	os.Setenv("HARMOSTES_TRIGGER_ACTION", "labeled")
@@ -763,6 +780,7 @@ func TestDispatchedHorizonReleasesSlot(t *testing.T) {
 		ArmedPR: 42, ArmedRepo: "git.rezus.cloud/tibrez/rhesadox",
 		ArmedSha: "abc123def456", ArmedSince: &old, DispatchedAt: &old,
 	}
+	seedLive(st, wf)
 	env := reviewGate(context.Background(), testDeps(st), wf)
 	if env != nil {
 		t.Fatal("horizon-exceeded dispatched review must not dispatch")
@@ -817,6 +835,7 @@ func TestDispatchedDeadRunRecoversViaBacklog(t *testing.T) {
 		ArmedSha: "abc123def456", ArmedSince: &stale, DispatchedAt: &stale,
 		LastDecision: "waiting", LastReason: "review in flight — dispatched, verdict pending",
 	}
+	seedLive(st, wf)
 
 	// Sweep 1: the dead dispatch is presumed dead — standdown, slot+marker released.
 	if env := reviewGate(context.Background(), testDeps(st), wf); env != nil {
@@ -847,5 +866,115 @@ func TestDispatchedDeadRunRecoversViaBacklog(t *testing.T) {
 	}
 	if rr2 := st.last.ReviewReady; rr2 == nil || rr2.DispatchedAt == nil || rr2.ArmedPR != 42 {
 		t.Fatalf("re-dispatch must stamp a fresh marker and re-arm, got %+v", rr2)
+	}
+}
+
+// TestGateMarkerSurvivesStaleSnapshot is THE #257 regression: the live CR
+// carries a dispatch marker (another writer set it after this run's
+// consumer fetched its snapshot — snapshot has none). A waiting evaluation
+// must keep the LIVE marker (the claim is still in flight) and must not
+// re-proceed on the marker-less snapshot. Live incident: dispatchedAt
+// re-stamped 13:04→13:49 under DNS-failure churn, each sweep re-proceeding.
+func TestGateMarkerSurvivesStaleSnapshot(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(req.URL.Path, "/pulls/42"):
+			json.NewEncoder(w).Encode(map[string]any{
+				"state": "open", "head": map[string]string{"sha": "abc123def456"},
+				"base":   map[string]string{"ref": "main"},
+				"labels": []map[string]string{{"name": "needs-review"}},
+			})
+		case strings.Contains(req.URL.Path, "/branch_protections/"):
+			json.NewEncoder(w).Encode(map[string]any{"status_check_contexts": []string{"ci / build-test (push)"}})
+		case strings.HasSuffix(req.URL.Path, "/statuses"):
+			json.NewEncoder(w).Encode([]map[string]string{
+				{"context": "ci / build-test (push)", "status": "success"},
+			})
+		case strings.Contains(req.URL.Path, "/issues/42/comments"):
+			json.NewEncoder(w).Encode([]map[string]any{}) // no verdict yet
+		default:
+			http.NotFound(w, req)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	st := &fakeStatus{}
+	wf := gateWorkflow()
+	since := metav1.NewTime(time.Now().Add(-10 * time.Minute))
+	// Run-start SNAPSHOT: armed but marker-less (fetched before the marker
+	// was set).
+	wf.Status.ReviewReady = &v1alpha1.ReviewReadyStatus{
+		ArmedPR: 42, ArmedRepo: "git.rezus.cloud/tibrez/rhesadox",
+		ArmedSha: "abc123def456", ArmedSince: &since, LastDecision: "proceed",
+	}
+	// LIVE status: the marker EXISTS (dispatch happened after the fetch).
+	liveMarker := metav1.NewTime(time.Now().Add(-2 * time.Minute))
+	st.last.ReviewReady = &v1alpha1.ReviewReadyStatus{
+		ArmedPR: 42, ArmedRepo: "git.rezus.cloud/tibrez/rhesadox",
+		ArmedSha: "abc123def456", ArmedSince: &since,
+		DispatchedAt: &liveMarker, LastDecision: "proceed",
+	}
+
+	env := reviewGate(context.Background(), testDeps(st), wf)
+	if env != nil {
+		t.Fatal("live marker must suppress the second dispatch — re-proceed is the #257 bug")
+	}
+	rr := st.last.ReviewReady
+	if rr == nil || rr.LastDecision != "waiting" || rr.DispatchedAt == nil {
+		t.Fatalf("waiting must preserve the live marker, got %+v", rr)
+	}
+	if !rr.DispatchedAt.Time.Equal(liveMarker.Time) {
+		t.Fatalf("marker must be the LIVE one, got %+v want %v", rr.DispatchedAt, liveMarker.Time)
+	}
+}
+
+// TestGateRetargetClearsLiveMarker: the marker belongs to the OLD armed
+// review — a request-shaped wake re-targeting to a different PR clears it
+// even though the live claim carried one (r5, now live-state aware).
+func TestGateRetargetClearsLiveMarker(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(req.URL.Path, "/pulls/99"):
+			json.NewEncoder(w).Encode(map[string]any{
+				"state": "open", "head": map[string]string{"sha": "newhead99"},
+				"base":   map[string]string{"ref": "main"},
+				"labels": []map[string]string{{"name": "needs-review"}},
+			})
+		case strings.Contains(req.URL.Path, "/branch_protections/"):
+			json.NewEncoder(w).Encode(map[string]any{"status_check_contexts": []string{"ci / build-test (push)"}})
+		case strings.HasSuffix(req.URL.Path, "/statuses"):
+			json.NewEncoder(w).Encode([]map[string]string{
+				{"context": "ci / build-test (push)", "status": "success"},
+			})
+		default:
+			http.NotFound(w, req)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	st := &fakeStatus{}
+	wf := gateWorkflow()
+	marker := metav1.NewTime(time.Now().Add(-3 * time.Minute))
+	// Live claim: armed on #42 with a marker.
+	st.last.ReviewReady = &v1alpha1.ReviewReadyStatus{
+		ArmedPR: 42, ArmedRepo: "git.rezus.cloud/tibrez/rhesadox",
+		ArmedSha: "abc123def456", DispatchedAt: &marker, LastDecision: "proceed",
+	}
+	// Request-shaped wake: label touched on #99 — re-target.
+	t.Setenv("HARMOSTES_TRIGGER_PR", "git.rezus.cloud/tibrez/rhesadox#99")
+	t.Setenv("HARMOSTES_TRIGGER_ACTION", "labeled")
+	t.Setenv("HARMOSTES_TRIGGER_REVISION", "newhead99")
+
+	env := reviewGate(context.Background(), testDeps(st), wf)
+	if env == nil {
+		t.Fatal("retarget to a labeled green PR must proceed")
+	}
+	rr := st.last.ReviewReady
+	if rr == nil || rr.ArmedPR != 99 || rr.DispatchedAt == nil || rr.DispatchedAt.Time.Equal(marker.Time) {
+		t.Fatalf("retarget must re-arm on #99 with a FRESH marker, got %+v", rr)
 	}
 }

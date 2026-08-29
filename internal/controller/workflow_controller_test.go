@@ -3,16 +3,21 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
 	"github.com/tibrezus/harmostes/internal/dapr"
@@ -194,5 +199,55 @@ func TestObserveGenerationSetsLastRunAt(t *testing.T) {
 	}
 	if !hasScheduled {
 		t.Error("missing Scheduled=True condition")
+	}
+}
+
+// TestObserveGenerationRetriesOnConflict (#257): a concurrent writer (the
+// one-shot gate patching reviewReady) bumps the resourceVersion between the
+// controller's read and write; the optimistic-lock patch must conflict and
+// the retry must land ALL of observeGeneration's fields on the fresh state
+// — while the concurrent reviewReady write survives untouched.
+func TestObserveGenerationRetriesOnConflict(t *testing.T) {
+	wf := &v1alpha1.Workflow{}
+	wf.Name = "test-wf"
+	wf.Namespace = "harmostes"
+	wf.Generation = 3
+	wf.Status.ReviewReady = &v1alpha1.ReviewReadyStatus{ArmedPR: 42, LastDecision: "waiting"}
+
+	attempts := 0
+	cl := fake.NewClientBuilder().
+		WithScheme(k8s.Scheme()).
+		WithStatusSubresource(&v1alpha1.Workflow{}).
+		WithObjects(wf).
+		WithInterceptorFuncs(interceptor.Funcs{
+			SubResourcePatch: func(ctx context.Context, c client.Client, subResourceName string, obj client.Object, patch client.Patch, opts ...client.SubResourcePatchOption) error {
+				attempts++
+				if attempts == 1 {
+					return apierrors.NewConflict(
+						schema.GroupResource{Group: "harmostes.dev", Resource: "workflows"},
+						"test-wf", errors.New("modified"))
+				}
+				return c.Status().Patch(ctx, obj, patch, opts...)
+			},
+		}).
+		Build()
+
+	r := &WorkflowReconciler{Client: cl, Scheme: k8s.Scheme()}
+	if err := r.observeGeneration(context.Background(), wf); err != nil {
+		t.Fatalf("observeGeneration: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("expected conflict then success, got %d attempts", attempts)
+	}
+
+	var got v1alpha1.Workflow
+	if err := cl.Get(context.Background(), types.NamespacedName{Name: "test-wf", Namespace: "harmostes"}, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.ObservedGeneration != 3 || got.Status.LastRunAt.IsZero() {
+		t.Fatalf("observeGeneration fields not landed after retry: %+v", got.Status)
+	}
+	if got.Status.ReviewReady == nil || got.Status.ReviewReady.ArmedPR != 42 {
+		t.Fatalf("concurrent reviewReady write must survive the retry: %+v", got.Status.ReviewReady)
 	}
 }

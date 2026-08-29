@@ -64,9 +64,18 @@ func (f *fakeDapr) Publish(_ context.Context, _, topic, _ string) error {
 	return nil
 }
 
-type fakeStatus struct{ last v1alpha1.WorkflowStatus }
+type fakeStatus struct {
+	last    v1alpha1.WorkflowStatus
+	patches int
+}
+
+func (f *fakeStatus) GetStatus(_ context.Context, _ string) (*v1alpha1.WorkflowStatus, error) {
+	st := f.last
+	return &st, nil
+}
 
 func (f *fakeStatus) PatchStatus(_ context.Context, _ string, mutate func(*v1alpha1.WorkflowStatus)) error {
+	f.patches++
 	mutate(&f.last)
 	return nil
 }

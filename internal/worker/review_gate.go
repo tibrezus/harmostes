@@ -55,6 +55,15 @@ func reviewGate(ctx context.Context, deps Deps, wf *v1alpha1.Workflow) *review.E
 		return nil // gate not configured for this workflow
 	}
 
+	// Decisions start from LIVE state, never the run-start snapshot (#257):
+	// the consumer fetched wf when the trigger arrived — a long evaluate, a
+	// parallel writer, or a lost marker in between makes the snapshot lie,
+	// and the gate re-proceeds forever (the live #257 incident).
+	if live, err := deps.Status.GetStatus(ctx, wf.Name); err != nil {
+		deps.log()("review-ready: live status read failed (%v) — falling back to run-start snapshot", err)
+	} else {
+		wf.Status = *live
+	}
 	armed := wf.Status.ReviewReady
 	// The controller clears the trigger annotations at schedule time (it must,
 	// or isDue rapid-fires), so the PR pointer rides the TriggerEvent payload
@@ -168,14 +177,28 @@ func reviewGate(ctx context.Context, deps Deps, wf *v1alpha1.Workflow) *review.E
 				LastReason:   result.Reason,
 			}
 		} else {
-			// Armed persists: preserve the dispatch marker across in-flight
-			// waiting (waiting must NOT clear it), set it at proceed.
+			// Armed persists: set the dispatch marker at proceed; for waiting
+			// decisions PRESERVE the live marker — same claim still in
+			// flight. The run-start snapshot (`armed`) is not authoritative
+			// here: deriving from it nils a marker another writer set after
+			// this run fetched, and the gate re-proceeds forever (#257).
+			// A different live claim (armedPR/armedSha mismatch — a retarget
+			// or a newer arm) means the marker belongs to the OLD review:
+			// cleared with it.
 			var dispatched *metav1.Time
 			if result.Decision == review.DecisionProceed {
+				// Restamp unconditionally: a proceed is a NEW dispatch — the
+				// previous marker's review has ended (verdict consumed or the
+				// claim failed) — so the dispatch-timeout clock restarts with
+				// it. Waiting paths preserve the live marker instead (below).
 				now := metav1.Now()
 				dispatched = &now
-			} else if armed != nil {
-				dispatched = armed.DispatchedAt
+			} else if live := s.ReviewReady; live != nil &&
+				live.ArmedPR == pr && live.ArmedSha == result.NewArmedSha {
+				dispatched = live.DispatchedAt
+				if live.ArmedSince != nil {
+					since = &live.ArmedSince.Time // the live horizon clock wins
+				}
 			}
 			s.ReviewReady = &v1alpha1.ReviewReadyStatus{
 				ArmedRepo:    repo,

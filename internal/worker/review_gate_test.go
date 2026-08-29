@@ -61,8 +61,10 @@ func clearTriggerEnv(t *testing.T) {
 
 // seedLive mirrors the run-start snapshot into the live status the gate now
 // reads (#257): decisions come from live state; the snapshot is what the
-// consumer fetched at trigger time. Tests that model a DIVERgence seed
-// st.last explicitly after calling this.
+// consumer fetched at trigger time. Tests that model a DIVERGENCE between
+// snapshot and live must seed st.last explicitly AFTER calling this — and
+// assertions about "the gate did not write" must count st.patches, not
+// inspect st.last (which the seed itself populates).
 func seedLive(st *fakeStatus, wf *v1alpha1.Workflow) {
 	if rr := wf.Status.ReviewReady; rr != nil {
 		cp := *rr

@@ -106,7 +106,10 @@ func (r *WorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		// Lost-update discipline (#257): clear on a FRESH read under a
 		// resourceVersion precondition — the cached copy may predate another
 		// reconcile's writes, and metadata patches replace whole maps.
-		_ = retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		// A permanently failed clear is self-healing (the annotation survives
+		// and the next reconcile retries the whole trigger path) but must be
+		// visible: surface the final error instead of discarding it.
+		if err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
 			var fresh v1alpha1.Workflow
 			if err := r.Get(ctx, client.ObjectKeyFromObject(&wf), &fresh); err != nil {
 				return err
@@ -123,7 +126,9 @@ func (r *WorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			delete(fresh.Annotations, "harmostes.dev/trigger-title")
 			patch := client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})
 			return r.Patch(ctx, &fresh, patch)
-		})
+		}); err != nil {
+			logger.Error(err, "clear webhook trigger annotation")
+		}
 	}
 
 	// Mark this generation as observed (scheduling happened); the worker records

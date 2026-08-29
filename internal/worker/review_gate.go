@@ -187,6 +187,10 @@ func reviewGate(ctx context.Context, deps Deps, wf *v1alpha1.Workflow) *review.E
 			// cleared with it.
 			var dispatched *metav1.Time
 			if result.Decision == review.DecisionProceed {
+				// Restamp unconditionally: a proceed is a NEW dispatch — the
+				// previous marker's review has ended (verdict consumed or the
+				// claim failed) — so the dispatch-timeout clock restarts with
+				// it. Waiting paths preserve the live marker instead (below).
 				now := metav1.Now()
 				dispatched = &now
 			} else if live := s.ReviewReady; live != nil &&

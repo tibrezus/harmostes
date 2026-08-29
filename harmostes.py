@@ -35,7 +35,7 @@ language-agnostic choice for a CLI callable from bash + Python workflows.
 
 Usage:
   harmostes task \
-    --skill /path/to/SKILL.md --model litellm/zai/glm-4.7 --tools read,bash,edit \
+    --skill /path/to/SKILL.md --model litellm/zai/anthropic/glm-5.3-flash --tools read,bash,edit \
     --workdir /repo --task-file task.txt \
     --gate "bash validate.sh && grep -q SIG file" \
     [--max-fixes 3] [--log /path/events.log] [--no-session]
@@ -161,7 +161,7 @@ def main():
 
     t = sub.add_parser("task", help="agent task + gate + feedback-as-session-continuation")
     t.add_argument("--skill", required=True, help="path to SKILL.md")
-    t.add_argument("--model", default="litellm/zai/glm-4.7")
+    t.add_argument("--model", default="litellm/zai/anthropic/glm-5.3-flash")
     t.add_argument("--tools", default="read,bash,edit,grep",
                    help="comma-separated tool allowlist (pi has no per-tool approval/sandbox)")
     t.add_argument("--workdir", required=True, help="agent working directory (the repo)")

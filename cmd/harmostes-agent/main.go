@@ -7,7 +7,7 @@
 // behaviorally interchangeable:
 //
 //	harmostes-agent task \
-//	  --skill /skills/wiki/SKILL.md --model zai/glm-5.2 --tools read,bash,edit,grep \
+//	  --skill /skills/wiki/SKILL.md --model litellm/zai/anthropic/glm-5.3-flash --tools read,bash,edit,grep \
 //	  --workdir /repo --task-file task.txt \
 //	  --gate "bash gate.sh /repo" \
 //	  [--max-fixes 3] [--log events.jsonl] [--timeout 1800]

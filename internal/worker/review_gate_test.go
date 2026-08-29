@@ -980,3 +980,103 @@ func TestGateRetargetClearsLiveMarker(t *testing.T) {
 		t.Fatalf("retarget must re-arm on #99 with a FRESH marker, got %+v", rr)
 	}
 }
+
+// greenPRServer serves the minimal API a proceed needs for repo/name.
+func greenPRServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(req.URL.Path, "/pulls/"):
+			json.NewEncoder(w).Encode(map[string]any{
+				"state": "open", "head": map[string]string{"sha": "headabc123"},
+				"base":   map[string]string{"ref": "main"},
+				"labels": []map[string]string{{"name": "needs-review"}},
+			})
+		case strings.Contains(req.URL.Path, "/branch_protections/"):
+			json.NewEncoder(w).Encode(map[string]any{"status_check_contexts": []string{"ci / build-test (push)"}})
+		case strings.HasSuffix(req.URL.Path, "/statuses"):
+			json.NewEncoder(w).Encode([]map[string]string{
+				{"context": "ci / build-test (push)", "status": "success"},
+			})
+		default:
+			http.NotFound(w, req)
+		}
+	}))
+}
+
+// #268: a bare owner/name wake (GitHub's full_name form) must arm and
+// proceed at the host-qualified form — the envelope's Repo feeds the
+// workspace plugin's host split, and a bare pointer is a guaranteed
+// NXDOMAIN there (live incident 2026-08-29).
+func TestGateNormalizesBareRepoWake(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := greenPRServer(t)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	st := &fakeStatus{}
+	wf := gateWorkflow() // scope: git.rezus.cloud/tibrez/rhesadox (full form)
+	t.Setenv("HARMOSTES_TRIGGER_PR", "tibrez/rhesadox#99")
+	t.Setenv("HARMOSTES_TRIGGER_ACTION", "labeled")
+	t.Setenv("HARMOSTES_TRIGGER_REVISION", "headabc123")
+
+	env := reviewGate(context.Background(), testDeps(st), wf)
+	if env == nil {
+		t.Fatal("bare-form wake on a full-form scope must proceed")
+	}
+	if env.Repo != "git.rezus.cloud/tibrez/rhesadox" {
+		t.Fatalf("envelope Repo must be host-qualified, got %q", env.Repo)
+	}
+	if rr := st.last.ReviewReady; rr == nil || rr.ArmedRepo != "git.rezus.cloud/tibrez/rhesadox" {
+		t.Fatalf("armedRepo must persist host-qualified, got %+v", rr)
+	}
+}
+
+// #268: a bare armedRepo persisted by an older gate self-heals — the sweep
+// normalizes before evaluation and rewrites the armed state at proceed.
+func TestGateSelfHealsBareArmedRepo(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := greenPRServer(t)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	st := &fakeStatus{}
+	wf := gateWorkflow()
+	st.last.ReviewReady = &v1alpha1.ReviewReadyStatus{
+		ArmedPR: 99, ArmedRepo: "tibrez/rhesadox", ArmedSha: "headabc123", // poisoned form
+	}
+
+	env := reviewGate(context.Background(), testDeps(st), wf)
+	if env == nil {
+		t.Fatal("sweep on a bare armedRepo must proceed (self-healed)")
+	}
+	if env.Repo != "git.rezus.cloud/tibrez/rhesadox" {
+		t.Fatalf("envelope Repo must be host-qualified, got %q", env.Repo)
+	}
+	if rr := st.last.ReviewReady; rr == nil || rr.ArmedRepo != "git.rezus.cloud/tibrez/rhesadox" {
+		t.Fatalf("armedRepo must be rewritten host-qualified, got %+v", rr)
+	}
+}
+
+// #268: bare wake AND bare scope (the exact live-incident config) — bare
+// scope means GitHub implied (repoInScope), so the pointer qualifies to
+// github.com and still proceeds with a host-qualified envelope.
+func TestGateNormalizesBareScopeToGitHub(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := greenPRServer(t)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	st := &fakeStatus{}
+	wf := gateWorkflow()
+	wf.Spec.Config = []byte(`{"repos": ["tibrez/rhesadox"]}`) // bare scope
+	t.Setenv("HARMOSTES_TRIGGER_PR", "tibrez/rhesadox#99")
+	t.Setenv("HARMOSTES_TRIGGER_ACTION", "labeled")
+	t.Setenv("HARMOSTES_TRIGGER_REVISION", "headabc123")
+
+	env := reviewGate(context.Background(), testDeps(st), wf)
+	if env == nil {
+		t.Fatal("bare wake on a bare scope must proceed (github.com implied)")
+	}
+	if env.Repo != "github.com/tibrez/rhesadox" {
+		t.Fatalf("envelope Repo must be github-qualified, got %q", env.Repo)
+	}
+}

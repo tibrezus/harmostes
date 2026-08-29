@@ -105,6 +105,16 @@ func reviewGate(ctx context.Context, deps Deps, wf *v1alpha1.Workflow) *review.E
 		deps.log()("review-ready: backlog pass arming pr=%d (%s)", pr, repo)
 	}
 
+	// One pointer form everywhere downstream (#268): producers emit either
+	// "host/owner/name" (webhook annotation) or bare "owner/name" (GitHub's
+	// full_name, spec.config.repos, older armed states). ResolveHost forgives
+	// the bare form, but the envelope's HARMOSTES_TRIGGER_REPO feeds the
+	// workspace plugin's host split — a bare pointer becomes HOST=owner and a
+	// guaranteed NXDOMAIN. Qualify here, at the single repo choke point, so
+	// scope checks, the retarget comparison, the armed state, and the
+	// envelope all carry the full form (a bare armedRepo self-heals).
+	repo = normalizeRepoPointer(repo, wf)
+
 	params := review.Params{
 		Repo:            repo,
 		PR:              pr,
@@ -259,10 +269,25 @@ func wakeRevision(wf *v1alpha1.Workflow) string {
 	return wf.Annotations["harmostes.dev/trigger-revision"]
 }
 
-// repoInScope reports whether repo matches the instance's configured repos.
-// The config stores either "host/owner/name" or bare "owner/name" (GitHub);
-// both forms must match the annotation's normalized "host/owner/name".
-// An empty/missing config accepts nothing (fail closed).
+// normalizeRepoPointer qualifies a repo pointer to host/owner/name. A bare
+// "owner/name" resolves via a scope entry whose suffix matches (self-hosted
+// Forgejo has no guessable host) or — matching ResolveHost's bare handling —
+// github.com. Pointers that already carry a host pass through unchanged.
+func normalizeRepoPointer(repo string, wf *v1alpha1.Workflow) string {
+	parts := strings.Split(repo, "/")
+	if len(parts) != 2 {
+		return repo // full form, or malformed (parse/scope checks reject)
+	}
+	for _, r := range scopeRepos(wf) {
+		// Only a full-form scope entry supplies a host (self-hosted Forgejo);
+		// a bare entry means "GitHub implied" (repoInScope), not a host.
+		if len(strings.Split(r, "/")) == 3 && strings.HasSuffix(r, "/"+repo) {
+			return r
+		}
+	}
+	return "github.com/" + repo
+}
+
 // scopeRepos lists the configured repos verbatim (spec.config.repos).
 func scopeRepos(wf *v1alpha1.Workflow) []string {
 	if len(wf.Spec.Config) == 0 {
@@ -277,6 +302,10 @@ func scopeRepos(wf *v1alpha1.Workflow) []string {
 	return cfg.Repos
 }
 
+// repoInScope reports whether repo matches the instance's configured repos.
+// repo arrives normalized to "host/owner/name" (normalizeRepoPointer); the
+// config may store either that or bare "owner/name" (GitHub implied).
+// An empty/missing config accepts nothing (fail closed).
 func repoInScope(wf *v1alpha1.Workflow, repo string) bool {
 	for _, r := range scopeRepos(wf) {
 		if r == repo {

@@ -63,10 +63,10 @@ func NewDispatcher(ctx context.Context, cfg DispatchConfig, logf func(string, ..
 	if err != nil {
 		return nil, fmt.Errorf("k8s config: %w", err)
 	}
-	scheme := runtime.NewScheme()
-	if err := v1alpha1.AddToScheme(scheme); err != nil {
-		return nil, fmt.Errorf("scheme: %w", err)
-	}
+	// k8s.Scheme() registers harmostes + corev1 + batchv1. The dispatcher
+	// lists batchv1.Jobs (live-Job dedupe, capacity) — a v1alpha1-only
+	// scheme fails every List with "no kind is registered" (#277).
+	scheme := k8s.Scheme()
 	cl, err := client.New(restCfg, client.Options{Scheme: scheme})
 	if err != nil {
 		return nil, fmt.Errorf("k8s client: %w", err)

@@ -502,3 +502,67 @@ func TestMultiArmFreshArmedClaimHoldsDuringGrace(t *testing.T) {
 		t.Fatalf("in-grace claim must stay live, got %+v", got.Status.Review)
 	}
 }
+
+// #285: a dispatched claim whose Job is terminally failed does not wait
+// out the DispatchTimeout — the sweep sees no live Job and refills.
+func TestMultiArmDeadJobClaimRefilled(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := labeledListServer(t, 99)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	stale := time.Now().Add(-10 * time.Minute)
+	claim := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#99", "headabc123", stale, &stale)
+	deps, ctx := gateEnv(t, wf, &fakeStatus{}, claim) // no Job seeded: the run died
+
+	out, err := RunReviewGateSweep(ctx, deps, wf)
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("dead-job claim must be refilled in the same sweep, got %d dispatches", len(out))
+	}
+	var old v1alpha1.Attempt
+	if err := deps.Client.Get(ctx, client.ObjectKey{Namespace: wf.Namespace, Name: claim.Name}, &old); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if old.Status.Review == nil || !old.Status.Review.Released || old.Status.Review.ReleaseReason != "dispatch-lost" {
+		t.Fatalf("dead-job claim must be released as dispatch-lost, got %+v", old.Status.Review)
+	}
+}
+
+// #285: a dispatched claim WITH a live Job (past the grace) is untouched —
+// the run is in flight; the dispatch-timeout bound still governs it.
+func TestMultiArmLiveJobClaimHolds(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := labeledListServer(t, 99)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	stale := time.Now().Add(-10 * time.Minute)
+	claim := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#99", "headabc123", stale, &stale)
+	liveJob := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{
+		Name: "attempt-claim-99-rx8sr", Namespace: wf.Namespace,
+		Labels: map[string]string{
+			"app.kubernetes.io/name": "harmostes",
+			"harmostes.dev/workflow": wf.Name,
+			"harmostes.dev/attempt":  claim.Name,
+		},
+	}}
+	deps, ctx := gateEnv(t, wf, &fakeStatus{}, claim, liveJob)
+
+	out, err := RunReviewGateSweep(ctx, deps, wf)
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if len(out) != 0 {
+		t.Fatalf("in-flight claim must not be re-dispatched, got %d", len(out))
+	}
+	var got v1alpha1.Attempt
+	if err := deps.Client.Get(ctx, client.ObjectKey{Namespace: wf.Namespace, Name: claim.Name}, &got); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if got.Status.Review == nil || got.Status.Review.Released {
+		t.Fatalf("live-job claim must stay dispatched, got %+v", got.Status.Review)
+	}
+}

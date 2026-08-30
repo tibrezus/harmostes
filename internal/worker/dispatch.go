@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"strconv"
 	"sync"
 
@@ -198,7 +199,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req RunRequest) error {
 			TTLSecondsAfterFinished: d.jobTTLSeconds,
 			DaprdImage:              d.daprdImage,
 			PluginConfigMaps:        d.pluginConfigMaps,
-			ExtraEnv:                dispatchEnv(req, &at, g.Envelope),
+			ExtraEnv:                append(jobCredentialEnv(), dispatchEnv(req, &at, g.Envelope)...),
 		})
 		if err := d.cl.Create(ctx, job); err != nil {
 			if errors.IsAlreadyExists(err) {
@@ -225,6 +226,41 @@ func triggerSubject(req RunRequest) timeline.Subject {
 		s.Title = req.PrTitle
 	}
 	return s
+}
+
+// jobEnvAllowlist is the deployment-level environment runs consume:
+// host credentials (Forgejo/Git/Codeberg tokens, rezus.cloud basics) and
+// the agent's LLM endpoint. Pre-ADR, runs inherited the pool's whole env
+// via buildChildEnv; the Job boundary dropped it, so the workspace plugin
+// hit the private Forgejo anonymously (404) and the agent node had no LLM
+// credentials (#287). Exact names on purpose — pod-scoped noise
+// (DAPR_*, KUBERNETES_*, service links, POD_NAME) must not cross the
+// boundary, and future credentials are added here explicitly.
+var jobEnvAllowlist = []string{
+	"HARMOSTES_FORGEJO_TOKEN",
+	"HARMOSTES_GIT_TOKEN",
+	"HARMOSTES_CODEBERG_TOKEN",
+	"HARMOSTES_RZC_USERNAME",
+	"HARMOSTES_RZC_PASSWORD",
+	"LITELLM_API_KEY",
+	"LITELLM_URL",
+}
+
+// jobCredentialEnv forwards the allowlisted deployment-level vars from the
+// dispatcher's own environment to the attempt Job. Later env entries win,
+// so dispatchEnv's per-run vars override any forwarded names.
+func jobCredentialEnv() []string {
+	wanted := map[string]bool{}
+	for _, n := range jobEnvAllowlist {
+		wanted[n] = true
+	}
+	var out []string
+	for _, kv := range os.Environ() {
+		if i := strings.IndexByte(kv, '='); i > 0 && wanted[kv[:i]] {
+			out = append(out, kv)
+		}
+	}
+	return out
 }
 
 // dispatchEnv renders the Job's trigger env: the envelope (gate output) when

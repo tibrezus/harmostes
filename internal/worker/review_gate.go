@@ -14,8 +14,11 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	batchv1 "k8s.io/api/batch/v1"
+
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
 	"github.com/tibrezus/harmostes/internal/attempt"
+	"github.com/tibrezus/harmostes/internal/k8s"
 	"github.com/tibrezus/harmostes/internal/review"
 	"github.com/tibrezus/harmostes/internal/timeline"
 )
@@ -23,6 +26,11 @@ import (
 // reDispatchGrace bounds how long an armed-but-never-dispatched claim
 // holds its PR before a sweep releases it for refill (#279).
 const reDispatchGrace = 5 * time.Minute
+
+// jobDeathGrace lets a just-created Job's controller sync (a new Job
+// reports no status until then — the race the dispatcher's dedupe also
+// tolerates) before a sweep treats a missing live Job as a dead run.
+const jobDeathGrace = 2 * time.Minute
 
 // newReviewAPI is the seam the tests swap for a server-pinned API.
 var newReviewAPI = func() review.API {
@@ -138,6 +146,40 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 			liveDispatched--
 		}
 	}
+	// A dispatched claim whose Job is already terminal does not wait out
+	// the DispatchTimeout: Job-per-attempt makes the death observable, so
+	// recovery is fact-based (ListActiveJobs), not timer-based (#285).
+	var liveJobs []batchv1.Job
+	for _, c := range claims {
+		if r := c.Status.Review; r.DispatchedAt != nil && time.Since(r.DispatchedAt.Time) > jobDeathGrace {
+			var err error
+			liveJobs, err = k8s.ListActiveJobs(ctx, deps.Client, wf.Namespace, wf.Name)
+			if err != nil {
+				log("review-ready: live-job list failed (%v) — deferring to the dispatch-timeout bound", err)
+			}
+			break
+		}
+	}
+	if liveJobs != nil {
+		for _, c := range claims {
+			r := c.Status.Review
+			if r.DispatchedAt == nil || time.Since(r.DispatchedAt.Time) <= jobDeathGrace {
+				continue
+			}
+			live := false
+			for _, j := range liveJobs {
+				if j.Labels["harmostes.dev/attempt"] == c.Name {
+					live = true
+					break
+				}
+			}
+			if !live {
+				log("review-ready: claim %s (%s) has no live job — releasing as dispatch-lost", c.Name, r.PR)
+				releaseClaim(ctx, deps, c, "dispatch-lost", log)
+			}
+		}
+	}
+
 	// Armed but never dispatched past the grace window: the sweep that
 	// armed the claim died before its Job landed (crash, API blip, or
 	// the #277 scheme-bug class). Release as dispatch-lost so this same

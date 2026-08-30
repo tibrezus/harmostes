@@ -1,7 +1,6 @@
 package v1alpha1
 
 import (
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"time"
 )
 
@@ -114,30 +113,16 @@ func (r *ReviewReadySpec) EffectiveLabel() string {
 // nothing while idle (an unarmed gate performs zero API calls; the trigger
 // annotations wake it).
 type ReviewReadyStatus struct {
-	// ArmedRepo is the repo (host/owner/name) of the armed PR.
-	ArmedRepo string `json:"armedRepo,omitempty"`
+	// LiveClaims counts dispatched reviews in flight (ADR-0007: the
+	// Attempt is the claim — this is the aggregate for the UI header).
+	LiveClaims int `json:"liveClaims,omitempty"`
 
-	// ArmedPR is the pull-request number under review consideration.
-	ArmedPR int `json:"armedPR,omitempty"`
-
-	// ArmedSha is the head SHA the gate is waiting on. A push that moves
-	// the head re-arms at the new SHA (the sync event wakes the gate).
-	ArmedSha string `json:"armedSha,omitempty"`
-
-	// ArmedSince is when the gate armed at ArmedSha (horizon start).
-	ArmedSince *metav1.Time `json:"armedSince,omitempty"`
-
-	// DispatchedAt marks an armed review the gate already proceeded on:
-	// the agent run is (or was) in flight and its verdict is not yet
-	// consumed. Durable across sweeps (unlike LastDecision, which every
-	// evaluation overwrites); cleared on consume (verdict posted) and on
-	// standdown. Sweeps re-check the verdict window instead of
-	// re-dispatching (#250).
-	DispatchedAt *metav1.Time `json:"dispatchedAt,omitempty"`
+	// Capacity is the effective maxConcurrent this cycle evaluated against.
+	Capacity int `json:"capacity,omitempty"`
 
 	// LastDecision is the gate's last outcome: proceed | waiting | standdown | idle.
 	LastDecision string `json:"lastDecision,omitempty"`
 
-	// LastReason is the human-readable reason for LastDecision.
+	// LastReason is the human-readable reason behind LastDecision.
 	LastReason string `json:"lastReason,omitempty"`
 }

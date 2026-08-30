@@ -7,9 +7,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -31,12 +31,14 @@ func dispatchScheme(t *testing.T) *runtime.Scheme {
 func newTestDispatcher(t *testing.T, objects ...runtime.Object) (*Dispatcher, context.Context) {
 	t.Helper()
 	scheme := dispatchScheme(t)
-	cl := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(objects...).Build()
+	cl := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&v1alpha1.Attempt{}, &v1alpha1.Workflow{}).
+		WithRuntimeObjects(objects...).Build()
 	d := &Dispatcher{
 		cl:                 cl,
 		scheme:             scheme,
 		namespace:          "default",
-		logf:               func(string, ...any) {},
+		logf:               t.Logf,
 		fleetMaxConcurrent: 3,
 		jobImage:           "harmostes-worker:test",
 		jobTTLSeconds:      nil,
@@ -112,8 +114,9 @@ func TestDispatchProceedsToJobAndAttempt(t *testing.T) {
 	}
 }
 
-// #272: at capacity the dispatcher ACKs without dispatching — the gate's
-// armed marker is the durable queue; sweeps retry as slots free.
+// #272/#274: at capacity the dispatcher ACKs without dispatching — capacity
+// counts live DISPATCHED CLAIMS (Attempts); the armed marker is the durable
+// queue and sweeps retry as slots free.
 func TestDispatchCapacityRefusalStaysQueued(t *testing.T) {
 	clearTriggerEnv(t)
 	srv := greenPRServer(t)
@@ -121,14 +124,10 @@ func TestDispatchCapacityRefusalStaysQueued(t *testing.T) {
 	pinReviewAPI(t, srv, true)
 	wf := gatedDispatchWorkflow()
 	wf.Spec.ReviewReady.MaxConcurrent = 1
-	active := batchv1.Job{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "other-run", Namespace: "default",
-			Labels: map[string]string{"app.kubernetes.io/name": "harmostes", "harmostes.dev/workflow": "pr-review-harmostes"},
-		},
-		Status: batchv1.JobStatus{Active: 1},
-	}
-	d, ctx := newTestDispatcher(t, wf, &active)
+	now := time.Now()
+	inFlight := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#99", "headabc123", now.Add(-time.Minute), &now)
+	other := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#100", "otherhead00", now.Add(-time.Minute), &now)
+	d, ctx := newTestDispatcher(t, wf, inFlight, other)
 
 	if err := d.Dispatch(ctx, dispatchRequest()); err != nil {
 		t.Fatalf("capacity refusal must ACK, got error: %v", err)
@@ -137,8 +136,8 @@ func TestDispatchCapacityRefusalStaysQueued(t *testing.T) {
 	if err := d.cl.List(ctx, &jobs); err != nil {
 		t.Fatalf("list jobs: %v", err)
 	}
-	if len(jobs.Items) != 1 {
-		t.Fatalf("no new Job may be created at capacity, got %d", len(jobs.Items))
+	if len(jobs.Items) != 0 {
+		t.Fatalf("no Job may be created at capacity, got %d", len(jobs.Items))
 	}
 }
 

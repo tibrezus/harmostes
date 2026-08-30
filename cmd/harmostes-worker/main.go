@@ -117,7 +117,8 @@ func runOneShot() {
 	if err != nil {
 		fatal("k8s config: %v", err)
 	}
-	cl, err := client.New(cfg, client.Options{Scheme: k8s.Scheme()})
+	scheme := k8s.Scheme()
+	cl, err := client.New(cfg, client.Options{Scheme: scheme})
 	if err != nil {
 		fatal("k8s client: %v", err)
 	}
@@ -141,27 +142,37 @@ func runOneShot() {
 	// HARMOSTES_DISPATCHED_ATTEMPT: the dispatcher ran the gate and created
 	// this Job for a claim — re-evaluating here would double-count API
 	// budget and risk diverging from the dispatch decision. Direct/manual
-	// runs (no marker) evaluate the gate as before.
+	// runs (no marker) evaluate the gate in WAKE mode: the wake PR only,
+	// never a multi-dispatch fan-out.
 	dispatched := os.Getenv("HARMOSTES_DISPATCHED_ATTEMPT") != ""
 	if wf.Spec.ReviewReady != nil && !dispatched {
 		gateTL := timeline.NewGateWriter(dapr.Tracing(dapr.New(os.Getenv("DAPR_HTTP_ENDPOINT"))),
 			envOr("HARMOSTES_STATE_STORE", "statestore"), wf.Name, os.Getenv("HARMOSTES_ATTEMPT"), subjectFromEnv())
-		env := worker.RunReviewGateWithTimeline(ctx, k8s.StatusPatcher{Client: cl, Namespace: namespace}, logf, wf, gateTL)
-		if env == nil {
+		gateDeps := worker.GateDeps{
+			Status: k8s.StatusPatcher{Client: cl, Namespace: namespace},
+			Client: cl, Scheme: scheme,
+			Log: logf, TL: gateTL,
+		}
+		dispatches, err := worker.RunReviewGateWake(ctx, gateDeps, wf)
+		if err != nil {
+			fatal("review-ready: %v", err)
+		}
+		if len(dispatches) == 0 {
 			logf("review-ready: not proceeding this cycle — exiting (waiting/standdown recorded in status)")
 			flushTelemetry()
 			recordAttemptOutcome(ctx, cl, "skipped", nil, "review-ready: waiting or stood down")
 			os.Exit(0)
 		}
-		// Export the FULL Trigger Envelope into the process env: the
-		// consumer pre-sets PR/ACTION/REVISION (buildChildEnv), but
-		// REPO/SHA/BASE/LABEL/CONTEXTS are the gate's output and must reach
-		// the workspace plugin — extraEnv below snapshots os.Environ(), so
+		env := dispatches[0].Envelope
+		// Export the FULL Trigger Envelope into the process env: REPO/SHA/
+		// BASE/LABEL/CONTEXTS are the gate's output and must reach the
+		// workspace plugin — extraEnv below snapshots os.Environ(), so
 		// os.Setenv here flows to every plugin node.
 		for _, kv := range worker.EnvelopeEnv(env) {
 			k, v, _ := strings.Cut(kv, "=")
 			os.Setenv(k, v)
 		}
+		os.Setenv("HARMOSTES_ATTEMPT", dispatches[0].Attempt)
 		logf("review-ready: proceed pr=%d head=%s base=%s — provisioning workspace", env.PR, env.HeadSHA, env.Base)
 	}
 

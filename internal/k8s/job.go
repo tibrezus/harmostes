@@ -95,8 +95,14 @@ func BuildJob(p AttemptJobParams) *batchv1.Job {
 	for _, cm := range p.PluginConfigMaps {
 		vol := "plugin-cm-" + cm
 		volumes = append(volumes, corev1.Volume{
-			Name:         vol,
-			VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: cm}}},
+			Name: vol,
+			VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
+				LocalObjectReference: corev1.LocalObjectReference{Name: cm},
+				// Plugins are executed (workspace.sh et al.); ConfigMap
+				// volumes default to 0644 and exec dies with permission
+				// denied. The pool's own Deployment mounts 0755 too (#283).
+				DefaultMode: ptr.To(int32(0o755)),
+			}},
 		})
 		mounts = append(mounts, corev1.VolumeMount{Name: vol, MountPath: "/plugins/" + cm, ReadOnly: true})
 	}

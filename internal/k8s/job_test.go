@@ -21,6 +21,30 @@ func jobTestAttempt() *v1alpha1.Attempt {
 
 // #270: the per-Attempt Job shape contract — one `harmostes-worker run`
 // process, isolated by construction, owned by the Attempt claim.
+// #283: plugin ConfigMap volumes must mount executable (0755) — the pool
+// Deployment does; Jobs created by the dispatcher otherwise fail every
+// plugin node with permission denied in milliseconds.
+func TestBuildJobPluginVolumeExecutable(t *testing.T) {
+	job := BuildJob(AttemptJobParams{
+		Attempt:          jobTestAttempt(),
+		WorkflowName:     "pr-review-harmostes",
+		Namespace:        "harmostes",
+		PluginConfigMaps: []string{"harmostes-pr-review"},
+	})
+	var vol *corev1.Volume
+	for i := range job.Spec.Template.Spec.Volumes {
+		if job.Spec.Template.Spec.Volumes[i].Name == "plugin-cm-harmostes-pr-review" {
+			vol = &job.Spec.Template.Spec.Volumes[i]
+		}
+	}
+	if vol == nil {
+		t.Fatal("plugin volume missing")
+	}
+	if mode := vol.ConfigMap.DefaultMode; mode == nil || *mode != 0o755 {
+		t.Fatalf("plugin ConfigMap defaultMode must be 0755, got %v", mode)
+	}
+}
+
 func TestBuildJobShape(t *testing.T) {
 	attempt := jobTestAttempt()
 	ttl := int32(3600)

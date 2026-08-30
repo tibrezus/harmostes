@@ -52,6 +52,12 @@ func ArmClaim(ctx context.Context, c client.Client, scheme *runtime.Scheme, wf *
 
 	now := metav1.NewTime(time.Now())
 	err = patchAttemptStatus(ctx, c, wf.Namespace, at.Name, func(s *v1alpha1.AttemptStatus) {
+		// Stamp the phase here, not only at create: the real API server's
+		// status subresource drops create-time status (the fake kept it —
+		// a fake-vs-real divergence that left claims phaseless, #277).
+		if s.Phase == "" {
+			s.Phase = v1alpha1.AttemptPhaseReconciling
+		}
 		if s.Review == nil {
 			s.Review = &v1alpha1.ReviewClaimStatus{}
 		}

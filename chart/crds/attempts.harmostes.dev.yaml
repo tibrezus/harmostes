@@ -119,6 +119,22 @@ spec:
                   enum: [reconciling, validated, superseded, failed]
                 lastRunAt: { type: string }
                 message:   { type: string }
+                review:                                             # the gate's per-PR claim (ADR-0007)
+                  type: object
+                  description: |
+                    Review-Ready Gate claim state. The Attempt IS the claim:
+                    one live claim per PR, written only by the gate through
+                    optimistic-locked status patches (#257). Schema presence
+                    is load-bearing — the API server prunes unknown status
+                    fields silently, which lost every claim (#277).
+                  properties:
+                    pr:            { type: string }
+                    headSha:       { type: string }
+                    label:         { type: string }
+                    armedSince:    { type: string }
+                    dispatchedAt:  { type: string }
+                    released:      { type: boolean }
+                    releaseReason: { type: string }
                 runs:
                   type: array
                   x-kubernetes-list-type: atomic

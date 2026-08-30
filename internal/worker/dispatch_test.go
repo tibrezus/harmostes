@@ -235,3 +235,24 @@ func TestEffectiveMaxConcurrent(t *testing.T) {
 		t.Fatalf("spec override must win, got %d", got)
 	}
 }
+
+// #287: the Job boundary must forward deployment-level credentials —
+// pre-ADR runs inherited the pool env via buildChildEnv; without the
+// forward the workspace plugin hits the private Forgejo anonymously (404)
+// and the agent node lacks its LLM endpoint.
+func TestJobCredentialEnv(t *testing.T) {
+	t.Setenv("HARMOSTES_FORGEJO_TOKEN", "fj-token")
+	t.Setenv("LITELLM_API_KEY", "llm-key")
+	t.Setenv("DAPR_HTTP_PORT", "3500")
+	t.Setenv("POD_NAME", "pool-pod")
+	t.Setenv("HARMOSTES_VALKEY_PORT_6379_TCP_ADDR", "noise")
+
+	got := jobCredentialEnv()
+	joined := strings.Join(got, " ")
+	if !strings.Contains(joined, "HARMOSTES_FORGEJO_TOKEN=fj-token") || !strings.Contains(joined, "LITELLM_API_KEY=llm-key") {
+		t.Fatalf("credential env missing: %q", joined)
+	}
+	if strings.Contains(joined, "DAPR_") || strings.Contains(joined, "POD_NAME") || strings.Contains(joined, "VALKEY") {
+		t.Fatalf("pod-scoped noise must not cross the Job boundary: %q", joined)
+	}
+}

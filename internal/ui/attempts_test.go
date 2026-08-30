@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -557,5 +558,77 @@ func TestSessionPageForkButtonVisibility(t *testing.T) {
 	}
 	if body := render(&piSessionDapr{payload: mustPiPayload(t, "{}")}); !strings.Contains(body, "Fork session") {
 		t.Error("fork button missing when a session exists")
+	}
+}
+
+// ADR-0007 phase 5: review attempts roll up per PR; scheduled classes
+// collapse to a last-run row per workflow.
+func TestGroupAttemptsRollup(t *testing.T) {
+	now := time.Now()
+	mk := func(name, wf, kind, subject string, lastRun time.Time, review *v1alpha1.ReviewClaimStatus) v1alpha1.Attempt {
+		a := v1alpha1.Attempt{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: name, Namespace: "harmostes",
+				CreationTimestamp: metav1.NewTime(lastRun),
+			},
+			Spec: v1alpha1.AttemptSpec{
+				WorkflowRef: "harmostes/" + wf,
+				Objective: v1alpha1.ObjectiveSpec{
+					Kind:           kind,
+					PrimarySubject: v1alpha1.Subject{Binding: "review", Object: subject},
+				},
+			},
+			Status: v1alpha1.AttemptStatus{LastRunAt: metav1.NewTime(lastRun)},
+		}
+		if review != nil {
+			a.Status.Review = review
+		}
+		return a
+	}
+
+	inFlight := &v1alpha1.ReviewClaimStatus{PR: "github.com/tibrezus/harmostes#99", HeadSHA: "aaa", DispatchedAt: &metav1.Time{Time: now.Add(-30 * time.Minute)}}
+	consumed := &v1alpha1.ReviewClaimStatus{PR: "github.com/tibrezus/harmostes#99", HeadSHA: "bbb", Released: true, ReleaseReason: "consumed"}
+	attempts := []v1alpha1.Attempt{
+		mk("a1", "pr-review-harmostes", v1alpha1.ObjectiveKindPRReview, "tibrezus/harmostes", now.Add(-1*time.Hour), inFlight),
+		mk("a2", "pr-review-harmostes", v1alpha1.ObjectiveKindPRReview, "tibrezus/harmostes", now.Add(-3*time.Hour), consumed),
+		mk("a3", "wiki-lint", "documentation-sync", "rezuscloud/llm-wiki", now.Add(-2*time.Hour), nil),
+		mk("a4", "wiki-lint", "documentation-sync", "rezuscloud/llm-wiki", now.Add(-30*24*time.Hour), nil), // outside 24h
+	}
+
+	groups := groupAttempts(attempts, now.Add(-24*time.Hour))
+	if len(groups) != 2 {
+		t.Fatalf("two rollup rows (PR group + workflow last-run), got %d: %+v", len(groups), groups)
+	}
+	bySubject := map[string]attemptGroup{}
+	for _, g := range groups {
+		bySubject[g.Subject] = g
+	}
+	pr := bySubject["github.com/tibrezus/harmostes#99"]
+	if !pr.IsReview || pr.Count != 2 || pr.ClaimState != "review in flight" {
+		t.Fatalf("PR rollup wrong: %+v", pr)
+	}
+	if len(pr.Attempts) != 2 || pr.Attempts[0].Name != "a1" {
+		t.Fatalf("PR group must list newest attempt first: %+v", pr.Attempts)
+	}
+	wl := bySubject["rezuscloud/llm-wiki"]
+	if wl.IsReview || wl.Count != 1 {
+		t.Fatalf("scheduled class must collapse to last-run within window, got %+v", wl)
+	}
+}
+
+// The claim state vocabulary (ADR-0007).
+func TestClaimStateWords(t *testing.T) {
+	cases := map[string]*v1alpha1.ReviewClaimStatus{
+		"review in flight":         {DispatchedAt: &metav1.Time{Time: time.Now()}},
+		"queued":                   {},
+		"verdict posted":           {Released: true, ReleaseReason: "consumed"},
+		"superseded by newer head": {Released: true, ReleaseReason: "superseded"},
+		"run expired":              {Released: true, ReleaseReason: "dispatch-timeout"},
+		"horizon reached":          {Released: true, ReleaseReason: "horizon"},
+	}
+	for want, r := range cases {
+		if got := claimState(r); got != want {
+			t.Errorf("claimState(%+v) = %q, want %q", r, got, want)
+		}
 	}
 }

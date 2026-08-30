@@ -58,6 +58,23 @@ spec:
                   fieldPath: metadata.namespace
             - name: HARMOSTES_CONSUMER_PORT
               value: "8084"
+            # ── Dispatcher knobs (ADR-0007 phase 3) ──
+            - name: HARMOSTES_MAX_CONCURRENT
+              value: {{ .Values.worker.job.maxConcurrent | default 3 | quote }}
+            - name: HARMOSTES_JOB_TTL_SECONDS
+              value: {{ .Values.worker.job.ttlSecondsAfterFinished | default 3600 | quote }}
+            - name: HARMOSTES_WORKER_IMAGE
+              value: {{ .Values.image.worker | quote }}
+            - name: HARMOSTES_SERVICE_ACCOUNT
+              value: {{ .Values.controller.serviceAccountName | default "harmostes-controller" }}
+            {{- if .Values.observability.daprdImage }}
+            - name: HARMOSTES_DAPRD_IMAGE
+              value: {{ .Values.observability.daprdImage | quote }}
+            {{- end }}
+            {{- with .Values.pluginConfigMaps }}
+            - name: HARMOSTES_PLUGIN_CONFIGMAPS
+              value: {{ . | join "," | quote }}
+            {{- end }}
             - name: HARMOSTES_PUBSUB_NAME
               value: {{ .Values.workerPool.pubsubName | default "pubsub" | quote }}
             - name: HARMOSTES_TRIGGER_TOPIC

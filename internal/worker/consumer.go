@@ -7,14 +7,10 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"os/exec"
-	"sync"
+	"strings"
 	"time"
 
 	cloudevents "github.com/cloudevents/sdk-go/v2"
-
-	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
-	"github.com/tibrezus/harmostes/internal/observability"
 )
 
 // ---------------------------------------------------------------------------
@@ -76,7 +72,8 @@ type RunRequest struct {
 type Consumer struct {
 	cfg    ConsumerConfig
 	server *http.Server
-	mu     sync.Mutex // single-flight: one concurrent run per pod
+	// (The run-scoped single-flight mutex died with ADR-0007 phase 3:
+	// graphs run in Job pods; the Dispatcher's createMu dedupes creates.)
 }
 
 // NewConsumer creates a pub/sub consumer.
@@ -186,21 +183,12 @@ func (c *Consumer) handleTrigger(w http.ResponseWriter, r *http.Request) {
 		"event_id", event.ID(),
 	)
 
-	// Single-flight: acquire the lock. If another run is active, return 503
-	// so daprd re-delivers to another pod (or retries later).
-	if !c.mu.TryLock() {
-		c.cfg.Logger.Warn("concurrent run rejected (single-flight)", "workflow", trigger.Workflow)
-		http.Error(w, "busy", http.StatusServiceUnavailable)
-		return
-	}
-	defer c.mu.Unlock()
-
-	// Run the workflow (shells out to /proc/self/exe in one-shot mode).
-	// The hard wall-clock bound on every run — the premise of the review
-	// gate's DispatchTimeout exactly-once construction (#248): no live run
-	// can outlive it. Keep in sync with v1alpha1.OneShotRunBound.
-	runCtx, cancel := context.WithTimeout(r.Context(), v1alpha1.OneShotRunBound)
-	defer cancel()
+	// No run-scoped single-flight: dispatch is milliseconds and graphs run
+	// in Job pods (ADR-0007). The gate + capacity check + create-section
+	// dedupe in the Dispatcher make redelivery idempotent; the Job's
+	// activeDeadlineSeconds (OneShotRunBound) carries the wall-clock bound
+	// that used to live here.
+	runCtx := r.Context()
 
 	if err := c.cfg.RunFunc(runCtx, RunRequest{
 		Workflow:    trigger.Workflow,
@@ -238,70 +226,47 @@ type TriggerEvent struct {
 	Action      string `json:"action,omitempty"`
 }
 
-// buildChildEnv constructs the environment for the exec'd one-shot worker
-// (`harmostes-worker run`, ADR-0007), appending the workflow-specific vars.
-func buildChildEnv(parentEnv []string, req RunRequest) []string {
-	childEnv := make([]string, 0, len(parentEnv)+5)
-	childEnv = append(childEnv, parentEnv...)
-	workflow, namespace := req.Workflow, req.Namespace
-	source, attemptName := req.Source, req.Attempt
-	traceparent, pr, action, revision, prTitle := req.Traceparent, req.Pr, req.Action, req.Revision, req.PrTitle
-	childEnv = append(childEnv,
-		"HARMOSTES_WORKFLOW="+workflow,
-		"HARMOSTES_NAMESPACE="+namespace,
-		// Prevent the exec'd worker from shutting down the shared daprd
-		// sidecar (which would kill the consumer process).
-		"HARMOSTES_NO_DAPR_SHUTDOWN=true",
-	)
-	if source != "" {
-		childEnv = append(childEnv, "HARMOSTES_SOURCE="+source)
-	}
-	if attemptName != "" {
-		childEnv = append(childEnv, "HARMOSTES_ATTEMPT="+attemptName)
-	}
-	if traceparent != "" {
-		childEnv = append(childEnv, observability.TraceparentCarrierKey+"="+traceparent)
-	}
-	if pr != "" {
-		childEnv = append(childEnv, "HARMOSTES_TRIGGER_PR="+pr)
-		if prTitle != "" {
-			childEnv = append(childEnv, "HARMOSTES_TRIGGER_TITLE="+prTitle)
-		}
-	}
-	if action != "" {
-		childEnv = append(childEnv, "HARMOSTES_TRIGGER_ACTION="+action)
-	}
-	if revision != "" {
-		childEnv = append(childEnv, "HARMOSTES_TRIGGER_REVISION="+revision)
-	}
-	return childEnv
-}
-
 // RunConsumer is the entry point for consumer mode. Called from main's
-// "consumer" subcommand. The RunFunc execs ourselves as
-// `harmostes-worker run` — the same entrypoint a per-Attempt Job pod runs
-// (ADR-0007) — for each trigger event.
+// "consumer" subcommand. The pool pod is the DISPATCHER (ADR-0007 phase 3):
+// each trigger is validated by the Review-Ready Gate in-process and accepted
+// runs dispatch as an Attempt + Job (milliseconds); the graphs run in the
+// Job pods, never here.
 func RunConsumer(ctx context.Context) error {
 	logger := slog.Default().With("component", "harmostes-consumer")
 
-	// The RunFunc execs ourselves in one-shot mode.
-	runFunc := func(runCtx context.Context, req RunRequest) error {
-		cmd := exec.CommandContext(runCtx, "/proc/self/exe", "run")
-		cmd.Env = buildChildEnv(os.Environ(), req)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		return cmd.Run()
+	dispatcher, err := DispatcherFromEnv(pluginConfigMapsFromEnv(), func(format string, args ...any) {
+		logger.Info(fmt.Sprintf(format, args...))
+	})
+	if err != nil {
+		return fmt.Errorf("dispatcher: %w", err)
 	}
 
 	consumer := NewConsumer(ConsumerConfig{
 		HTTPPort:   envOr("HARMOSTES_CONSUMER_PORT", "8084"),
 		PubsubName: envOr("HARMOSTES_PUBSUB_NAME", "pubsub"),
 		Topic:      envOr("HARMOSTES_TRIGGER_TOPIC", "harmostes-triggers"),
-		RunFunc:    runFunc,
+		RunFunc:    dispatcher.Dispatch,
 		Logger:     logger,
 	})
 
 	return consumer.Start(ctx)
+}
+
+// pluginConfigMapsFromEnv reads the comma-separated plugin ConfigMap list
+// the chart renders (HARMOSTES_PLUGIN_CONFIGMAPS) — the same mounts the pool
+// pod carries must reach the per-Attempt Jobs.
+func pluginConfigMapsFromEnv() []string {
+	raw := os.Getenv("HARMOSTES_PLUGIN_CONFIGMAPS")
+	if raw == "" {
+		return nil
+	}
+	var cms []string
+	for _, name := range strings.Split(raw, ",") {
+		if name = strings.TrimSpace(name); name != "" {
+			cms = append(cms, name)
+		}
+	}
+	return cms
 }
 
 func envOr(key, def string) string {

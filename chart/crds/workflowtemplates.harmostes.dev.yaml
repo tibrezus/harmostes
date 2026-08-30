@@ -112,6 +112,7 @@ spec:
                   properties:
                     label:   { type: string, default: needs-review }
                     horizon: { type: string, default: 6h }
+                    maxConcurrent: { type: integer, minimum: 1 }
 
             status:
               type: object

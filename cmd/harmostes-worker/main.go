@@ -1,9 +1,17 @@
-// Command harmostes-worker runs ONE Workflow's pipeline (prepare → agent → deploy)
-// as a Kubernetes Job. The monitor controller spawns it; it fetches its Workflow
-// CR by name, builds its collaborators from in-cluster clients + the Dapr
-// sidecar, runs worker.Run, and exits by outcome.
+// Command harmostes-worker runs harmostes' execution plane (ADR-0007):
 //
-// Env:
+//	harmostes-worker consumer
+//	    the long-lived pub/sub consumer + dispatcher (worker-pool pod). It
+//	    subscribes to the harmostes-triggers topic via daprd and dispatches
+//	    each trigger to a one-shot child (process isolation per run).
+//	harmostes-worker run
+//	    one Workflow run (review-ready gate → prepare → agent → deploy):
+//	    fetches its Workflow CR by name, builds its collaborators from
+//	    in-cluster clients + the Dapr sidecar, runs worker.Run, exits by
+//	    outcome. The consumer's children exec this form, and so does the
+//	    per-Attempt Job pod (internal/k8s.BuildJob) — one code path.
+//
+// Env (the run form):
 //
 //	HARMOSTES_WORKFLOW    the Workflow CR name (required)
 //	HARMOSTES_NAMESPACE   its namespace (required)
@@ -16,7 +24,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -51,24 +58,35 @@ var (
 )
 
 func main() {
-	_ = flag.CommandLine.Parse(os.Args[1:])
-
-	// Consumer mode: if HARMOSTES_CONSUMER_MODE is set, start the pub/sub
-	// consumer instead of the one-shot Job mode. The consumer subscribes to
-	// the harmostes-triggers topic via daprd and processes trigger events by
-	// execing itself in one-shot mode (process isolation per run).
-	if os.Getenv("HARMOSTES_CONSUMER_MODE") != "" {
-		// Initialize a minimal logger so fatal() (which uses the global logger)
-		// doesn't panic with a nil pointer if RunConsumer returns an error.
+	// argv is the authoritative dispatch (ADR-0007 phase 2): the consumer
+	// execs "run" children and the per-Attempt Job runs "run" directly —
+	// one code path, no implicit env-selected modes.
+	if len(os.Args) < 2 {
+		fmt.Fprintln(os.Stderr, "usage: harmostes-worker run|consumer")
+		os.Exit(2)
+	}
+	switch os.Args[1] {
+	case "consumer":
+		// Minimal logger so fatal() (which uses the global logger) doesn't
+		// panic with a nil pointer if RunConsumer returns an error.
 		logger = slog.Default().With("component", "harmostes-worker")
 		ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 		defer cancel()
 		if err := worker.RunConsumer(ctx); err != nil {
 			fatal("consumer: %v", err)
 		}
-		return
+	case "run":
+		runOneShot()
+	default:
+		fmt.Fprintf(os.Stderr, "unknown subcommand %q (want run|consumer)\n", os.Args[1])
+		os.Exit(2)
 	}
+}
 
+// runOneShot executes exactly one Workflow run (gate → graph) and exits by
+// outcome. Invoked as `harmostes-worker run` by the consumer's exec children
+// and by per-Attempt Job pods (ADR-0007).
+func runOneShot() {
 	workflow := envReq("HARMOSTES_WORKFLOW")
 	namespace := envReq("HARMOSTES_NAMESPACE")
 	workdir := envOr("HARMOSTES_WORKDIR", "/workspace")

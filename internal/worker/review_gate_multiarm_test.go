@@ -437,3 +437,68 @@ func TestMultiArmOutOfScopeWakeIgnored(t *testing.T) {
 		t.Fatalf("out-of-scope wake must not arm, got %d claims", len(claims))
 	}
 }
+
+// #279: a claim armed but never dispatched (its arming sweep died before
+// the Job create landed) must not hold the PR until the horizon. Past the
+// re-dispatch grace, the sweep releases it as dispatch-lost and re-fills
+// the slot in the same cycle.
+func TestMultiArmDispatchLostClaimRefilled(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := labeledListServer(t, 99)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	stale := time.Now().Add(-10 * time.Minute)
+	claim := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#99", "headabc123", stale, nil)
+	deps, ctx := gateEnv(t, wf, &fakeStatus{}, claim)
+
+	out, err := RunReviewGateSweep(ctx, deps, wf)
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("dispatch-lost claim must be refilled in the same sweep, got %d dispatches", len(out))
+	}
+	var re v1alpha1.Attempt
+	if err := deps.Client.Get(ctx, client.ObjectKey{Namespace: wf.Namespace, Name: out[0].Attempt}, &re); err != nil {
+		t.Fatalf("re-armed claim: %v", err)
+	}
+	if re.Status.Review == nil || re.Status.Review.Released || re.Status.Review.HeadSHA != "headabc123" {
+		t.Fatalf("refilled claim must be armed at the head, got %+v", re.Status.Review)
+	}
+	var old v1alpha1.Attempt
+	if err := deps.Client.Get(ctx, client.ObjectKey{Namespace: wf.Namespace, Name: claim.Name}, &old); err != nil {
+		t.Fatalf("stale claim: %v", err)
+	}
+	if old.Status.Review == nil || !old.Status.Review.Released || old.Status.Review.ReleaseReason != "dispatch-lost" {
+		t.Fatalf("stale claim must be released as dispatch-lost, got %+v", old.Status.Review)
+	}
+}
+
+// #279: a freshly armed claim (inside the grace) is left alone — its own
+// sweep's dispatch loop is still in flight.
+func TestMultiArmFreshArmedClaimHoldsDuringGrace(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := labeledListServer(t, 99)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	fresh := time.Now().Add(-time.Minute)
+	claim := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#99", "headabc123", fresh, nil)
+	deps, ctx := gateEnv(t, wf, &fakeStatus{}, claim)
+
+	out, err := RunReviewGateSweep(ctx, deps, wf)
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if len(out) != 0 {
+		t.Fatalf("in-grace claim must not be re-dispatched, got %d", len(out))
+	}
+	var got v1alpha1.Attempt
+	if err := deps.Client.Get(ctx, client.ObjectKey{Namespace: wf.Namespace, Name: claim.Name}, &got); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if got.Status.Review == nil || got.Status.Review.Released {
+		t.Fatalf("in-grace claim must stay live, got %+v", got.Status.Review)
+	}
+}

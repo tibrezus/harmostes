@@ -6,31 +6,47 @@
 {{- $owner := .Owner -}}
 <div class="page-content">
 	<div class="ds-card-list">
-		{{range .Attempts}}
-		<a href="/attempts/{{.Name}}" class="ds-card ds-card--link">
-			<div class="ds-card-header">
-				<span class="ds-card-title">{{.PrimarySubject}}</span>
-				{{if eq .Phase "validated"}}<span class="ds-status-badge ds-status-badge--positive">✓ Validated</span>
-				{{else if eq .Phase "reconciling"}}<span class="ds-status-badge ds-status-badge--warning">↻ Reconciling</span>
-				{{else if eq .Phase "failed"}}<span class="ds-status-badge ds-status-badge--negative">✗ Failed</span>
-				{{else if eq .Phase "superseded"}}<span class="ds-status-badge ds-status-badge--neutral">↪ Superseded</span>
-				{{else}}<span class="ds-status-badge ds-status-badge--neutral">{{.Phase}}</span>
-				{{end}}
-			</div>
+		{{range .Groups}}
+		<details class="ds-card ds-card--link" {{if or .IsReview (eq .Count 1)}}open{{end}}>
+			<summary class="ds-card-header" style="cursor: pointer; list-style: none;">
+				<span class="ds-card-title">
+					{{if .IsReview}}⟡ {{.Subject}}{{else}}<code>{{.Subject}}</code>{{end}}
+				</span>
+				{{if .IsReview}}
+					{{if eq .ClaimState "review in flight"}}<span class="ds-status-badge ds-status-badge--warning">● In flight</span>
+					{{else if eq .ClaimState "verdict posted"}}<span class="ds-status-badge ds-status-badge--positive">✓ Verdict posted</span>
+					{{else if eq .ClaimState "queued"}}<span class="ds-status-badge ds-status-badge--neutral">◌ Queued</span>
+					{{else}}<span class="ds-status-badge ds-status-badge--neutral">{{.ClaimState}}</span>{{end}}
+				{{else if eq .LatestPhase "validated"}}<span class="ds-status-badge ds-status-badge--positive">✓ Validated</span>
+				{{else if eq .LatestPhase "reconciling"}}<span class="ds-status-badge ds-status-badge--warning">↻ Reconciling</span>
+				{{else if eq .LatestPhase "failed"}}<span class="ds-status-badge ds-status-badge--negative">✗ Failed</span>
+				{{else if eq .LatestPhase "superseded"}}<span class="ds-status-badge ds-status-badge--neutral">↪ Superseded</span>
+				{{else}}<span class="ds-status-badge ds-status-badge--neutral">{{.LatestPhase}}</span>{{end}}
+			</summary>
 			<div class="ds-card-body">
-				<span class="ds-card-meta">{{.ObjectiveKind}}</span>
+				<span class="ds-card-meta">{{.WorkflowRef}}</span>
 				<span class="ds-card-meta">·</span>
-				<span class="ds-card-meta">{{.RunCount}} run{{if ne .RunCount 1}}s{{end}}</span>
-				{{if .LastRunAt}}
+				<span class="ds-card-meta">{{.Count}} attempt{{if ne .Count 1}}s{{end}}</span>
+				{{if .LastActivity}}
 				<span class="ds-card-meta">·</span>
-				<span class="ds-card-meta">{{.LastRunAt}}</span>
+				<span class="ds-card-meta">{{.LastActivity}}</span>
 				{{end}}
 			</div>
-		</a>
+			<div style="padding: 0 1rem 0.75rem;">
+				{{range .Attempts}}
+				<div style="display: flex; gap: 0.75rem; align-items: baseline; padding: 0.25rem 0; border-top: 1px solid var(--ds-border-faint);">
+					<a href="/attempts/{{.Name}}" class="ds-link" style="min-width: 14rem;"><code>{{.Name}}</code></a>
+					<span class="ds-card-meta">{{.Phase}}</span>
+					<span class="ds-card-meta">{{.RunCount}} run{{if ne .RunCount 1}}s{{end}}</span>
+					{{if .LastRunAt}}<span class="ds-card-meta">{{.LastRunAt}}</span>{{end}}
+				</div>
+				{{end}}
+			</div>
+		</details>
 		{{else}}
 		<div class="ds-empty-state">
-			<p>No attempts yet. Attempts are created when a workflow runs.</p>
-			<p><a href="/workflows" class="ds-link">View workflows →</a></p>
+			<p>No attempts in this window. Attempts appear when a workflow runs.</p>
+			<p><a href="/attempts?window=all" class="ds-link">Show all</a> · <a href="/workflows" class="ds-link">View workflows →</a></p>
 		</div>
 		{{end}}
 	</div>

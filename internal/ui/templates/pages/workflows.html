@@ -59,6 +59,9 @@
 				</td>
 				<td class="ds-table-td wf-last-run">
 					{{- if not .Status.LastRunAt.IsZero}}{{.Status.LastRunAt.Format "2006-01-02 15:04"}}{{else}}<span class="ds-card-meta">never</span>{{end}}
+					{{- if and .Status.ReviewReady (gt .Status.ReviewReady.Capacity 0)}}
+					<br/><span class="ds-card-meta">reviews {{.Status.ReviewReady.LiveClaims}}/{{.Status.ReviewReady.Capacity}} in flight</span>
+					{{- end}}
 				</td>
 				<td class="ds-table-td wf-actions">
 					<a href="/timeline?workflow={{.Name}}" class="ds-btn ds-btn--xs ds-btn--secondary" title="Execution runtime: gate transitions, nodes, agent turns">⏱ Timeline</a>

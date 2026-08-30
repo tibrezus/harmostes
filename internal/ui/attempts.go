@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"time"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -60,31 +61,137 @@ func (s *Server) handleAttemptList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	summaries := make([]attemptSummary, 0, len(attempts))
+	// ADR-0007 anti-bloat contract: with Job-per-attempt every run creates
+	// an Attempt, so the list aggregates. Review attempts roll up per PR
+	// (one row: PR, review count, claim state — expandable); scheduled
+	// classes collapse to a single last-run row per workflow. Default
+	// window 24h, explicit filters (?window=24h|7d|all).
+	window := r.URL.Query().Get("window")
+	if window == "" {
+		window = "24h"
+	}
+	cutoff := windowCutoff(window, time.Now())
+
+	groups := groupAttempts(attempts, cutoff)
+	sort.Slice(groups, func(i, j int) bool {
+		return groups[i].LastActivity > groups[j].LastActivity
+	})
+
+	s.render(w, r, "pages/attempts.html", map[string]any{
+		"Groups": groups,
+		"Window": window,
+	})
+}
+
+// attemptGroup is one rollup row: a PR (review class) or a workflow
+// (scheduled classes) with its attempts expandable beneath it.
+type attemptGroup struct {
+	WorkflowRef  string
+	Subject      string // PR pointer (review) or workflow ref (scheduled)
+	IsReview     bool
+	Count        int
+	LatestPhase  string
+	ClaimState   string // human claim state for reviews: in flight, queued, consumed, ...
+	LastActivity string
+	Attempts     []attemptSummary
+}
+
+// windowCutoff resolves the list window; unknown values fall back to 24h.
+func windowCutoff(window string, now time.Time) time.Time {
+	switch window {
+	case "all":
+		return time.Time{}
+	case "7d":
+		return now.Add(-7 * 24 * time.Hour)
+	default: // "24h"
+		return now.Add(-24 * time.Hour)
+	}
+}
+
+// groupAttempts folds attempts into rollup rows (ADR-0007): reviews per PR,
+// everything else per workflow. Order within a group: most recent first.
+func groupAttempts(attempts []v1alpha1.Attempt, cutoff time.Time) []attemptGroup {
+	byKey := map[string]*attemptGroup{}
+	var order []string
 	for _, a := range attempts {
+		last := a.Status.LastRunAt.Time
+		if last.IsZero() {
+			last = a.CreationTimestamp.Time
+		}
+		if !cutoff.IsZero() && last.Before(cutoff) {
+			continue
+		}
+		isReview := a.Spec.Objective.Kind == v1alpha1.ObjectiveKindPRReview
+		subject := a.Spec.Objective.PrimarySubject.Object
+		key := a.Spec.WorkflowRef + "/" + subject
+		if isReview && a.Status.Review != nil {
+			subject = a.Status.Review.PR
+			key = a.Spec.WorkflowRef + "/" + subject
+		}
+		g, ok := byKey[key]
+		if !ok {
+			g = &attemptGroup{
+				WorkflowRef: a.Spec.WorkflowRef,
+				Subject:     subject,
+				IsReview:    isReview,
+			}
+			byKey[key] = g
+			order = append(order, key)
+		}
+		g.Count++
 		lastRun := ""
 		if !a.Status.LastRunAt.IsZero() {
-			lastRun = a.Status.LastRunAt.Time.Format("2006-01-02 15:04 MST")
+			lastRun = a.Status.LastRunAt.Time.Format("2006-01-02 15:04")
 		}
-		summaries = append(summaries, attemptSummary{
+		g.Attempts = append(g.Attempts, attemptSummary{
 			Name:           a.Name,
 			WorkflowRef:    a.Spec.WorkflowRef,
 			ObjectiveKind:  a.Spec.Objective.Kind,
-			PrimarySubject: a.Spec.Objective.PrimarySubject.Object,
+			PrimarySubject: subject,
 			Phase:          a.Status.Phase,
 			LastRunAt:      lastRun,
 			RunCount:       len(a.Status.Runs),
 		})
+		if last.Format(time.RFC3339) > g.LastActivity {
+			g.LastActivity = last.Format(time.RFC3339)
+			g.LatestPhase = a.Status.Phase
+			if isReview && a.Status.Review != nil {
+				g.ClaimState = claimState(a.Status.Review)
+			}
+		}
 	}
+	groups := make([]attemptGroup, 0, len(order))
+	for _, k := range order {
+		g := byKey[k]
+		sort.Slice(g.Attempts, func(i, j int) bool {
+			return g.Attempts[i].LastRunAt > g.Attempts[j].LastRunAt
+		})
+		groups = append(groups, *g)
+	}
+	return groups
+}
 
-	// Sort by most recent activity (LastRunAt desc, then name).
-	sort.Slice(summaries, func(i, j int) bool {
-		return summaries[i].LastRunAt > summaries[j].LastRunAt
-	})
-
-	s.render(w, r, "pages/attempts.html", map[string]any{
-		"Attempts": summaries,
-	})
+// claimState renders the gate claim's human state (ADR-0007).
+func claimState(r *v1alpha1.ReviewClaimStatus) string {
+	switch {
+	case r.Released:
+		switch r.ReleaseReason {
+		case "consumed":
+			return "verdict posted"
+		case "superseded":
+			return "superseded by newer head"
+		case "dispatch-timeout":
+			return "run expired"
+		case "horizon":
+			return "horizon reached"
+		default:
+			return "released"
+		}
+	case r.DispatchedAt != nil:
+		return "review in flight"
+	default:
+		return "queued"
+	}
 }
 
 // attemptDetailData is the template data for the attempt detail page.

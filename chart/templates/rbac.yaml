@@ -8,6 +8,13 @@ metadata:
   namespace: {{ .Values.namespace }}
   labels:
     app.kubernetes.io/name: harmostes
+{{- if .Values.image.pullSecret }}
+# Per-attempt Job pods (ADR-0007) run as this SA and inherit the pull
+# secret here — the long-running Deployments carry it in their pod spec,
+# but Jobs created by the dispatcher never did (#281).
+imagePullSecrets:
+  - name: {{ .Values.image.pullSecret }}
+{{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role

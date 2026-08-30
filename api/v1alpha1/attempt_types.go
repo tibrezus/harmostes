@@ -169,6 +169,40 @@ type AttemptStatus struct {
 	// Conditions are standard k8s conditions.
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// Review holds the Review-Ready Gate's per-claim state (ADR-0007):
+	// the Attempt IS the claim — armed horizon, dispatch liveness, and
+	// release state live here, never on the Workflow's status slot.
+	// +optional
+	Review *ReviewClaimStatus `json:"review,omitempty"`
+}
+
+// ReviewClaimStatus is the gate's claim on this Attempt: one live claim
+// per reviewed PR; head moves supersede (a fresh claim arms at the new
+// head — the objective identity changes with the SHA, ADR-0005).
+type ReviewClaimStatus struct {
+	// PR is the reviewed pointer: host/owner/name#N (normalized).
+	PR string `json:"pr,omitempty"`
+
+	// HeadSHA is the reviewed commit — the verdict-window anchor.
+	HeadSHA string `json:"headSha,omitempty"`
+
+	// Label is the gate label at arm time.
+	Label string `json:"label,omitempty"`
+
+	// ArmedSince is when the gate armed at HeadSHA (horizon start).
+	ArmedSince *metav1.Time `json:"armedSince,omitempty"`
+
+	// DispatchedAt marks the review dispatched (Job created); the
+	// DispatchTimeout liveness bound runs from here (#248).
+	DispatchedAt *metav1.Time `json:"dispatchedAt,omitempty"`
+
+	// Released frees the claim's capacity slot: the PR may re-arm on a
+	// later sweep.
+	Released bool `json:"released,omitempty"`
+
+	// ReleaseReason: consumed | horizon | dispatch-timeout | superseded | closed.
+	ReleaseReason string `json:"releaseReason,omitempty"`
 }
 
 // RunRecord is one Workflow Run (job) executed inside an attempt.

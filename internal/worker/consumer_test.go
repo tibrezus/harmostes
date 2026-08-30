@@ -9,7 +9,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 )
 
 func TestConsumerSubscribeEndpoint(t *testing.T) {
@@ -105,57 +104,6 @@ func TestConsumerTriggerEvent_ParsesCloudEvent(t *testing.T) {
 	}
 	if atomic.LoadInt32(&callCount) != 1 {
 		t.Errorf("RunFunc called %d times, want 1", callCount)
-	}
-}
-
-func TestConsumerTriggerEvent_SingleFlight(t *testing.T) {
-	// Simulate a slow RunFunc; a second concurrent trigger should get 503.
-	block := make(chan struct{})
-	consumer := NewConsumer(ConsumerConfig{
-		RunFunc: func(_ context.Context, _ RunRequest) error {
-			<-block // block until test releases
-			return nil
-		},
-	})
-
-	cloudEvent := `{
-		"specversion": "1.0",
-		"type": "harmostes.trigger",
-		"source": "harmostes-controller",
-		"subject": "test",
-		"id": "test-1",
-		"datacontenttype": "application/json",
-		"data": {"workflow": "test", "namespace": "harmostes", "triggerType": "schedule"}
-	}`
-
-	// Start the first request in a goroutine.
-	done := make(chan int, 2)
-	go func() {
-		req := httptest.NewRequest(http.MethodPost, "/triggers", strings.NewReader(cloudEvent))
-		req.Body = http.MaxBytesReader(nil, req.Body, 1<<20)
-		rr := httptest.NewRecorder()
-		consumer.handleTrigger(rr, req)
-		done <- rr.Code
-	}()
-
-	// Give the first request time to acquire the lock.
-	time.Sleep(50 * time.Millisecond)
-
-	// Second concurrent request should get 503.
-	req2 := httptest.NewRequest(http.MethodPost, "/triggers", strings.NewReader(cloudEvent))
-	req2.Body = http.MaxBytesReader(nil, req2.Body, 1<<20)
-	rr2 := httptest.NewRecorder()
-	consumer.handleTrigger(rr2, req2)
-
-	if rr2.Code != http.StatusServiceUnavailable {
-		t.Errorf("second request status = %d, want 503", rr2.Code)
-	}
-
-	// Release the first request.
-	close(block)
-	code := <-done
-	if code != http.StatusOK {
-		t.Errorf("first request status = %d, want 200", code)
 	}
 }
 

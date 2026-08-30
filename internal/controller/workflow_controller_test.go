@@ -212,7 +212,7 @@ func TestObserveGenerationRetriesOnConflict(t *testing.T) {
 	wf.Name = "test-wf"
 	wf.Namespace = "harmostes"
 	wf.Generation = 3
-	wf.Status.ReviewReady = &v1alpha1.ReviewReadyStatus{ArmedPR: 42, LastDecision: "waiting"}
+	wf.Status.ReviewReady = &v1alpha1.ReviewReadyStatus{LiveClaims: 1, LastDecision: "waiting"}
 
 	attempts := 0
 	cl := fake.NewClientBuilder().
@@ -247,7 +247,7 @@ func TestObserveGenerationRetriesOnConflict(t *testing.T) {
 	if got.Status.ObservedGeneration != 3 || got.Status.LastRunAt.IsZero() {
 		t.Fatalf("observeGeneration fields not landed after retry: %+v", got.Status)
 	}
-	if got.Status.ReviewReady == nil || got.Status.ReviewReady.ArmedPR != 42 {
+	if got.Status.ReviewReady == nil || got.Status.ReviewReady.LiveClaims != 1 {
 		t.Fatalf("concurrent reviewReady write must survive the retry: %+v", got.Status.ReviewReady)
 	}
 }

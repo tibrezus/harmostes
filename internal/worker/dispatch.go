@@ -128,19 +128,44 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req RunRequest) error {
 
 	// ── Review-Ready Gate (ADR-0006): validate before dispatching. ──────
 	// Only workflows with reviewReady gate; every other class dispatches
-	// straight through (every class is Job-per-run, ADR-0007).
-	var envelope *review.Envelope
-	if wf.Spec.ReviewReady != nil {
-		tl := timeline.NewGateWriter(dapr.Tracing(dapr.New(os.Getenv("DAPR_HTTP_ENDPOINT"))),
-			envOr("HARMOSTES_STATE_STORE", "statestore"), wf.Name, "", triggerSubject(req))
-		envelope = RunReviewGateWithTimeline(ctx, k8s.StatusPatcher{Client: d.cl, Namespace: req.Namespace}, d.logf, wf, tl)
-		if envelope == nil {
-			d.logf("dispatch: gate did not proceed — nothing to dispatch (recorded in status)")
-			return nil
-		}
+	// straight through (every class is Job-per-run, ADR-0007). The gate
+	// drains to capacity: one sweep accepts every free slot.
+	gateDeps := GateDeps{
+		Status:             k8s.StatusPatcher{Client: d.cl, Namespace: req.Namespace},
+		Client:             d.cl,
+		Scheme:             d.scheme,
+		FleetMaxConcurrent: d.fleetMaxConcurrent,
+		Log:                d.logf,
+		TL: timeline.NewGateWriter(dapr.Tracing(dapr.New(os.Getenv("DAPR_HTTP_ENDPOINT"))),
+			envOr("HARMOSTES_STATE_STORE", "statestore"), wf.Name, "", triggerSubject(req)),
 	}
 
-	// ── Capacity + create (serialized: dedupe racing wakes). ───────────
+	var dispatches []GateDispatch
+	if wf.Spec.ReviewReady != nil {
+		dispatches, err = RunReviewGateSweep(ctx, gateDeps, wf)
+		if err != nil {
+			return fmt.Errorf("review gate: %w", err)
+		}
+		if len(dispatches) == 0 {
+			return nil // waiting/standdown/at-capacity — recorded in aggregates
+		}
+	} else {
+		// Non-gated class: dispatch straight through under a claimless
+		// attempt (deterministic objective identity).
+		obj := attempt.DeriveObjective(wf, attempt.TriggerContext{Revision: req.Revision, Source: "webhook"})
+		at, _, err := attempt.ResolveOrCreate(ctx, d.cl, obj, attempt.ResolveOptions{
+			Namespace:   req.Namespace,
+			WorkflowRef: req.Namespace + "/" + req.Workflow,
+			Owner:       wf,
+			Scheme:      d.scheme,
+		})
+		if err != nil {
+			return fmt.Errorf("resolve attempt: %w", err)
+		}
+		dispatches = append(dispatches, GateDispatch{Attempt: at.Name})
+	}
+
+	// ── Create the Jobs (serialized: dedupe racing wakes). ──────────────
 	d.createMu.Lock()
 	defer d.createMu.Unlock()
 
@@ -148,61 +173,46 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req RunRequest) error {
 	if err != nil {
 		return fmt.Errorf("list active jobs: %w", err)
 	}
-	if max := wf.Spec.ReviewReady.EffectiveMaxConcurrent(d.fleetMaxConcurrent); len(live) >= max {
-		// Durable queue semantics: the gate's armed marker stands; the next
-		// sweep re-evaluates and dispatches when a slot frees (FIFO comes
-		// from the labeled set + backlog pass; step 4 generalizes to
-		// drain-to-capacity).
-		d.logf("dispatch: at capacity (%d/%d live jobs) — staying queued", len(live), max)
-		return nil
-	}
-
-	obj := attempt.DeriveObjective(wf, attempt.TriggerContext{Revision: envelopeHead(envelope, req), Source: "webhook"})
-	at, _, err := attempt.ResolveOrCreate(ctx, d.cl, obj, attempt.ResolveOptions{
-		Namespace:   req.Namespace,
-		WorkflowRef: req.Namespace + "/" + req.Workflow,
-		Owner:       wf,
-		Scheme:      d.scheme,
-	})
-	if err != nil {
-		return fmt.Errorf("resolve attempt: %w", err)
-	}
-	for _, j := range live {
-		if j.Labels["harmostes.dev/attempt"] == at.Name {
-			d.logf("dispatch: attempt %s already has a live job — deduped", at.Name)
-			return nil
+	for _, g := range dispatches {
+		duplicate := false
+		for _, j := range live {
+			if j.Labels["harmostes.dev/attempt"] == g.Attempt {
+				duplicate = true
+				break
+			}
 		}
-	}
-
-	job := k8s.BuildJob(k8s.AttemptJobParams{
-		Attempt:                 at,
-		WorkflowName:            req.Workflow,
-		Namespace:               req.Namespace,
-		Image:                   d.jobImage,
-		ServiceAccount:          d.serviceAccount,
-		TTLSecondsAfterFinished: d.jobTTLSeconds,
-		DaprdImage:              d.daprdImage,
-		PluginConfigMaps:        d.pluginConfigMaps,
-		ExtraEnv:                dispatchEnv(req, at, envelope),
-	})
-	if err := d.cl.Create(ctx, job); err != nil {
-		if errors.IsAlreadyExists(err) {
-			d.logf("dispatch: job for attempt %s already exists — deduped", at.Name)
-			return nil
+		if duplicate {
+			d.logf("dispatch: attempt %s already has a live job — deduped", g.Attempt)
+			continue
 		}
-		return fmt.Errorf("create job: %w", err)
+		var at v1alpha1.Attempt
+		if err := d.cl.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: g.Attempt}, &at); err != nil {
+			return fmt.Errorf("get claim attempt %s: %w", g.Attempt, err)
+		}
+		job := k8s.BuildJob(k8s.AttemptJobParams{
+			Attempt:                 &at,
+			WorkflowName:            req.Workflow,
+			Namespace:               req.Namespace,
+			Image:                   d.jobImage,
+			ServiceAccount:          d.serviceAccount,
+			TTLSecondsAfterFinished: d.jobTTLSeconds,
+			DaprdImage:              d.daprdImage,
+			PluginConfigMaps:        d.pluginConfigMaps,
+			ExtraEnv:                dispatchEnv(req, &at, g.Envelope),
+		})
+		if err := d.cl.Create(ctx, job); err != nil {
+			if errors.IsAlreadyExists(err) {
+				d.logf("dispatch: job for attempt %s already exists — deduped", at.Name)
+				continue
+			}
+			return fmt.Errorf("create job: %w", err)
+		}
+		if err := attempt.MarkClaimDispatched(ctx, d.cl, req.Namespace, at.Name); err != nil {
+			return fmt.Errorf("mark dispatched %s: %w", at.Name, err)
+		}
+		d.logf("dispatch: job %s created for attempt %s (workflow %s)", job.Name, at.Name, req.Workflow)
 	}
-	d.logf("dispatch: job %s created for attempt %s (workflow %s)", job.Name, at.Name, req.Workflow)
 	return nil
-}
-
-// envelopeHead prefers the gate's reviewed SHA; non-gated triggers carry the
-// wake revision.
-func envelopeHead(env *review.Envelope, req RunRequest) string {
-	if env != nil && env.HeadSHA != "" {
-		return env.HeadSHA
-	}
-	return req.Revision
 }
 
 // triggerSubject builds the timeline subject from the trigger event.

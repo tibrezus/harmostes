@@ -7,7 +7,6 @@ import (
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -36,15 +35,15 @@ func testWorkflow(name string) *v1alpha1.Workflow {
 func TestPatchStatusMutatesLiveState(t *testing.T) {
 	wf := testWorkflow("w")
 	wf.Status.ReviewReady = &v1alpha1.ReviewReadyStatus{
-		ArmedPR:      42,
-		DispatchedAt: &metav1.Time{Time: metav1.Now().Time},
+		LiveClaims:   1,
+		LastDecision: "proceed",
 	}
 	cl := newTestClient(t, wf)
 	sp := StatusPatcher{Client: cl, Namespace: "harmostes"}
 
 	if err := sp.PatchStatus(context.Background(), "w", func(s *v1alpha1.WorkflowStatus) {
-		// The closure sees LIVE state (the marker above), not a snapshot.
-		if s.ReviewReady == nil || s.ReviewReady.DispatchedAt == nil {
+		// The closure sees LIVE state (the aggregates above), not a snapshot.
+		if s.ReviewReady == nil || s.ReviewReady.LiveClaims != 1 {
 			t.Fatal("closure did not receive live status — stale read")
 		}
 		s.ReviewReady.LastDecision = "waiting"
@@ -56,8 +55,8 @@ func TestPatchStatusMutatesLiveState(t *testing.T) {
 	if err := cl.Get(context.Background(), types.NamespacedName{Name: "w", Namespace: "harmostes"}, &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Status.ReviewReady.LastDecision != "waiting" || got.Status.ReviewReady.DispatchedAt == nil {
-		t.Fatalf("mutation lost or marker dropped: %+v", got.Status.ReviewReady)
+	if got.Status.ReviewReady.LastDecision != "waiting" || got.Status.ReviewReady.LiveClaims != 1 {
+		t.Fatalf("mutation lost or aggregates clobbered: %+v", got.Status.ReviewReady)
 	}
 }
 
@@ -67,7 +66,7 @@ func TestPatchStatusMutatesLiveState(t *testing.T) {
 // fresh state (#257 — no silent lost updates).
 func TestPatchStatusRetriesOnConflict(t *testing.T) {
 	wf := testWorkflow("w")
-	wf.Status.ReviewReady = &v1alpha1.ReviewReadyStatus{ArmedPR: 42}
+	wf.Status.ReviewReady = &v1alpha1.ReviewReadyStatus{LiveClaims: 42}
 	cl := newTestClient(t, wf)
 
 	attempts := 0
@@ -110,7 +109,7 @@ func TestPatchStatusRetriesOnConflict(t *testing.T) {
 // never leak into decisions.
 func TestGetStatusReturnsFresh(t *testing.T) {
 	wf := testWorkflow("w")
-	wf.Status.ReviewReady = &v1alpha1.ReviewReadyStatus{ArmedPR: 7}
+	wf.Status.ReviewReady = &v1alpha1.ReviewReadyStatus{LiveClaims: 7}
 	cl := newTestClient(t, wf)
 	sp := StatusPatcher{Client: cl, Namespace: "harmostes"}
 
@@ -118,20 +117,20 @@ func TestGetStatusReturnsFresh(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st.ReviewReady == nil || st.ReviewReady.ArmedPR != 7 {
+	if st.ReviewReady == nil || st.ReviewReady.LiveClaims != 7 {
 		t.Fatalf("GetStatus returned stale/empty status: %+v", st.ReviewReady)
 	}
 
 	// A write is visible to the next GetStatus (freshness contract).
 	if err := sp.PatchStatus(context.Background(), "w", func(s *v1alpha1.WorkflowStatus) {
-		s.ReviewReady.ArmedPR = 8
+		s.ReviewReady.LiveClaims = 8
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if st, err = sp.GetStatus(context.Background(), "w"); err != nil {
 		t.Fatal(err)
 	}
-	if st.ReviewReady.ArmedPR != 8 {
+	if st.ReviewReady.LiveClaims != 8 {
 		t.Fatalf("GetStatus not fresh after write: %+v", st.ReviewReady)
 	}
 }

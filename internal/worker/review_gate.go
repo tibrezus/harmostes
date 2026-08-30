@@ -11,8 +11,11 @@ import (
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
+	"github.com/tibrezus/harmostes/internal/attempt"
 	"github.com/tibrezus/harmostes/internal/review"
 	"github.com/tibrezus/harmostes/internal/timeline"
 )
@@ -22,220 +25,311 @@ var newReviewAPI = func() review.API {
 	return &review.RESTAPI{Client: http.DefaultClient, TokenLookup: os.Getenv}
 }
 
-// reviewGate evaluates the Review-Ready Gate (ADR-0006) when the workflow is
-// woken by a pull_request event or is armed from a previous wake. It returns
-// the Trigger Envelope when the gate proceeds, nil otherwise (waiting, stood
-// down, or gate not configured / nothing armed).
-//
-// The gate's armed state lives on the Workflow status (persisted via the
-// status patcher). Cost per sweep: armed → one PR fetch (+ protection,
-// contexts, and a verdict-window comment scan while dispatched); unarmed →
-// one cheap list call per scope repo (the #249 backlog pass).
-// RunReviewGate is the PRODUCTION seam: the one-shot worker calls it after
-// template resolution and BEFORE graph execution (the pipeline.Run path is
-// legacy — production has routed through graph.ExecuteGraph since #177).
-// Returns the Trigger Envelope on proceed; nil otherwise (waiting, stood
-// down, or gate not configured). The caller exits before provisioning when
-// nil is returned for a gated workflow.
-func RunReviewGate(ctx context.Context, status StatusPatcher, logFn func(string, ...any), wf *v1alpha1.Workflow) *review.Envelope {
-	return RunReviewGateWithTimeline(ctx, status, logFn, wf, nil)
+// GateDeps are the Review-Ready Gate's collaborators (ADR-0007 phase 4).
+// Claims live on Attempt CRs (Client); the Workflow status carries
+// aggregates only (Status).
+type GateDeps struct {
+	Status StatusPatcher
+	Client client.Client
+	Scheme *runtime.Scheme
+	// FleetMaxConcurrent is the chart default; spec.reviewReady.maxConcurrent
+	// overrides per workflow.
+	FleetMaxConcurrent int
+	Log                func(format string, args ...any)
+	TL                 timeline.Writer
 }
 
-// RunReviewGateWithTimeline also appends gate lifecycle transitions to the
-// timeline evidence layer (armed / waiting / proceed / standdown — state
-// CHANGES only, not every armed-poll re-evaluation).
-func RunReviewGateWithTimeline(ctx context.Context, status StatusPatcher, logFn func(string, ...any), wf *v1alpha1.Workflow, tl timeline.Writer) *review.Envelope {
-	deps := Deps{Status: status, Log: logFn, TL: tl}
-	return reviewGate(ctx, deps, wf)
+func (d GateDeps) log() func(string, ...any) {
+	if d.Log != nil {
+		return d.Log
+	}
+	return func(string, ...any) {}
 }
 
-func reviewGate(ctx context.Context, deps Deps, wf *v1alpha1.Workflow) *review.Envelope {
+// GateDispatch is one accepted review: the Trigger Envelope to execute and
+// the claim (Attempt) it dispatches under.
+type GateDispatch struct {
+	Envelope *review.Envelope
+	Attempt  string // the claim's Attempt name → HARMOSTES_ATTEMPT on the Job
+}
+
+// RunReviewGateSweep evaluates the gate drain-to-capacity (ADR-0007): the
+// dispatcher calls it per trigger — in-flight claims are checked for
+// consume/expiry, then the oldest-first labeled set fills every free slot.
+// A request-shaped wake jumps the queue as a priority candidate. Returns
+// one dispatch per accepted review.
+func RunReviewGateSweep(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow) ([]GateDispatch, error) {
+	return runGate(ctx, deps, wf, false)
+}
+
+// RunReviewGateWake evaluates ONLY the wake PR — the manual/direct run path
+// (harmostes-worker run without a dispatcher), which must never fan out into
+// multiple dispatches.
+func RunReviewGateWake(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow) ([]GateDispatch, error) {
+	return runGate(ctx, deps, wf, true)
+}
+
+// candidate is a PR the gate may arm/dispatch this cycle.
+type candidate struct {
+	repo    string
+	pr      int
+	pointer string // host/owner/name#N (normalized)
+	sha     string // wake revision, when the wake carried one
+	isWake  bool
+	request bool // request-shaped (label touched): may supersede a live claim
+}
+
+func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly bool) ([]GateDispatch, error) {
 	rr := wf.Spec.ReviewReady
 	if rr == nil {
-		return nil // gate not configured for this workflow
+		return nil, nil // gate not configured for this workflow
+	}
+	log := deps.log()
+	now := time.Now()
+	capacity := rr.EffectiveMaxConcurrent(deps.FleetMaxConcurrent)
+	api := newReviewAPI()
+	label := rr.EffectiveLabel()
+
+	// Live status read: the timeline-transition dedupe reads the CURRENT
+	// aggregates, never the fetch-time snapshot (#257).
+	var liveAgg *v1alpha1.ReviewReadyStatus
+	if st, err := deps.Status.GetStatus(ctx, wf.Name); err == nil && st.ReviewReady != nil {
+		liveAgg = st.ReviewReady
 	}
 
-	// Decisions start from LIVE state, never the run-start snapshot (#257):
-	// the consumer fetched wf when the trigger arrived — a long evaluate, a
-	// parallel writer, or a lost marker in between makes the snapshot lie,
-	// and the gate re-proceeds forever (the live #257 incident).
-	if live, err := deps.Status.GetStatus(ctx, wf.Name); err != nil {
-		deps.log()("review-ready: live status read failed (%v) — falling back to run-start snapshot", err)
-	} else {
-		wf.Status = *live
+	claims, err := attempt.LiveReviewClaims(ctx, deps.Client, wf.Namespace, wf.Name)
+	if err != nil {
+		return nil, fmt.Errorf("list claims: %w", err)
 	}
-	armed := wf.Status.ReviewReady
-	// The controller clears the trigger annotations at schedule time (it must,
-	// or isDue rapid-fires), so the PR pointer rides the TriggerEvent payload
-	// through the consumer into the one-shot worker's environment. The
-	// annotation is the fallback for direct/manual invocations.
+
+	// ── A. In-flight claims: consume / expiry / refresh — never dispatch. ──
+	liveDispatched := 0
+	liveOn := map[string]bool{} // normalized pointer → live claim present
+	for _, c := range claims {
+		r := c.Status.Review
+		liveOn[r.PR] = true
+		if r.DispatchedAt == nil {
+			continue // armed-queued: holds no capacity slot
+		}
+		liveDispatched++
+		repo, pr, perr := parsePRPointer(r.PR)
+		if perr != nil {
+			releaseClaim(ctx, deps, c, "closed", log)
+			continue
+		}
+		p := review.Params{
+			Repo: repo, PR: pr, Label: r.Label,
+			Horizon: rr.HorizonDuration(), DispatchTimeout: rr.DispatchTimeoutDuration(),
+			ArmedSha: r.HeadSHA,
+			Now:      now,
+		}
+		if r.ArmedSince != nil {
+			p.ArmedAt = r.ArmedSince.Time
+		}
+		p.DispatchedAt = r.DispatchedAt.Time
+		res := review.Evaluate(ctx, api, p)
+		if res.Decision == review.DecisionStanddown {
+			releaseClaim(ctx, deps, c, classifyRelease(res.Reason), log)
+			emitGate(ctx, deps.TL, liveAgg, res, repo, pr)
+			liveDispatched--
+		}
+	}
+	// Re-list: releases in the loop above must be visible to the drain
+	// (liveOn/claims snapshots are stale the moment a claim releases).
+	claims, err = attempt.LiveReviewClaims(ctx, deps.Client, wf.Namespace, wf.Name)
+	if err != nil {
+		return nil, fmt.Errorf("re-list claims: %w", err)
+	}
+	liveOn = make(map[string]bool, len(claims))
+	liveDispatched = 0
+	for _, c := range claims {
+		liveOn[c.Status.Review.PR] = true
+		if c.Status.Review.DispatchedAt != nil {
+			liveDispatched++
+		}
+	}
+	free := capacity - liveDispatched
+
+	// ── B. Candidates: the wake (priority) + the labeled set (oldest first). ──
+	var cands []candidate
+	seen := map[string]bool{}
+	addCand := func(c candidate) {
+		if seen[c.pointer] {
+			return
+		}
+		seen[c.pointer] = true
+		cands = append(cands, c)
+	}
+	if wake := parseWake(wf); wake != nil {
+		addCand(*wake)
+	}
+	if !wakeOnly {
+		for _, repo := range scopeRepos(wf) {
+			norm := normalizeRepoPointer(repo, wf)
+			pulls, err := api.ListLabeledOpenPulls(ctx, norm, label)
+			if err != nil {
+				log("review-ready: labeled scan %s failed: %v", norm, err)
+				continue
+			}
+			for _, pr := range pulls {
+				addCand(candidate{repo: norm, pr: pr.Number,
+					pointer: fmt.Sprintf("%s#%d", norm, pr.Number)})
+			}
+		}
+	}
+
+	// ── C. Evaluate + drain-to-capacity. ──────────────────────────────────
+	var out []GateDispatch
+	lastDecision, lastReason := "waiting", "nothing to evaluate this cycle"
+	for _, cand := range cands {
+		claimed := liveOn[cand.pointer]
+		if claimed {
+			// Request-shaped wakes may supersede (head moved since the
+			// claim armed — an explicit human re-request); push-shaped and
+			// scan candidates leave the in-flight claim alone (r5).
+			if !cand.request {
+				continue
+			}
+			claimFor := findClaim(claims, cand.pointer)
+			if claimFor != nil && claimFor.Status.Review.HeadSHA == candSha(cand) {
+				continue // same head — nothing to re-request
+			}
+			if claimFor != nil {
+				if err := attempt.ReleaseClaim(ctx, deps.Client, wf.Namespace, claimFor.Name, "superseded"); err != nil {
+					log("review-ready: supersede %s failed: %v", claimFor.Name, err)
+					continue
+				}
+				liveOn[cand.pointer] = false
+				if claimFor.Status.Review.DispatchedAt != nil {
+					liveDispatched--
+					free++
+				}
+			}
+		}
+		if free <= 0 {
+			break // durable queue: the labeled set re-fills on the next sweep
+		}
+
+		res := review.Evaluate(ctx, api, review.Params{
+			Repo: cand.repo, PR: cand.pr, Label: label,
+			Horizon: rr.HorizonDuration(), DispatchTimeout: rr.DispatchTimeoutDuration(),
+			WakeSHA: candSha(cand),
+			Now:     now,
+		})
+		switch res.Decision {
+		case review.DecisionProceed:
+			sha := res.Envelope.HeadSHA
+			at, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf, cand.pointer, sha, label)
+			if err != nil {
+				log("review-ready: arm claim %s failed: %v", cand.pointer, err)
+				lastDecision, lastReason = string(res.Decision), res.Reason
+				continue
+			}
+			out = append(out, GateDispatch{Envelope: res.Envelope, Attempt: at.Name})
+			free--
+			lastDecision, lastReason = string(res.Decision), res.Reason
+			emitGate(ctx, deps.TL, liveAgg, res, cand.repo, cand.pr)
+		case review.DecisionWaiting:
+			sha := res.NewArmedSha
+			if sha == "" {
+				sha = candSha(cand)
+			}
+			if _, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf, cand.pointer, sha, label); err != nil {
+				log("review-ready: arm claim %s failed: %v", cand.pointer, err)
+			}
+			lastDecision, lastReason = string(res.Decision), res.Reason
+			emitGate(ctx, deps.TL, liveAgg, res, cand.repo, cand.pr)
+		case review.DecisionStanddown:
+			lastDecision, lastReason = string(res.Decision), res.Reason
+			emitGate(ctx, deps.TL, liveAgg, res, cand.repo, cand.pr)
+		}
+	}
+
+	// ── D. Aggregates (the Workflow status stops being a hot field). ──
+	if err := deps.Status.PatchStatus(ctx, wf.Name, func(s *v1alpha1.WorkflowStatus) {
+		s.ReviewReady = &v1alpha1.ReviewReadyStatus{
+			LiveClaims:   liveDispatched,
+			Capacity:     capacity,
+			LastDecision: lastDecision,
+			LastReason:   lastReason,
+		}
+	}); err != nil {
+		log("review-ready: aggregates patch failed: %v", err)
+	}
+
+	return out, nil
+}
+
+// parseWake reads the trigger annotations (env first — the controller clears
+// annotations at schedule time). nil when this cycle has no wake.
+func parseWake(wf *v1alpha1.Workflow) *candidate {
 	trigPR := os.Getenv("HARMOSTES_TRIGGER_PR")
 	if trigPR == "" {
 		trigPR = wf.Annotations["harmostes.dev/trigger-pr"]
+	}
+	if trigPR == "" {
+		return nil
 	}
 	action := os.Getenv("HARMOSTES_TRIGGER_ACTION")
 	if action == "" {
 		action = wf.Annotations["harmostes.dev/trigger-action"]
 	}
-
-	var repo string
-	var pr int
-	switch {
-	case trigPR != "":
-		r, n, err := parsePRPointer(trigPR)
-		if err != nil {
-			deps.log()("review-ready: bad trigger annotation %q: %v", trigPR, err)
-			return nil
-		}
-		repo, pr = r, n
-	case armed != nil && armed.ArmedPR != 0:
-		repo, pr = armed.ArmedRepo, armed.ArmedPR
-	default:
-		// Nothing armed, no wake event: backlog pass (#249). A label added
-		// while the gate was busy on another PR produces no further event —
-		// the newest label stole the single armed slot and the older labeled
-		// PRs starve. Discover the oldest labeled open PR across the scope
-		// and arm it; evaluation stays single-flight, only arming becomes
-		// queue-aware.
-		r, n := oldestLabeledOpen(ctx, deps, wf)
-		if n == 0 {
-			return nil // nothing labeled anywhere in scope — genuinely idle
-		}
-		repo, pr = r, n
-		deps.log()("review-ready: backlog pass arming pr=%d (%s)", pr, repo)
-	}
-
-	// One pointer form everywhere downstream (#268): producers emit either
-	// "host/owner/name" (webhook annotation) or bare "owner/name" (GitHub's
-	// full_name, spec.config.repos, older armed states). ResolveHost forgives
-	// the bare form, but the envelope's HARMOSTES_TRIGGER_REPO feeds the
-	// workspace plugin's host split — a bare pointer becomes HOST=owner and a
-	// guaranteed NXDOMAIN. Qualify here, at the single repo choke point, so
-	// scope checks, the retarget comparison, the armed state, and the
-	// envelope all carry the full form (a bare armedRepo self-heals).
-	repo = normalizeRepoPointer(repo, wf)
-
-	params := review.Params{
-		Repo:            repo,
-		PR:              pr,
-		Label:           rr.EffectiveLabel(),
-		Horizon:         rr.HorizonDuration(),
-		DispatchTimeout: rr.DispatchTimeoutDuration(),
-		DisarmHint:      action == "closed",
-		WakeSHA:         wakeRevision(wf),
-	}
-	if armed != nil {
-		params.ArmedSha = armed.ArmedSha
-		if armed.ArmedSince != nil {
-			params.ArmedAt = armed.ArmedSince.Time
-		}
-		// A durable dispatch marker (set at proceed, preserved across
-		// in-flight waiting, cleared on consume) — LastDecision alone is
-		// overwritten by every evaluation and evaporates after one sweep.
-		if armed.DispatchedAt != nil {
-			params.DispatchedAt = armed.DispatchedAt.Time
-		}
-	}
-	// A wake event targeting a DIFFERENT PR than the armed one re-targets
-	// the gate ONLY when the wake is request-shaped (a label was touched —
-	// a human or the skill asked for something). A synchronize/push wake on
-	// an unrelated PR must NOT hijack an armed review: observed live when a
-	// push on #1577 re-targeted an armed #1566, whose "label absent"
-	// standdown then disarmed it. The armed PR's OWN synchronize arrives as
-	// its own wake and re-arms its head correctly.
-	if armed != nil && trigPR != "" && armed.ArmedPR != 0 && (armed.ArmedRepo != repo || armed.ArmedPR != pr) {
-		switch action {
-		case "labeled", "unlabeled", "label_updated":
-			// request-shaped: re-target (reset the armed head AND the
-			// dispatch marker — it belongs to the OLD armed PR's review;
-			// carried across, Evaluate would scan the NEW PR's comments
-			// for a verdict that only ever posts on the old one, and the
-			// new PR waits "in flight" up to a full Horizon).
-			params.ArmedSha = ""
-			params.ArmedAt = time.Time{}
-			params.DispatchedAt = time.Time{}
-		default:
-			// push-shaped on another PR: ignore — keep the armed review
-			deps.log()("review-ready: wake for pr=%d (%s) while armed on pr=%d — ignored, armed review preserved", pr, action, armed.ArmedPR)
-			return nil
-		}
-	}
-
-	// Scope allowlist (defense-in-depth): spec.config.repos declares which
-	// repos this instance serves. A signed webhook from an undeclared repo
-	// (mis-pointed hook) stands down instead of arming.
-	if !repoInScope(wf, repo) {
-		deps.log()("review-ready: %s not in spec.config.repos — ignoring wake", repo)
-		patchIdle(ctx, deps, wf.Name, "wake for out-of-scope repo "+repo)
+	repo, pr, err := parsePRPointer(trigPR)
+	if err != nil {
 		return nil
 	}
-
-	result := review.Evaluate(ctx, newReviewAPI(), params)
-
-	// Persist the armed state (and the decision, for the UI).
-	var since *time.Time
-	if !result.NewArmedAt.IsZero() {
-		t := result.NewArmedAt
-		since = &t
+	repo = normalizeRepoPointer(repo, wf)
+	if !repoInScope(wf, repo) {
+		return nil // out-of-scope wake: arm nothing (defense-in-depth)
 	}
-	if err := deps.Status.PatchStatus(ctx, wf.Name, func(s *v1alpha1.WorkflowStatus) {
-		if result.NewArmedSha == "" {
-			// Standdown/idle: armed slot released — any dispatch marker
-			// goes with it (consumed, horizon, closed).
-			s.ReviewReady = &v1alpha1.ReviewReadyStatus{
-				LastDecision: string(result.Decision),
-				LastReason:   result.Reason,
-			}
-		} else {
-			// Armed persists: set the dispatch marker at proceed; for waiting
-			// decisions PRESERVE the live marker — same claim still in
-			// flight. The run-start snapshot (`armed`) is not authoritative
-			// here: deriving from it nils a marker another writer set after
-			// this run fetched, and the gate re-proceeds forever (#257).
-			// A different live claim (armedPR/armedSha mismatch — a retarget
-			// or a newer arm) means the marker belongs to the OLD review:
-			// cleared with it.
-			var dispatched *metav1.Time
-			if result.Decision == review.DecisionProceed {
-				// Restamp unconditionally: a proceed is a NEW dispatch — the
-				// previous marker's review has ended (verdict consumed or the
-				// claim failed) — so the dispatch-timeout clock restarts with
-				// it. Waiting paths preserve the live marker instead (below).
-				now := metav1.Now()
-				dispatched = &now
-			} else if live := s.ReviewReady; live != nil &&
-				live.ArmedPR == pr && live.ArmedSha == result.NewArmedSha {
-				dispatched = live.DispatchedAt
-				if live.ArmedSince != nil {
-					since = &live.ArmedSince.Time // the live horizon clock wins
-				}
-			}
-			s.ReviewReady = &v1alpha1.ReviewReadyStatus{
-				ArmedRepo:    repo,
-				ArmedPR:      pr,
-				ArmedSha:     result.NewArmedSha,
-				ArmedSince:   metaTime(since),
-				DispatchedAt: dispatched,
-				LastDecision: string(result.Decision),
-				LastReason:   result.Reason,
-			}
+	sha := wakeRevision(wf)
+	return &candidate{
+		repo: repo, pr: pr, pointer: fmt.Sprintf("%s#%d", repo, pr), sha: sha,
+		isWake:  true,
+		request: action == "labeled" || action == "unlabeled" || action == "label_updated",
+	}
+}
+
+func candSha(c candidate) string { return c.sha }
+
+func findClaim(claims []v1alpha1.Attempt, pointer string) *v1alpha1.Attempt {
+	for i := range claims {
+		if claims[i].Status.Review != nil && claims[i].Status.Review.PR == pointer && !claims[i].Status.Review.Released {
+			return &claims[i]
 		}
-	}); err != nil {
-		deps.log()("review-ready: status patch failed: %v", err)
-	}
-
-	deps.log()("review-ready: %s pr=%d — %s", result.Decision, pr, result.Reason)
-	emitGateTransition(ctx, deps.TL, armed, result, repo, pr)
-	if result.Decision == review.DecisionProceed {
-		return result.Envelope
 	}
 	return nil
+}
+
+// classifyRelease maps a standdown reason onto the claim's release-reason
+// vocabulary.
+func classifyRelease(reason string) string {
+	switch {
+	case strings.Contains(reason, "consumed"):
+		return "consumed"
+	case strings.Contains(reason, "presumed dead"):
+		return "dispatch-timeout"
+	case strings.Contains(reason, "horizon exceeded"):
+		return "horizon"
+	case strings.Contains(reason, "closed"):
+		return "closed"
+	default:
+		return "standdown"
+	}
+}
+
+func releaseClaim(ctx context.Context, deps GateDeps, at v1alpha1.Attempt, reason string, log func(string, ...any)) {
+	if err := attempt.ReleaseClaim(ctx, deps.Client, at.Namespace, at.Name, reason); err != nil {
+		log("review-ready: release %s failed: %v", at.Name, err)
+		return
+	}
+	log("review-ready: claim %s released (%s)", at.Name, reason)
 }
 
 // emitGateTransition records state CHANGES only: a re-evaluation that repeats
 // the previous waiting decision+reason (the armed poll, ~every 5 min) is a
 // non-event.
-func emitGateTransition(ctx context.Context, tl timeline.Writer, armed *v1alpha1.ReviewReadyStatus, result review.Result, repo string, pr int) {
+func emitGate(ctx context.Context, tl timeline.Writer, agg *v1alpha1.ReviewReadyStatus, result review.Result, repo string, pr int) {
 	if tl == nil {
 		return
 	}
@@ -247,15 +341,12 @@ func emitGateTransition(ctx context.Context, tl timeline.Writer, armed *v1alpha1
 		kind = timeline.KindGateStanddown
 	case review.DecisionWaiting:
 		kind = timeline.KindGateWaiting
-		if armed != nil && armed.LastDecision == string(review.DecisionWaiting) && armed.LastReason == result.Reason {
+		if agg != nil && agg.LastDecision == string(review.DecisionWaiting) && agg.LastReason == result.Reason {
 			return // same waiting state — not a transition
 		}
 	}
 	if kind == "" {
 		return
-	}
-	if result.NewArmedSha != "" && (armed == nil || armed.ArmedSha != result.NewArmedSha) {
-		_ = tl.Emit(ctx, timeline.KindGateArmed, "", map[string]any{"pr": pr, "repo": repo, "sha": result.NewArmedSha})
 	}
 	_ = tl.Emit(ctx, kind, "", map[string]any{"reason": result.Reason, "pr": pr, "repo": repo})
 }
@@ -296,7 +387,7 @@ func scopeRepos(wf *v1alpha1.Workflow) []string {
 	var cfg struct {
 		Repos []string `json:"repos"`
 	}
-	if err := json.Unmarshal(wf.Spec.Config, &cfg); err != nil {
+	if err := jsonUnmarshalScope(wf.Spec.Config, &cfg); err != nil {
 		return nil
 	}
 	return cfg.Repos
@@ -317,21 +408,6 @@ func repoInScope(wf *v1alpha1.Workflow, repo string) bool {
 		}
 	}
 	return false
-}
-
-func patchIdle(ctx context.Context, deps Deps, name, reason string) {
-	// Preserve any armed state: an out-of-scope wake must not disarm a
-	// legitimately armed in-scope PR (self-heals, but do not cause it).
-	if err := deps.Status.PatchStatus(ctx, name, func(s *v1alpha1.WorkflowStatus) {
-		if s.ReviewReady != nil {
-			s.ReviewReady.LastDecision = "idle"
-			s.ReviewReady.LastReason = reason
-			return
-		}
-		s.ReviewReady = &v1alpha1.ReviewReadyStatus{LastDecision: "idle", LastReason: reason}
-	}); err != nil {
-		deps.log()("review-ready: status patch failed: %v", err)
-	}
 }
 
 // parsePRPointer splits "host/owner/name#N" (the webhook's annotation form).
@@ -359,29 +435,8 @@ func metaTime(t *time.Time) *metav1.Time {
 	return &m
 }
 
-// oldestLabeledOpen returns the oldest labeled open PR of the FIRST scope
-// repo (config order) that has one. Per-repo oldest (host API sorts
-// oldest-first); cross-repo ordering is config order, not updated_at — with
-// the single-repo scopes this instance runs, the distinction is moot, and
-// the comment says what the code does. API-shaped failures degrade to
-// "nothing found" — a broken listing must not wedge the gate, the next sweep
-// retries.
-func oldestLabeledOpen(ctx context.Context, deps Deps, wf *v1alpha1.Workflow) (string, int) {
-	api := newReviewAPI()
-	rrCfg := wf.Spec.ReviewReady
-	if rrCfg == nil {
-		rrCfg = &v1alpha1.ReviewReadySpec{}
-	}
-	label := rrCfg.EffectiveLabel()
-	for _, repo := range scopeRepos(wf) {
-		prs, err := api.ListLabeledOpenPulls(ctx, repo, label)
-		if err != nil {
-			deps.log()("review-ready: backlog list failed for %s: %v", repo, err)
-			continue
-		}
-		if len(prs) > 0 {
-			return repo, prs[0].Number
-		}
-	}
-	return "", 0
+// jsonUnmarshalScope indirection keeps encoding/json out of the gate's hot
+// imports (single use).
+func jsonUnmarshalScope(b []byte, v any) error {
+	return json.Unmarshal(b, v)
 }

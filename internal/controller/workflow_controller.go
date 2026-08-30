@@ -162,7 +162,10 @@ func (r *WorkflowReconciler) isDue(wf *v1alpha1.Workflow) (bool, time.Duration) 
 	// poll is the only thing that moves waiting → proceed. This carve-out
 	// comes BEFORE the webhook-only guard: an armed gate on a kind:webhook
 	// workflow would otherwise starve and die at the horizon.
-	if wf.Status.ReviewReady != nil && wf.Status.ReviewReady.ArmedPR != 0 {
+	// ADR-0007 phase 4: the armed slot became claims on Attempts; the
+	// Workflow status keeps aggregates. Poll while anything is in flight
+	// (verdict consume checks) or waiting (CI pending → proceed).
+	if rr := wf.Status.ReviewReady; rr != nil && (rr.LiveClaims > 0 || rr.LastDecision == "waiting") {
 		return true, r.PollInterval
 	}
 

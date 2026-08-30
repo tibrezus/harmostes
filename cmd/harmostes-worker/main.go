@@ -84,8 +84,9 @@ func main() {
 }
 
 // runOneShot executes exactly one Workflow run (gate → graph) and exits by
-// outcome. Invoked as `harmostes-worker run` by the consumer's exec children
-// and by per-Attempt Job pods (ADR-0007).
+// outcome. Invoked as `harmostes-worker run` by per-Attempt Job pods
+// (ADR-0007), whose HARMOSTES_DISPATCHED_ATTEMPT env marks the gate as
+// already satisfied by the dispatcher; direct invocations run the gate.
 func runOneShot() {
 	workflow := envReq("HARMOSTES_WORKFLOW")
 	namespace := envReq("HARMOSTES_NAMESPACE")
@@ -121,21 +122,9 @@ func runOneShot() {
 		fatal("k8s client: %v", err)
 	}
 
-	var wf v1alpha1.Workflow
-	if err := cl.Get(ctx, client.ObjectKey{Namespace: namespace, Name: workflow}, &wf); err != nil {
-		fatal("get workflow %s/%s: %v", namespace, workflow, err)
-	}
-	// A Workflow referencing a WorkflowTemplate (spec.templateRef) inherits the
-	// template's prepare/agent/deploy defaults; instance-set fields and
-	// spec.config win. Applied here so every trigger path executes the merged
-	// spec (the stored CR stays thin — the template remains the single source
-	// of pipeline shape).
-	if ref := wf.Spec.TemplateRef; ref != "" {
-		var tmpl v1alpha1.WorkflowTemplate
-		if err := cl.Get(ctx, client.ObjectKey{Namespace: namespace, Name: ref}, &tmpl); err != nil {
-			fatal("get workflow template %s/%s: %v", namespace, ref, err)
-		}
-		v1alpha1.ApplyTemplateDefaults(&wf, &tmpl)
+	wf, err := worker.FetchWorkflow(ctx, cl, namespace, workflow)
+	if err != nil {
+		fatal("%v", err)
 	}
 	logf("workflow %s/%s phase=run source=%q workdir=%s", namespace, workflow, source, workdir)
 
@@ -149,10 +138,15 @@ func runOneShot() {
 	// The envelope flows to the workspace plugin via the process env
 	// (HARMOSTES_TRIGGER_*), which the consumer set from the TriggerEvent
 	// payload — nothing else to wire.
-	if wf.Spec.ReviewReady != nil {
+	// HARMOSTES_DISPATCHED_ATTEMPT: the dispatcher ran the gate and created
+	// this Job for a claim — re-evaluating here would double-count API
+	// budget and risk diverging from the dispatch decision. Direct/manual
+	// runs (no marker) evaluate the gate as before.
+	dispatched := os.Getenv("HARMOSTES_DISPATCHED_ATTEMPT") != ""
+	if wf.Spec.ReviewReady != nil && !dispatched {
 		gateTL := timeline.NewGateWriter(dapr.Tracing(dapr.New(os.Getenv("DAPR_HTTP_ENDPOINT"))),
 			envOr("HARMOSTES_STATE_STORE", "statestore"), wf.Name, os.Getenv("HARMOSTES_ATTEMPT"), subjectFromEnv())
-		env := worker.RunReviewGateWithTimeline(ctx, k8s.StatusPatcher{Client: cl, Namespace: namespace}, logf, &wf, gateTL)
+		env := worker.RunReviewGateWithTimeline(ctx, k8s.StatusPatcher{Client: cl, Namespace: namespace}, logf, wf, gateTL)
 		if env == nil {
 			logf("review-ready: not proceeding this cycle — exiting (waiting/standdown recorded in status)")
 			flushTelemetry()
@@ -164,13 +158,10 @@ func runOneShot() {
 		// REPO/SHA/BASE/LABEL/CONTEXTS are the gate's output and must reach
 		// the workspace plugin — extraEnv below snapshots os.Environ(), so
 		// os.Setenv here flows to every plugin node.
-		envelopeJSON, _ := json.Marshal(env)
-		os.Setenv("HARMOSTES_TRIGGER_REPO", env.Repo)
-		os.Setenv("HARMOSTES_TRIGGER_PR", fmt.Sprintf("%d", env.PR))
-		os.Setenv("HARMOSTES_TRIGGER_SHA", env.HeadSHA)
-		os.Setenv("HARMOSTES_TRIGGER_BASE", env.Base)
-		os.Setenv("HARMOSTES_TRIGGER_LABEL", env.Label)
-		os.Setenv("HARMOSTES_TRIGGER_CONTEXTS", string(envelopeJSON))
+		for _, kv := range worker.EnvelopeEnv(env) {
+			k, v, _ := strings.Cut(kv, "=")
+			os.Setenv(k, v)
+		}
 		logf("review-ready: proceed pr=%d head=%s base=%s — provisioning workspace", env.PR, env.HeadSHA, env.Base)
 	}
 
@@ -320,7 +311,7 @@ func runOneShot() {
 		execGraph = *wf.Spec.Graph
 		logf("workflow %s/%s — graph-native mode (%d nodes, %d edges)", namespace, wf.Name, len(execGraph.Nodes), len(execGraph.Edges))
 	} else {
-		execGraph = graph.CompileWorkflow(&wf)
+		execGraph = graph.CompileWorkflow(wf)
 		logf("workflow %s/%s — compiled to graph (%d nodes, %d edges)", namespace, wf.Name, len(execGraph.Nodes), len(execGraph.Edges))
 	}
 
@@ -339,7 +330,7 @@ func runOneShot() {
 	}
 
 	graphCtx := observability.ContextWithTraceparent(ctx, os.Getenv(observability.TraceparentCarrierKey))
-	graphCtx, graphCancel := context.WithTimeout(graphCtx, runTimeout(&wf))
+	graphCtx, graphCancel := context.WithTimeout(graphCtx, runTimeout(wf))
 	defer graphCancel()
 
 	graphDeps := graph.Dependencies{

@@ -36,8 +36,11 @@ func TestBuildJobShape(t *testing.T) {
 		ExtraEnv:                []string{"HARMOSTES_TRIGGER_PR=github.com/tibrezus/harmostes#264", "malformed-no-equals", ""},
 	})
 
-	if job.Name != attempt.Name || job.Namespace != attempt.Namespace {
-		t.Fatalf("job must carry the attempt's namespaced name, got %s/%s", job.Namespace, job.Name)
+	if job.GenerateName != attempt.Name+"-" || job.Namespace != attempt.Namespace {
+		t.Fatalf("job must generate from the attempt's name, got %s/%s", job.Namespace, job.GenerateName)
+	}
+	if job.Labels["harmostes.dev/attempt"] != attempt.Name {
+		t.Fatalf("job must label the attempt claim: %+v", job.Labels)
 	}
 
 	// Owner: the Attempt claim is the controller owner (GC follows it).

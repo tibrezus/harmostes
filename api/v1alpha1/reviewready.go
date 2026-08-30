@@ -56,6 +56,22 @@ type ReviewReadySpec struct {
 	// (helm-roll kill, wedged worker) is held "in flight" until the full
 	// Horizon (observed live: 6h single-slot deadlock, #248).
 	DispatchTimeout string `json:"dispatchTimeout,omitempty"` // duration string; default "45m"
+
+	// MaxConcurrent bounds this workflow's live claims (ADR-0007): 0 means
+	// the fleet default (chart HARMOSTES_MAX_CONCURRENT, 3). Attempts beyond
+	// capacity queue — the gate's armed marker is the durable queue and
+	// sweeps dispatch as slots free.
+	MaxConcurrent int `json:"maxConcurrent,omitempty"`
+}
+
+// EffectiveMaxConcurrent resolves the live-claim capacity: the spec override
+// when set, else the fleet default. Nil-receiver safe (workflows without
+// reviewReady always take the fleet default).
+func (r *ReviewReadySpec) EffectiveMaxConcurrent(fleetDefault int) int {
+	if r == nil || r.MaxConcurrent <= 0 {
+		return fleetDefault
+	}
+	return r.MaxConcurrent
 }
 
 // HorizonDuration parses Horizon with the default applied.

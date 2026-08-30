@@ -193,6 +193,7 @@ spec:
                     label:   { type: string, default: needs-review }
                     horizon: { type: string, default: 6h }
                     dispatchTimeout: { type: string, default: 45m }
+                    maxConcurrent: { type: integer, minimum: 1 }
 
                 # External System Bindings (ADR-0003). Optional — legacy
                 # Workflows without bindings still validate. When present, this

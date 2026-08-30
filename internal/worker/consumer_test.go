@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -172,55 +171,6 @@ func TestConsumerTriggerEvent_InvalidJSON(t *testing.T) {
 
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", rr.Code)
-	}
-}
-
-func TestBuildChildEnv_PassesParentAndWakeVars(t *testing.T) {
-	parent := []string{
-		"PATH=/usr/bin",
-		"HOME=/root",
-	}
-	env := buildChildEnv(parent, RunRequest{Workflow: "wiki-lint-harmostes", Namespace: "harmostes", Source: "main", Attempt: "attempt-1", Traceparent: "00-trace", Pr: "git.rezus.cloud/tibrez/rhesadox#42", Action: "labeled", Revision: "wake123"})
-	if !slices.Contains(env, "HARMOSTES_TRIGGER_PR=git.rezus.cloud/tibrez/rhesadox#42") ||
-		!slices.Contains(env, "HARMOSTES_TRIGGER_ACTION=labeled") ||
-		!slices.Contains(env, "HARMOSTES_TRIGGER_REVISION=wake123") {
-		t.Fatalf("wake env missing: %v", env)
-	}
-
-	// The child runs `harmostes-worker run` (argv dispatch, ADR-0007): the
-	// parent env passes through verbatim, plus the workflow vars below.
-	mustContain := map[string]bool{
-		"HARMOSTES_WORKFLOW=wiki-lint-harmostes": false,
-		"HARMOSTES_NAMESPACE=harmostes":          false,
-		"HARMOSTES_SOURCE=main":                  false,
-		"HARMOSTES_NO_DAPR_SHUTDOWN=true":        false,
-		"HARMOSTES_ATTEMPT=attempt-1":            false,
-		"HARMOSTES_TRACEPARENT=00-trace":         false,
-		"PATH=/usr/bin":                          false,
-		"HOME=/root":                             false,
-	}
-	for _, e := range env {
-		if _, ok := mustContain[e]; ok {
-			mustContain[e] = true
-		}
-	}
-	for k, found := range mustContain {
-		if !found {
-			t.Errorf("missing expected env var: %s", k)
-		}
-	}
-}
-
-func TestBuildChildEnv_OmitsEmptyOptional(t *testing.T) {
-	env := buildChildEnv([]string{"PATH=/usr/bin"}, RunRequest{Workflow: "wf", Namespace: "ns"})
-
-	for _, e := range env {
-		if strings.HasPrefix(e, "HARMOSTES_ATTEMPT=") {
-			t.Errorf("HARMOSTES_ATTEMPT should be omitted when empty, got: %s", e)
-		}
-		if strings.HasPrefix(e, "TRACEPARENT=") {
-			t.Errorf("TRACEPARENT should be omitted when empty, got: %s", e)
-		}
 	}
 }
 

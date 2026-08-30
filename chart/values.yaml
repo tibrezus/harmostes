@@ -33,6 +33,9 @@ dapr:
 worker:
   deployRBAC:
     enabled: false
+  job:                     # per-Attempt Job pods (ADR-0007)
+    maxConcurrent: 3       # fleet default; spec.reviewReady.maxConcurrent overrides per Workflow
+    ttlSecondsAfterFinished: 3600
 
 # workerPool: event-driven worker pool (Dapr pub/sub consumer).
 # A long-running Deployment subscribes to the harmostes-triggers topic via

@@ -1,12 +1,16 @@
 package k8s
 
 import (
+	"context"
 	"strings"
+	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
 )
@@ -99,14 +103,20 @@ func BuildJob(p AttemptJobParams) *batchv1.Job {
 
 	return &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:            attemptName,
+			// GenerateName: a Job name is unique PER RUN (an Attempt
+			// continues across triggers, ADR-0005) — the Attempt itself is
+			// the deterministic claim, carried in labels + ownerRef.
+			GenerateName:    attemptName + "-",
 			Namespace:       p.Namespace,
 			Labels:          labels,
 			Annotations:     annotations,
 			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(p.Attempt, attemptGVK)},
 		},
 		Spec: batchv1.JobSpec{
-			BackoffLimit:            new(int32), // 0: retries are the dispatcher's re-arm
+			BackoffLimit: new(int32), // 0: retries are the dispatcher's re-arm
+			// The wall-clock bound follows the run out of the pool pod
+			// (was the consumer's run context; OneShotRunBound unchanged).
+			ActiveDeadlineSeconds:   ptr.To(int64(v1alpha1.OneShotRunBound / time.Second)),
 			TTLSecondsAfterFinished: p.TTLSecondsAfterFinished,
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: labels, Annotations: annotations},
@@ -125,4 +135,36 @@ func BuildJob(p AttemptJobParams) *batchv1.Job {
 			},
 		},
 	}
+}
+
+// ListActiveJobs returns the workflow's unfinished attempt Jobs — the
+// dispatcher's capacity signal (ADR-0007): one live Job per accepted claim.
+func ListActiveJobs(ctx context.Context, cl client.Client, namespace, workflow string) ([]batchv1.Job, error) {
+	var list batchv1.JobList
+	if err := cl.List(ctx, &list, client.InNamespace(namespace), client.MatchingLabels{
+		"app.kubernetes.io/name": "harmostes", "harmostes.dev/workflow": workflow,
+	}); err != nil {
+		return nil, err
+	}
+	live := make([]batchv1.Job, 0, len(list.Items))
+	for _, j := range list.Items {
+		// Live = not finished: a just-created Job reports Active==0 until
+		// the job controller syncs, so counting only active would let
+		// racing wakes double-dispatch inside that window.
+		if j.DeletionTimestamp == nil && j.Status.CompletionTime == nil && !jobFailed(&j) {
+			live = append(live, j)
+		}
+	}
+	return live, nil
+}
+
+// jobFailed reports whether the Job reached its failed condition
+// (backoffLimit 0 → one pod failure finishes it).
+func jobFailed(j *batchv1.Job) bool {
+	for _, c := range j.Status.Conditions {
+		if c.Type == batchv1.JobFailed && c.Status == corev1.ConditionTrue {
+			return true
+		}
+	}
+	return false
 }

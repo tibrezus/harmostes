@@ -175,10 +175,9 @@ func TestConsumerTriggerEvent_InvalidJSON(t *testing.T) {
 	}
 }
 
-func TestBuildChildEnv_ScrubsConsumerMode(t *testing.T) {
+func TestBuildChildEnv_PassesParentAndWakeVars(t *testing.T) {
 	parent := []string{
 		"PATH=/usr/bin",
-		"HARMOSTES_CONSUMER_MODE=true",
 		"HOME=/root",
 	}
 	env := buildChildEnv(parent, RunRequest{Workflow: "wiki-lint-harmostes", Namespace: "harmostes", Source: "main", Attempt: "attempt-1", Traceparent: "00-trace", Pr: "git.rezus.cloud/tibrez/rhesadox#42", Action: "labeled", Revision: "wake123"})
@@ -188,14 +187,8 @@ func TestBuildChildEnv_ScrubsConsumerMode(t *testing.T) {
 		t.Fatalf("wake env missing: %v", env)
 	}
 
-	// HARMOSTES_CONSUMER_MODE must NOT be present
-	for _, e := range env {
-		if strings.HasPrefix(e, "HARMOSTES_CONSUMER_MODE=") {
-			t.Errorf("HARMOSTES_CONSUMER_MODE leaked into child env: %s", e)
-		}
-	}
-
-	// Workflow vars must be present
+	// The child runs `harmostes-worker run` (argv dispatch, ADR-0007): the
+	// parent env passes through verbatim, plus the workflow vars below.
 	mustContain := map[string]bool{
 		"HARMOSTES_WORKFLOW=wiki-lint-harmostes": false,
 		"HARMOSTES_NAMESPACE=harmostes":          false,

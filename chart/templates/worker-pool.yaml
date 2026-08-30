@@ -44,12 +44,14 @@ spec:
         - name: worker
           image: {{ .Values.image.worker | quote }}
           imagePullPolicy: Always
+          # Explicit subcommand (ADR-0007 phase 2): the pool pod is the
+          # consumer + dispatcher; its children and the per-Attempt Job pods
+          # run `harmostes-worker run`.
+          args: ["consumer"]
           ports:
             - name: app-port
               containerPort: 8084
           env:
-            - name: HARMOSTES_CONSUMER_MODE
-              value: "true"
             - name: HARMOSTES_NAMESPACE
               valueFrom:
                 fieldRef:

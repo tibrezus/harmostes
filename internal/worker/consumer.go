@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"strings"
 	"sync"
 	"time"
 
@@ -239,16 +238,11 @@ type TriggerEvent struct {
 	Action      string `json:"action,omitempty"`
 }
 
-// buildChildEnv constructs the environment for the exec'd one-shot worker.
-// It scrubs HARMOSTES_CONSUMER_MODE so the child runs in one-shot mode
-// (not consumer mode), then appends the workflow-specific vars.
+// buildChildEnv constructs the environment for the exec'd one-shot worker
+// (`harmostes-worker run`, ADR-0007), appending the workflow-specific vars.
 func buildChildEnv(parentEnv []string, req RunRequest) []string {
 	childEnv := make([]string, 0, len(parentEnv)+5)
-	for _, e := range parentEnv {
-		if !strings.HasPrefix(e, "HARMOSTES_CONSUMER_MODE=") {
-			childEnv = append(childEnv, e)
-		}
-	}
+	childEnv = append(childEnv, parentEnv...)
 	workflow, namespace := req.Workflow, req.Namespace
 	source, attemptName := req.Source, req.Attempt
 	traceparent, pr, action, revision, prTitle := req.Traceparent, req.Pr, req.Action, req.Revision, req.PrTitle
@@ -283,15 +277,16 @@ func buildChildEnv(parentEnv []string, req RunRequest) []string {
 	return childEnv
 }
 
-// RunConsumer is the entry point for consumer mode. Called from main when
-// HARMOSTES_CONSUMER_MODE is set. The RunFunc shells out to /proc/self/exe
-// in one-shot Job mode for each trigger event.
+// RunConsumer is the entry point for consumer mode. Called from main's
+// "consumer" subcommand. The RunFunc execs ourselves as
+// `harmostes-worker run` — the same entrypoint a per-Attempt Job pod runs
+// (ADR-0007) — for each trigger event.
 func RunConsumer(ctx context.Context) error {
 	logger := slog.Default().With("component", "harmostes-consumer")
 
 	// The RunFunc execs ourselves in one-shot mode.
 	runFunc := func(runCtx context.Context, req RunRequest) error {
-		cmd := exec.CommandContext(runCtx, "/proc/self/exe")
+		cmd := exec.CommandContext(runCtx, "/proc/self/exe", "run")
 		cmd.Env = buildChildEnv(os.Environ(), req)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr

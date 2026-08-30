@@ -182,6 +182,8 @@ func claimState(r *v1alpha1.ReviewClaimStatus) string {
 			return "superseded by newer head"
 		case "dispatch-timeout":
 			return "run expired"
+		case "dispatch-lost":
+			return "dispatch lost, re-arming"
 		case "horizon":
 			return "horizon reached"
 		default:

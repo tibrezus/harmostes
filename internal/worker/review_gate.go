@@ -20,6 +20,10 @@ import (
 	"github.com/tibrezus/harmostes/internal/timeline"
 )
 
+// reDispatchGrace bounds how long an armed-but-never-dispatched claim
+// holds its PR before a sweep releases it for refill (#279).
+const reDispatchGrace = 5 * time.Minute
+
 // newReviewAPI is the seam the tests swap for a server-pinned API.
 var newReviewAPI = func() review.API {
 	return &review.RESTAPI{Client: http.DefaultClient, TokenLookup: os.Getenv}
@@ -134,6 +138,27 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 			liveDispatched--
 		}
 	}
+	// Armed but never dispatched past the grace window: the sweep that
+	// armed the claim died before its Job landed (crash, API blip, or
+	// the #277 scheme-bug class). Release as dispatch-lost so this same
+	// sweep's drain re-evaluates and re-fills the slot — the createMu
+	// and live-Job dedupe make the refill safe (#279).
+	for _, c := range claims {
+		r := c.Status.Review
+		if r.DispatchedAt != nil {
+			continue
+		}
+		arm := time.Time{}
+		if r.ArmedSince != nil {
+			arm = r.ArmedSince.Time
+		}
+		if time.Since(arm) <= reDispatchGrace {
+			continue // fresh arm: its sweep's dispatch loop is still in flight
+		}
+		log("review-ready: claim %s (%s) never dispatched — releasing as dispatch-lost", c.Name, r.PR)
+		releaseClaim(ctx, deps, c, "dispatch-lost", log)
+	}
+
 	// Re-list: releases in the loop above must be visible to the drain
 	// (liveOn/claims snapshots are stale the moment a claim releases).
 	claims, err = attempt.LiveReviewClaims(ctx, deps.Client, wf.Namespace, wf.Name)

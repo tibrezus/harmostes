@@ -286,13 +286,10 @@ spec:
                 gateStatus: { type: string, enum: [green, failed, unknown] }
                 reviewReady:
                   type: object
-                  description: armed state of the Review-Ready Gate (ADR-0006)
+                  description: Review-Ready Gate aggregates (ADR-0006/0007) — per-PR claim state lives on Attempts (status.review).
                   properties:
-                    armedRepo:    { type: string }
-                    armedPR:      { type: integer }
-                    armedSha:     { type: string }
-                    armedSince:   { type: string, format: date-time }
-                    dispatchedAt:  { type: string, format: date-time }
+                    liveClaims:   { type: integer }
+                    capacity:     { type: integer }
                     lastDecision: { type: string, enum: [proceed, waiting, standdown, idle] }
                     lastReason:   { type: string }
                 lastRunAt: { type: string }

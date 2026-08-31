@@ -87,14 +87,16 @@ func (s *Server) handleAttemptList(w http.ResponseWriter, r *http.Request) {
 // attemptGroup is one rollup row: a PR (review class) or a workflow
 // (scheduled classes) with its attempts expandable beneath it.
 type attemptGroup struct {
-	WorkflowRef  string
-	Subject      string // PR pointer (review) or workflow ref (scheduled)
-	IsReview     bool
-	Count        int
-	LatestPhase  string
-	ClaimState   string // human claim state for reviews: in flight, queued, consumed, ...
-	LastActivity string
-	Attempts     []attemptSummary
+	WorkflowRef   string
+	Subject       string // PR pointer (review) or workflow ref (scheduled)
+	IsReview      bool
+	Count         int
+	LatestPhase   string
+	ClaimState    string // human claim state for reviews: in flight, queued, consumed, ...
+	HeadSHA       string // review head SHA the latest attempt is armed/dispatched for
+	LatestAttempt string // name of the most recently active attempt (wall + drill-down)
+	LastActivity  string
+	Attempts      []attemptSummary
 }
 
 // windowCutoff resolves the list window; unknown values fall back to 24h.
@@ -156,8 +158,10 @@ func groupAttempts(attempts []v1alpha1.Attempt, cutoff time.Time) []attemptGroup
 		if last.Format(time.RFC3339) > g.LastActivity {
 			g.LastActivity = last.Format(time.RFC3339)
 			g.LatestPhase = a.Status.Phase
+			g.LatestAttempt = a.Name
 			if isReview && a.Status.Review != nil {
 				g.ClaimState = claimState(a.Status.Review)
+				g.HeadSHA = a.Status.Review.HeadSHA
 			}
 		}
 	}

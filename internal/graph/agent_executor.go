@@ -176,6 +176,12 @@ func (e *AgentExecutor) Execute(ctx context.Context, node v1alpha1.NodeSpec, env
 			"green":    result.Green,
 			"attempts": result.Attempts,
 			"usage":    result.Usage,
+			// Agent metadata for the live wall (carried on node.completed
+			// lifecycle events; the UI caches per workflow). Model is the
+			// configured model id; turns is the conversation length of the
+			// persisted session.
+			"model": cfg.Model,
+			"turns": len(result.Session.Turns),
 		},
 		Feedback: fmt.Sprintf("agent %s after %d attempt(s), %s", status, result.Attempts, result.Usage.String()),
 	}, nil

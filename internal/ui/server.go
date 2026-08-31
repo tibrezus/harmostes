@@ -15,6 +15,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/tibrezus/harmostes/version"
 
@@ -24,7 +25,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
-	"github.com/tibrezus/harmostes/internal/timeline"
 )
 
 // template-embed-v2: forces Go build cache to re-embed updated templates
@@ -43,16 +43,16 @@ type logFetchFunc func(ctx context.Context, namespace, podName, container string
 
 // Server is the harmostes-ui HTTP server.
 type Server struct {
-	k8sClient      client.Client
-	logFetch       logFetchFunc
-	namespace      string
-	logger         *slog.Logger
-	templates      *template.Template
-	hub            *EventHub
-	platforms      *platformRegistry // display config for git platforms (plug-and-play)
-	dapr           DaprClient        // optional: reads session transcripts from worker state store
-	timelineReader timeline.Reader   // optional: reads execution evidence (nil = empty timeline)
-	signoz         *SignozClient     // optional: queries SigNoz API for metrics
+	k8sClient client.Client
+	logFetch  logFetchFunc
+	namespace string
+	logger    *slog.Logger
+	templates *template.Template
+	hub       *EventHub
+	platforms *platformRegistry // display config for git platforms (plug-and-play)
+	dapr      DaprClient        // optional: reads session transcripts + usage from worker state store
+	wallMu    sync.Mutex
+	wallMeta  map[string]*wallUsage // workflow → cached agent metadata (live wall)
 }
 
 // New creates a Server with parsed templates and the given k8s client.
@@ -70,6 +70,7 @@ func New(k8sClient client.Client, namespace string, logger *slog.Logger, kubeCli
 		templates: tmpl,
 		hub:       NewEventHub(),
 		platforms: newPlatformRegistry(platformConfigs),
+		wallMeta:  make(map[string]*wallUsage),
 	}
 
 	if kubeClient != nil {
@@ -79,22 +80,11 @@ func New(k8sClient client.Client, namespace string, logger *slog.Logger, kubeCli
 	return s, nil
 }
 
-// SetDaprClient injects a Dapr client for reading session transcripts
-// from the worker's state store. Optional — the session viewer shows
-// "not available" when nil.
-// SetTimelineReader injects the evidence-layer reader for the Timeline page.
-func (s *Server) SetTimelineReader(r timeline.Reader) {
-	s.timelineReader = r
-}
-
+// SetDaprClient injects a Dapr client for reading session transcripts and
+// usage summaries from the worker's state store. Optional — the run detail
+// transcript and wall usage degrade gracefully when nil.
 func (s *Server) SetDaprClient(d DaprClient) {
 	s.dapr = d
-}
-
-// SetSignozClient injects a SigNoz API client for querying metrics.
-// Optional — the metrics view shows "not configured" when nil.
-func (s *Server) SetSignozClient(c *SignozClient) {
-	s.signoz = c
 }
 
 // Routes returns the HTTP handler with all routes registered.
@@ -119,13 +109,7 @@ func (s *Server) Routes() http.Handler {
 
 	// Pages — all wrapped in auth middleware
 	pages := http.NewServeMux()
-	pages.HandleFunc("GET /", s.handleIndex)
-
-	// Hubble-style views (milestone #7)
-	pages.HandleFunc("GET /map", s.handleMapView)
-	pages.HandleFunc("GET /timeline", s.handleTimelineView)
-	pages.HandleFunc("GET /metrics", s.handleMetricsView)
-	pages.HandleFunc("GET /sessions", s.handleSessionsView)
+	pages.HandleFunc("GET /", s.handleWall)
 
 	// Runs — the execution spine (Attempts under the hood, ADR-0005). One
 	// history: list, detail (metadata + node results + per-run logs +
@@ -154,14 +138,10 @@ func (s *Server) Routes() http.Handler {
 	pages.HandleFunc("GET /api/workflows/{name}/graph", s.handleWorkflowGraphAPI)
 
 	// Lifecycle SSE stream (live event streaming for the Live view)
+	pages.HandleFunc("GET /api/wall/events", s.handleWallSSE)
 	pages.HandleFunc("GET /api/pipelines/{name}/events", s.handlePipelineSSE)
 
 	// Flows view: global SSE stream (all workflows or filtered by ?workflow=)
-	pages.HandleFunc("GET /api/timeline/events", s.handleTimelineSSE)
-
-	// Metrics view: token usage from SigNoz API
-	pages.HandleFunc("GET /api/metrics", s.handleMetricsAPI)
-
 	mux.Handle("/", s.authMiddleware(pages))
 
 	return mux
@@ -366,14 +346,8 @@ func statusText(status string) string {
 // pageTitle maps a template path to a human-readable page title.
 func pageTitle(page string) string {
 	switch page {
-	case "pages/map.html":
-		return "Map"
-	case "pages/timeline.html":
-		return "Timeline"
-	case "pages/metrics.html":
-		return "Metrics"
-	case "pages/sessions.html":
-		return "Sessions"
+	case "pages/wall.html":
+		return "Live"
 	case "pages/attempts.html":
 		return "Runs"
 	case "pages/attempt_detail.html":
@@ -398,14 +372,8 @@ func pageTitle(page string) string {
 // pageKey returns a lowercase key for nav active-state matching in the layout.
 func pageKey(page string) string {
 	switch {
-	case strings.HasPrefix(page, "pages/map"):
-		return "map"
-	case strings.HasPrefix(page, "pages/timeline"):
-		return "timeline"
-	case strings.HasPrefix(page, "pages/metrics"):
-		return "metrics"
-	case strings.HasPrefix(page, "pages/sessions"):
-		return "sessions"
+	case strings.HasPrefix(page, "pages/wall"):
+		return "wall"
 	case strings.HasPrefix(page, "pages/attempts"):
 		return "runs"
 	case strings.HasPrefix(page, "pages/attempt_detail"):

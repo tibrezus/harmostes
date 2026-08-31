@@ -32,7 +32,6 @@ import (
 
 	"github.com/tibrezus/harmostes/internal/dapr"
 	"github.com/tibrezus/harmostes/internal/k8s"
-	"github.com/tibrezus/harmostes/internal/timeline"
 	"github.com/tibrezus/harmostes/internal/ui"
 	"github.com/tibrezus/harmostes/version"
 )
@@ -84,22 +83,9 @@ func main() {
 	// state store. resolveDaprEndpoint prefers the explicit DAPR_HTTP_ENDPOINT
 	// and falls back to the injector's DAPR_HTTP_PORT (127.0.0.1 — Go resolves
 	// localhost to ::1 while the sidecar binds v4 only).
-	store := os.Getenv("HARMOSTES_STATE_STORE")
-	if store == "" {
-		store = "statestore"
-	}
 	daprEndpoint := resolveDaprEndpoint()
 	server.SetDaprClient(ui.NewDaprClient(dapr.New(daprEndpoint)))
-	server.SetTimelineReader(timeline.NewReader(dapr.New(daprEndpoint), store))
-	logger.Info("Dapr client wired for session viewer + timeline", "endpoint", daprEndpoint)
-
-	// Wire the SigNoz client for querying agent metrics (token usage, durations,
-	// cost). Optional — the metrics view shows "not configured" when nil.
-	if signozURL := os.Getenv("SIGNOZ_URL"); signozURL != "" {
-		signozKey := os.Getenv("SIGNOZ_API_KEY")
-		server.SetSignozClient(ui.NewSignozClient(signozURL, signozKey))
-		logger.Info("SigNoz client wired for metrics view", "url", signozURL)
-	}
+	logger.Info("Dapr client wired for transcripts + usage", "endpoint", daprEndpoint)
 
 	httpServer := &http.Server{
 		Addr:    addr,

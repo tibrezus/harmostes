@@ -58,6 +58,15 @@ func TestAgentExecutorFailed(t *testing.T) {
 	if attempts, ok := result.Outputs["attempts"].(int); !ok || attempts != 3 {
 		t.Errorf("attempts = %v, want 3", result.Outputs["attempts"])
 	}
+	if model, ok := result.Outputs["model"].(string); !ok || model != "zai/glm-5.2" {
+		t.Errorf("model = %v, want zai/glm-5.2", result.Outputs["model"])
+	}
+	turns, ok := result.Outputs["turns"].(int)
+	if !ok {
+		t.Errorf("turns = %v, want int", result.Outputs["turns"])
+	} else if turns < 0 {
+		t.Errorf("turns = %d, want non-negative", turns)
+	}
 }
 
 func TestAgentExecutorRunnerError(t *testing.T) {

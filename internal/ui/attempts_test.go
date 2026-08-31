@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -41,11 +42,12 @@ func newAttemptTestServer(t *testing.T, objs ...runtime.Object) *Server {
 
 	return &Server{
 		namespace: "test-ns",
-		logger:    nil,
+		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
 		templates: tmpl,
 		hub:       NewEventHub(),
 		k8sClient: fakeClient,
 		platforms: newPlatformRegistry(nil),
+		wallMeta:  make(map[string]*wallUsage),
 	}
 }
 

@@ -1,0 +1,25 @@
+{{define "pages/wall.html"}}
+{{- /* wall.html — the live wall: what is running, in which workflow, where.
+      Zero-click glance; the grid re-renders itself over SSE. */ -}}
+<div class="page-content">
+	<div class="wall-header">
+		<span class="wall-live"><span class="ds-status-dot ds-status-dot--positive"></span> live</span>
+		<span class="wall-header-note">runs by workflow · auto-updating</span>
+	</div>
+	<div id="wall-grid">
+		{{template "pages/frag_wall.html" .}}
+	</div>
+</div>
+<script>
+(function () {
+	var grid = document.getElementById('wall-grid');
+	if (!grid || !window.EventSource) return;
+	var es = new EventSource('/api/wall/events');
+	es.addEventListener('wall', function (e) {
+		grid.innerHTML = e.data;
+		grid.classList.remove('wall-stale');
+	});
+	es.onerror = function () { grid.classList.add('wall-stale'); };
+})();
+</script>
+{{end}}

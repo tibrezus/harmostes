@@ -29,35 +29,17 @@
 			</div>
 		</div>
 		<nav class="ds-sidebar-nav" aria-label="Main navigation">
-			<a href="/map" class="ds-sidebar-link {{if eq .PageKey "map"}}ds-sidebar-link--active{{end}}">
-				<svg class="ds-sidebar-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0a8 8 0 100 16A8 8 0 008 0zM7 14.93A6 6 0 011.07 9H4a4 4 0 003 3.87v2.06zM7 7H1.07A6 6 0 017 1.07V4a4 4 0 00-3 3h3v0zm2-5.93A6 6 0 0114.93 7H12a4 4 0 00-3-3.87V1.07zM9 9h5.93A6 6 0 019 14.93V12a4 4 0 003-3H9z"></path></svg>
-				Map
-			</a>
-			<a href="/timeline" class="ds-sidebar-link {{if eq .PageKey "timeline"}}ds-sidebar-link--active{{end}}" title="Execution runtime — gate transitions, node boundaries, plugin output, agent turns">
-				<svg class="ds-sidebar-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M2 2h2v2H2V2zm4 0h2v2H6V2zm4 0h2v2h-2V2zM2 6h2v2H2V6zm4 0h2v2H6V6zm4 0h2v2h-2V6zM2 10h2v2H2v-2zm4 0h2v2H6v-2zm4 0h2v2h-2v-2z"></path></svg>
-				Timeline
-			</a>
-			<a href="/metrics" class="ds-sidebar-link {{if eq .PageKey "metrics"}}ds-sidebar-link--active{{end}}">
-				<svg class="ds-sidebar-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M1 12h2v2H1v-2zm4-4h2v6H5V8zm4-4h2v10H9V4zm4-2h2v12h-2V2z"></path></svg>
-				Metrics
-			</a>
-			<div class="ds-sidebar-divider"></div>
-			<a href="/sessions" class="ds-sidebar-link {{if eq .PageKey "sessions"}}ds-sidebar-link--active{{end}}" title="Agent conversation transcripts (messages, tool calls)">
-				<svg class="ds-sidebar-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M2 2h12v10H4l-2 2V2zm2 2v6h8V4H4z"></path></svg>
-				Sessions
-			</a>
-			<div class="ds-sidebar-divider"></div>
-			<a href="/workflows" class="ds-sidebar-link {{if eq .PageKey "workflows"}}ds-sidebar-link--active{{end}}">
-				<svg class="ds-sidebar-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M1 3h14v2H1V3zm0 4h14v2H1V7zm0 4h14v2H1v-2z"></path></svg>
-				Workflows
-			</a>
-			<a href="/templates" class="ds-sidebar-link {{if eq .PageKey "templates"}}ds-sidebar-link--active{{end}}">
-				<svg class="ds-sidebar-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M2 2h5v5H2V2zm7 0h5v5H9V2zM2 9h5v5H2V9zm7 0h5v5H9V9z"></path></svg>
-				Templates
+			<a href="/" class="ds-sidebar-link {{if eq .PageKey "wall"}}ds-sidebar-link--active{{end}}" title="The live wall — what is running, right now">
+				<svg class="ds-sidebar-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0a8 8 0 100 16A8 8 0 008 0zm.5 3v5.3l3.5 2-.8 1.4L7 9V3h1.5z"></path></svg>
+				Live
 			</a>
 			<a href="/runs" class="ds-sidebar-link {{if eq .PageKey "runs"}}ds-sidebar-link--active{{end}}" title="Execution history — every run with metadata, logs, and transcripts">
-				<svg class="ds-sidebar-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0a8 8 0 100 16A8 8 0 008 0zm.5 3v5.3l3.5 2-.8 1.4L7 9V3h1.5z"></path></svg>
+				<svg class="ds-sidebar-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M1 3h14v2H1V3zm0 4h14v2H1V7zm0 4h14v2H1v-2z"></path></svg>
 				Runs
+			</a>
+			<a href="/workflows" class="ds-sidebar-link {{if eq .PageKey "workflows"}}ds-sidebar-link--active{{end}}">
+				<svg class="ds-sidebar-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M2 2h5v5H2V2zm7 0h5v5H9V2zM2 9h5v5H2V9zm7 0h5v5H9V9z"></path></svg>
+				Workflows
 			</a>
 		</nav>
 		<div class="ds-sidebar-footer">
@@ -89,14 +71,6 @@
 </div>
 <script src="/static/htmx.min.js"></script>
 <script src="/static/alpine.min.js" defer></script>
-{{- if eq .PageKey "map"}}
-<script src="/static/cytoscape.min.js"></script>
-<script src="/static/js/map.js?v={{assetVersion}}"></script>
-{{- end}}
-{{- if eq .PageKey "metrics"}}
-<script src="/static/js/metrics.js?v={{assetVersion}}"></script>
-{{- end}}
-
 <script>
 // navParam sets one query param (or removes it when value is empty) and
 // navigates — used by the per-page workflow/range selects.

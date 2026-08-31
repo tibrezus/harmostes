@@ -408,6 +408,8 @@ func pageKey(page string) string {
 		return "sessions"
 	case strings.HasPrefix(page, "pages/attempts"):
 		return "runs"
+	case strings.HasPrefix(page, "pages/attempt_detail"):
+		return "runs"
 	case strings.HasPrefix(page, "pages/session"):
 		return "runs"
 	case strings.HasPrefix(page, "pages/templates"):

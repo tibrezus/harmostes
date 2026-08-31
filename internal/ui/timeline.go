@@ -182,7 +182,7 @@ func (s *Server) loadTimeline(ctx context.Context, owner, workflowFilter string)
 				SHA:        ev.Subject.SHA,
 				Summary:    eventSummary(ev),
 				Tail:       eventTail(ev),
-				AttemptURL: "/attempts/" + att.Name,
+				AttemptURL: "/runs/" + att.Name,
 			})
 		}
 	}

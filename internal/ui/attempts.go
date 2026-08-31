@@ -268,14 +268,21 @@ func (s *Server) handleAttemptDetail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	runs := make([]runSummary, 0, len(att.Status.Runs))
+	var earliest, latest time.Time
 	for _, run := range att.Status.Runs {
 		started := ""
 		ended := ""
 		if !run.StartedAt.IsZero() {
 			started = run.StartedAt.Time.Format("2006-01-02 15:04:05 MST")
+			if earliest.IsZero() || run.StartedAt.Time.Before(earliest) {
+				earliest = run.StartedAt.Time
+			}
 		}
 		if !run.EndedAt.IsZero() {
 			ended = run.EndedAt.Time.Format("2006-01-02 15:04:05 MST")
+			if run.EndedAt.Time.After(latest) {
+				latest = run.EndedAt.Time
+			}
 		}
 		runs = append(runs, runSummary{
 			Name:      run.Name,
@@ -283,6 +290,10 @@ func (s *Server) handleAttemptDetail(w http.ResponseWriter, r *http.Request) {
 			EndedAt:   ended,
 			Phase:     run.Phase,
 		})
+	}
+	totalDuration := ""
+	if !earliest.IsZero() {
+		totalDuration = formatDuration(latest.Sub(earliest))
 	}
 
 	// Fetch the Workflow to determine whether the agent is enabled.
@@ -310,7 +321,7 @@ func (s *Server) handleAttemptDetail(w http.ResponseWriter, r *http.Request) {
 		Owner:          att.Spec.Owner,
 		AgentEnabled:   agentEnabled,
 		LastRunAt:      formatMetaTime(att.Status.LastRunAt),
-		TotalDuration:  runsSpan(runs),
+		TotalDuration:  totalDuration,
 	}
 	if rv := att.Status.Review; rv != nil {
 		data.Claim = &claimView{
@@ -341,34 +352,6 @@ func formatMetaTimePtr(t *metav1.Time) string {
 	return formatMetaTime(*t)
 }
 
-// runsSpan spans the earliest run start → latest run end across a run list.
-// Empty when the attempt has no timestamped runs.
-func runsSpan(runs []runSummary) string {
-	var earliest, latest time.Time
-	for _, r := range runs {
-		for _, t := range []string{r.StartedAt, r.EndedAt} {
-			if t == "" {
-				continue
-			}
-			pt, err := time.Parse("2006-01-02 15:04:05 MST", t)
-			if err != nil {
-				continue
-			}
-			if earliest.IsZero() || pt.Before(earliest) {
-				earliest = pt
-			}
-			if pt.After(latest) {
-				latest = pt
-			}
-		}
-	}
-	if earliest.IsZero() {
-		return ""
-	}
-	return formatDuration(latest.Sub(earliest))
-}
-
-// attemptSessionData is the template data for the agent session viewer.
 type attemptSessionData struct {
 	AttemptName   string
 	WorkflowRef   string

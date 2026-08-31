@@ -24,7 +24,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
-	"github.com/tibrezus/harmostes/internal/rbac"
 	"github.com/tibrezus/harmostes/internal/timeline"
 )
 
@@ -50,7 +49,6 @@ type Server struct {
 	logger         *slog.Logger
 	templates      *template.Template
 	hub            *EventHub
-	nodePolicy     rbac.NodePolicy
 	platforms      *platformRegistry // display config for git platforms (plug-and-play)
 	dapr           DaprClient        // optional: reads session transcripts from worker state store
 	timelineReader timeline.Reader   // optional: reads execution evidence (nil = empty timeline)
@@ -59,22 +57,19 @@ type Server struct {
 
 // New creates a Server with parsed templates and the given k8s client.
 // If kubeClient is non-nil, the run-detail log viewer is enabled.
-// nodePolicy restricts which node types a user can include in pipelines;
-// pass nil for unrestricted access.
-func New(k8sClient client.Client, namespace string, logger *slog.Logger, kubeClient kubernetes.Interface, nodePolicy rbac.NodePolicy, platformConfigs []PlatformConfig) (*Server, error) {
+func New(k8sClient client.Client, namespace string, logger *slog.Logger, kubeClient kubernetes.Interface, platformConfigs []PlatformConfig) (*Server, error) {
 	tmpl, err := parseTemplates()
 	if err != nil {
 		return nil, fmt.Errorf("parse templates: %w", err)
 	}
 
 	s := &Server{
-		k8sClient:  k8sClient,
-		namespace:  namespace,
-		logger:     logger,
-		templates:  tmpl,
-		hub:        NewEventHub(),
-		nodePolicy: nodePolicy,
-		platforms:  newPlatformRegistry(platformConfigs),
+		k8sClient: k8sClient,
+		namespace: namespace,
+		logger:    logger,
+		templates: tmpl,
+		hub:       NewEventHub(),
+		platforms: newPlatformRegistry(platformConfigs),
 	}
 
 	if kubeClient != nil {
@@ -138,7 +133,8 @@ func (s *Server) Routes() http.Handler {
 	pages.HandleFunc("GET /attempts/{name}/runs/{job}/session", s.handleAttemptSession)
 	pages.HandleFunc("GET /attempts/{name}/runs/{job}/pi-session", s.handleAttemptPiSession)
 
-	// Workflows — read-only reference catalog (config is GitOps YAML)
+	// Workflows — read-only reference catalog (config is GitOps YAML).
+	// The UI is observe-only: no create, trigger, toggle, or delete surfaces.
 	pages.HandleFunc("GET /workflows", s.handleWorkflowList)
 
 	// Templates — read-only catalog (WorkflowTemplate CRs discovered from the cluster)
@@ -146,17 +142,6 @@ func (s *Server) Routes() http.Handler {
 	pages.HandleFunc("GET /templates/{name}", s.handleTemplateDetail)
 	pages.HandleFunc("GET /workflows/{name}", s.handleWorkflowDetail)
 	pages.HandleFunc("GET /workflows/{name}/runs/{job}", s.handleRunDetail)
-	pages.HandleFunc("POST /workflows/{name}/trigger", s.handleWorkflowTrigger)
-	pages.HandleFunc("POST /workflows/{name}/toggle", s.handleWorkflowToggle)
-	pages.HandleFunc("POST /workflows/{name}/delete", s.handleWorkflowDelete)
-
-	// Workflow creation — the ONLY sanctioned creation surface. The owner
-	// label is stamped from the authenticated identity (StampOwnerLabel), so
-	// every created workflow is visible to its creator. GitOps/YAML workflow
-	// creation was deliberately removed (it produced workflows invisible in
-	// the UI); nothing else may create Workflow CRs.
-	pages.HandleFunc("GET /workflows/new", s.handleWorkflowNew)
-	pages.HandleFunc("POST /workflows", s.handleWorkflowCreate)
 
 	// Read-only graph API (auto-generated from Workflow spec — no editing)
 	pages.HandleFunc("GET /api/workflows/{name}/graph", s.handleWorkflowGraphAPI)
@@ -396,10 +381,6 @@ func pageTitle(page string) string {
 		return "Workflows"
 	case "pages/detail.html":
 		return "Workflow Detail"
-	case "pages/tokens.html":
-		return "Tokens"
-	case "pages/workflow_new.html":
-		return "New Workflow"
 	case "pages/run_detail.html":
 		return "Run Detail"
 	case "pages/error.html":
@@ -434,44 +415,7 @@ func pageKey(page string) string {
 		return "workflows"
 	case strings.HasPrefix(page, "pages/detail"):
 		return "workflows"
-	case strings.HasPrefix(page, "pages/tokens"):
-		return "tokens"
-	case strings.HasPrefix(page, "pages/workflow_new"):
-		return "workflows" // active state stays on Workflows nav
 	default:
 		return ""
 	}
-}
-
-// SanitizeLabels strips any client-supplied harmostes.dev/owner label from a
-// label map and stamps the authenticated user's username instead. This is the
-// anti-spoofing boundary: the owner label is ALWAYS set by the server from the
-// verified Authentik identity, never trusted from client input (a malicious
-// user could otherwise set owner=alice to create a workflow under another
-// user's namespace).
-//
-// It also strips harmostes.dev/workflow (a controller-managed label) to
-// prevent accidental or malicious override of the workflow linkage.
-func SanitizeLabels(labels map[string]string, owner string) map[string]string {
-	if labels == nil {
-		labels = map[string]string{}
-	}
-	delete(labels, v1alpha1.OwnerLabel)
-	delete(labels, v1alpha1.WorkflowLabel)
-	if owner != "" {
-		labels[v1alpha1.OwnerLabel] = owner
-	}
-	return labels
-}
-
-// StampOwnerLabel sets the owner label on a Workflow CR's ObjectMeta, stripping
-// any pre-existing value first. Used by the Workflow CRUD handlers (Phase D)
-// to ensure every UI-created CR carries the authenticated user's identity.
-func StampOwnerLabel(obj *v1alpha1.Workflow, owner string) {
-	if obj.Labels == nil {
-		obj.Labels = map[string]string{}
-	}
-	delete(obj.Labels, v1alpha1.OwnerLabel)
-	delete(obj.Labels, v1alpha1.WorkflowLabel)
-	obj.Labels[v1alpha1.OwnerLabel] = owner
 }

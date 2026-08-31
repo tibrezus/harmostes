@@ -6,13 +6,11 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -34,319 +32,12 @@ func workflowTestServer(existing ...client.Object) *Server {
 	tmpl, _ := parseTemplates()
 
 	return &Server{
-		k8sClient:  cl,
-		namespace:  "harmostes",
-		logger:     slog.Default(),
-		templates:  tmpl,
-		hub:        NewEventHub(),
-		nodePolicy: nil,
-		platforms:  newPlatformRegistry(DefaultPlatformConfigs()),
-	}
-}
-
-func TestHandleWorkflowCreate_RejectsEmptyName(t *testing.T) {
-	s := workflowTestServer()
-
-	form := url.Values{}
-	form.Set("name", "")
-	form.Set("repoUrl", "git@github.com:rezuscloud/repo.git")
-
-	req := httptest.NewRequest(http.MethodPost, "/workflows", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req = req.WithContext(withIdentity(req.Context(), &Identity{Username: "alice"}))
-
-	rec := httptest.NewRecorder()
-	s.handleWorkflowCreate(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Errorf("status = %d, want 200 (error page)", rec.Code)
-	}
-	if !strings.Contains(rec.Body.String(), "required") {
-		t.Error("expected error about name being required")
-	}
-}
-
-func TestHandleWorkflowCreate_RejectsInvalidName(t *testing.T) {
-	s := workflowTestServer()
-
-	cases := []string{"My-Workflow", "wf with space", "-leading-dash", ""}
-	for _, badName := range cases {
-		form := url.Values{}
-		form.Set("name", badName)
-		form.Set("repoUrl", "git@github.com:rezuscloud/repo.git")
-		form.Set("gate", "wiki-lint")
-
-		req := httptest.NewRequest(http.MethodPost, "/workflows", strings.NewReader(form.Encode()))
-		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		req = req.WithContext(withIdentity(req.Context(), &Identity{Username: "alice"}))
-
-		rec := httptest.NewRecorder()
-		s.handleWorkflowCreate(rec, req)
-
-		// Should render error page (200), not redirect (303)
-		if rec.Code == http.StatusSeeOther && badName != "" {
-			t.Errorf("invalid name %q should be rejected", badName)
-		}
-	}
-}
-
-func TestHandleWorkflowCreate_OwnerNeverSpoofed(t *testing.T) {
-	s := workflowTestServer(prReviewTemplate())
-
-	// Even though the form has no owner field, the server should stamp "alice"
-	// from the authenticated identity. A malicious client CANNOT inject an
-	// owner label via the form (there's no owner form field, and StampOwnerLabel
-	// overwrites any existing label).
-	form := url.Values{}
-	form.Set("name", "spoof-test")
-	form.Set("templateRef", "pr-review")
-
-	req := httptest.NewRequest(http.MethodPost, "/workflows", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req = req.WithContext(withIdentity(req.Context(), &Identity{Username: "alice"}))
-
-	rec := httptest.NewRecorder()
-	s.handleWorkflowCreate(rec, req)
-
-	var wf v1alpha1.Workflow
-	_ = s.k8sClient.Get(req.Context(), types.NamespacedName{Namespace: "harmostes", Name: "spoof-test"}, &wf)
-
-	if wf.Labels[v1alpha1.OwnerLabel] != "alice" {
-		t.Errorf("owner = %q, want alice (server-set, not client-supplied)", wf.Labels[v1alpha1.OwnerLabel])
-	}
-}
-
-func TestHandleWorkflowDelete_OwnerIsolation(t *testing.T) {
-	bobWf := &v1alpha1.Workflow{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "bobs-workflow",
-			Namespace: "harmostes",
-			Labels:    map[string]string{v1alpha1.OwnerLabel: "bob"},
-		},
-	}
-	s := workflowTestServer(bobWf)
-
-	// Alice tries to delete Bob's workflow
-	req := httptest.NewRequest(http.MethodPost, "/workflows/bobs-workflow/delete", nil)
-	req.SetPathValue("name", "bobs-workflow")
-	req = req.WithContext(withIdentity(req.Context(), &Identity{Username: "alice"}))
-
-	rec := httptest.NewRecorder()
-	s.handleWorkflowDelete(rec, req)
-
-	if rec.Code != http.StatusNotFound {
-		t.Errorf("status = %d, want %d (cross-tenant delete must fail)", rec.Code, http.StatusNotFound)
-	}
-
-	// Verify still exists
-	var wf v1alpha1.Workflow
-	if err := s.k8sClient.Get(req.Context(), types.NamespacedName{Namespace: "harmostes", Name: "bobs-workflow"}, &wf); err != nil {
-		t.Errorf("bob's workflow should still exist: %v", err)
-	}
-}
-
-func TestHandleWorkflowDelete_Success(t *testing.T) {
-	aliceWf := &v1alpha1.Workflow{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "alice-wf",
-			Namespace: "harmostes",
-			Labels:    map[string]string{v1alpha1.OwnerLabel: "alice"},
-		},
-	}
-	s := workflowTestServer(aliceWf)
-
-	req := httptest.NewRequest(http.MethodPost, "/workflows/alice-wf/delete", nil)
-	req.SetPathValue("name", "alice-wf")
-	req = req.WithContext(withIdentity(req.Context(), &Identity{Username: "alice"}))
-
-	rec := httptest.NewRecorder()
-	s.handleWorkflowDelete(rec, req)
-
-	if rec.Code != http.StatusSeeOther {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusSeeOther)
-	}
-
-	// Verify deleted
-	var wf v1alpha1.Workflow
-	err := s.k8sClient.Get(req.Context(), types.NamespacedName{Namespace: "harmostes", Name: "alice-wf"}, &wf)
-	if err == nil {
-		t.Error("workflow should have been deleted")
-	}
-}
-
-func TestHandleWorkflowDelete_RejectsUnmanagedWorkflow(t *testing.T) {
-	// A workflow without an owner label (GitOps-created system workflow) must
-	// NOT be deletable from the self-service UI.
-	systemWf := &v1alpha1.Workflow{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "system-workflow",
-			Namespace: "harmostes",
-			Labels:    map[string]string{}, // no owner label
-		},
-	}
-	s := workflowTestServer(systemWf)
-
-	req := httptest.NewRequest(http.MethodPost, "/workflows/system-workflow/delete", nil)
-	req.SetPathValue("name", "system-workflow")
-	req = req.WithContext(withIdentity(req.Context(), &Identity{Username: "alice"}))
-
-	rec := httptest.NewRecorder()
-	s.handleWorkflowDelete(rec, req)
-
-	if rec.Code != http.StatusNotFound {
-		t.Errorf("status = %d, want %d (unmanaged workflow not deletable)", rec.Code, http.StatusNotFound)
-	}
-}
-
-func TestHandleWorkflowTrigger_SetsAnnotation(t *testing.T) {
-	aliceWf := &v1alpha1.Workflow{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "alice-wf",
-			Namespace: "harmostes",
-			Labels:    map[string]string{v1alpha1.OwnerLabel: "alice"},
-		},
-	}
-	s := workflowTestServer(aliceWf)
-
-	req := httptest.NewRequest(http.MethodPost, "/workflows/alice-wf/trigger", nil)
-	req.SetPathValue("name", "alice-wf")
-	req = req.WithContext(withIdentity(req.Context(), &Identity{Username: "alice"}))
-
-	rec := httptest.NewRecorder()
-	s.handleWorkflowTrigger(rec, req)
-
-	if rec.Code != http.StatusSeeOther {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusSeeOther)
-	}
-
-	// Verify trigger annotation was set
-	var wf v1alpha1.Workflow
-	_ = s.k8sClient.Get(req.Context(), types.NamespacedName{Namespace: "harmostes", Name: "alice-wf"}, &wf)
-
-	if wf.Annotations == nil {
-		t.Fatal("annotations is nil")
-	}
-	triggerRev := wf.Annotations[triggerAnnotation]
-	if triggerRev == "" {
-		t.Fatal("trigger-revision annotation not set")
-	}
-	if !strings.HasPrefix(triggerRev, "manual-") {
-		t.Errorf("trigger value = %q, want prefix manual-", triggerRev)
-	}
-}
-
-func TestHandleWorkflowTrigger_OwnerIsolation(t *testing.T) {
-	bobWf := &v1alpha1.Workflow{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "bobs-workflow",
-			Namespace: "harmostes",
-			Labels:    map[string]string{v1alpha1.OwnerLabel: "bob"},
-		},
-	}
-	s := workflowTestServer(bobWf)
-
-	req := httptest.NewRequest(http.MethodPost, "/workflows/bobs-workflow/trigger", nil)
-	req.SetPathValue("name", "bobs-workflow")
-	req = req.WithContext(withIdentity(req.Context(), &Identity{Username: "alice"}))
-
-	rec := httptest.NewRecorder()
-	s.handleWorkflowTrigger(rec, req)
-
-	if rec.Code != http.StatusNotFound {
-		t.Errorf("status = %d, want %d (cross-tenant trigger must fail)", rec.Code, http.StatusNotFound)
-	}
-
-	// Verify annotation was NOT set
-	var wf v1alpha1.Workflow
-	_ = s.k8sClient.Get(req.Context(), types.NamespacedName{Namespace: "harmostes", Name: "bobs-workflow"}, &wf)
-	if wf.Annotations != nil && wf.Annotations[triggerAnnotation] != "" {
-		t.Error("trigger annotation should NOT have been set by cross-tenant user")
-	}
-}
-
-func TestHandleWorkflowToggle(t *testing.T) {
-	aliceWf := &v1alpha1.Workflow{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "alice-wf",
-			Namespace: "harmostes",
-			Labels:    map[string]string{v1alpha1.OwnerLabel: "alice"},
-		},
-	}
-	s := workflowTestServer(aliceWf)
-
-	// First toggle: enabled → disabled
-	req := httptest.NewRequest(http.MethodPost, "/workflows/alice-wf/toggle", nil)
-	req.SetPathValue("name", "alice-wf")
-	req = req.WithContext(withIdentity(req.Context(), &Identity{Username: "alice"}))
-
-	rec := httptest.NewRecorder()
-	s.handleWorkflowToggle(rec, req)
-
-	if rec.Code != http.StatusSeeOther {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusSeeOther)
-	}
-
-	var wf v1alpha1.Workflow
-	_ = s.k8sClient.Get(req.Context(), types.NamespacedName{Namespace: "harmostes", Name: "alice-wf"}, &wf)
-
-	if !wf.Spec.Disabled {
-		t.Error("workflow should be disabled after toggle")
-	}
-
-	// Second toggle: disabled → enabled
-	rec2 := httptest.NewRecorder()
-	s.handleWorkflowToggle(rec2, req)
-
-	_ = s.k8sClient.Get(req.Context(), types.NamespacedName{Namespace: "harmostes", Name: "alice-wf"}, &wf)
-	if wf.Spec.Disabled {
-		t.Error("workflow should be enabled after second toggle")
-	}
-}
-
-func TestHandleWorkflowToggle_OwnerIsolation(t *testing.T) {
-	bobWf := &v1alpha1.Workflow{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "bobs-workflow",
-			Namespace: "harmostes",
-			Labels:    map[string]string{v1alpha1.OwnerLabel: "bob"},
-		},
-	}
-	s := workflowTestServer(bobWf)
-
-	req := httptest.NewRequest(http.MethodPost, "/workflows/bobs-workflow/toggle", nil)
-	req.SetPathValue("name", "bobs-workflow")
-	req = req.WithContext(withIdentity(req.Context(), &Identity{Username: "alice"}))
-
-	rec := httptest.NewRecorder()
-	s.handleWorkflowToggle(rec, req)
-
-	if rec.Code != http.StatusNotFound {
-		t.Errorf("status = %d, want %d (cross-tenant toggle must fail)", rec.Code, http.StatusNotFound)
-	}
-
-	var wf v1alpha1.Workflow
-	_ = s.k8sClient.Get(req.Context(), types.NamespacedName{Namespace: "harmostes", Name: "bobs-workflow"}, &wf)
-	if wf.Spec.Disabled {
-		t.Error("workflow should not have been toggled by cross-tenant user")
-	}
-}
-
-func TestParseGitURL(t *testing.T) {
-	cases := []struct {
-		url      string
-		wantHost string
-		wantObj  string
-	}{
-		{"git@github.com:rezuscloud/llm-wiki.git", "github.com", "rezuscloud/llm-wiki"},
-		{"https://github.com/rezuscloud/llm-wiki.git", "github.com", "rezuscloud/llm-wiki"},
-		{"https://gitlab.com/tibrez/operations/k8s-config", "gitlab.com", "tibrez/operations/k8s-config"},
-		{"", "", ""},
-	}
-	for _, c := range cases {
-		host, obj := parseGitURL(c.url)
-		if host != c.wantHost || obj != c.wantObj {
-			t.Errorf("parseGitURL(%q) = (%q, %q), want (%q, %q)", c.url, host, obj, c.wantHost, c.wantObj)
-		}
+		k8sClient: cl,
+		namespace: "harmostes",
+		logger:    slog.Default(),
+		templates: tmpl,
+		hub:       NewEventHub(),
+		platforms: newPlatformRegistry(DefaultPlatformConfigs()),
 	}
 }
 
@@ -390,80 +81,6 @@ func prReviewTemplate() *v1alpha1.WorkflowTemplate {
 			},
 			Deploy: v1alpha1.DeploySpec{Plugin: v1alpha1.PluginRef{Name: "post-review", ConfigMap: "harmostes-pr-review"}},
 		},
-	}
-}
-
-func TestHandleWorkflowCreate_TemplateInstance(t *testing.T) {
-	s := workflowTestServer(prReviewTemplate())
-
-	form := url.Values{}
-	form.Set("name", "pr-review-harmostes")
-	form.Set("templateRef", "pr-review")
-	form.Set("schedule", "*/10 * * * *")
-	form.Set("label", "needs-review")
-	form.Set("repos", "tibrezus/harmostes, github.com/other/repo")
-	form.Set("wiki", "")
-
-	req := httptest.NewRequest(http.MethodPost, "/workflows", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req = req.WithContext(withIdentity(req.Context(), &Identity{Username: "alice"}))
-
-	rec := httptest.NewRecorder()
-	s.handleWorkflowCreate(rec, req)
-
-	if rec.Code != http.StatusSeeOther {
-		t.Fatalf("status = %d, want %d. body: %s", rec.Code, http.StatusSeeOther, rec.Body.String())
-	}
-
-	var wf v1alpha1.Workflow
-	if err := s.k8sClient.Get(context.Background(), types.NamespacedName{Namespace: "harmostes", Name: "pr-review-harmostes"}, &wf); err != nil {
-		t.Fatalf("workflow not created: %v", err)
-	}
-	if wf.Spec.TemplateRef != "pr-review" {
-		t.Errorf("templateRef = %q, want pr-review", wf.Spec.TemplateRef)
-	}
-	if wf.Spec.Source.Kind != "schedule" || wf.Spec.Source.Schedule != "*/10 * * * *" {
-		t.Errorf("source = %+v, want schedule */10", wf.Spec.Source)
-	}
-	var cfg map[string]any
-	if err := json.Unmarshal(wf.Spec.Config, &cfg); err != nil {
-		t.Fatalf("config not JSON: %v", err)
-	}
-	if repos, _ := cfg["repos"].([]any); len(repos) != 2 || repos[0] != "tibrezus/harmostes" {
-		t.Errorf("config repos = %v, want 2 repos", cfg["repos"])
-	}
-	// Owner is stamped from the authenticated identity — the creation
-	// invariant: every created workflow is visible to its creator.
-	if wf.Labels[v1alpha1.OwnerLabel] != "alice" {
-		t.Errorf("owner label = %q, want alice", wf.Labels[v1alpha1.OwnerLabel])
-	}
-	// The stored CR stays thin: pipeline shape lives in the template.
-	if wf.Spec.Agent.Model != "" || wf.Spec.Prepare.Plugin.Name != "" {
-		t.Errorf("thin instance must not duplicate template spec, got agent=%+v prepare=%+v", wf.Spec.Agent, wf.Spec.Prepare)
-	}
-}
-
-func TestHandleWorkflowCreate_TemplateInstanceUnknownTemplate(t *testing.T) {
-	s := workflowTestServer()
-
-	form := url.Values{}
-	form.Set("name", "orphan")
-	form.Set("templateRef", "does-not-exist")
-
-	req := httptest.NewRequest(http.MethodPost, "/workflows", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req = req.WithContext(withIdentity(req.Context(), &Identity{Username: "alice"}))
-
-	rec := httptest.NewRecorder()
-	s.handleWorkflowCreate(rec, req)
-
-	if rec.Code != http.StatusOK { // renders the error page
-		t.Fatalf("status = %d, want 200 (error page)", rec.Code)
-	}
-	var list v1alpha1.WorkflowList
-	_ = s.k8sClient.List(context.Background(), &list)
-	if len(list.Items) != 0 {
-		t.Fatalf("no workflow should be created for unknown template, got %d", len(list.Items))
 	}
 }
 
@@ -547,93 +164,6 @@ func TestHandleWorkflowDetail_ThinInstanceRendersMergedPipeline(t *testing.T) {
 	}
 }
 
-func TestHandleWorkflowCreate_CustomScopeDialect(t *testing.T) {
-	// A template may declare an arbitrary configuration dialect: the form
-	// and the stored instance config follow the declaration, with no UI
-	// code knowing these keys.
-	tmpl := &v1alpha1.WorkflowTemplate{
-		ObjectMeta: metav1.ObjectMeta{Name: "deploy-thing", Namespace: "harmostes"},
-		Spec: v1alpha1.WorkflowTemplateSpec{
-			Description: "deploy thing",
-			Scope: []v1alpha1.ScopeParam{
-				{Name: "env", Kind: "string", Label: "Environment", Default: "staging"},
-				{Name: "targets", Kind: "list", Label: "Targets"},
-			},
-			Prepare: v1alpha1.PrepareSpec{Plugin: v1alpha1.PluginRef{Name: "noop"}},
-			Agent:   v1alpha1.AgentSpec{Enabled: boolPtr(false), Model: "none", Gate: v1alpha1.GateRef{Plugin: v1alpha1.PluginRef{Name: "noop"}}},
-			Deploy:  v1alpha1.DeploySpec{Plugin: v1alpha1.PluginRef{Name: "noop"}},
-		},
-	}
-	s := workflowTestServer(tmpl)
-
-	form := url.Values{}
-	form.Set("name", "deploy-thing-prod")
-	form.Set("templateRef", "deploy-thing")
-	form.Set("schedule", "0 * * * *")
-	form.Set("env", "prod")
-	form.Set("targets", "cluster-a, cluster-b")
-	// Stray keys the template does NOT declare must be ignored.
-	form.Set("label", "needs-review")
-
-	req := httptest.NewRequest(http.MethodPost, "/workflows", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req = req.WithContext(withIdentity(req.Context(), &Identity{Username: "alice"}))
-	rec := httptest.NewRecorder()
-	s.handleWorkflowCreate(rec, req)
-
-	if rec.Code != http.StatusSeeOther {
-		t.Fatalf("status = %d. body: %s", rec.Code, rec.Body.String())
-	}
-	var wf v1alpha1.Workflow
-	if err := s.k8sClient.Get(context.Background(), types.NamespacedName{Namespace: "harmostes", Name: "deploy-thing-prod"}, &wf); err != nil {
-		t.Fatalf("not created: %v", err)
-	}
-	var cfg map[string]any
-	if err := json.Unmarshal(wf.Spec.Config, &cfg); err != nil {
-		t.Fatal(err)
-	}
-	if cfg["env"] != "prod" {
-		t.Errorf("env = %v, want prod", cfg["env"])
-	}
-	if tg, _ := cfg["targets"].([]any); len(tg) != 2 || tg[0] != "cluster-a" {
-		t.Errorf("targets = %v, want [cluster-a cluster-b]", cfg["targets"])
-	}
-	if _, exists := cfg["label"]; exists {
-		t.Error("undeclared key 'label' must not be stored")
-	}
-}
-
-func TestHandleWorkflowCreate_ScopeDefaultsApply(t *testing.T) {
-	tmpl := prReviewTemplate()
-	s := workflowTestServer(tmpl)
-
-	form := url.Values{}
-	form.Set("name", "pr-review-defaults")
-	form.Set("templateRef", "pr-review")
-	form.Set("repos", "tibrezus/harmostes")
-	// label + wiki left empty → defaults (needs-review) / empty string
-
-	req := httptest.NewRequest(http.MethodPost, "/workflows", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req = req.WithContext(withIdentity(req.Context(), &Identity{Username: "alice"}))
-	rec := httptest.NewRecorder()
-	s.handleWorkflowCreate(rec, req)
-
-	if rec.Code != http.StatusSeeOther {
-		t.Fatalf("status = %d. body: %s", rec.Code, rec.Body.String())
-	}
-	var wf v1alpha1.Workflow
-	_ = s.k8sClient.Get(context.Background(), types.NamespacedName{Namespace: "harmostes", Name: "pr-review-defaults"}, &wf)
-	var cfg map[string]any
-	_ = json.Unmarshal(wf.Spec.Config, &cfg)
-	if cfg["label"] != "needs-review" {
-		t.Errorf("label default not applied: %v", cfg["label"])
-	}
-}
-
-// #245: the workflows page is the navigation hub — one dense row per
-// workflow, CR name primary (unique — slugs can collide across hosts),
-// quick actions presetting ?workflow=.
 func TestWorkflowListHubTable(t *testing.T) {
 	mkWf := func(name, tmpl, repo string) *v1alpha1.Workflow {
 		return &v1alpha1.Workflow{
@@ -681,5 +211,58 @@ func TestWorkflowListHubTable(t *testing.T) {
 	// Template grouping: one pr-review group carrying both instances.
 	if got := strings.Count(body, "gate-group-title"); got != 2 {
 		t.Errorf("gate-group-title count = %d, want 2 (pr-review, sync)", got)
+	}
+}
+
+// TestWriteSurfaceRemoved pins the observe-only contract (#290): the UI has
+// no create, trigger, toggle, or delete surfaces. Each removed endpoint must
+// be unreachable — never 2xx, never a redirect (a redirect would mean the
+// route still does something).
+func TestWriteSurfaceRemoved(t *testing.T) {
+	s := workflowTestServer()
+
+	cases := []struct {
+		method, path string
+	}{
+		{http.MethodGet, "/workflows/new"},
+		{http.MethodPost, "/workflows"},
+		{http.MethodPost, "/workflows/pr-review-harmostes/trigger"},
+		{http.MethodPost, "/workflows/pr-review-harmostes/toggle"},
+		{http.MethodPost, "/workflows/pr-review-harmostes/delete"},
+	}
+	for _, tc := range cases {
+		if tc.method == http.MethodGet {
+			continue // GET /workflows/new asserted separately (content-level)
+		}
+		req := httptest.NewRequest(tc.method, tc.path, nil)
+		req.Header.Set("X-Authentik-Username", "alice")
+		rec := httptest.NewRecorder()
+		s.Routes().ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusNotFound && rec.Code != http.StatusMethodNotAllowed {
+			t.Errorf("%s %s: write surface still reachable (status %d)", tc.method, tc.path, rec.Code)
+		}
+	}
+
+	// GET /workflows/new falls through to the (missing) workflow "new" and
+	// renders the app's error page. The creation form itself must be gone.
+	req := httptest.NewRequest(http.MethodGet, "/workflows/new", nil)
+	req.Header.Set("X-Authentik-Username", "alice")
+	rec := httptest.NewRecorder()
+	s.Routes().ServeHTTP(rec, req)
+	for _, marker := range []string{"wf-new-form", `action="/workflows"`, "New Workflow"} {
+		if strings.Contains(rec.Body.String(), marker) {
+			t.Errorf("GET /workflows/new: creation surface marker %q still served", marker)
+		}
+	}
+
+	// The index must land on the runs history (the interim spine until the
+	// live wall exists), not the removed map view.
+	req = httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("X-Authentik-Username", "alice")
+	rec = httptest.NewRecorder()
+	s.Routes().ServeHTTP(rec, req)
+	if loc := rec.Header().Get("Location"); rec.Code != http.StatusSeeOther || loc != "/attempts" {
+		t.Errorf("/ redirect: got status %d Location %q, want 303 -> /attempts", rec.Code, loc)
 	}
 }

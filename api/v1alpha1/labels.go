@@ -7,7 +7,7 @@ const (
 	// OwnerLabel identifies which user owns a Workflow CR or a worker Job.
 	//
 	// The harmostes-ui server stamps it from the authenticated Authentik identity
-	// (never trusts client-supplied values — see ui.SanitizeLabels). The
+	// (never trusts client-supplied values). The
 	// controller propagates it from the Workflow to spawned worker Jobs so the
 	// UI's owner-filtered Job queries work end-to-end.
 	//

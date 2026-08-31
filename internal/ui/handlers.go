@@ -16,7 +16,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	http.Redirect(w, r, "/map", http.StatusSeeOther)
+	http.Redirect(w, r, "/attempts", http.StatusSeeOther)
 }
 
 // handleWorkflowList renders all workflows owned by the current user,

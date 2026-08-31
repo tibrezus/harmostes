@@ -24,8 +24,9 @@ func wallTestServer(t *testing.T, objs ...runtime.Object) *Server {
 	return s
 }
 
-// usageStubDapr answers the durable usage:last key and counts everything else
-// as a miss (the SSE re-render path must never touch the state store).
+// usageStubDapr answers EXACTLY the durable usage:last key for the seeded
+// workflow and counts everything else as a miss — a suffix match would mask
+// a namespaced-vs-bare key regression (the lookup must normalize the ref).
 type usageStubDapr struct {
 	DaprClient
 	reads int
@@ -33,7 +34,7 @@ type usageStubDapr struct {
 
 func (d *usageStubDapr) GetStateFromStore(_ context.Context, _, key string, value any) (bool, error) {
 	d.reads++
-	if !strings.HasSuffix(key, ":usage:last") {
+	if key != "pr-review-x:usage:last" {
 		return false, nil
 	}
 	b, _ := json.Marshal(map[string]any{"input": 100, "output": 50, "attempts": 2})
@@ -53,7 +54,9 @@ func wallReviewAttempt(name, wf string) *v1alpha1.Attempt {
 			CreationTimestamp: now,
 		},
 		Spec: v1alpha1.AttemptSpec{
-			WorkflowRef: wf,
+			// Production writes the namespaced ref (attempt/claim.go) — the
+			// wall must normalize it to the bare CR name for cache/usage keys.
+			WorkflowRef: "harmostes/" + wf,
 			Objective:   v1alpha1.ObjectiveSpec{Kind: v1alpha1.ObjectiveKindPRReview},
 		},
 		Status: v1alpha1.AttemptStatus{

@@ -26,8 +26,10 @@ const (
 
 // wallUsage is the cached agent metadata for one workflow. Populated from
 // node.completed lifecycle events (which carry usage/model/turns since the
-// agent executor publishes them) and hydrated once from the durable
-// `<workflow>:usage:last` state-store record when the cache is cold.
+// agent executor publishes them); when the cache is cold it is partially
+// hydrated from the durable `<workflow>:usage:last` state-store record —
+// that record carries token totals and attempts but NOT model/turns, so
+// those stay unknown until the next agent node completes.
 type wallUsage struct {
 	Model        string
 	InputTokens  int
@@ -143,8 +145,12 @@ func (s *Server) wallGroups(r *http.Request, owner string, hydrate bool) ([]wall
 		if len(out) >= wallMaxGroups {
 			break
 		}
+		// WorkflowRef is namespaced (ns/name); the event cache and the
+		// durable usage:last record are keyed by the bare CR name (which is
+		// also the lifecycle event's Pipeline field).
+		wfName := workflowCRName(g.WorkflowRef)
 		wg := wallGroup{
-			WorkflowRef:  g.WorkflowRef,
+			WorkflowRef:  wfName,
 			Subject:      g.Subject,
 			IsReview:     g.IsReview,
 			Phase:        g.LatestPhase,
@@ -152,7 +158,7 @@ func (s *Server) wallGroups(r *http.Request, owner string, hydrate bool) ([]wall
 			HeadSHA:      shortSHA(g.HeadSHA),
 			Count:        g.Count,
 			LastActivity: relTime(g.LastActivity, time.Now()),
-			Usage:        s.usageFor(r, g.WorkflowRef, hydrate),
+			Usage:        s.usageFor(r, wfName, hydrate),
 		}
 		if g.LatestAttempt != "" {
 			wg.LastRunURL = "/runs/" + g.LatestAttempt

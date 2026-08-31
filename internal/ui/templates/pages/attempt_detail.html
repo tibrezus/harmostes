@@ -79,7 +79,7 @@
 					<div class="runlogs-slot" id="runlogs-{{.Name}}"
 						hx-get="/runs/{{$.Name}}/runs/{{.Name}}/logs"
 						hx-target="#runlogs-{{.Name}}"
-						hx-swap="innerHTML"
+						hx-swap="outerHTML"
 						{{- if eq .Phase "running"}} hx-trigger="load delay:200ms, every 3s"{{- else}} hx-trigger="click"{{- end}}>
 						<button type="button" class="ds-btn ds-btn--secondary ds-btn--xs" title="Pod log tail; the session transcript persists after the pod is recycled">Logs</button>
 					</div>

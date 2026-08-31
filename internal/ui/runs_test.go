@@ -158,6 +158,13 @@ func TestRunLogs_PodAlive(t *testing.T) {
 	att := makeAttempt("attempt-x", "alice", "wf-a", "job-1", "running")
 	pod := makePod("job-1", "attempt-x", corev1.PodRunning)
 	pod.Status.StartTime = &metav1.Time{Time: metav1.Now().Time}
+	fin := metav1.Now()
+	pod.Status.ContainerStatuses = []corev1.ContainerStatus{{
+		Name: "run",
+		State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{
+			ExitCode: 0, FinishedAt: fin,
+		}},
+	}}
 	s := runsTestServer(att, pod)
 
 	req := httptest.NewRequest(http.MethodGet, "/runs/attempt-x/runs/job-1/logs", nil)
@@ -176,8 +183,60 @@ func TestRunLogs_PodAlive(t *testing.T) {
 	if !strings.Contains(body, "job-1 · Running") {
 		t.Errorf("fragment missing pod metadata:\n%s", body)
 	}
+	if !strings.Contains(body, "exit 0") {
+		t.Errorf("fragment missing terminated exit note:\n%s", body)
+	}
+	// Run still in flight + pod alive: the fragment must keep polling.
+	if !strings.Contains(body, `hx-trigger="every 3s"`) {
+		t.Errorf("running fragment must continue polling:\n%s", body)
+	}
 	if strings.Contains(body, "Pod recycled") {
 		t.Errorf("fragment wrongly claims pod is gone:\n%s", body)
+	}
+}
+
+// TestRunLogs_TerminalStopsPolling: once the run is terminal the fragment
+// renders inert — no hx attributes, no 3s churn.
+func TestRunLogs_TerminalStopsPolling(t *testing.T) {
+	att := makeAttempt("attempt-x", "alice", "wf-a", "job-1", "succeeded")
+	pod := makePod("job-1", "attempt-x", corev1.PodSucceeded)
+	s := runsTestServer(att, pod)
+
+	req := httptest.NewRequest(http.MethodGet, "/runs/attempt-x/runs/job-1/logs", nil)
+	req.Header.Set("X-Authentik-Username", "alice")
+	rec := httptest.NewRecorder()
+	s.Routes().ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	if strings.Contains(body, "hx-trigger") || strings.Contains(body, "hx-get") {
+		t.Errorf("terminal fragment must not poll:\n%s", body)
+	}
+	if !strings.Contains(body, "workflow started") {
+		t.Errorf("terminal fragment missing logs:\n%s", body)
+	}
+}
+
+// TestRunLogs_LogFetchErrorStopsPolling: a failed fetch renders the warning
+// WITHOUT polling attributes — error state plus 3s polling is churn.
+func TestRunLogs_LogFetchErrorStopsPolling(t *testing.T) {
+	att := makeAttempt("attempt-x", "alice", "wf-a", "job-1", "running")
+	pod := makePod("job-1", "attempt-x", corev1.PodRunning)
+	s := runsTestServer(att, pod)
+	s.logFetch = func(ctx context.Context, ns, pod, container string) (string, error) {
+		return "", context.DeadlineExceeded
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/runs/attempt-x/runs/job-1/logs", nil)
+	req.Header.Set("X-Authentik-Username", "alice")
+	rec := httptest.NewRecorder()
+	s.Routes().ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "Failed to fetch logs") {
+		t.Errorf("fragment missing fetch-error note:\n%s", body)
+	}
+	if strings.Contains(body, "hx-trigger") {
+		t.Errorf("error fragment must not poll:\n%s", body)
 	}
 }
 
@@ -196,6 +255,9 @@ func TestRunLogs_PodGone_PointsAtTranscript(t *testing.T) {
 	}
 	if !strings.Contains(body, "/runs/attempt-x/runs/job-1/session") {
 		t.Errorf("fragment missing durable transcript link:\n%s", body)
+	}
+	if strings.Contains(body, "hx-trigger") {
+		t.Errorf("pod-gone fragment must not poll:\n%s", body)
 	}
 }
 

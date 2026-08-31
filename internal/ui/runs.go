@@ -29,7 +29,7 @@ type runLogsData struct {
 	RunPhase    string // running | succeeded | failed | "" (unknown)
 	PodName     string
 	PodPhase    string
-	ExitCode    *int32
+	ExitNote    string // "exit 0" style; empty while the container hasn't terminated
 	Duration    string
 	Logs        string
 	LogsError   string
@@ -111,7 +111,9 @@ func (s *Server) handleRunLogs(w http.ResponseWriter, r *http.Request) {
 
 	data.PodName = pod.Name
 	data.PodPhase = string(pod.Status.Phase)
-	data.ExitCode = podExitCode(*pod)
+	if code := podExitCode(*pod); code != nil {
+		data.ExitNote = fmt.Sprintf("exit %d", *code)
+	}
 	data.Duration = podDuration(*pod)
 
 	if s.logFetch == nil {

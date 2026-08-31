@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -306,5 +307,49 @@ func TestRunGraphNodeDataJSONEscaping(t *testing.T) {
 	got := parsed["prepare"]["summary"]
 	if !strings.Contains(got.(string), `"needs-review"`) || !strings.Contains(got.(string), "<b>") {
 		t.Errorf("summary round-trip lost content: %q", got)
+	}
+}
+
+// Multi-tenant gate (review F1/F2 probe): a foreign authenticated user gets
+// the same 404 as an unknown attempt — on the graph stream AND on every
+// attempt-scoped fragment endpoint — with no existence leak.
+func TestAttemptScopeForeignUser404(t *testing.T) {
+	att := wallReviewAttempt("attempt-pr-review-x-1", "pr-review-x")
+	s := newAttemptTestServer(t, graphSeedWorkflow("pr-review-x"), att)
+
+	srv := httptest.NewServer(s.Routes())
+	defer srv.Close()
+
+	paths := []string{
+		"/runs/attempt-pr-review-x-1/graph/events",
+		"/runs/attempt-pr-review-x-1/runs/attempt-pr-review-x-1-run/logs",
+	}
+	for _, path := range paths {
+		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, srv.URL+path, nil)
+		req.Header.Set("X-Authentik-Username", "bob")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("bob probe %s: %v", path, err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("bob %s: status = %d, want 404 (existence leak)", path, resp.StatusCode)
+		}
+		if strings.Contains(string(body), "pr-review-x") {
+			t.Errorf("bob %s: body leaks attempt/workflow identifiers", path)
+		}
+	}
+
+	// The owner still gets through.
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, srv.URL+paths[0], nil)
+	req.Header.Set("X-Authentik-Username", "alice")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("alice probe: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("alice graph stream status = %d, want 200", resp.StatusCode)
 	}
 }

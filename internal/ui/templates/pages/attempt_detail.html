@@ -172,19 +172,37 @@
 			running: '↻ running', pending: '· pending', external: '◇ external' }[status] || status;
 	}
 
+	// Rows are built with createElement/textContent — NEVER innerHTML
+	// concatenation. Summaries originate in gate/plugin output, so they are
+	// attacker-influenced text; the DOM API keeps them inert.
 	function show(nodeID) {
 		var d = dataFor(nodeID);
 		if (!d) return;
-		var rows = '<div class="rg-panel-title"><code>' + nodeID + '</code></div>' +
-			'<dl class="ds-definition-list">' +
-			'<dt>State</dt><dd>' + stateLabel(d.status) + '</dd>';
-		if (d.summary) rows += '<dt>Summary</dt><dd>' + d.summary + '</dd>';
-		if (d.runID) rows += '<dt>Run</dt><dd><code>' + d.runID + '</code></dd>';
-		if (d.producedAt) rows += '<dt>Finished</dt><dd>' + d.producedAt + '</dd>';
-		if (d.claims) rows += '<dt>Claims</dt><dd>' + d.claims + '</dd>';
-		if (d.refs) rows += '<dt>Evidence refs</dt><dd>' + d.refs + '</dd>';
-		if (d.triggeredBy) rows += '<dt>Triggered by</dt><dd>' + d.triggeredBy + '</dd>';
-		panel.innerHTML = rows + '</dl>';
+		panel.textContent = '';
+		var title = document.createElement('div');
+		title.className = 'rg-panel-title';
+		var code = document.createElement('code');
+		code.textContent = nodeID;
+		title.appendChild(code);
+		panel.appendChild(title);
+		var dl = document.createElement('dl');
+		dl.className = 'ds-definition-list';
+		function row(label, value) {
+			var dt = document.createElement('dt');
+			dt.textContent = label;
+			var dd = document.createElement('dd');
+			dd.textContent = value;
+			dl.appendChild(dt);
+			dl.appendChild(dd);
+		}
+		row('State', stateLabel(d.status));
+		if (d.summary) row('Summary', d.summary);
+		if (d.runID) row('Run', d.runID);
+		if (d.producedAt) row('Finished', d.producedAt);
+		if (d.claims) row('Claims', d.claims);
+		if (d.refs) row('Evidence refs', d.refs);
+		if (d.triggeredBy) row('Triggered by', d.triggeredBy);
+		panel.appendChild(dl);
 	}
 
 	section.addEventListener('mouseover', function (e) {

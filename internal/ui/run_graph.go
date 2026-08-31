@@ -269,7 +269,7 @@ func layoutGraph(gs v1alpha1.GraphSpec, latest map[string]v1alpha1.NodeResultEnv
 		y := graphMargin + r*(graphNodeH+graphRowGap)
 		views = append(views, graphNodeView{
 			ID:     n.ID,
-			Label:  truncate(label, graphLabelLimit),
+			Label:  truncateRunes(label, graphLabelLimit),
 			Type:   n.Type,
 			Status: status,
 			X:      x,
@@ -323,11 +323,17 @@ func isExternalNode(nodes []v1alpha1.NodeSpec, id string) bool {
 	return false
 }
 
-func truncate(s string, n int) string {
-	if len(s) <= n {
+// truncateRunes truncates by runes (byte slicing corrupts multi-byte labels)
+// and appends an ellipsis. Shared with the template funcMap.
+func truncateRunes(s string, n int) string {
+	runes := []rune(s)
+	if len(runes) <= n {
 		return s
 	}
-	return s[:n-1] + "…"
+	if n <= 1 {
+		return "…"
+	}
+	return string(runes[:n-1]) + "…"
 }
 
 // handleRunGraphSSE streams the run-detail graph fragment for one attempt.
@@ -350,8 +356,10 @@ func (s *Server) handleRunGraphSSE(w http.ResponseWriter, r *http.Request) {
 	s.streamFragments(w, r, sub, cancel, runGraphEventName, render, 0)
 }
 
-// attemptOr404 resolves the {name} path value to an owned attempt; unknown
-// or foreign attempts are 404, never a 200 error page.
+// attemptOr404 resolves the {name} path value to an attempt the caller owns:
+// unknown, foreign, and unowned attempts are indistinguishable 404s (no
+// existence leak), never a 200 error page. The multi-tenant gate lives HERE
+// so every attempt-scoped fragment/stream endpoint inherits it.
 func (s *Server) attemptOr404(w http.ResponseWriter, r *http.Request) (*v1alpha1.Attempt, bool) {
 	name := r.PathValue("name")
 	if name == "" {
@@ -365,6 +373,10 @@ func (s *Server) attemptOr404(w http.ResponseWriter, r *http.Request) (*v1alpha1
 			return nil, false
 		}
 		s.renderError(w, r, "Failed to get attempt: "+err.Error())
+		return nil, false
+	}
+	if att.Labels[v1alpha1.OwnerLabel] != identityFromContext(r.Context()).Username {
+		http.NotFound(w, r)
 		return nil, false
 	}
 	return att, true

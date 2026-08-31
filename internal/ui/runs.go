@@ -38,9 +38,9 @@ type runLogsData struct {
 
 // handleRunLogs renders the log fragment for one run of an attempt.
 //
-// Security: the Attempt lookup IS the gate — only the attempt owner reaches
-// this handler (same chain as the run detail page). A user who knows a Job
-// name but owns no attempt containing it gets 404.
+// Security: attemptOr404 gates ownership, and the run name must exist in the
+// attempt's recorded run list. A forged name in the URL never reaches pod
+// discovery.
 func (s *Server) handleRunLogs(w http.ResponseWriter, r *http.Request) {
 	attemptName := r.PathValue("name")
 	jobName := r.PathValue("job")
@@ -51,10 +51,6 @@ func (s *Server) handleRunLogs(w http.ResponseWriter, r *http.Request) {
 
 	att, ok := s.attemptOr404(w, r)
 	if !ok {
-		return
-	}
-	if att.Labels[v1alpha1.OwnerLabel] != identityFromContext(r.Context()).Username {
-		http.NotFound(w, r)
 		return
 	}
 

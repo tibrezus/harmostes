@@ -80,13 +80,6 @@ ui:
   resources:
     requests: { cpu: 50m, memory: 64Mi }
     limits:   { cpu: 500m, memory: 256Mi }
-  # RBAC (G8): restrict node types by Authentik group. The policy is mounted
-  # as a JSON ConfigMap and loaded at startup. Empty map = all unrestricted.
-  # Default: deployment nodes (vela-app, flux-reconcile) require ops or admin.
-  rbac:
-    nodeTypePolicy:
-      vela-app: ["ops", "admin"]
-      flux-reconcile: ["ops", "admin"]
   # Platform display configs (plug-and-play). Any platform string is accepted
   # for token creation — this only provides display metadata (label, color).
   # Add new platforms here (GitOps); no code change needed.

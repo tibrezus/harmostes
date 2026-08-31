@@ -39,7 +39,7 @@ Honest: show what happened, not what looks good. Failed runs are red. Broken pip
 
 4. **Read the machine, not the marketing.** Raw output over summaries. Gate stderr over "validation failed." Tool call results over "tool completed." The UI surfaces what the system produced, unedited.
 
-5. **Code-first, UI-observe.** The UI never creates, edits, or deletes configuration. Workflows and templates are YAML in GitOps. The UI reads and displays. Operational actions (trigger, toggle) are the only writes.
+5. **Code-first, UI-observe.** The UI never creates, edits, or deletes configuration — and has no write surfaces at all: no trigger, toggle, or creation flows. Workflows and templates are YAML in GitOps (Flux-provisioned); the UI reads and displays.
 
 ## Accessibility
 

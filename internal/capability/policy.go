@@ -15,7 +15,7 @@
 // binding's Granted slice is the authority scope for that binding. A node's
 // Requires slice lists {binding, capability} pairs. Matching is exact, except
 // that a Granted entry of "*" is a wildcard granting any capability on that
-// binding (mirrors the "*" wildcard convention in internal/rbac).
+// binding (wildcard convention: "*" grants any capability on the binding).
 package capability
 
 import (
@@ -36,7 +36,7 @@ type Violation struct {
 
 // Error carries all violations found during an Authorize call, so the caller
 // (UI / executor) can surface every problem at once instead of just the first.
-// Matches the convention in internal/rbac.
+// Matches the aggregate-error convention of capability validation.
 type Error struct {
 	Violations []Violation
 }

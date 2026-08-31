@@ -158,30 +158,6 @@ func extractPrepareRepos(rawConfig json.RawMessage) []string {
 	return cfg.Repos
 }
 
-// parseGitTarget extracts the host and owner/repo from a git URL.
-// "https://github.com/rezuscloud/signoz.git" → ("github.com", "rezuscloud/signoz")
-// "git@github.com:rezuscloud/signoz.git" → ("github.com", "rezuscloud/signoz")
-func parseGitURL(rawURL string) (host, object string) {
-	s := strings.TrimSpace(rawURL)
-	if s == "" {
-		return "", ""
-	}
-	// SSH form: git@host:path
-	if i := strings.Index(s, ":"); i > 0 && strings.Contains(s[:i], "@") {
-		host = s[:i]
-		if at := strings.LastIndex(host, "@"); at >= 0 {
-			host = host[at+1:]
-		}
-		object = strings.TrimSuffix(s[i+1:], ".git")
-		return host, object
-	}
-	// HTTPS form
-	if u, err := url.Parse(s); err == nil && u.Host != "" {
-		return u.Host, strings.TrimSuffix(strings.TrimPrefix(u.Path, "/"), ".git")
-	}
-	return "", s
-}
-
 // formatDuration renders a duration for UI display (compact, one decimal).
 func formatDuration(d time.Duration) string {
 	if d < time.Minute {

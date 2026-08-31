@@ -1,8 +1,4 @@
 {{define "pages/workflows.html"}}
-<div class="ds-section ds-section--row">
-	<p class="ds-empty-text">Workflows are created here — instantiate a reusable template. This is the only creation surface; every workflow you create is visible to you.</p>
-	<a href="/workflows/new" class="ds-button ds-button--primary">New Workflow</a>
-</div>
 {{- if not .Workflows}}
 <div class="ds-empty">
 	<div class="ds-empty-icon">
@@ -11,7 +7,7 @@
 		</svg>
 	</div>
 	<span class="ds-empty-title">No Workflows Yet</span>
-	<p class="ds-empty-text">You have no workflows. <a href="/workflows/new">Create one</a> to start automating with harmostes.</p>
+	<p class="ds-empty-text">No workflows are visible to your account. Workflows are provisioned by the platform (Flux-managed); access is granted via the harmostes.dev/owner label.</p>
 </div>
 {{- else}}
 {{range .GateGroups}}

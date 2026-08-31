@@ -49,9 +49,6 @@ spec:
           imagePullPolicy: Always
           args:
             - --namespace={{ .Values.namespace }}
-            {{- if .Values.ui.rbac }}
-            - --rbac-policy=/etc/harmostes-rbac/policy.json
-            {{- end }}
             - --platforms-config=/etc/harmostes-platforms/platforms.json
           env:
             - name: HARMOSTES_NAMESPACE
@@ -85,21 +82,11 @@ spec:
             periodSeconds: 30
           resources:
             {{- toYaml .Values.ui.resources | nindent 12 }}
-          {{- if .Values.ui.rbac }}
           volumeMounts:
-            - name: rbac-policy
-              mountPath: /etc/harmostes-rbac
-              readOnly: true
-          {{- end }}
             - name: platforms-config
               mountPath: /etc/harmostes-platforms
               readOnly: true
       volumes:
-        {{- if .Values.ui.rbac }}
-        - name: rbac-policy
-          configMap:
-            name: harmostes-ui-rbac
-        {{- end }}
         - name: platforms-config
           configMap:
             name: harmostes-ui-platforms

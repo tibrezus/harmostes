@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,6 +11,12 @@ import (
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
 )
+
+// withIdentity is a test helper that injects an Identity into the context
+// (bypassing the auth middleware which reads HTTP headers).
+func withIdentity(ctx context.Context, id *Identity) context.Context {
+	return context.WithValue(ctx, identityKey, id)
+}
 
 func TestExtractIdentity_AuthentikHeaders(t *testing.T) {
 	tests := []struct {
@@ -197,69 +204,6 @@ func TestParseTemplates(t *testing.T) {
 	}
 }
 
-// TestSanitizeLabels_AntiSpoof is the Phase B anti-spoofing acceptance test:
-// a client-supplied harmostes.dev/owner label is always stripped and replaced
-// with the authenticated user's username. The server never trusts the
-// client-supplied owner — a malicious user cannot create a workflow under
-// another user's identity.
-func TestSanitizeLabels_AntiSpoof(t *testing.T) {
-	t.Run("strips spoofed owner and stamps authenticated user", func(t *testing.T) {
-		input := map[string]string{
-			v1alpha1.OwnerLabel:    "victim", // attacker tries to impersonate
-			v1alpha1.WorkflowLabel: "llm-wiki",
-			"env":                  "prod",
-		}
-		got := SanitizeLabels(input, "alice")
-		if got[v1alpha1.OwnerLabel] != "alice" {
-			t.Errorf("owner = %q, want alice (spoofed value must be replaced)", got[v1alpha1.OwnerLabel])
-		}
-		if _, ok := got[v1alpha1.WorkflowLabel]; ok {
-			t.Error("workflow label should be stripped (controller-managed)")
-		}
-		if got["env"] != "prod" {
-			t.Error("non-harmostes labels should be preserved")
-		}
-	})
-
-	t.Run("nil map returns new map with owner", func(t *testing.T) {
-		got := SanitizeLabels(nil, "alice")
-		if got[v1alpha1.OwnerLabel] != "alice" {
-			t.Errorf("owner = %q, want alice", got[v1alpha1.OwnerLabel])
-		}
-	})
-
-	t.Run("empty owner omits label", func(t *testing.T) {
-		input := map[string]string{v1alpha1.OwnerLabel: "someone"}
-		got := SanitizeLabels(input, "")
-		if _, ok := got[v1alpha1.OwnerLabel]; ok {
-			t.Error("owner label should be absent when owner is empty")
-		}
-	})
-}
-
-// TestStampOwnerLabel verifies that StampOwnerLabel sets the owner on a
-// Workflow CR, stripping any pre-existing value first (anti-spoof).
-func TestStampOwnerLabel(t *testing.T) {
-	t.Run("stamps owner on fresh CR", func(t *testing.T) {
-		wf := &v1alpha1.Workflow{}
-		StampOwnerLabel(wf, "alice")
-		if wf.Labels[v1alpha1.OwnerLabel] != "alice" {
-			t.Errorf("owner = %q, want alice", wf.Labels[v1alpha1.OwnerLabel])
-		}
-	})
-
-	t.Run("replaces spoofed owner", func(t *testing.T) {
-		wf := &v1alpha1.Workflow{}
-		wf.Labels = map[string]string{v1alpha1.OwnerLabel: "victim"}
-		StampOwnerLabel(wf, "alice")
-		if wf.Labels[v1alpha1.OwnerLabel] != "alice" {
-			t.Errorf("owner = %q, want alice (must replace spoofed value)", wf.Labels[v1alpha1.OwnerLabel])
-		}
-	})
-}
-
-// The global filter topbar was removed (#245): no ds-topbar on any page, and
-// the identity badge + theme toggle live in the page header instead.
 func TestLayoutHasNoGlobalTopbar(t *testing.T) {
 	s := newAttemptTestServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/timeline", nil)

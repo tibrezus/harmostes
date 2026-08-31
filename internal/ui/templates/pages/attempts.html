@@ -35,7 +35,7 @@
 			<div style="padding: 0 1rem 0.75rem;">
 				{{range .Attempts}}
 				<div style="display: flex; gap: 0.75rem; align-items: baseline; padding: 0.25rem 0; border-top: 1px solid var(--ds-border-faint);">
-					<a href="/attempts/{{.Name}}" class="ds-link" style="min-width: 14rem;"><code>{{.Name}}</code></a>
+					<a href="/runs/{{.Name}}" class="ds-link" style="min-width: 14rem;"><code>{{.Name}}</code></a>
 					<span class="ds-card-meta">{{.Phase}}</span>
 					<span class="ds-card-meta">{{.RunCount}} run{{if ne .RunCount 1}}s{{end}}</span>
 					{{if .LastRunAt}}<span class="ds-card-meta">{{.LastRunAt}}</span>{{end}}
@@ -46,7 +46,7 @@
 		{{else}}
 		<div class="ds-empty-state">
 			<p>No attempts in this window. Attempts appear when a workflow runs.</p>
-			<p><a href="/attempts?window=all" class="ds-link">Show all</a> · <a href="/workflows" class="ds-link">View workflows →</a></p>
+			<p><a href="/runs?window=all" class="ds-link">Show all</a> · <a href="/workflows" class="ds-link">View workflows →</a></p>
 		</div>
 		{{end}}
 	</div>

@@ -1,0 +1,15 @@
+{{define "pages/frag_run_logs.html"}}
+{{- /* frag_run_logs.html — inner HTML of the per-run logs slot (HTMX fragment).
+      The container on the attempt detail page owns the hx-get/hx-trigger
+      attributes, so polling survives every swap. */ -}}
+{{- if .LogsError}}
+<div class="ds-callout ds-callout--warning">{{.LogsError}}</div>
+{{- else if .PodGone}}
+<div class="ds-callout ds-callout--info">Pod recycled — the live log is gone.
+	<a class="ds-link" href="/runs/{{.AttemptName}}/runs/{{.RunName}}/session">Session transcript</a> persists.</div>
+{{- else}}
+<div class="ds-card-meta">{{.PodName}} · {{.PodPhase}}{{if .ExitCode}} · exit {{.ExitCode}}{{end}}{{if .Duration}} · {{.Duration}}{{end}}</div>
+<pre class="log-output">{{range $line := splitLines .Logs}}<div class="log-line {{$line | logLineClass}}">{{$line}}</div>
+{{end}}</pre>
+{{- end}}
+{{end}}

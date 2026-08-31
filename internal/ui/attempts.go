@@ -8,6 +8,7 @@ import (
 	"sort"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
@@ -196,7 +197,8 @@ func claimState(r *v1alpha1.ReviewClaimStatus) string {
 	}
 }
 
-// attemptDetailData is the template data for the attempt detail page.
+// attemptDetailData is the template data for the run detail page
+// (an Attempt rendered as a Run — the execution spine).
 type attemptDetailData struct {
 	Name           string
 	WorkflowRef    string
@@ -212,6 +214,20 @@ type attemptDetailData struct {
 	Evidence       []v1alpha1.EvidenceReference
 	Owner          string
 	AgentEnabled   bool
+	Claim          *claimView // review-gate claim state (nil = not a gated attempt)
+	LastRunAt      string
+	TotalDuration  string // earliest run start → latest run end ("" if unknown)
+}
+
+// claimView is the review-gate claim state attached to a run.
+type claimView struct {
+	PR            string // host/owner/name#N (normalized)
+	HeadSHA       string
+	State         string // dispatched | released | armed/waiting…
+	ArmedSince    string
+	DispatchedAt  string
+	Released      bool
+	ReleaseReason string
 }
 
 type runSummary struct {
@@ -293,8 +309,63 @@ func (s *Server) handleAttemptDetail(w http.ResponseWriter, r *http.Request) {
 		Evidence:       att.Status.Evidence,
 		Owner:          att.Spec.Owner,
 		AgentEnabled:   agentEnabled,
+		LastRunAt:      formatMetaTime(att.Status.LastRunAt),
+		TotalDuration:  runsSpan(runs),
+	}
+	if rv := att.Status.Review; rv != nil {
+		data.Claim = &claimView{
+			PR:            rv.PR,
+			HeadSHA:       rv.HeadSHA,
+			State:         claimState(rv),
+			Released:      rv.Released,
+			ReleaseReason: rv.ReleaseReason,
+			ArmedSince:    formatMetaTimePtr(rv.ArmedSince),
+			DispatchedAt:  formatMetaTimePtr(rv.DispatchedAt),
+		}
 	}
 	s.render(w, r, "pages/attempt_detail.html", data)
+}
+
+// formatMetaTime renders a metav1.Time for dense display; zero → "".
+func formatMetaTime(t metav1.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.Time.Format("2006-01-02 15:04:05 MST")
+}
+
+func formatMetaTimePtr(t *metav1.Time) string {
+	if t == nil {
+		return ""
+	}
+	return formatMetaTime(*t)
+}
+
+// runsSpan spans the earliest run start → latest run end across a run list.
+// Empty when the attempt has no timestamped runs.
+func runsSpan(runs []runSummary) string {
+	var earliest, latest time.Time
+	for _, r := range runs {
+		for _, t := range []string{r.StartedAt, r.EndedAt} {
+			if t == "" {
+				continue
+			}
+			pt, err := time.Parse("2006-01-02 15:04:05 MST", t)
+			if err != nil {
+				continue
+			}
+			if earliest.IsZero() || pt.Before(earliest) {
+				earliest = pt
+			}
+			if pt.After(latest) {
+				latest = pt
+			}
+		}
+	}
+	if earliest.IsZero() {
+		return ""
+	}
+	return formatDuration(latest.Sub(earliest))
 }
 
 // attemptSessionData is the template data for the agent session viewer.

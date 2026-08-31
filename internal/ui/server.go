@@ -127,11 +127,18 @@ func (s *Server) Routes() http.Handler {
 	pages.HandleFunc("GET /metrics", s.handleMetricsView)
 	pages.HandleFunc("GET /sessions", s.handleSessionsView)
 
-	// Observability-first: Attempts (execution history timeline)
-	pages.HandleFunc("GET /attempts", s.handleAttemptList)
-	pages.HandleFunc("GET /attempts/{name}", s.handleAttemptDetail)
-	pages.HandleFunc("GET /attempts/{name}/runs/{job}/session", s.handleAttemptSession)
-	pages.HandleFunc("GET /attempts/{name}/runs/{job}/pi-session", s.handleAttemptPiSession)
+	// Runs — the execution spine (Attempts under the hood, ADR-0005). One
+	// history: list, detail (metadata + node results + per-run logs +
+	// transcripts), and the legacy /attempts deep links.
+	pages.HandleFunc("GET /runs", s.handleAttemptList)
+	pages.HandleFunc("GET /runs/{name}", s.handleAttemptDetail)
+	pages.HandleFunc("GET /runs/{name}/runs/{job}/logs", s.handleRunLogs)
+	pages.HandleFunc("GET /runs/{name}/runs/{job}/session", s.handleAttemptSession)
+	pages.HandleFunc("GET /runs/{name}/runs/{job}/pi-session", s.handleAttemptPiSession)
+	pages.HandleFunc("GET /attempts", redirectAttempts)
+	pages.HandleFunc("GET /attempts/{name}", redirectAttempts)
+	pages.HandleFunc("GET /attempts/{name}/runs/{job}/session", redirectAttempts)
+	pages.HandleFunc("GET /attempts/{name}/runs/{job}/pi-session", redirectAttempts)
 
 	// Workflows — read-only reference catalog (config is GitOps YAML).
 	// The UI is observe-only: no create, trigger, toggle, or delete surfaces.
@@ -141,7 +148,7 @@ func (s *Server) Routes() http.Handler {
 	pages.HandleFunc("GET /templates", s.handleTemplateList)
 	pages.HandleFunc("GET /templates/{name}", s.handleTemplateDetail)
 	pages.HandleFunc("GET /workflows/{name}", s.handleWorkflowDetail)
-	pages.HandleFunc("GET /workflows/{name}/runs/{job}", s.handleRunDetail)
+	pages.HandleFunc("GET /workflows/{name}/runs/{job}", s.handleWorkflowRunRedirect)
 
 	// Read-only graph API (auto-generated from Workflow spec — no editing)
 	pages.HandleFunc("GET /api/workflows/{name}/graph", s.handleWorkflowGraphAPI)
@@ -368,9 +375,9 @@ func pageTitle(page string) string {
 	case "pages/sessions.html":
 		return "Sessions"
 	case "pages/attempts.html":
-		return "Attempts"
+		return "Runs"
 	case "pages/attempt_detail.html":
-		return "Attempt Detail"
+		return "Run Detail"
 	case "pages/session.html":
 		return "Agent Session"
 	case "pages/templates.html":
@@ -381,8 +388,6 @@ func pageTitle(page string) string {
 		return "Workflows"
 	case "pages/detail.html":
 		return "Workflow Detail"
-	case "pages/run_detail.html":
-		return "Run Detail"
 	case "pages/error.html":
 		return "Error"
 	default:
@@ -402,11 +407,9 @@ func pageKey(page string) string {
 	case strings.HasPrefix(page, "pages/sessions"):
 		return "sessions"
 	case strings.HasPrefix(page, "pages/attempts"):
-		return "attempts"
-	case strings.HasPrefix(page, "pages/attempt_detail"):
-		return "attempts"
+		return "runs"
 	case strings.HasPrefix(page, "pages/session"):
-		return "attempts"
+		return "runs"
 	case strings.HasPrefix(page, "pages/templates"):
 		return "templates"
 	case strings.HasPrefix(page, "pages/template_detail"):

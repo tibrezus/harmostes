@@ -1,12 +1,13 @@
 {{define "pages/attempt_detail.html"}}
-{{- /* attempt_detail.html — single Attempt: objective, runs, node results, evidence. */ -}}
+{{- /* attempt_detail.html — one Run (an Attempt): metadata, claim state, runs,
+      per-run logs, node results, evidence. The execution spine's detail view. */ -}}
 <div class="page-content">
 	<!-- Header -->
 	<div class="ds-section">
 		<div class="ds-section-header">
 			<div>
 				<h2 class="ds-section-title">{{.PrimarySubject}}</h2>
-				<span class="ds-card-meta">{{.ObjectiveKind}} · <a href="/workflows/{{.WorkflowLink}}" class="ds-link">{{.WorkflowLink}}</a></span>
+				<span class="ds-card-meta"><code>{{.Name}}</code> · {{.ObjectiveKind}} · <a href="/workflows/{{.WorkflowLink}}" class="ds-link">{{.WorkflowLink}}</a>{{if .TotalDuration}} · total {{.TotalDuration}}{{end}}{{if .LastRunAt}} · last run {{.LastRunAt}}{{end}}</span>
 			</div>
 			{{if eq .Phase "validated"}}<span class="ds-status-badge ds-status-badge--positive">✓ Validated</span>
 			{{else if eq .Phase "reconciling"}}<span class="ds-status-badge ds-status-badge--warning">↻ Reconciling</span>
@@ -20,6 +21,31 @@
 	{{if .Message}}
 	<div class="ds-section">
 		<div class="ds-callout ds-callout--info">{{.Message}}</div>
+	</div>
+	{{end}}
+
+	{{if .Claim}}
+	<!-- Review claim -->
+	<div class="ds-section">
+		<h3 class="ds-section-heading">Review Claim</h3>
+		<dl class="ds-definition-list">
+			<dt>Pull Request</dt>
+			<dd><code>{{.Claim.PR}}</code></dd>
+			{{if .Claim.HeadSHA}}
+			<dt>Head SHA</dt>
+			<dd><code>{{.Claim.HeadSHA}}</code></dd>
+			{{end}}
+			<dt>Claim State</dt>
+			<dd>{{.Claim.State}}{{if .Claim.Released}} ({{.Claim.ReleaseReason}}){{end}}</dd>
+			{{if .Claim.ArmedSince}}
+			<dt>Armed</dt>
+			<dd>{{.Claim.ArmedSince}}</dd>
+			{{end}}
+			{{if .Claim.DispatchedAt}}
+			<dt>Dispatched</dt>
+			<dd>{{.Claim.DispatchedAt}}</dd>
+			{{end}}
+		</dl>
 	</div>
 	{{end}}
 
@@ -43,14 +69,21 @@
 			<div class="ds-timeline-item">
 				<div class="ds-timeline-marker ds-timeline-marker--{{if eq .Phase "succeeded"}}positive{{else if eq .Phase "failed"}}negative{{else}}warning{{end}}"></div>
 				<div class="ds-timeline-content">
-					<a href="/workflows/{{$.WorkflowLink}}/runs/{{.Name}}" class="ds-link"><code>{{.Name}}</code></a>
-					{{if $.AgentEnabled}}<a href="/attempts/{{$.Name}}/runs/{{.Name}}/session" class="ds-btn ds-btn--secondary ds-btn--xs" title="View agent session transcript">📜 Session</a>{{end}}
+					<code>{{.Name}}</code>
 					{{if eq .Phase "succeeded"}}<span class="ds-status-badge ds-status-badge--positive">✓</span>
 					{{else if eq .Phase "failed"}}<span class="ds-status-badge ds-status-badge--negative">✗</span>
 					{{else}}<span class="ds-status-badge ds-status-badge--warning">↻ {{.Phase}}</span>
 					{{end}}
 					<br>
 					<span class="ds-card-meta">{{.StartedAt}}{{if .EndedAt}} → {{.EndedAt}}{{end}}</span>
+					<div class="runlogs-slot" id="runlogs-{{.Name}}"
+						hx-get="/runs/{{$.Name}}/runs/{{.Name}}/logs"
+						hx-target="#runlogs-{{.Name}}"
+						hx-swap="innerHTML"
+						{{- if eq .Phase "running"}} hx-trigger="load delay:200ms, every 3s"{{- else}} hx-trigger="click"{{- end}}>
+						<button type="button" class="ds-btn ds-btn--secondary ds-btn--xs" title="Pod log tail; the session transcript persists after the pod is recycled">Logs</button>
+					</div>
+					{{if $.AgentEnabled}}<a href="/runs/{{$.Name}}/runs/{{.Name}}/session" class="ds-btn ds-btn--secondary ds-btn--xs" title="View agent session transcript">📜 Session</a>{{end}}
 				</div>
 			</div>
 			{{end}}

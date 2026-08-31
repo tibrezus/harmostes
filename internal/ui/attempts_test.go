@@ -310,8 +310,8 @@ func TestAttemptDetail_PrefixedWorkflowRef(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("session status = %d, body: %s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), `href="/workflows/pr-review-x/runs/worker-pool-pod-xyz"`) {
-		t.Error("session back-link not stripped of platform prefix")
+	if !strings.Contains(rec.Body.String(), `href="/runs/attempt-pr-review-x-1"`) {
+		t.Error("session back-link should point at the attempt on the runs spine")
 	}
 	// The writer keys sessions by the bare name; the stub only answers that
 	// key, so a hit also proves the read key matches the writer's.

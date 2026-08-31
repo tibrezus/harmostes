@@ -229,6 +229,13 @@ func TestWriteSurfaceRemoved(t *testing.T) {
 		{http.MethodPost, "/workflows/pr-review-harmostes/trigger"},
 		{http.MethodPost, "/workflows/pr-review-harmostes/toggle"},
 		{http.MethodPost, "/workflows/pr-review-harmostes/delete"},
+		// Graph write handlers exist in no route table and must never re-arm:
+		// PUT (spec.graph overwrite), PATCH-style convert, and create-by-canvas
+		// are all mutations under the observe-only contract (#290).
+		{http.MethodPut, "/api/workflows/pr-review-harmostes/graph"},
+		{http.MethodPost, "/api/workflows/pr-review-harmostes/graph"},
+		{http.MethodPost, "/api/workflows/pr-review-harmostes/convert"},
+		{http.MethodPost, "/api/workflows"},
 	}
 	for _, tc := range cases {
 		if tc.method == http.MethodGet {

@@ -84,7 +84,7 @@ func TestAuthorize_WildcardGrant(t *testing.T) {
 }
 
 // TestAuthorize_CollectsAllViolations — the engine does not short-circuit;
-// every unmet requirement is reported (matches internal/rbac convention).
+// every unmet requirement is reported (aggregate-error convention).
 func TestAuthorize_CollectsAllViolations(t *testing.T) {
 	bindings := []v1alpha1.ExternalSystemBinding{
 		binding("sourceRepo", "repository.read"),

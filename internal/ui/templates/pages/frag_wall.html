@@ -1,0 +1,42 @@
+{{define "pages/frag_wall.html"}}
+{{- /* frag_wall.html — the wall grid. Rendered by the page AND streamed as an
+      SSE fragment on every lifecycle event (one template, one truth). */ -}}
+<div class="wall-grid">
+{{- range .Groups}}
+	<div class="ds-card wall-card">
+		<a class="wall-card-link" href="{{.LastRunURL}}" aria-label="Open latest run of {{.Subject}}"></a>
+		<div class="wall-card-head">
+			{{if .IsReview}}<span class="wall-card-title">⟡ {{.Subject}}</span>
+			{{else}}<span class="wall-card-title"><code>{{.Subject}}</code></span>{{end}}
+			{{if .IsReview}}
+				{{if eq .ClaimState "review in flight"}}<span class="ds-status-badge ds-status-badge--warning">● in flight</span>
+				{{else if eq .ClaimState "verdict posted"}}<span class="ds-status-badge ds-status-badge--positive">✓ verdict</span>
+				{{else if eq .ClaimState "queued"}}<span class="ds-status-badge ds-status-badge--neutral">◌ armed</span>
+				{{else}}<span class="ds-status-badge ds-status-badge--neutral">{{.ClaimState}}</span>{{end}}
+			{{else if eq .Phase "validated"}}<span class="ds-status-badge ds-status-badge--positive">✓ validated</span>
+			{{else if eq .Phase "reconciling"}}<span class="ds-status-badge ds-status-badge--warning">↻ running</span>
+			{{else if eq .Phase "failed"}}<span class="ds-status-badge ds-status-badge--negative">✗ failed</span>
+			{{else}}<span class="ds-status-badge ds-status-badge--neutral">{{.Phase}}</span>{{end}}
+		</div>
+		<div class="wall-card-meta">
+			<span>{{.WorkflowRef}}</span>
+			{{if .HeadSHA}}<span>· <code>{{.HeadSHA}}</code></span>{{end}}
+			{{if .Count}}<span>· {{.Count}} run{{if ne .Count 1}}s{{end}}</span>{{end}}
+			{{if .LastActivity}}<span>· {{.LastActivity}}</span>{{end}}
+		</div>
+		{{if .Usage}}
+		<div class="wall-card-meta wall-card-usage">
+			{{if .Usage.Model}}<span class="wall-usage-model">{{.Usage.Model}}</span>{{end}}
+			<span>↑{{.Usage.InputTokens}} ↓{{.Usage.OutputTokens}}</span>
+			{{if .Usage.Turns}}<span>· {{.Usage.Turns}} turns</span>{{end}}
+		</div>
+		{{end}}
+	</div>
+{{- else}}
+	<div class="ds-empty-state">
+		<p>Nothing has run yet. The wall lights up when a workflow runs.</p>
+		<p><a href="/workflows" class="ds-link">View workflows →</a></p>
+	</div>
+{{- end}}
+</div>
+{{end}}

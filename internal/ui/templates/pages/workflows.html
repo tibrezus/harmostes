@@ -1,4 +1,8 @@
 {{define "pages/workflows.html"}}
+<div class="page-tabs">
+	<a href="/workflows" class="page-tab page-tab--active">Workflows</a>
+	<a href="/templates" class="page-tab">Templates</a>
+</div>
 {{- if not .Workflows}}
 <div class="ds-empty">
 	<div class="ds-empty-icon">
@@ -60,9 +64,7 @@
 					{{- end}}
 				</td>
 				<td class="ds-table-td wf-actions">
-					<a href="/timeline?workflow={{.Name}}" class="ds-btn ds-btn--xs ds-btn--secondary" title="Execution runtime: gate transitions, nodes, agent turns">⏱ Timeline</a>
-					<a href="/sessions?workflow={{.Name}}" class="ds-btn ds-btn--xs ds-btn--secondary" title="Agent session transcripts">💬 Sessions</a>
-					<a href="/workflows/{{.Name}}" class="ds-btn ds-btn--xs ds-btn--secondary" title="Detail, trigger, toggle">▸ Detail</a>
+					<a href="/workflows/{{.Name}}" class="ds-btn ds-btn--xs ds-btn--secondary" title="Spec, graph, recent runs">▸ Detail</a>
 				</td>
 			</tr>
 			{{- end}}

@@ -489,6 +489,7 @@ func (e *GraphExecutor) Execute(ctx context.Context, graph v1alpha1.GraphSpec, p
 			NodeType:   node.Type,
 			Status:     string(nodeResult.Status),
 			Feedback:   nodeResult.Feedback,
+			Outputs:    nodeResult.Outputs,
 			DurationMs: durationMs,
 			Envelope:   &completedEnv,
 		}

@@ -9,18 +9,6 @@ import (
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
 )
 
-// handleIndex redirects to the workflow list.
-func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
-	// Only match exact "/" — Go 1.22 mux matches subtree for "/".
-	if r.URL.Path != "/" {
-		http.NotFound(w, r)
-		return
-	}
-	http.Redirect(w, r, "/runs", http.StatusSeeOther)
-}
-
-// handleWorkflowList renders all workflows owned by the current user,
-// grouped by gate archetype.
 func (s *Server) handleWorkflowList(w http.ResponseWriter, r *http.Request) {
 	owner := identityFromContext(r.Context()).Username
 	workflows, err := s.listWorkflows(r, owner)

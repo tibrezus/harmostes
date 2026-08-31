@@ -96,13 +96,6 @@ ui:
     - id: codeberg
       label: Codeberg
       color: "#2185d0"
-  # SigNoz integration for the Metrics view (token histograms, durations).
-  # The URL is the internal cluster service (avoids gateway auth on the
-  # external URL). The API key is synced from BSM via ExternalSecret.
-  signoz:
-    url: http://signoz.signoz.svc.cluster.local:8080
-    apiKeySecret: signoz-api   # k8s Secret in harmostes ns with key SIGNOZ_API_KEY
-
 # Observability via the rezuscloud/dapr fork: push traces+metrics+logs over OTLP
 # to SigNoz through a unified spec.observability.otel block, deployed per-pod via
 # dapr.io/sidecar-image. See llm-wiki: concepts/harmostes-observability.md and

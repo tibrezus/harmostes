@@ -198,10 +198,9 @@ func TestWorkflowListHubTable(t *testing.T) {
 			t.Errorf("missing %q", want)
 		}
 	}
-	// Quick actions preset the workflow context.
+	// Quick actions preset the workflow context (timeline/sessions views are
+	// removed destinations — #290).
 	for _, href := range []string{
-		`href="/timeline?workflow=pr-review-harmostes"`,
-		`href="/sessions?workflow=pr-review-harmostes"`,
 		`href="/workflows/pr-review-harmostes"`,
 	} {
 		if !strings.Contains(body, href) {
@@ -263,13 +262,17 @@ func TestWriteSurfaceRemoved(t *testing.T) {
 		}
 	}
 
-	// The index must land on the runs history (the interim spine until the
-	// live wall exists), not the removed map view.
+	// The index IS the live wall now (milestone 3): real page, no redirect.
 	req = httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("X-Authentik-Username", "alice")
 	rec = httptest.NewRecorder()
 	s.Routes().ServeHTTP(rec, req)
-	if loc := rec.Header().Get("Location"); rec.Code != http.StatusSeeOther || loc != "/runs" {
-		t.Errorf("/ redirect: got status %d Location %q, want 303 -> /runs", rec.Code, loc)
+	if rec.Code != http.StatusOK {
+		t.Errorf("/ status = %d, want 200 (live wall)", rec.Code)
+	}
+	for _, marker := range []string{"wall-grid", "EventSource('/api/wall/events')"} {
+		if !strings.Contains(rec.Body.String(), marker) {
+			t.Errorf("/ missing wall marker %q", marker)
+		}
 	}
 }

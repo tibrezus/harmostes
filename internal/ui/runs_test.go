@@ -68,12 +68,18 @@ func makeAttempt(name, owner, workflow, runName, phase string) *v1alpha1.Attempt
 	}
 }
 
-func makePod(name, jobName string, phase corev1.PodPhase) *corev1.Pod {
+// makePod builds an attempt-runner pod the way BuildJob does: the
+// harmostes.dev/attempt label from the Job's pod template, container "run",
+// and the pod name equal to the RunRecord name (downward-API POD_NAME).
+func makePod(name, attemptName string, phase corev1.PodPhase) *corev1.Pod {
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: "harmostes",
-			Labels:    map[string]string{"job-name": jobName},
+			Labels:    map[string]string{v1alpha1.AttemptLabel: attemptName},
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{Name: "run"}},
 		},
 		Status: corev1.PodStatus{Phase: phase},
 	}
@@ -150,7 +156,7 @@ func TestRedirectAttempts_PreservesPathAndQuery(t *testing.T) {
 
 func TestRunLogs_PodAlive(t *testing.T) {
 	att := makeAttempt("attempt-x", "alice", "wf-a", "job-1", "running")
-	pod := makePod("job-1-pod", "job-1", corev1.PodRunning)
+	pod := makePod("job-1", "attempt-x", corev1.PodRunning)
 	pod.Status.StartTime = &metav1.Time{Time: metav1.Now().Time}
 	s := runsTestServer(att, pod)
 
@@ -167,7 +173,7 @@ func TestRunLogs_PodAlive(t *testing.T) {
 	if !strings.Contains(body, "workflow started") || !strings.Contains(body, "plugin stderr output here") {
 		t.Errorf("fragment missing log content:\n%s", body)
 	}
-	if !strings.Contains(body, "job-1-pod") {
+	if !strings.Contains(body, "job-1 · Running") {
 		t.Errorf("fragment missing pod metadata:\n%s", body)
 	}
 	if strings.Contains(body, "Pod recycled") {
@@ -212,7 +218,7 @@ func TestRunLogs_ForgedJobName(t *testing.T) {
 
 func TestRunLogs_ForeignOwner(t *testing.T) {
 	att := makeAttempt("attempt-x", "alice", "wf-a", "job-1", "succeeded")
-	pod := makePod("job-1-pod", "job-1", corev1.PodRunning)
+	pod := makePod("job-1", "attempt-x", corev1.PodRunning)
 	s := runsTestServer(att, pod)
 
 	req := httptest.NewRequest(http.MethodGet, "/runs/attempt-x/runs/job-1/logs", nil)
@@ -227,7 +233,7 @@ func TestRunLogs_ForeignOwner(t *testing.T) {
 
 func TestRunLogs_NilLogFetch(t *testing.T) {
 	att := makeAttempt("attempt-x", "alice", "wf-a", "job-1", "running")
-	pod := makePod("job-1-pod", "job-1", corev1.PodRunning)
+	pod := makePod("job-1", "attempt-x", corev1.PodRunning)
 	s := runsTestServer(att, pod)
 	s.logFetch = nil
 
@@ -262,27 +268,6 @@ func TestFormatLogs_Empty(t *testing.T) {
 	}
 }
 
-func TestSelectPod_PrefersRunning(t *testing.T) {
-	older := makePod("older", "j", corev1.PodSucceeded)
-	newer := makePod("newer", "j", corev1.PodSucceeded)
-	newer.CreationTimestamp = metav1.Now()
-	running := makePod("running", "j", corev1.PodRunning)
-	got := selectPod([]corev1.Pod{*older, *newer, *running})
-	if got.Name != "running" {
-		t.Errorf("selectPod picked %q, want running", got.Name)
-	}
-}
-
-func TestSelectPod_LatestWhenNoRunning(t *testing.T) {
-	older := makePod("older", "j", corev1.PodSucceeded)
-	newer := makePod("newer", "j", corev1.PodSucceeded)
-	newer.CreationTimestamp = metav1.Now()
-	got := selectPod([]corev1.Pod{*older, *newer})
-	if got.Name != "newer" {
-		t.Errorf("selectPod picked %q, want newer", got.Name)
-	}
-}
-
 func TestPodExitCode_NotTerminated(t *testing.T) {
 	pod := makePod("p", "j", corev1.PodRunning)
 	if code := podExitCode(*pod); code != nil {
@@ -290,17 +275,17 @@ func TestPodExitCode_NotTerminated(t *testing.T) {
 	}
 }
 
-func TestListPodsForJob(t *testing.T) {
+func TestListAttemptPods(t *testing.T) {
 	att := makeAttempt("attempt-x", "alice", "wf-a", "job-1", "running")
-	pod := makePod("job-1-pod", "job-1", corev1.PodRunning)
+	pod := makePod("job-1", "attempt-x", corev1.PodRunning)
 	s := runsTestServer(att, pod)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	pods, err := s.listPodsForJob(req, "job-1")
+	pods, err := s.listAttemptPods(req, "attempt-x")
 	if err != nil {
-		t.Fatalf("listPodsForJob: %v", err)
+		t.Fatalf("listAttemptPods: %v", err)
 	}
-	if len(pods) != 1 || pods[0].Name != "job-1-pod" {
-		t.Errorf("pods = %v, want [job-1-pod]", pods)
+	if len(pods) != 1 || pods[0].Name != "job-1" {
+		t.Errorf("pods = %v, want [job-1]", pods)
 	}
 }

@@ -1,11 +1,13 @@
 package ui
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
@@ -49,6 +51,10 @@ func (s *Server) handleRunLogs(w http.ResponseWriter, r *http.Request) {
 
 	att, err := s.getAttempt(r, attemptName)
 	if err != nil {
+		if apierrors.IsNotFound(err) {
+			http.NotFound(w, r)
+			return
+		}
 		s.renderError(w, r, "Failed to get attempt: "+err.Error())
 		return
 	}
@@ -77,15 +83,25 @@ func (s *Server) handleRunLogs(w http.ResponseWriter, r *http.Request) {
 		RunPhase:    runPhase,
 	}
 
-	pods, err := s.listPodsForJob(r, jobName)
+	pods, err := s.listAttemptPods(r, attemptName)
 	if err != nil {
-		s.logger.Error("list pods for run logs", "job", jobName, "err", err)
+		s.logger.Error("list pods for run logs", "attempt", attemptName, "err", err)
 		data.LogsError = "Failed to list pods: " + err.Error()
 		s.renderFragment(w, "pages/frag_run_logs.html", data)
 		return
 	}
 
-	if len(pods) == 0 {
+	// RunRecord.Name is the pod name on the Job execution model (the worker
+	// reads its own pod name via the downward API). Match exactly — a run
+	// without a live matching pod is a recycled pod.
+	var pod *corev1.Pod
+	for i := range pods {
+		if pods[i].Name == jobName {
+			pod = &pods[i]
+			break
+		}
+	}
+	if pod == nil {
 		// Pod GC'd (the normal terminal state under Job-per-attempt).
 		// The session transcript persists in the state store — point there.
 		data.PodGone = true
@@ -93,18 +109,17 @@ func (s *Server) handleRunLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	pod := selectPod(pods)
 	data.PodName = pod.Name
 	data.PodPhase = string(pod.Status.Phase)
-	data.ExitCode = podExitCode(pod)
-	data.Duration = podDuration(pod)
+	data.ExitCode = podExitCode(*pod)
+	data.Duration = podDuration(*pod)
 
 	if s.logFetch == nil {
 		data.LogsError = "log streaming not configured"
 		s.renderFragment(w, "pages/frag_run_logs.html", data)
 		return
 	}
-	logs, err := s.logFetch(r.Context(), s.namespace, pod.Name, "worker")
+	logs, err := s.logFetch(r.Context(), s.namespace, pod.Name, resolveContainer(pod))
 	if err != nil {
 		s.logger.Error("fetch run logs", "pod", pod.Name, "err", err)
 		data.LogsError = "Failed to fetch logs: " + err.Error()
@@ -112,6 +127,40 @@ func (s *Server) handleRunLogs(w http.ResponseWriter, r *http.Request) {
 		data.Logs = formatLogs(logs)
 	}
 	s.renderFragment(w, "pages/frag_run_logs.html", data)
+}
+
+// listAttemptPods lists the live pods of an attempt — BuildJob stamps the
+// harmostes.dev/attempt label on the Job's pod template (there is no
+// job-name label: k8s >= 1.31 no longer stamps it, and RunRecord.Name is
+// the pod name, not the Job name). Absence is the normal terminal state.
+func (s *Server) listAttemptPods(r *http.Request, attemptName string) ([]corev1.Pod, error) {
+	var podList corev1.PodList
+	if err := s.k8sClient.List(r.Context(), &podList,
+		client.InNamespace(s.namespace),
+		client.MatchingLabels{v1alpha1.AttemptLabel: attemptName},
+	); err != nil {
+		return nil, fmt.Errorf("list pods for attempt %s: %w", attemptName, err)
+	}
+	return podList.Items, nil
+}
+
+// resolveContainer picks the worker container to stream: the attempt Job
+// names it "run"; legacy pool pods named it "worker". Falls back to the
+// first container so a future rename degrades to best-effort, not failure.
+func resolveContainer(pod *corev1.Pod) string {
+	names := make(map[string]bool, len(pod.Spec.Containers))
+	for _, c := range pod.Spec.Containers {
+		names[c.Name] = true
+	}
+	for _, want := range []string{"run", "worker"} {
+		if names[want] {
+			return want
+		}
+	}
+	if len(pod.Spec.Containers) > 0 {
+		return pod.Spec.Containers[0].Name
+	}
+	return "run"
 }
 
 // renderFragment executes a page template standalone (no layout wrapper).
@@ -185,26 +234,12 @@ func redirectAttempts(w http.ResponseWriter, r *http.Request) {
 // Pod helpers (shared by the logs fragment)
 // ---------------------------------------------------------------------------
 
-// selectPod picks the most relevant pod from a list: prefers a running pod,
-// otherwise the one with the latest creation timestamp.
-func selectPod(pods []corev1.Pod) corev1.Pod {
-	var best corev1.Pod
-	for _, p := range pods {
-		if p.Status.Phase == corev1.PodRunning {
-			return p
-		}
-		if best.Name == "" || p.CreationTimestamp.After(best.CreationTimestamp.Time) {
-			best = p
-		}
-	}
-	return best
-}
-
 // podExitCode extracts the worker container's exit code from the pod's
 // container statuses. Returns nil if the container hasn't terminated yet.
 func podExitCode(pod corev1.Pod) *int32 {
+	want := resolveContainer(&pod)
 	for _, cs := range pod.Status.ContainerStatuses {
-		if cs.Name != "worker" {
+		if cs.Name != want {
 			continue
 		}
 		if cs.LastTerminationState.Terminated != nil {

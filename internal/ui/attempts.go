@@ -291,8 +291,11 @@ func (s *Server) handleAttemptDetail(w http.ResponseWriter, r *http.Request) {
 			Phase:     run.Phase,
 		})
 	}
+	// Total span needs BOTH ends: an in-flight run has StartedAt but no
+	// EndedAt — subtracting a zero time would render a negative geological
+	// age in the header.
 	totalDuration := ""
-	if !earliest.IsZero() {
+	if !earliest.IsZero() && !latest.IsZero() {
 		totalDuration = formatDuration(latest.Sub(earliest))
 	}
 

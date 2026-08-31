@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
-	"strings"
 	"time"
 )
 
@@ -185,84 +184,14 @@ func (s *Server) renderWallFragment(r *http.Request, owner string) (string, erro
 	return buf.String(), nil
 }
 
-// handleWallSSE streams the wall grid as Server-Sent Events. Every lifecycle
-// event triggers one debounced re-render (a rendered HTML fragment, swapped
-// client-side); a slow ticker keeps relative times fresh without events.
+// handleWallSSE streams the wall grid: re-rendered on every lifecycle event
+// (debounced), plus a slow ticker that keeps relative ages fresh without
+// events. Rendering is cache-only — never the state store.
 func (s *Server) handleWallSSE(w http.ResponseWriter, r *http.Request) {
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		s.writeAPIError(w, http.StatusInternalServerError, "streaming not supported")
-		return
-	}
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Accel-Buffering", "no")
-
-	// Subscribe("") receives ALL pipelines' events (global fan-out).
-	sub, cancel := s.hub.Subscribe("")
-	defer cancel()
-
 	owner := identityFromContext(r.Context()).Username
-
-	send := func() {
-		html, err := s.renderWallFragment(r, owner)
-		if err != nil {
-			s.logger.Error("wall sse render", "err", err)
-			return // keep the stream alive; the next tick retries
-		}
-		fmt.Fprintf(w, "event: %s\n", wallEventName)
-		for _, line := range strings.Split(html, "\n") {
-			fmt.Fprintf(w, "data: %s\n", line)
-		}
-		fmt.Fprint(w, "\n")
-		flusher.Flush()
-	}
-
-	send() // initial paint — the wall is correct before any event arrives
-
-	heartbeat := time.NewTicker(sseHeartbeat)
-	defer heartbeat.Stop()
-	rerender := time.NewTicker(wallRerender)
-	defer rerender.Stop()
-
-	// Event bursts coalesce: the timer signals the select loop via a channel
-	// (never write to w from the timer's goroutine — one writer, the loop).
-	kicks := make(chan struct{}, 1)
-	var debounce *time.Timer
-	defer func() {
-		if debounce != nil {
-			debounce.Stop()
-		}
-	}()
-
-	for {
-		select {
-		case <-r.Context().Done():
-			return
-		case <-heartbeat.C:
-			fmt.Fprintf(w, ": heartbeat\n\n")
-			flusher.Flush()
-		case <-rerender.C:
-			send()
-		case _, ok := <-sub.ch:
-			if !ok {
-				return
-			}
-			if debounce == nil {
-				debounce = time.AfterFunc(wallDebounce, func() {
-					select {
-					case kicks <- struct{}{}:
-					default:
-					}
-				})
-			} else {
-				debounce.Reset(wallDebounce)
-			}
-		case <-kicks:
-			send()
-		}
-	}
+	render := func() (string, error) { return s.renderWallFragment(r, owner) }
+	sub, cancel := s.hub.Subscribe("")
+	s.streamFragments(w, r, sub, cancel, wallEventName, render, wallRerender)
 }
 
 // jsonInt extracts an int from a JSON-roundtripped value (numbers decode as

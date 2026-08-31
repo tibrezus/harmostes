@@ -1,0 +1,27 @@
+{{define "pages/frag_run_graph.html"}}
+{{- /* frag_run_graph.html — the attempt's workflow graph as SVG: layered
+      layout, per-node state colors, pulsing live position. Re-rendered over
+      SSE; the hover panel lives OUTSIDE this fragment (delegation survives
+      swaps). */ -}}
+{{- with .Graph}}
+{{- if .Available}}
+<svg id="run-graph-svg" viewBox="0 0 {{.Width}} {{.Height}}" width="{{.Width}}" height="{{.Height}}" role="img" aria-label="Workflow graph for {{.Workflow}}">
+	{{range .Edges}}
+	<path class="rg-edge" d="{{.Path}}"></path>
+	{{end}}
+	{{range .Nodes}}
+	<g class="rg-node rg-node--{{.Status}}" data-node="{{.ID}}" tabindex="0">
+		<title>{{.ID}} — {{.Status}}</title>
+		<rect class="rg-box" x="{{.X}}" y="{{.Y}}" width="168" height="40" rx="6"></rect>
+		{{if eq .Status "running"}}<circle class="rg-pulse" cx="{{.PulseX}}" cy="{{.PulseY}}" r="5"></circle>{{end}}
+		<text class="rg-label" x="{{.LabelX}}" y="{{.LabelY}}">{{.Label}}</text>
+		<text class="rg-type" x="{{.TypeX}}" y="{{.TypeY}}">{{.Type}}</text>
+	</g>
+	{{end}}
+</svg>
+{{- else}}
+<div class="ds-callout ds-callout--info">{{.Reason}}</div>
+{{- end}}
+{{- end}}
+<script id="run-graph-data" type="application/json">{{.NodeDataJSON}}</script>
+{{end}}

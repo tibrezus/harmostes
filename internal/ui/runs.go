@@ -1,13 +1,13 @@
 package ui
 
 import (
+	"bytes"
 	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
@@ -49,13 +49,8 @@ func (s *Server) handleRunLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	att, err := s.getAttempt(r, attemptName)
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			http.NotFound(w, r)
-			return
-		}
-		s.renderError(w, r, "Failed to get attempt: "+err.Error())
+	att, ok := s.attemptOr404(w, r)
+	if !ok {
 		return
 	}
 	if att.Labels[v1alpha1.OwnerLabel] != identityFromContext(r.Context()).Username {
@@ -129,6 +124,20 @@ func (s *Server) handleRunLogs(w http.ResponseWriter, r *http.Request) {
 		data.Logs = formatLogs(logs)
 	}
 	s.renderFragment(w, "pages/frag_run_logs.html", data)
+}
+
+// renderFragmentString renders a template fragment to a string (for SSE
+// delivery). Mirror of renderFragment for non-HTTP writers.
+func (s *Server) renderFragmentString(name string, data any) (string, error) {
+	tmpl := s.templates.Lookup(name)
+	if tmpl == nil {
+		return "", fmt.Errorf("template not found: %s", name)
+	}
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, data); err != nil {
+		return "", fmt.Errorf("render %s: %w", name, err)
+	}
+	return buf.String(), nil
 }
 
 // listAttemptPods lists the live pods of an attempt — BuildJob stamps the

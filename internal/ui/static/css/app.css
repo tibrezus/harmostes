@@ -1939,3 +1939,83 @@ code, pre {
 	font-weight: 600;
 	border-bottom-color: var(--ds-accent, currentColor);
 }
+
+/* ---------------------------------------------------------------------------
+   Run-detail timeline graph (milestone 4): layered SVG, node states, live
+   position pulse, hover panel
+   --------------------------------------------------------------------------- */
+.run-graph-layout {
+	display: flex;
+	gap: 1rem;
+	align-items: flex-start;
+	flex-wrap: wrap;
+}
+.run-graph-stream {
+	flex: 1 1 420px;
+	min-width: 0;
+	overflow-x: auto;
+}
+.rg-panel {
+	flex: 0 1 300px;
+	border: 1px solid var(--ds-border-faint);
+	border-radius: 6px;
+	padding: 0.75rem 1rem;
+	min-height: 4rem;
+	background: var(--ds-bg-elevated, transparent);
+}
+.rg-panel-empty {
+	color: var(--ds-text-muted);
+	font-size: 0.8rem;
+}
+.rg-panel-title {
+	margin-bottom: 0.4rem;
+}
+.rg-node {
+	cursor: pointer;
+}
+.rg-node:focus {
+	outline: none;
+}
+.rg-box {
+	fill: var(--ds-bg-elevated, var(--ds-bg, #fff));
+	stroke: var(--ds-border);
+	stroke-width: 1.5;
+}
+.rg-node--ok .rg-box { stroke: var(--ds-positive, #2e7d32); stroke-width: 2; }
+.rg-node--failed .rg-box { stroke: var(--ds-negative, #c62828); stroke-width: 2; }
+.rg-node--skipped .rg-box { stroke-dasharray: 4 3; }
+.rg-node--skipped .rg-label { fill: var(--ds-text-muted); }
+.rg-node--external .rg-box { stroke-dasharray: 2 3; }
+.rg-node--external .rg-label { fill: var(--ds-text-muted); }
+.rg-node--pending .rg-box { stroke-dasharray: none; opacity: 0.75; }
+.rg-node--running .rg-box {
+	stroke: var(--ds-warning, #ef6c00);
+	stroke-width: 2.5;
+	animation: rg-live 1.6s ease-in-out infinite;
+}
+.rg-pulse {
+	fill: var(--ds-warning, #ef6c00);
+	animation: rg-pulse 1.6s ease-in-out infinite;
+}
+@keyframes rg-live {
+	0%, 100% { stroke-opacity: 1; }
+	50% { stroke-opacity: 0.45; }
+}
+@keyframes rg-pulse {
+	0%, 100% { opacity: 1; }
+	50% { opacity: 0.25; }
+}
+.rg-label {
+	font-size: 13px;
+	fill: var(--ds-text);
+}
+.rg-type {
+	font-size: 10px;
+	fill: var(--ds-text-muted);
+	text-anchor: end;
+}
+.rg-edge {
+	fill: none;
+	stroke: var(--ds-border);
+	stroke-width: 1.5;
+}

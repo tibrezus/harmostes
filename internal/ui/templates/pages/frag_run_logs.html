@@ -1,0 +1,19 @@
+{{define "pages/frag_run_logs.html"}}
+{{- /* frag_run_logs.html — replaces the per-run logs slot (HTMX outerHTML).
+      Polling continues only while the run is in flight, the pod is alive, and
+      nothing errored: a terminal or failed fetch renders a static node so the
+      3s churn stops. */ -}}
+{{- $poll := and (eq .RunPhase "running") (not .LogsError) .PodName -}}
+<div id="runlogs-{{.RunName}}"{{if $poll}} hx-get="/runs/{{.AttemptName}}/runs/{{.RunName}}/logs" hx-trigger="every 3s" hx-swap="outerHTML"{{end}}>
+{{- if .LogsError}}
+	<div class="ds-callout ds-callout--warning">{{.LogsError}}</div>
+{{- else if .PodGone}}
+	<div class="ds-callout ds-callout--info">Pod recycled — the live log is gone.
+		<a class="ds-link" href="/runs/{{.AttemptName}}/runs/{{.RunName}}/session">Session transcript</a> persists.</div>
+{{- else}}
+	<div class="ds-card-meta">{{.PodName}} · {{.PodPhase}}{{if .ExitNote}} · {{.ExitNote}}{{end}}{{if .Duration}} · {{.Duration}}{{end}}</div>
+	<pre class="log-output">{{range $line := splitLines .Logs}}<div class="log-line {{$line | logLineClass}}">{{$line}}</div>
+{{end}}</pre>
+{{- end}}
+</div>
+{{end}}

@@ -76,7 +76,7 @@ func (s *Server) handleSessionsView(w http.ResponseWriter, r *http.Request) {
 				Attempt:    att.Name,
 				Phase:      run.Phase,
 				StartedAt:  run.StartedAt.Time,
-				SessionURL: fmt.Sprintf("/attempts/%s/runs/%s/session", att.Name, run.Name),
+				SessionURL: fmt.Sprintf("/runs/%s/runs/%s/session", att.Name, run.Name),
 				Subject:    subjects[att.Name],
 			}
 			entries = append(entries, entry)

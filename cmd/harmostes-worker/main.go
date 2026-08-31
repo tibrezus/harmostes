@@ -344,6 +344,14 @@ func runOneShot() {
 	graphCtx, graphCancel := context.WithTimeout(graphCtx, runTimeout(wf))
 	defer graphCancel()
 
+	// Record the run as started BEFORE executing: without this the Attempt's
+	// run list only ever shows terminal records, so the UI cannot show a live
+	// tail for an in-flight run (the dispatcher does not record starts). Best-
+	// effort and idempotent (upsertRun) — mirrors recordAttemptOutcome below,
+	// and runName() here equals the name the outcome upserts, so a crash that
+	// never reaches the outcome path leaves an honest 'running' record.
+	recordAttemptStarted(ctx, cl)
+
 	graphDeps := graph.Dependencies{
 		PluginResolver: deps.Plugins,
 		AgentRunner:    deps.Agent,
@@ -449,6 +457,20 @@ func patchWorkflowStatus(ctx context.Context, c client.Client, namespace, name s
 		}
 	}); err != nil {
 		logf("warn: patch workflow status: %v", err)
+	}
+}
+
+// recordAttemptStarted marks this run 'running' in the Attempt's canonical
+// history before graph execution begins. Best-effort mirror of
+// recordAttemptOutcome: empty HARMOSTES_ATTEMPT (non-Job context) is a no-op;
+// errors are logged and never abort the run.
+func recordAttemptStarted(ctx context.Context, c client.Client) {
+	attemptName := os.Getenv("HARMOSTES_ATTEMPT")
+	if attemptName == "" {
+		return
+	}
+	if err := attempt.RecordRunStarted(ctx, c, os.Getenv("HARMOSTES_NAMESPACE"), attemptName, runName()); err != nil {
+		logf("warn: record attempt started %s: %v", attemptName, err)
 	}
 }
 

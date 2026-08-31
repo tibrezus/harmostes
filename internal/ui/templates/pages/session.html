@@ -21,15 +21,15 @@
 			<div>
 				<h2 class="ds-section-title">Agent Session</h2>
 				<span class="ds-card-meta">
-					<a href="/attempts/{{.AttemptName}}" class="ds-link">{{.AttemptName}}</a> ·
-					<a href="/workflows/{{.WorkflowRef}}/runs/{{.RunName}}" class="ds-link"><code>{{.RunName}}</code></a>
+					<a href="/runs/{{.AttemptName}}" class="ds-link">{{.AttemptName}}</a> ·
+					<a href="/runs/{{.AttemptName}}" class="ds-link"><code>{{.RunName}}</code></a>
 				</span>
 			</div>
 			{{if $s.Green}}<span class="ds-status-badge ds-status-badge--positive">✓ Green</span>
 			{{else}}<span class="ds-status-badge ds-status-badge--negative">✗ Failed</span>
 			{{end}}
 			{{if $.HasPiSession}}
-			<a href="/attempts/{{$.AttemptName}}/runs/{{$.RunName}}/pi-session" class="ds-btn ds-btn--secondary ds-btn--xs" title="Download the agent's exact pi session — forkable into a local pi">⎇ Fork session</a>
+			<a href="/runs/{{$.AttemptName}}/runs/{{$.RunName}}/pi-session" class="ds-btn ds-btn--secondary ds-btn--xs" title="Download the agent's exact pi session — forkable into a local pi">⎇ Fork session</a>
 			{{end}}
 		</div>
 		<div class="ds-card-meta">

@@ -269,7 +269,7 @@ func TestWriteSurfaceRemoved(t *testing.T) {
 	req.Header.Set("X-Authentik-Username", "alice")
 	rec = httptest.NewRecorder()
 	s.Routes().ServeHTTP(rec, req)
-	if loc := rec.Header().Get("Location"); rec.Code != http.StatusSeeOther || loc != "/attempts" {
-		t.Errorf("/ redirect: got status %d Location %q, want 303 -> /attempts", rec.Code, loc)
+	if loc := rec.Header().Get("Location"); rec.Code != http.StatusSeeOther || loc != "/runs" {
+		t.Errorf("/ redirect: got status %d Location %q, want 303 -> /runs", rec.Code, loc)
 	}
 }

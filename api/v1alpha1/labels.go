@@ -19,4 +19,10 @@ const (
 	// WorkflowLabel links a worker Job to its parent Workflow CR. Both the
 	// controller (Job creation) and the UI (Job filtering) use this constant.
 	WorkflowLabel = "harmostes.dev/workflow"
+
+	// AttemptLabel links an attempt-runner Job (and its pods, via the Job's
+	// pod template) to the Attempt CR that owns the run. Set by BuildJob;
+	// consumed by the UI's run-log discovery and the dispatcher's liveness
+	// checks.
+	AttemptLabel = "harmostes.dev/attempt"
 )

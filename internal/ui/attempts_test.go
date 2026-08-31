@@ -77,7 +77,7 @@ func TestAttemptDetail_HidesSessionLinkForDeterministicWorkflow(t *testing.T) {
 	}
 
 	srv := newAttemptTestServer(t, wf, att)
-	req := httptest.NewRequest("GET", "/attempts/attempt-fork-maintenance-forgejo-abc123", nil)
+	req := httptest.NewRequest("GET", "/runs/attempt-fork-maintenance-forgejo-abc123", nil)
 	req = req.WithContext(withTestIdentity(context.Background()))
 	req.SetPathValue("name", "attempt-fork-maintenance-forgejo-abc123")
 
@@ -85,7 +85,7 @@ func TestAttemptDetail_HidesSessionLinkForDeterministicWorkflow(t *testing.T) {
 	srv.handleAttemptDetail(rec, req)
 
 	body := rec.Body.String()
-	sessionURL := "/attempts/attempt-fork-maintenance-forgejo-abc123/runs/worker-pool-pod-abc/session"
+	sessionURL := "/runs/attempt-fork-maintenance-forgejo-abc123/runs/worker-pool-pod-abc/session"
 	if strings.Contains(body, sessionURL) {
 		t.Error("Session link should NOT be shown for deterministic workflows (agent disabled)")
 	}
@@ -119,7 +119,7 @@ func TestAttemptDetail_ShowsSessionLinkForAgentWorkflow(t *testing.T) {
 	}
 
 	srv := newAttemptTestServer(t, wf, att)
-	req := httptest.NewRequest("GET", "/attempts/attempt-wiki-lint-harmostes-abc123", nil)
+	req := httptest.NewRequest("GET", "/runs/attempt-wiki-lint-harmostes-abc123", nil)
 	req = req.WithContext(withTestIdentity(context.Background()))
 	req.SetPathValue("name", "attempt-wiki-lint-harmostes-abc123")
 
@@ -127,7 +127,7 @@ func TestAttemptDetail_ShowsSessionLinkForAgentWorkflow(t *testing.T) {
 	srv.handleAttemptDetail(rec, req)
 
 	body := rec.Body.String()
-	sessionURL := "/attempts/attempt-wiki-lint-harmostes-abc123/runs/worker-pool-pod-xyz/session"
+	sessionURL := "/runs/attempt-wiki-lint-harmostes-abc123/runs/worker-pool-pod-xyz/session"
 	if !strings.Contains(body, sessionURL) {
 		t.Error("Session link should be shown for agent-enabled workflows")
 	}
@@ -155,7 +155,7 @@ func TestAttemptSession_DeterministicEmptyState(t *testing.T) {
 	}
 
 	srv := newAttemptTestServer(t, wf, att)
-	req := httptest.NewRequest("GET", "/attempts/attempt-fork-maintenance-forgejo-abc123/runs/worker-pod-abc/session", nil)
+	req := httptest.NewRequest("GET", "/runs/attempt-fork-maintenance-forgejo-abc123/runs/worker-pod-abc/session", nil)
 	req = req.WithContext(withTestIdentity(context.Background()))
 	req.SetPathValue("name", "attempt-fork-maintenance-forgejo-abc123")
 	req.SetPathValue("job", "worker-pod-abc")
@@ -195,7 +195,7 @@ func TestAttemptSession_AgentWorkflowNotFoundState(t *testing.T) {
 	}
 
 	srv := newAttemptTestServer(t, wf, att)
-	req := httptest.NewRequest("GET", "/attempts/attempt-wiki-lint-harmostes-abc123/runs/worker-pod-xyz/session", nil)
+	req := httptest.NewRequest("GET", "/runs/attempt-wiki-lint-harmostes-abc123/runs/worker-pod-xyz/session", nil)
 	req = req.WithContext(withTestIdentity(context.Background()))
 	req.SetPathValue("name", "attempt-wiki-lint-harmostes-abc123")
 	req.SetPathValue("job", "worker-pod-xyz")
@@ -255,7 +255,7 @@ func TestAttemptDetail_PrefixedWorkflowRef(t *testing.T) {
 
 	// Detail page: the agentEnabled Get must resolve the bare CR name —
 	// with the raw ref the Get fails and the Session link never renders.
-	req := httptest.NewRequest("GET", "/attempts/attempt-pr-review-x-1", nil)
+	req := httptest.NewRequest("GET", "/runs/attempt-pr-review-x-1", nil)
 	req = req.WithContext(withTestIdentity(context.Background()))
 	req.SetPathValue("name", "attempt-pr-review-x-1")
 	rec := httptest.NewRecorder()
@@ -264,21 +264,26 @@ func TestAttemptDetail_PrefixedWorkflowRef(t *testing.T) {
 		t.Fatalf("status = %d", rec.Code)
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, "/attempts/attempt-pr-review-x-1/runs/worker-pool-pod-xyz/session") {
+	if !strings.Contains(body, "/runs/attempt-pr-review-x-1/runs/worker-pool-pod-xyz/session") {
 		t.Error("Session link missing: agentEnabled Get failed on prefixed ref")
 	}
-	// Run links and header link must carry the bare CR name.
-	if !strings.Contains(body, `href="/workflows/pr-review-x/runs/worker-pool-pod-xyz"`) {
-		t.Error("run link not stripped of platform prefix")
+	// Header link must carry the bare CR name; the old per-run Job links
+	// (/workflows/{wf}/runs/{job}) are gone — runs render as code + Logs/Session
+	// affordances on the attempt spine.
+	if !strings.Contains(body, `href="/workflows/pr-review-x"`) {
+		t.Error("header link not stripped of platform prefix")
 	}
 	if strings.Contains(body, `href="/workflows/test-ns/`) {
 		t.Error("header link still carries the platform prefix")
+	}
+	if strings.Contains(body, `href="/workflows/pr-review-x/runs/`) {
+		t.Error("dead Job link (ephemeral run page) still rendered")
 	}
 
 	// Session page: dapr is nil here so the no-record branch renders —
 	// the deterministic empty state prints the workflow name; it must be
 	// the bare CR name, never the prefixed ref.
-	req = httptest.NewRequest("GET", "/attempts/attempt-pr-review-x-1/runs/worker-pool-pod-xyz/session", nil)
+	req = httptest.NewRequest("GET", "/runs/attempt-pr-review-x-1/runs/worker-pool-pod-xyz/session", nil)
 	req = req.WithContext(withTestIdentity(context.Background()))
 	req.SetPathValue("name", "attempt-pr-review-x-1")
 	req.SetPathValue("job", "worker-pool-pod-xyz")
@@ -296,7 +301,7 @@ func TestAttemptDetail_PrefixedWorkflowRef(t *testing.T) {
 	// stub the state store to return one and assert the href.
 	srv.logger = slog.Default() // render logs execution errors
 	srv.dapr = &stubSessionDapr{key: "pr-review-x:worker-pool-pod-xyz:session"}
-	req = httptest.NewRequest("GET", "/attempts/attempt-pr-review-x-1/runs/worker-pool-pod-xyz/session", nil)
+	req = httptest.NewRequest("GET", "/runs/attempt-pr-review-x-1/runs/worker-pool-pod-xyz/session", nil)
 	req = req.WithContext(withTestIdentity(context.Background()))
 	req.SetPathValue("name", "attempt-pr-review-x-1")
 	req.SetPathValue("job", "worker-pool-pod-xyz")
@@ -305,8 +310,8 @@ func TestAttemptDetail_PrefixedWorkflowRef(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("session status = %d, body: %s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), `href="/workflows/pr-review-x/runs/worker-pool-pod-xyz"`) {
-		t.Error("session back-link not stripped of platform prefix")
+	if !strings.Contains(rec.Body.String(), `href="/runs/attempt-pr-review-x-1"`) {
+		t.Error("session back-link should point at the attempt on the runs spine")
 	}
 	// The writer keys sessions by the bare name; the stub only answers that
 	// key, so a hit also proves the read key matches the writer's.
@@ -406,7 +411,7 @@ func TestSessionPageTemplateDelegatedNotDeterministic(t *testing.T) {
 	srv := newAttemptTestServer(t, wf, tmpl, att)
 	srv.logger = slog.Default()
 
-	req := httptest.NewRequest("GET", "/attempts/attempt-pr-review-x-1/runs/pool-pod-1/session", nil)
+	req := httptest.NewRequest("GET", "/runs/attempt-pr-review-x-1/runs/pool-pod-1/session", nil)
 	req = req.WithContext(withTestIdentity(req.Context()))
 	req.SetPathValue("name", "attempt-pr-review-x-1")
 	req.SetPathValue("job", "pool-pod-1")

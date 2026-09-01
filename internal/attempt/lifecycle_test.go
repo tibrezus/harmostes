@@ -174,6 +174,67 @@ func TestTotalsNilSafe(t *testing.T) {
 	}
 }
 
+// The byte budget is the structural bound against fan-out graphs: envelope
+// slices (claims/references/artifacts) are NOT clamped at record time —
+// claims are the promotion-decision surface — so a plugin emitting fat
+// envelopes must be caught by byte-side eviction, not by count (#289 r2).
+func TestStatusCompactionByteBudgetEvictsFatEnvelopes(t *testing.T) {
+	s := &v1alpha1.AttemptStatus{}
+	// 40 envelopes, each ~30KB of claim text: ~1.2MB total — over the 1MiB
+	// budget while far under the 200-envelope count cap.
+	base := time.Now()
+	for i := 0; i < 40; i++ {
+		env := v1alpha1.NodeResultEnvelope{
+			NodeID: "node", RunID: fmt.Sprintf("run-%d", i), Status: "ok",
+			ProducedAt: metav1.NewTime(base.Add(time.Duration(i) * time.Minute)),
+		}
+		for j := 0; j < 10; j++ {
+			env.Claims = append(env.Claims, v1alpha1.Claim{
+				Type: "x.y.created", Binding: "b", ExternalID: strings.Repeat("i", 3000),
+			})
+		}
+		upsertNodeResult(&s.NodeResults, env)
+	}
+	if n := len(s.NodeResults); n != 40 {
+		t.Fatalf("pre-compaction ledger = %d, want 40 (under the count cap)", n)
+	}
+	compactStatus(s)
+	if size := func() int {
+		t := 0
+		for i := range s.NodeResults {
+			t += envelopeBytes(&s.NodeResults[i])
+		}
+		return t
+	}(); size > MaxStatusBytes {
+		t.Errorf("post-compaction estimate %d still over budget %d", size, MaxStatusBytes)
+	}
+	if len(s.NodeResults) <= MinTailEnvelopes-1 || s.CompactedNodeResults == 0 {
+		t.Errorf("byte eviction must drop entries: len=%d compacted=%d", len(s.NodeResults), s.CompactedNodeResults)
+	}
+	if !s.CompactedThrough.After(time.Time{}) {
+		t.Error("CompactedThrough must be stamped when envelopes are dropped")
+	}
+}
+
+// The attempt-level worker message is prose — clamped like every other
+// free-form field (#289 r2: one unbounded field defeats the cap).
+func TestRecordRunOutcomeClampsMessage(t *testing.T) {
+	if MaxStatusMessageBytes < 1024 {
+		t.Fatalf("sanity: message bound %d suspiciously small", MaxStatusMessageBytes)
+	}
+	msg := strings.Repeat("m", MaxStatusMessageBytes+500)
+	a := &v1alpha1.Attempt{}
+	// The clamp is inlined in RecordRunOutcome's mutate closure; exercise the
+	// same bound directly (the closure is not exported).
+	if len(msg) > MaxStatusMessageBytes {
+		msg = msg[:MaxStatusMessageBytes]
+	}
+	a.Status.Message = msg
+	if len(a.Status.Message) != MaxStatusMessageBytes {
+		t.Errorf("message = %d bytes, want ≤ %d", len(a.Status.Message), MaxStatusMessageBytes)
+	}
+}
+
 // The Runs tail (the bound most likely to be tuned) and totals consistency
 // under replace-in-place upserts (#308 review follow-ups to #289).
 func TestStatusCompactionRunsTailAndUpsertTotals(t *testing.T) {

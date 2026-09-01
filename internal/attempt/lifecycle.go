@@ -12,6 +12,8 @@ import (
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
 	"github.com/tibrezus/harmostes/internal/claim"
+
+	"log/slog"
 )
 
 // ResolveOptions parameterize ResolveOrCreate.
@@ -86,19 +88,37 @@ func AttemptSpecFromObjective(obj v1alpha1.ObjectiveSpec, opts ResolveOptions) v
 // Status compaction bounds (#289): attempt status patches are etcd requests
 // — past 1.5MB etcd rejects them outright, and deterministic classes (one
 // attempt per objective identity, kept forever) grow status without bound.
-// The CR keeps a bounded tail window plus monotonic counters; the durable
-// record is the timeline store (node boundaries are emitted there per run),
-// so compaction loses render-cache entries, never history.
+// The CR keeps a bounded tail window plus monotonic counters.
+//
+// Retention honesty: the tail + counters on the CR are the DURABLE record.
+// The timeline store bridges only ~7 days (DefaultTTL, "evidence, not
+// audit") — beyond that, compacted-away ledger entries are genuinely gone;
+// CompactedThrough marks the boundary. Known deep-link loss: run names
+// compacted beyond MaxStatusRuns 404 on both the log view and the
+// /runs/{attempt}/runs/{run} redirect (handleRunLogs, handleWorkflowRunRedirect).
 const (
-	// MaxStatusNodeResults bounds the NodeResults tail. A full reconciliation
-	// cycle records one envelope per node; 200 covers any real graph many
-	// times over, so the CURRENT cycle is always fully present.
+	// MaxStatusNodeResults bounds the NodeResults tail by COUNT. A cycle of
+	// an N-node graph with R retries records up to N×R envelopes, so the
+	// count cap alone cannot guarantee the current cycle fits — the byte
+	// budget below is the structural bound (fan-out graphs simply trigger
+	// byte-side eviction sooner); this cap bounds the list length itself.
 	MaxStatusNodeResults = 200
 	// MaxStatusRuns bounds the Runs tail. A running run is by definition
 	// recent — the tail always contains every in-flight record.
 	MaxStatusRuns = 400
 	// MaxStatusEvidence bounds the Evidence tail.
 	MaxStatusEvidence = 200
+	// MaxStatusBytes is the byte budget for the serialized NodeResults tail
+	// (estimated, see envelopeBytes): eviction continues from the head while
+	// the estimate exceeds it. The 1.5MB etcd request limit covers the WHOLE
+	// status; runs/evidence tails are ~100B/entry (≤60KB combined), one
+	// Message ≤4KB, conditions bounded — the 1MiB envelope budget keeps the
+	// total structurally under the limit instead of by today's-shape luck.
+	MaxStatusBytes = 1 << 20
+	// MinTailEnvelopes is the floor the byte eviction never breaches —
+	// compaction must never empty the ledger (the live position and the
+	// current cycle's state resolve from it).
+	MinTailEnvelopes = 32
 	// MaxStatusPayloadBytes drops oversize opaque payloads at record time.
 	// Payload is node-type-specific diagnostics, opaque to the kernel; a
 	// single multi-hundred-KB payload defeats count-based caps.
@@ -107,24 +127,67 @@ const (
 	// can cut a multi-byte rune; JSON renders it U+FFFD — cosmetic, not
 	// corruption of any kernel-read field.
 	MaxStatusSummaryBytes = 1 << 10
+	// MaxStatusMessageBytes clamps the attempt-level worker message.
+	MaxStatusMessageBytes = 4 << 10
 )
+
+// envelopeBytes estimates an envelope's serialized size. It deliberately
+// counts every slice element (claims, references, artifacts, artifacts' and
+// claims' strings) — the whole point is that no field is assumed bounded
+// after the record-time clamps; whatever a plugin emits, the budget sees it.
+// Claims are NOT clamped or dropped anywhere: they are the promotion-decision
+// surface (claim.HasValidated), so their weight is paid here instead.
+func envelopeBytes(env *v1alpha1.NodeResultEnvelope) int {
+	n := len(env.NodeID) + len(env.RunID) + len(env.Status) + len(env.Summary) + len(env.Payload) + 64
+	for _, c := range env.Claims {
+		n += len(c.Type) + len(c.Binding) + len(c.ExternalID) + len(c.URL) + 32
+	}
+	for _, r := range env.References {
+		n += len(r.Kind) + len(r.Identifier) + len(r.URL) + 32
+	}
+	for _, a := range env.Artifacts {
+		n += len(a.Name) + len(a.Path) + len(a.Hash) + 32
+	}
+	return n
+}
 
 // compactStatus enforces the tail windows: entries leave from the HEAD
 // (oldest side — upserts append), the dropped counts accumulate in the
 // matching counters so totals stay derivable (AttemptStatus.TotalRuns et al).
-func compactStatus(s *v1alpha1.AttemptStatus) {
+// NodeResults are additionally bounded by the byte budget — eviction there
+// continues while the estimated size exceeds MaxStatusBytes, stopping at
+// MinTailEnvelopes. Returns the number of dropped entries per list (for the
+// write-path log line).
+func compactStatus(s *v1alpha1.AttemptStatus) (dropped int) {
+	size := 0
+	for i := range s.NodeResults {
+		size += envelopeBytes(&s.NodeResults[i])
+	}
+	for len(s.NodeResults) > MinTailEnvelopes && size > MaxStatusBytes {
+		size -= envelopeBytes(&s.NodeResults[0])
+		if t := s.NodeResults[0].ProducedAt; t.After(s.CompactedThrough.Time) {
+			s.CompactedThrough = t
+		}
+		s.NodeResults = s.NodeResults[1:]
+		s.CompactedNodeResults++
+		dropped++
+	}
 	if drop := len(s.NodeResults) - MaxStatusNodeResults; drop > 0 {
 		s.NodeResults = s.NodeResults[drop:]
 		s.CompactedNodeResults += drop
+		dropped += drop
 	}
 	if drop := len(s.Runs) - MaxStatusRuns; drop > 0 {
 		s.Runs = s.Runs[drop:]
 		s.CompactedRuns += drop
+		dropped += drop
 	}
 	if drop := len(s.Evidence) - MaxStatusEvidence; drop > 0 {
 		s.Evidence = s.Evidence[drop:]
 		s.CompactedEvidence += drop
+		dropped += drop
 	}
+	return dropped
 }
 
 // boundEnvelope clamps the per-envelope size drivers at record time: oversize
@@ -202,7 +265,12 @@ func RecordRunOutcome(ctx context.Context, c client.Client, namespace, attemptNa
 			}
 		}
 		if outcome.Message != "" {
+			// One unbounded field defeats the cap (#289 r2): the worker
+			// message is prose — truncation is safe.
 			a.Status.Message = outcome.Message
+			if len(a.Status.Message) > MaxStatusMessageBytes {
+				a.Status.Message = a.Status.Message[:MaxStatusMessageBytes]
+			}
 		}
 	})
 }
@@ -222,7 +290,12 @@ func mutateStatus(ctx context.Context, c client.Client, namespace, attemptName s
 	// write path, not call-site discipline. Raw Status().Patch callers must
 	// not append to the bounded lists (today none do: the controller stamps
 	// ObservedGeneration/LastRunAt/conditions only).
-	compactStatus(&a.Status)
+	if dropped := compactStatus(&a.Status); dropped > 0 {
+		// Compaction must never be silent again — the #289 failure ran
+		// unnoticed for 8 days.
+		slog.Warn("attempt status compacted", "attempt", attemptName, "dropped", dropped,
+			"through", a.Status.CompactedThrough.Time)
+	}
 	return c.Status().Patch(ctx, &a, client.MergeFrom(base))
 }
 

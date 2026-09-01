@@ -180,6 +180,14 @@ type AttemptStatus struct {
 	// +optional
 	CompactedEvidence int `json:"compactedEvidence,omitempty"`
 
+	// CompactedThrough is the ProducedAt of the newest envelope dropped by
+	// status compaction (#289): history BEFORE this instant is not in the
+	// CR ledger (the visible tail is a window, not the whole story). The
+	// timeline store bridges ~7 days beyond it (DefaultTTL — "evidence, not
+	// audit"); beyond that the dropped entries are genuinely gone.
+	// +optional
+	CompactedThrough metav1.Time `json:"compactedThrough,omitempty"`
+
 	// LastRunAt is when the most recent run in this attempt executed.
 	// +optional
 	LastRunAt metav1.Time `json:"lastRunAt,omitempty"`

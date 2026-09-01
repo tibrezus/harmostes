@@ -12,6 +12,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
+
+	"log/slog"
 )
 
 // Review-Ready Gate claims (ADR-0007 phase 4): the Attempt IS the claim.
@@ -135,7 +137,10 @@ func patchAttemptStatus(ctx context.Context, c client.Client, namespace, attempt
 		mutate(&at.Status)
 		// Structural compaction (#289) — same rationale as mutateStatus:
 		// the bound is a property of the write path.
-		compactStatus(&at.Status)
+		if dropped := compactStatus(&at.Status); dropped > 0 {
+			slog.Warn("attempt status compacted", "attempt", namespace+"/"+attemptName, "dropped", dropped,
+				"through", at.Status.CompactedThrough.Time)
+		}
 		patch := client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})
 		return c.Status().Patch(ctx, &at, patch)
 	})

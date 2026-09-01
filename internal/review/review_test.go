@@ -790,3 +790,46 @@ func TestHasVerdictTrailerSpecificity(t *testing.T) {
 		}
 	}
 }
+
+// Unprotected repos (required = ∅) must get the SAME in-flight guarantees
+// as protected ones: the early-proceed for the no-required-contexts contract
+// used to sit ABOVE the in-flight branch, so every sweep on a labeled,
+// dispatched PR re-proceeded — the duplicate-dispatch loop class #250 r4
+// fixed for protected repos, alive and well on unprotected ones (#256).
+func TestDispatchedUnprotectedRepoWaitsInFlight(t *testing.T) {
+	api := &fakeAPI{
+		pr:       openPR("needs-review"),
+		required: []string{}, // no branch protection
+		states:   map[string]string{},
+	}
+	p := base
+	p.DispatchedAt = p.Now.Add(-10 * time.Minute) // fresh dispatch
+	p.DispatchTimeout = 45 * time.Minute
+	res := Evaluate(context.Background(), api, p)
+	if res.Decision != DecisionWaiting || !strings.Contains(res.Reason, "in flight") {
+		t.Fatalf("unprotected + dispatched must wait in flight, got %s: %s", res.Decision, res.Reason)
+	}
+	if res.Envelope != nil {
+		t.Fatalf("in-flight must not emit a second envelope, got %+v", res.Envelope)
+	}
+	if res.NewArmedSha == "" {
+		t.Fatal("in-flight waiting must stay armed")
+	}
+}
+
+// The contract itself is unchanged when NOT in flight: an unprotected repo
+// with the label and no dispatch proceeds on the label alone.
+func TestUnprotectedProceedStillReachableWhenNotInFlight(t *testing.T) {
+	api := &fakeAPI{
+		pr:       openPR("needs-review"),
+		required: []string{},
+		states:   map[string]string{},
+	}
+	res := Evaluate(context.Background(), api, base)
+	if res.Decision != DecisionProceed || res.Envelope == nil {
+		t.Fatalf("unprotected + label + not dispatched must proceed, got %s: %s", res.Decision, res.Reason)
+	}
+	if len(res.Envelope.RequiredContexts) != 0 {
+		t.Fatalf("proceed must carry the empty required set, got %v", res.Envelope.RequiredContexts)
+	}
+}

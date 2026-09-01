@@ -144,7 +144,7 @@ func (s *Server) buildRunGraph(ctx context.Context, att *v1alpha1.Attempt) runGr
 				Status:      env.Status,
 				Summary:     env.Summary,
 				RunID:       env.RunID,
-				ProducedAt:  env.ProducedAt.Format("2006-01-02 15:04:05"),
+				ProducedAt:  env.ProducedAt.Format("2006-01-02 15:04:05 MST"), // matches the run rows above
 				Claims:      len(env.Claims),
 				Refs:        len(env.References),
 				TriggeredBy: env.Provenance.TriggeredBy,

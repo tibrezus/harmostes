@@ -1,0 +1,12 @@
+{
+  "name": "harmostes-ui-e2e",
+  "private": true,
+  "type": "module",
+  "description": "Playwright E2E tier for the harmostes UI \u2014 runs against `harmostes-ui -fixture` (milestone 5 of #290). Node is CI/test tooling only; the UI itself ships no JavaScript build.",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.56.0"
+  }
+}

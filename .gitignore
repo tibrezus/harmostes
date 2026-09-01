@@ -9,3 +9,8 @@ internal/ui/static/spa/assets/
 web/tsconfig.tsbuildinfo
 /harmostes-worker
 __pycache__/
+
+# Playwright E2E tier (e2e/)
+e2e/node_modules/
+e2e/test-results/
+e2e/playwright-report/

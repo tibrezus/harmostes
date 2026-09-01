@@ -27,9 +27,11 @@ test:
 	$(GO) test ./...
 
 ## test-ui: UI test framework — fixture-seeded goquery component tests
-## (fast tier; the Playwright E2E tier joins this target when it lands).
+## plus the Playwright E2E tier against harmostes-ui -fixture.
+## (e2e needs node/npm and Playwright browsers: npx playwright install chromium)
 test-ui:
 	$(GO) test ./internal/ui/... -run 'TestComponent|TestFixture'
+	cd e2e && npm ci --silent && npx playwright test
 
 ## vet: go vet.
 vet:

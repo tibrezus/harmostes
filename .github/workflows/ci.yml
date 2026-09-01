@@ -66,6 +66,47 @@ jobs:
           go mod tidy
           git diff --exit-code -- go.mod go.sum
 
+  # UI E2E tier: Playwright against harmostes-ui -fixture. The fixture
+  # world is deterministic (process-start-relative clock, in-memory seeds),
+  # so a failure is a real regression, not weather. Node is test tooling
+  # only — the UI ships no JavaScript build.
+  ui-e2e:
+    name: UI E2E (Playwright · fixture)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: e2e/package-lock.json
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('e2e/package-lock.json') }}
+
+      - name: Install e2e dependencies
+        run: cd e2e && npm ci
+
+      - name: Install Playwright browsers
+        run: cd e2e && npx playwright install --with-deps chromium
+
+      # The webServer hook in playwright.config.ts boots the fixture UI
+      # itself (go run) and waits for /healthz — one command runs the tier.
+      - name: Playwright tests
+        run: cd e2e && npx playwright test
+
   chart:
     name: Helm chart (lint · template)
     runs-on: ubuntu-latest

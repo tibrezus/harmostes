@@ -283,7 +283,16 @@ func (a *RESTAPI) ListComments(ctx context.Context, repo string, number int, sin
 	if err != nil {
 		return nil, err
 	}
-	base := fmt.Sprintf("/repos/%s/issues/%d/comments?per_page=100", host.RepoPath, number)
+	// Page size is a per-kind dialect (same split as ListLabeledOpenPulls):
+	// GitHub reads per_page; Forgejo/Gitea read limit and IGNORE per_page —
+	// a per_page-only request would get the server default (often < 100),
+	// making page 1 short and stopping the walk before the verdict (#308
+	// review).
+	pageSize := "limit=100"
+	if host.Kind == HostGitHub {
+		pageSize = "per_page=100"
+	}
+	base := fmt.Sprintf("/repos/%s/issues/%d/comments?%s", host.RepoPath, number, pageSize)
 	if !since.IsZero() {
 		base += "&since=" + since.UTC().Format(time.RFC3339)
 	}

@@ -497,6 +497,20 @@ func TestRESTListCommentsShapes(t *testing.T) {
 					http.Error(w, "bad page", 400)
 					return
 				}
+				// The page-size param is a per-kind dialect; the fake
+				// rejects the wrong one so a dialect regression (asking
+				// Forgejo for per_page) cannot pass silently (#308 review).
+				q := req.URL.Query()
+				if tc.name == "forgejo" {
+					if q.Get("limit") != "100" {
+						t.Errorf("forgejo request must use limit=100, got %q", q.Get("limit"))
+					}
+					if q.Get("per_page") != "" {
+						t.Errorf("forgejo ignores per_page; request must not send it")
+					}
+				} else if q.Get("per_page") != "100" {
+					t.Errorf("github request must use per_page=100, got %q", q.Get("per_page"))
+				}
 				pages[page] = true
 				out := []map[string]string{}
 				for i := 0; i < 100; i++ {

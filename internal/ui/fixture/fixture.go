@@ -33,9 +33,14 @@ import (
 // the X-Harmostes-Dev-User header.
 const DevUser = "fixture-user"
 
-// base is the fixture clock origin: one fixed morning, so every timestamp in
-// the world is deterministic across runs.
-var base = time.Date(2026, 9, 1, 8, 0, 0, 0, time.UTC)
+// base is the fixture clock origin: process start, truncated to the hour.
+// Every world timestamp is an offset from it, so the world stays inside the
+// runs list' default 24h activity window forever — a fixed date would age
+// the fixture out of /runs one day after the commit (the #304 review proved
+// it with a 31-day clock shift; the first attempt at this fix was itself
+// clobbered by a stale in-memory copy — pinned by TestComponent_RunsList_
+// DefaultWindow so it cannot silently regress again).
+var base = time.Now().UTC().Truncate(time.Hour)
 
 // t offsets base by minutes+seconds and returns a fresh metav1.Time.
 func t(min, sec int) metav1.Time {
@@ -187,6 +192,11 @@ func Scheme() *runtime.Scheme {
 // explicit identity — the zero-setup contract behind `harmostes-ui -fixture`
 // (no Authentik, no headers). Wrap Routes() with it in the binary; tests
 // wrap it to pin the contract.
+//
+// PROD HAZARD: this is an auth bypass by construction. It must only ever
+// wrap a fixture-mounted Routes(); the production mount is bare Routes()
+// (which 401s identity-less requests — pinned by TestComponent_Routes_
+// RejectsAnonymous).
 func DevIdentity(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("X-Authentik-Username") == "" && r.Header.Get("X-Harmostes-Dev-User") == "" {

@@ -255,6 +255,40 @@ func TestComponent_FixtureServer_Healthz(t *testing.T) {
 	}
 }
 
+// The default 24h window — what every real visitor's first /runs hit uses —
+// must surface the fixture world. This is the regression pin for the fixture
+// clock: if base ever becomes a fixed date again, this test goes red one day
+// after the commit instead of rotting silently.
+func TestComponent_RunsList_DefaultWindow(t *testing.T) {
+	ts := newFixtureServer(t)
+	doc := getAsFixtureUser(t, ts, "/runs")
+	if got := doc.Find(`[data-testid="run-link"]`).Length(); got < 1 {
+		t.Errorf("default-window /runs shows %d run links, want at least 1 — fixture clock fell out of the 24h window", got)
+	}
+}
+
+// The production mount is bare Routes(): an identity-less request must be
+// rejected. DevIdentity is a fixture-only wrapper — this test is the guard
+// that keeps its auth-bypass nature out of the production path.
+func TestComponent_Routes_RejectsAnonymous(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv, err := fixture.NewServer(fixtureNamespace, logger)
+	if err != nil {
+		t.Fatalf("fixture server: %v", err)
+	}
+	ts := httptest.NewServer(srv.Routes()) // exactly as production mounts it
+	t.Cleanup(ts.Close)
+
+	resp, err := http.Get(ts.URL + "/runs")
+	if err != nil {
+		t.Fatalf("GET /runs: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("anonymous GET /runs on bare Routes() = %d, want 401", resp.StatusCode)
+	}
+}
+
 // The `-fixture` zero-setup contract: an unauthenticated request through
 // DevIdentity is served as the fixture dev user — the wall renders the
 // owner-scoped cards with no headers at all.

@@ -103,7 +103,9 @@ const (
 	// Payload is node-type-specific diagnostics, opaque to the kernel; a
 	// single multi-hundred-KB payload defeats count-based caps.
 	MaxStatusPayloadBytes = 4 << 10
-	// MaxStatusSummaryBytes truncates summaries at record time.
+	// MaxStatusSummaryBytes truncates summaries at record time. Byte-slicing
+	// can cut a multi-byte rune; JSON renders it U+FFFD — cosmetic, not
+	// corruption of any kernel-read field.
 	MaxStatusSummaryBytes = 1 << 10
 )
 
@@ -147,7 +149,6 @@ func RecordRunStarted(ctx context.Context, c client.Client, namespace, attemptNa
 	now := metav1.Now()
 	return mutateStatus(ctx, c, namespace, attemptName, func(a *v1alpha1.Attempt) {
 		upsertRun(&a.Status.Runs, v1alpha1.RunRecord{Name: runName, StartedAt: now, Phase: "running"})
-		compactStatus(&a.Status)
 		a.Status.LastRunAt = now
 	})
 }
@@ -183,7 +184,6 @@ func RecordRunOutcome(ctx context.Context, c client.Client, namespace, attemptNa
 		for _, env := range outcome.Envelopes {
 			a.Status.Evidence = appendUniqueEvidence(a.Status.Evidence, env.References)
 		}
-		compactStatus(&a.Status)
 		a.Status.LastRunAt = now
 		switch outcome.Phase {
 		case "failed":
@@ -216,6 +216,13 @@ func mutateStatus(ctx context.Context, c client.Client, namespace, attemptName s
 	}
 	base := a.DeepCopy()
 	mutate(&a)
+	// Structural compaction (#289): every status writer funnels through a
+	// get-mutate-patch helper (this one, or claim.go's patchAttemptStatus) —
+	// enforcing the tail windows HERE makes the bound a property of the
+	// write path, not call-site discipline. Raw Status().Patch callers must
+	// not append to the bounded lists (today none do: the controller stamps
+	// ObservedGeneration/LastRunAt/conditions only).
+	compactStatus(&a.Status)
 	return c.Status().Patch(ctx, &a, client.MergeFrom(base))
 }
 
@@ -229,7 +236,6 @@ func UpsertNodeResult(ctx context.Context, c client.Client, namespace, attemptNa
 	boundEnvelope(&env)
 	return mutateStatus(ctx, c, namespace, attemptName, func(a *v1alpha1.Attempt) {
 		upsertNodeResult(&a.Status.NodeResults, env)
-		compactStatus(&a.Status)
 	})
 }
 

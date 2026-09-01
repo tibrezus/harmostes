@@ -11,6 +11,13 @@ import (
 // without a verdict is provably dead. Keep in sync with the consumer.
 const OneShotRunBound = 30 * time.Minute
 
+// MinDispatchMargin is the minimum delivery/queue margin a configured
+// DispatchTimeout must leave over OneShotRunBound. Enforced (not merely
+// documented) so no configurable value can re-dispatch while a run may
+// still be alive — the exactly-once invariant holds for every config
+// (#255).
+const MinDispatchMargin = 5 * time.Minute
+
 // ReviewReadySpec configures the event-armed Review-Ready Gate (ADR-0006):
 // the deterministic decision that a Pull Request may enter adversarial
 // review. Git hosts send consolidated pull_request events (GitHub semantics,
@@ -48,9 +55,9 @@ type ReviewReadySpec struct {
 	// flight without a verdict before the gate presumes the run dead and
 	// stands down (the backlog pass re-arms the still-labeled PR on the
 	// next sweep — recovery needs no external label toggle). The bound
-	// must strictly exceed OneShotRunBound plus delivery/queue margin; a
-	// value at or below the run bound is rejected (falls back to the
-	// default) because it would re-dispatch while a run may still be
+	// must leave a delivery/queue margin of at least MinDispatchMargin
+	// over OneShotRunBound; a smaller value is rejected (falls back to
+	// the default) because it would re-dispatch while a run may still be
 	// alive, silently breaking exactly-once. Without it a dead dispatch
 	// (helm-roll kill, wedged worker) is held "in flight" until the full
 	// Horizon (observed live: 6h single-slot deadlock, #248).
@@ -86,15 +93,16 @@ func (r *ReviewReadySpec) HorizonDuration() time.Duration {
 
 // DispatchTimeoutDuration parses DispatchTimeout with the default applied
 // (OneShotRunBound + 15m delivery/queue margin). A configured value must
-// strictly exceed OneShotRunBound; anything else (unparsable, non-positive,
-// or at/below the run bound) degrades to the default — honoring it would
-// break the exactly-once construction silently.
+// leave a margin of at least MinDispatchMargin over OneShotRunBound;
+// anything else (unparsable, non-positive, or inside the margin) degrades
+// to the default — honoring it would let the gate re-dispatch while a run
+// is still alive, silently breaking exactly-once (#255).
 func (r *ReviewReadySpec) DispatchTimeoutDuration() time.Duration {
 	def := OneShotRunBound + 15*time.Minute
 	if r == nil || r.DispatchTimeout == "" {
 		return def
 	}
-	if d, err := time.ParseDuration(r.DispatchTimeout); err == nil && d > OneShotRunBound {
+	if d, err := time.ParseDuration(r.DispatchTimeout); err == nil && d >= OneShotRunBound+MinDispatchMargin {
 		return d
 	}
 	return def

@@ -109,8 +109,11 @@ func TestReviewReadyDispatchTimeoutFloor(t *testing.T) {
 		{"garbage", def},                // unparsable → default
 		{"0s", def},                     // non-positive → default
 		{"10m", def},                    // below the run bound → default
-		{OneShotRunBound.String(), def}, // AT the run bound → default
-		{(OneShotRunBound + time.Minute).String(), OneShotRunBound + time.Minute}, // above → honored
+		{OneShotRunBound.String(), def}, // AT the run bound (zero margin) → default
+		{(OneShotRunBound + 4*time.Minute).String(), def}, // 4m margin < MinDispatchMargin → default
+		{"31m", def}, // the #255 case: 1m margin reads as run+1m → default
+		{(OneShotRunBound + MinDispatchMargin).String(), OneShotRunBound + MinDispatchMargin}, // exactly the floor (5m margin) → honored
+		{(OneShotRunBound + 6*time.Minute).String(), OneShotRunBound + 6*time.Minute},         // above the floor → honored
 		{"2h", 2 * time.Hour}, // custom above the floor → honored
 	}
 	for _, c := range cases {

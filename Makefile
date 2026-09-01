@@ -13,7 +13,7 @@ DS_SRC        ?= ../rezuscloud/design-system
 BIN_DIR       := bin
 GO            := go
 
-.PHONY: all build test vet tidy generate manifests controller-worker docker docker-push docker-ui ui-css-sync clean
+.PHONY: all build test test-ui vet tidy generate manifests controller-worker docker docker-push docker-ui ui-css-sync clean
 
 all: test build
 
@@ -25,6 +25,11 @@ build:
 test:
 	git submodule update --init --recursive
 	$(GO) test ./...
+
+## test-ui: UI test framework — fixture-seeded goquery component tests
+## (fast tier; the Playwright E2E tier joins this target when it lands).
+test-ui:
+	$(GO) test ./internal/ui/... -run 'TestComponent|TestFixture'
 
 ## vet: go vet.
 vet:

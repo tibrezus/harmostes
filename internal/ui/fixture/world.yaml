@@ -1,0 +1,62 @@
+# Fixture world — synthetic workflows for `harmostes-ui -fixture`, the
+# component tests, and the E2E target. The shape mirrors what an operator
+# would check into k8s-config; the content is invented (demo-rezuscloud
+# is not a real org). Milestone ⑤ of #290.
+apiVersion: harmostes.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: pr-review-demo
+spec:
+  # Graph-native mode: explicit nodes + edges. The compiled graph is
+  # prepare -> agent -> gate -> deploy; attempts raised from this workflow
+  # carry objective kind pr-review (review-class UI rendering).
+  source:
+    kind: webhook
+    repo: demo-rezuscloud-harmostes
+  graph:
+    nodes:
+      - id: prepare
+        type: plugin
+        label: prepare
+      - id: agent
+        type: agent
+        label: agent
+      - id: gate
+        type: plugin
+        label: gate
+      - id: deploy
+        type: plugin
+        label: deploy
+    edges:
+      - from: prepare
+        to: agent
+      - from: agent
+        to: gate
+      - from: gate
+        to: deploy
+  reviewReady:
+    label: needs-review
+    dispatchTimeout: 45m
+---
+apiVersion: harmostes.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: merge-sync-demo
+spec:
+  # Deterministic: no agent node, prepare -> deploy only.
+  source:
+    kind: schedule
+    schedule: "0 */6 * * *"
+  agent:
+    enabled: false
+  graph:
+    nodes:
+      - id: prepare
+        type: plugin
+        label: prepare
+      - id: deploy
+        type: plugin
+        label: deploy
+    edges:
+      - from: prepare
+        to: deploy

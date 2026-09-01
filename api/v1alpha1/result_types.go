@@ -81,6 +81,12 @@ type NodeResultEnvelope struct {
 	// ProducedAt is when the node finished producing this envelope.
 	// +optional
 	ProducedAt metav1.Time `json:"producedAt,omitempty"`
+
+	// DurationMs is how long the node execution took. Zero for instantaneous
+	// nodes or envelopes synthesized before this field existed. Enables
+	// per-step timing views (issue #298).
+	// +optional
+	DurationMs int64 `json:"durationMs,omitempty"`
 }
 
 // Claim is a typed, reference-backed statement describing an observable

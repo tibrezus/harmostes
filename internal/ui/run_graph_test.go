@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -426,4 +427,152 @@ func TestRunGraphSSEAttemptScopedWake(t *testing.T) {
 	// Legacy unattributed event: wakes conservatively (rolling-deploy safety).
 	wakeWithAttempt("")
 	readUntilMarkers(3)
+}
+
+// The timing waterfall (#298): per-node lanes with wall-clock-proportional
+// bars, an overhead lane for queue+pod, and humanized durations — the answer
+// to "where did the 13 minutes go" without leaving the run page.
+func TestRunDetailTimingWaterfall(t *testing.T) {
+	att := wallReviewAttempt("attempt-pr-review-x-1", "pr-review-x")
+	base := time.Date(2026, 9, 1, 8, 0, 0, 0, time.UTC)
+	att.CreationTimestamp = metav1.NewTime(base)
+
+	env := func(node string, produced time.Time, durSec int64) v1alpha1.NodeResultEnvelope {
+		e := graphEnvelope(node, "ok", metav1.NewTime(produced))
+		e.DurationMs = durSec * 1000
+		return e
+	}
+	att.Status.NodeResults = []v1alpha1.NodeResultEnvelope{
+		env("prepare", base.Add(10*time.Second), 5),                              // ran 5s, finished T0+10s
+		env("agent", base.Add(10*time.Second+13*time.Minute+time.Second), 13*60), // 13m
+		env("deploy", base.Add(10*time.Second+13*time.Minute+6*time.Second), 5),
+	}
+	// External node: has an envelope but must not get a lane.
+	ext := graphEnvelope("upstream", "external", metav1.NewTime(base.Add(time.Second)))
+	ext.DurationMs = 60 * 1000
+	att.Status.NodeResults = append(att.Status.NodeResults, ext)
+
+	s := newAttemptTestServer(t, graphSeedWorkflow("pr-review-x"), att)
+	// Through Routes(): the auth middleware materializes the session identity
+	// the owner gate reads (a direct handler call skips it).
+	ts := httptest.NewServer(s.Routes())
+	defer ts.Close()
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, ts.URL+"/runs/attempt-pr-review-x-1", nil)
+	req.Header.Set("X-Authentik-Username", "alice")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("page: %v", err)
+	}
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	body := string(bodyBytes)
+
+	if !strings.Contains(body, "rg-timing") {
+		t.Fatal("no timing waterfall in run detail")
+	}
+	// Anchor on the strip block: node labels appear all over the page.
+	stripStart := strings.Index(body, "rg-timing-title")
+	stripEnd := stripStart + strings.Index(body[stripStart:], "</svg>")
+	strip := body[stripStart:stripEnd]
+	// Lane labels are html-escaped (+ becomes &#43;).
+	for _, want := range []string{"queue&#43;pod", "prepare", "agent", "deploy"} {
+		if !strings.Contains(strip, want) {
+			t.Errorf("waterfall missing lane %q; strip=%.400s", want, strip)
+		}
+	}
+	if lanes := strings.Count(strip, "rg-timing-lane"); lanes != 4 {
+		t.Errorf("timing lanes = %d, want 4 (overhead + 3 nodes; external excluded)", lanes)
+	}
+	// The agent's bar must dominate: its lane width exceeds prepare's.
+	agentW := extractTimingWidth(t, strip, "agent")
+	prepW := extractTimingWidth(t, strip, "prepare")
+	if agentW <= prepW {
+		t.Errorf("agent bar width %d should dominate prepare %d", agentW, prepW)
+	}
+	// Durations are humanized (naming.go formatDuration).
+	if !strings.Contains(strip, "13.0m") {
+		t.Error("agent duration not rendered")
+	}
+	// Geometry is precomputed in Go (templates cannot multiply): lane offsets
+	// must be exact multiples of the 22px lane height, and the viewBox height
+	// must equal lanes*22.
+	for i, offset := range []string{"translate(0, 0)", "translate(0, 22)", "translate(0, 44)", "translate(0, 66)"} {
+		if !strings.Contains(strip, offset) {
+			t.Errorf("lane %d geometry missing %q", i, offset)
+		}
+	}
+	if !strings.Contains(strip, `viewBox="0 0 640 88"`) {
+		t.Errorf("strip viewBox height wrong: want 88 (4 lanes x 22)")
+	}
+	// The hover panel carries the node duration too — both the payload key
+	// and the rendered row (a dead payload field satisfies neither).
+	if !strings.Contains(body, `"duration"`) {
+		t.Error("nodeData missing duration field")
+	}
+	if !strings.Contains(body, "row('Duration', d.duration)") {
+		t.Error("hover panel never renders the duration row")
+	}
+}
+
+func extractTimingWidth(t *testing.T, body, label string) int {
+	t.Helper()
+	marker := ">" + label + "</text>"
+	i := strings.Index(body, marker)
+	if i < 0 {
+		t.Fatalf("lane %s not found", label)
+	}
+	seg := body[i:]
+	wi := strings.Index(seg, "width=\"")
+	if wi < 0 {
+		t.Fatal("no width after lane label")
+	}
+	rest := seg[wi+len(`width="`):]
+	end := strings.Index(rest, "\"")
+	n, err := strconv.Atoi(rest[:end])
+	if err != nil {
+		t.Fatalf("width parse: %v", err)
+	}
+	return n
+}
+
+// All-zero durations degrade to no strip at all (nothing to proportion).
+func TestRunDetailTimingWaterfallZeroDurations(t *testing.T) {
+	att := wallReviewAttempt("attempt-pr-review-x-1", "pr-review-x")
+	base := time.Date(2026, 9, 1, 8, 0, 0, 0, time.UTC)
+	att.CreationTimestamp = metav1.NewTime(base)
+	att.Status.NodeResults = []v1alpha1.NodeResultEnvelope{
+		graphEnvelope("prepare", "ok", metav1.NewTime(base.Add(10*time.Second))),
+		graphEnvelope("agent", "ok", metav1.NewTime(base.Add(20*time.Second))),
+	}
+	s := newAttemptTestServer(t, graphSeedWorkflow("pr-review-x"), att)
+	view := s.buildRunGraph(context.Background(), att)
+	if view.Timing != nil || view.TimingH != 0 {
+		t.Errorf("zero-duration envelopes should yield an empty strip, got %d lanes h=%d", len(view.Timing), view.TimingH)
+	}
+}
+
+// When the attempt object is created at/after the first node's start (slow
+// envelope reconciliation), the overhead lane is silently dropped — correct:
+// there is no measured queue+pod window to show.
+func TestRunDetailTimingWaterfallNoOverheadWhenCreatedLate(t *testing.T) {
+	att := wallReviewAttempt("attempt-pr-review-x-1", "pr-review-x")
+	base := time.Date(2026, 9, 1, 8, 0, 0, 0, time.UTC)
+	att.CreationTimestamp = metav1.NewTime(base.Add(30 * time.Second)) // after first node start
+	prepare := graphEnvelope("prepare", "ok", metav1.NewTime(base.Add(10*time.Second)))
+	prepare.DurationMs = 5000
+	att.Status.NodeResults = []v1alpha1.NodeResultEnvelope{prepare}
+	s := newAttemptTestServer(t, graphSeedWorkflow("pr-review-x"), att)
+	view := s.buildRunGraph(context.Background(), att)
+	if len(view.Timing) != 1 {
+		t.Fatalf("lanes = %d, want 1 (prepare only; no overhead lane)", len(view.Timing))
+	}
+	if view.Timing[0].Label == "queue+pod" {
+		t.Error("overhead lane rendered despite creation after node start")
+	}
 }

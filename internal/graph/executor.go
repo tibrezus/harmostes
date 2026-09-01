@@ -369,7 +369,7 @@ func (e *GraphExecutor) Execute(ctx context.Context, graph v1alpha1.GraphSpec, p
 			startTime := time.Now()
 			denied := NodeResult{Status: StatusFailed, Feedback: feedback}
 			result.NodeResults[nodeID] = denied
-			deniedEnv := e.synthesizeEnvelope(nodeID, node.Type, denied)
+			deniedEnv := e.synthesizeEnvelope(nodeID, node.Type, denied, time.Since(startTime).Milliseconds())
 			result.NodeEnvelopes[nodeID] = deniedEnv
 			e.checkpoint(ctx, pipelineName, nodeID, denied)
 			e.publishLifecycle(ctx, LifecycleEvent{
@@ -423,7 +423,7 @@ func (e *GraphExecutor) Execute(ctx context.Context, graph v1alpha1.GraphSpec, p
 			result.Message = fmt.Sprintf("node %s: %v", nodeID, err)
 			errResult := NodeResult{Status: StatusFailed, Feedback: err.Error()}
 			result.NodeResults[nodeID] = errResult
-			result.NodeEnvelopes[nodeID] = e.synthesizeEnvelope(nodeID, node.Type, errResult)
+			result.NodeEnvelopes[nodeID] = e.synthesizeEnvelope(nodeID, node.Type, errResult, time.Since(startTime).Milliseconds())
 			errEnv := result.NodeEnvelopes[nodeID]
 			e.publishLifecycle(ctx, LifecycleEvent{
 				Event:      "node.failed",
@@ -494,7 +494,7 @@ func (e *GraphExecutor) Execute(ctx context.Context, graph v1alpha1.GraphSpec, p
 				e.log("warn: timeline emit node.completed %s: %v", nodeID, err)
 			}
 		}
-		completedEnv := e.synthesizeEnvelope(nodeID, node.Type, nodeResult)
+		completedEnv := e.synthesizeEnvelope(nodeID, node.Type, nodeResult, durationMs)
 		// Trust enforcement (ADR-0004): a non-deterministic node cannot
 		// self-validate its own claims — demote any self-asserted validated
 		// claims to observed before the envelope is recorded.
@@ -738,12 +738,13 @@ func envelopeStatus(s NodeStatus) string {
 // This is called for every finalized node — executed, capability-denied, or
 // registry-error — so the caller always receives a complete, uniform record per
 // node for orchestration history (ADR-0005).
-func (e *GraphExecutor) synthesizeEnvelope(nodeID, nodeType string, nr NodeResult) v1alpha1.NodeResultEnvelope {
+func (e *GraphExecutor) synthesizeEnvelope(nodeID, nodeType string, nr NodeResult, durationMs int64) v1alpha1.NodeResultEnvelope {
 	now := metav1.Now()
 	env := v1alpha1.NodeResultEnvelope{
-		NodeID: nodeID,
-		RunID:  e.runID,
-		Status: envelopeStatus(nr.Status),
+		NodeID:     nodeID,
+		RunID:      e.runID,
+		Status:     envelopeStatus(nr.Status),
+		DurationMs: durationMs,
 		Provenance: v1alpha1.Provenance{
 			TriggeredBy:   e.triggeredBy,
 			TriggerSource: e.triggerSource,

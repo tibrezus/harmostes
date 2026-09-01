@@ -42,7 +42,7 @@ func TestSynthesizeEnvelope_Baseline(t *testing.T) {
 		WithProvenance("tibrez", "webhook"),
 	)
 	nr := NodeResult{Status: StatusGreen, Feedback: "docs synced"}
-	env := e.synthesizeEnvelope("agent-1", "agent", nr)
+	env := e.synthesizeEnvelope("agent-1", "agent", nr, 0)
 
 	if env.NodeID != "agent-1" {
 		t.Errorf("NodeID = %q, want agent-1", env.NodeID)
@@ -84,7 +84,7 @@ func TestSynthesizeEnvelope_ExecutorEnrichmentMerged(t *testing.T) {
 		References: []v1alpha1.EvidenceReference{{Binding: "workspaceRepo", Kind: "commit", Identifier: "deadbeef"}},
 	}
 	nr := NodeResult{Status: StatusGreen, Envelope: executorEnv}
-	env := e.synthesizeEnvelope("deploy-1", "plugin", nr)
+	env := e.synthesizeEnvelope("deploy-1", "plugin", nr, 0)
 
 	// Executor enrichment preserved.
 	if env.Summary != "pushed commit deadbeef" {
@@ -298,4 +298,19 @@ func (leakyExecutor) Deterministic() bool    { return true }
 func (leakyExecutor) ExecutionClass() string { return "deterministic" }
 func (leakyExecutor) Execute(_ context.Context, _ v1alpha1.NodeSpec, _ NodeEnv) (NodeResult, error) {
 	return NodeResult{Status: StatusFailed, Feedback: "cloning https://user:secret@host/x.git failed"}, nil
+}
+
+// A measurable duration must survive synthesizeEnvelope (#298): the UI's
+// timing waterfall is only as honest as this field.
+func TestSynthesizeEnvelopeCarriesDuration(t *testing.T) {
+	e := &GraphExecutor{}
+	nr := NodeResult{Status: StatusGreen, Feedback: "done"}
+	env := e.synthesizeEnvelope("agent", "agent", nr, 781_000)
+	if env.DurationMs != 781_000 {
+		t.Errorf("DurationMs = %d, want 781000", env.DurationMs)
+	}
+	zero := e.synthesizeEnvelope("gate", "gate", nr, 0)
+	if zero.DurationMs != 0 {
+		t.Errorf("zero duration should stay zero (omitempty), got %d", zero.DurationMs)
+	}
 }

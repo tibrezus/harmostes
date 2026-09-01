@@ -33,6 +33,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -261,26 +262,41 @@ type IssueComment struct {
 	Body string `json:"body"`
 }
 
+// maxCommentPages bounds the page walk in ListComments: 10 pages of 100
+// fresh-since-armed comments is far beyond any real review conversation;
+// the cap keeps a pathological conversation from turning one evaluation
+// into an unbounded request series.
+const maxCommentPages = 10
+
 // ListComments fetches the PR's conversation comments updated at or after
-// `since`. Both host kinds expose issue comments at the same path shape AND
-// honor the `since` filter (updated_at ≥ since) — which makes the hosts'
-// oldest-first ordering (no sort param exists on GitHub's endpoint;
-// Gitea/Forgejo also order ascending by id) IRRELEVANT: the consume signal
-// (a verdict trailer) is posted after the gate armed, so restricting the
-// window to [since, now] must surface it without walking pages. Callers pass
-// armedAt minus a slack that covers gate↔host clock skew.
+// `since`, walking pages. Both host kinds expose issue comments at the same
+// path shape, honor the `since` filter (updated_at ≥ since), and order
+// ascending (GitHub's endpoint has no sort param; Gitea/Forgejo order by
+// id): the consume signal (a verdict trailer) is posted after the gate
+// armed, so it sits at the END of the filtered result — a >100-comment
+// conversation hides it beyond page 1 (#242), hence the walk. Each request
+// carries `since`, so filtered pages shrink fast; the walk stops at the
+// first short page. Callers pass armedAt minus a slack that covers
+// gate↔host clock skew.
 func (a *RESTAPI) ListComments(ctx context.Context, repo string, number int, since time.Time) ([]IssueComment, error) {
 	host, err := ResolveHost(repo)
 	if err != nil {
 		return nil, err
 	}
-	path := fmt.Sprintf("/repos/%s/issues/%d/comments?per_page=100", host.RepoPath, number)
+	base := fmt.Sprintf("/repos/%s/issues/%d/comments?per_page=100", host.RepoPath, number)
 	if !since.IsZero() {
-		path += "&since=" + since.UTC().Format(time.RFC3339)
+		base += "&since=" + since.UTC().Format(time.RFC3339)
 	}
 	var out []IssueComment
-	if err := a.get(ctx, host, path, "application/json", &out); err != nil {
-		return nil, err
+	for page := 1; page <= maxCommentPages; page++ {
+		var batch []IssueComment
+		if err := a.get(ctx, host, fmt.Sprintf("%s&page=%d", base, page), "application/json", &batch); err != nil {
+			return nil, err
+		}
+		out = append(out, batch...)
+		if len(batch) < 100 {
+			return out, nil
+		}
 	}
 	return out, nil
 }
@@ -692,6 +708,13 @@ func standdown(reason string) Evaluation {
 	return Evaluation{Decision: DecisionStanddown, Reason: reason}
 }
 
+// verdictTrailer anchors hasVerdict to the FULL trailer shape the pr-review
+// skill emits — decision, space-@-space, lowercase hex sha, terminal `-->`.
+// Matching the bare `<!-- pr-review: ` prefix read any comment QUOTING the
+// contract (docs, review instructions) as a consumed verdict, disarming a
+// still-pending request (#242).
+var verdictTrailer = regexp.MustCompile(`<!-- pr-review: (APPROVE|REQUEST_CHANGES|COMMENT) @ [0-9a-f]{7,40} -->`)
+
 // hasVerdict reports whether any conversation comment carries a pr-review
 // verdict trailer (the skill's output contract — the merge currency). A
 // verdict at ANY sha counts: a fresh review request re-adds the label (a new
@@ -699,7 +722,7 @@ func standdown(reason string) Evaluation {
 // post-review cleanup, never a pending request.
 func hasVerdict(comments []IssueComment) bool {
 	for _, c := range comments {
-		if strings.Contains(c.Body, "<!-- pr-review: ") {
+		if verdictTrailer.MatchString(c.Body) {
 			return true
 		}
 	}

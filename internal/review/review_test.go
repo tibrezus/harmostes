@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -143,7 +144,7 @@ func TestStanddownLabelAbsent(t *testing.T) {
 	// The consumed case: the deploy plugin removed the label AFTER posting
 	// the verdict — the trailer is the durable consume signal.
 	api := &fakeAPI{pr: openPR("full-pipeline"), required: []string{"a"}, states: map[string]string{"a": "success"},
-		comments: []fakeComment{{IssueComment: IssueComment{Body: "## Adversarial Review\n…\n<!-- pr-review: APPROVE @ abc123 -->"}, updatedAt: base.Now}}}
+		comments: []fakeComment{{IssueComment: IssueComment{Body: "## Adversarial Review\n…\n<!-- pr-review: APPROVE @ abc1234 -->"}, updatedAt: base.Now}}}
 	r := Evaluate(context.Background(), api, base)
 	if r.Decision != DecisionStanddown || r.NewArmedSha != "" {
 		t.Fatalf("want standdown+disarm, got %s", r.Decision)
@@ -192,14 +193,14 @@ func TestVerdictWindowFreshConsumeOnly(t *testing.T) {
 	// window) must. Ordering (oldest-first hosts) is irrelevant by
 	// construction — the window, not the page, decides.
 	old := &fakeAPI{pr: openPR("full-pipeline"), required: []string{"a"}, states: map[string]string{"a": "success"},
-		comments: []fakeComment{{IssueComment: IssueComment{Body: "<!-- pr-review: APPROVE @ dead000 -->"}, updatedAt: base.Now.Add(-2 * time.Hour)}}}
+		comments: []fakeComment{{IssueComment: IssueComment{Body: "<!-- pr-review: APPROVE @ dead0000 -->"}, updatedAt: base.Now.Add(-2 * time.Hour)}}}
 	r := Evaluate(context.Background(), old, base)
 	if r.Decision != DecisionWaiting || r.NewArmedSha != "abc123" {
 		t.Fatalf("old verdict must not consume: got %s sha=%s (%s)", r.Decision, r.NewArmedSha, r.Reason)
 	}
 	fresh := &fakeAPI{pr: openPR("full-pipeline"), required: []string{"a"}, states: map[string]string{"a": "success"},
 		comments: []fakeComment{{IssueComment: IssueComment{Body: "old noise"}, updatedAt: base.Now.Add(-2 * time.Hour)},
-			{IssueComment: IssueComment{Body: "<!-- pr-review: COMMENT @ abc123 -->"}, updatedAt: base.Now.Add(-1 * time.Minute)}}}
+			{IssueComment: IssueComment{Body: "<!-- pr-review: COMMENT @ abc1234 -->"}, updatedAt: base.Now.Add(-1 * time.Minute)}}}
 	r = Evaluate(context.Background(), fresh, base)
 	if r.Decision != DecisionStanddown || r.NewArmedSha != "" {
 		t.Fatalf("fresh verdict must consume: got %s sha=%s", r.Decision, r.NewArmedSha)
@@ -469,15 +470,15 @@ func TestRESTListCommentsShapes(t *testing.T) {
 		{"github", "tibrezus/harmostes", "/repos/tibrezus/harmostes/issues/237/comments", 237},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			pages := map[int]bool{}
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 				if req.URL.Path != tc.path {
 					http.NotFound(w, req)
 					return
 				}
 				// The request MUST carry the since window — without it the
-				// hosts' oldest-first, page-1-only response hides a fresh
-				// verdict behind 100 stale comments on a busy PR (#238
-				// review MAJOR).
+				// hosts' oldest-first ordering hides a fresh verdict behind
+				// stale comments on a busy PR (#238 review MAJOR).
 				sinceQ := req.URL.Query().Get("since")
 				if sinceQ == "" {
 					t.Errorf("request missing since param: %s", req.URL.RawQuery)
@@ -485,20 +486,29 @@ func TestRESTListCommentsShapes(t *testing.T) {
 				if _, err := time.Parse(time.RFC3339, sinceQ); err != nil {
 					t.Errorf("since not RFC3339: %q", sinceQ)
 				}
-				// Server-side `since` filter (updated_at ≥ since) over a
-				// >100-comment PR: 140 stale, 10 fresh — the verdict rides
-				// LAST in the filtered response, the position page-1-only
-				// fetching would never reach without the window.
-				since, _ := time.Parse(time.RFC3339, sinceQ)
+				// Ascending order + server-side `since` filter over a
+				// >100-comment conversation: the verdict rides LAST, so
+				// single-page fetching never reaches it (#242). The fake
+				// honors `page` like the real hosts: 100 per page, verdict
+				// on the final short page.
+				page, err := strconv.Atoi(req.URL.Query().Get("page"))
+				if err != nil || page < 1 {
+					t.Errorf("bad page param: %q", req.URL.Query().Get("page"))
+					http.Error(w, "bad page", 400)
+					return
+				}
+				pages[page] = true
 				out := []map[string]string{}
-				for i := 0; i < 140; i++ {
-					out = append(out, map[string]string{"body": fmt.Sprintf("stale comment %d", i)})
+				for i := 0; i < 100; i++ {
+					n := (page-1)*100 + i
+					out = append(out, map[string]string{"body": fmt.Sprintf("fresh comment %d", n)})
 				}
-				for i := 0; i < 9; i++ {
-					out = append(out, map[string]string{"body": fmt.Sprintf("fresh comment %d", i)})
+				if page == 2 {
+					// 150 comments total: page 2 is short and carries the
+					// verdict last — the walk must stop here having seen it.
+					out = out[:50]
+					out = append(out, map[string]string{"body": "review…\n<!-- pr-review: COMMENT @ abc1234 -->"})
 				}
-				out = append(out, map[string]string{"body": "review…\n<!-- pr-review: COMMENT @ abc123 -->"})
-				_ = since
 				w.Header().Set("Content-Type", "application/json")
 				json.NewEncoder(w).Encode(out)
 			}))
@@ -511,8 +521,11 @@ func TestRESTListCommentsShapes(t *testing.T) {
 				api.BaseOverride = srv.URL
 			}
 			cs, err := api.ListComments(context.Background(), tc.repo, tc.number, time.Now().Add(-time.Hour))
-			if err != nil || len(cs) != 150 || !hasVerdict(cs) {
+			if err != nil || len(cs) != 151 || !hasVerdict(cs) {
 				t.Fatalf("ListComments: %d comments, verdict=%v err=%v", len(cs), hasVerdict(cs), err)
+			}
+			if !pages[1] || !pages[2] || len(pages) != 2 {
+				t.Fatalf("page walk visited %v, want exactly pages 1 and 2", pages)
 			}
 		})
 	}
@@ -705,7 +718,7 @@ func TestDispatchedVerdictBeatsTimeout(t *testing.T) {
 		required: []string{"ci"},
 		states:   map[string]string{"ci": "success"},
 		comments: []fakeComment{{
-			IssueComment: IssueComment{Body: "verdict\n<!-- pr-review: APPROVE @ abc123 -->"},
+			IssueComment: IssueComment{Body: "verdict\n<!-- pr-review: APPROVE @ abc1234 -->"},
 			updatedAt:    base.Now.Add(-5 * time.Minute),
 		}},
 	}
@@ -732,5 +745,34 @@ func TestDispatchedZeroTimeoutKeepsWaiting(t *testing.T) {
 	res := Evaluate(context.Background(), api, p)
 	if res.Decision != DecisionWaiting || !strings.Contains(res.Reason, "in flight") {
 		t.Fatalf("zero DispatchTimeout must keep waiting (horizon remains the bound), got %s: %s", res.Decision, res.Reason)
+	}
+}
+
+// The verdict scan anchors to the FULL trailer shape (#242): any comment
+// merely QUOTING the contract text must not read as a consumed verdict —
+// that would disarm a still-pending request on a stale observation.
+func TestHasVerdictTrailerSpecificity(t *testing.T) {
+	verdicts := []string{
+		"review…\n<!-- pr-review: APPROVE @ abc1234 -->",
+		"\n<!-- pr-review: REQUEST_CHANGES @ 0123456789abcdef0123456789abcdef01234567 -->\n",
+		"<!-- pr-review: COMMENT @ abcdef7 -->",
+	}
+	for _, v := range verdicts {
+		if !hasVerdict([]IssueComment{{Body: v}}) {
+			t.Errorf("hasVerdict(%q) = false, want true", v)
+		}
+	}
+	nonVerdicts := []string{
+		"the contract is: <!-- pr-review: ",      // bare prefix (the old match)
+		"<!-- pr-review: APPROVE -->",            // no @ sha
+		"<!-- pr-review: APPROVED @ abc1234 -->", // not a contract decision
+		"<!-- pr-review: approve @ abc1234 -->",  // lowercase decision
+		"<!-- pr-review: APPROVE @ ABC1234 -->",  // uppercase sha
+		"<!-- pr-review: APPROVE @ abc -->",      // sha too short
+	}
+	for _, nv := range nonVerdicts {
+		if hasVerdict([]IssueComment{{Body: nv}}) {
+			t.Errorf("hasVerdict(%q) = true, want false", nv)
+		}
 	}
 }

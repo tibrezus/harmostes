@@ -614,12 +614,44 @@ func Evaluate(ctx context.Context, api API, p Params) Result {
 		return Result{Evaluation: standdown("horizon exceeded (CI pending > " + p.Horizon.String() + ")"), NewArmedSha: ""}
 	}
 
+	// In-flight discrimination (#250 r2) + liveness bound (#248) — BEFORE
+	// any proceed path, including the no-required-contexts one (#256): a
+	// dispatched review keeps the label until the deploy plugin removes it
+	// after posting the verdict. Green+label alone would re-proceed on every
+	// sweep — duplicate dispatch. The branch must sit above the
+	// len(required)==0 early-return or repos WITHOUT branch protection
+	// (required = ∅, the label is the whole contract) bypass both the
+	// no-re-dispatch guard and the liveness bound entirely — every sweep on
+	// a labeled, dispatched PR re-proceeds. The verdict window
+	// (armedAt − slack) is the durable consume signal, the same one the
+	// label-absent path uses. Past DispatchTimeout with no verdict the run
+	// is provably dead — the consumer wraps every one-shot run in a 30m
+	// context — so the gate stands down and the backlog pass re-arms the
+	// still-labeled PR on the next sweep (recovery without any external
+	// label toggle, #248).
+	if !p.DispatchedAt.IsZero() {
+		since := armTime(p.ArmedAt, now).Add(-verdictSinceSlack)
+		comments, err := api.ListComments(ctx, p.Repo, p.PR, since)
+		if err != nil {
+			return Result{Evaluation: waiting("in-flight verdict check failed: " + err.Error()), NewArmedSha: pr.HeadSHA, NewArmedAt: armedAt}
+		}
+		if hasVerdict(comments) {
+			return Result{Evaluation: standdown("verdict posted — consumed"), NewArmedSha: ""}
+		}
+		if p.DispatchTimeout > 0 && now.Sub(p.DispatchedAt) >= p.DispatchTimeout {
+			return Result{Evaluation: standdown(fmt.Sprintf("dispatch presumed dead (no verdict after %s; run bound %s) — backlog will re-arm", p.DispatchTimeout, v1alpha1.OneShotRunBound)), NewArmedSha: ""}
+		}
+		return Result{Evaluation: waiting("review in flight — dispatched, verdict pending"), NewArmedSha: pr.HeadSHA, NewArmedAt: armedAt}
+	}
+
 	required, err := api.RequiredContexts(ctx, p.Repo, pr.Base)
 	if err != nil {
 		return Result{Evaluation: waiting("merge-rules fetch failed: " + err.Error()), NewArmedSha: pr.HeadSHA, NewArmedAt: armedAt}
 	}
 	if len(required) == 0 {
 		// No merge-rule contexts defined: the label is the whole contract.
+		// Reached only when NOT in flight — the in-flight branch above owns
+		// dispatched reviews regardless of protection (#256).
 		return proceed(p, pr, nil, nil)
 	}
 
@@ -638,30 +670,6 @@ func Evaluate(ctx context.Context, api API, p Params) Result {
 		default: // pending or missing entirely (run not started)
 			pending = append(pending, ctx)
 		}
-	}
-
-	// In-flight discrimination (#250 r2) + liveness bound (#248): a
-	// dispatched review keeps the label until the deploy plugin removes it
-	// after posting the verdict. Green+label alone would re-proceed on every
-	// sweep — duplicate dispatch. The verdict window (armedAt − slack) is
-	// the durable consume signal, the same one the label-absent path uses.
-	// Past DispatchTimeout with no verdict the run is provably dead — the
-	// consumer wraps every one-shot run in a 30m context — so the gate
-	// stands down and the backlog pass re-arms the still-labeled PR on the
-	// next sweep (recovery without any external label toggle, #248).
-	if !p.DispatchedAt.IsZero() {
-		since := armTime(p.ArmedAt, now).Add(-verdictSinceSlack)
-		comments, err := api.ListComments(ctx, p.Repo, p.PR, since)
-		if err != nil {
-			return Result{Evaluation: waiting("in-flight verdict check failed: " + err.Error()), NewArmedSha: pr.HeadSHA, NewArmedAt: armedAt}
-		}
-		if hasVerdict(comments) {
-			return Result{Evaluation: standdown("verdict posted — consumed"), NewArmedSha: ""}
-		}
-		if p.DispatchTimeout > 0 && now.Sub(p.DispatchedAt) >= p.DispatchTimeout {
-			return Result{Evaluation: standdown(fmt.Sprintf("dispatch presumed dead (no verdict after %s; run bound %s) — backlog will re-arm", p.DispatchTimeout, v1alpha1.OneShotRunBound)), NewArmedSha: ""}
-		}
-		return Result{Evaluation: waiting("review in flight — dispatched, verdict pending"), NewArmedSha: pr.HeadSHA, NewArmedAt: armedAt}
 	}
 
 	switch {

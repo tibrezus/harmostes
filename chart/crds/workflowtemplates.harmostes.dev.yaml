@@ -61,9 +61,14 @@ spec:
                       required: [name]
                       properties:
                         name: { type: string }
+                        image: { type: string }
                         configMap: { type: string }
                         args: { type: array, items: { type: string } }
                     detect: { type: string, enum: [changed, conflict, always] }
+                    output: { type: string }
+                    config:
+                      type: object
+                      x-kubernetes-preserve-unknown-fields: true
 
                 agent:
                   type: object
@@ -89,9 +94,12 @@ spec:
                           required: [name]
                           properties:
                             name: { type: string }
+                            image: { type: string }
                             configMap: { type: string }
                             args: { type: array, items: { type: string } }
                     maxFixes: { type: integer, minimum: 1 }
+                    timeout: { type: integer, default: 1800 }
+                    scope: { type: string }
 
                 deploy:
                   type: object
@@ -101,6 +109,7 @@ spec:
                       required: [name]
                       properties:
                         name: { type: string }
+                        image: { type: string }
                         configMap: { type: string }
                         args: { type: array, items: { type: string } }
                 # Review-Ready Gate (ADR-0006): the event-armed deterministic
@@ -112,6 +121,7 @@ spec:
                   properties:
                     label:   { type: string, default: needs-review }
                     horizon: { type: string, default: 6h }
+                    dispatchTimeout: { type: string, default: 45m }
                     maxConcurrent: { type: integer, minimum: 1 }
 
             status:

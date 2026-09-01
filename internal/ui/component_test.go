@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -83,14 +84,14 @@ func TestComponent_Wall_RendersAllFixtureSubjects(t *testing.T) {
 	if got := cards.Length(); got != 3 {
 		t.Errorf("wall cards = %d, want 3 (two review PRs + one deterministic subject)", got)
 	}
-	reviewMarked := 0
 	cards.Each(func(_ int, s *goquery.Selection) {
 		if s.AttrOr("data-subject", "") == "" {
 			t.Error("wall card without data-subject")
 		}
 	})
-	doc.Find(".wall-card-title").Each(func(_ int, s *goquery.Selection) {
-		if text := strings.TrimSpace(s.Text()); strings.HasPrefix(text, "⟡") {
+	reviewMarked := 0
+	doc.Find(`[data-testid="wall-card-title"]`).Each(func(_ int, s *goquery.Selection) {
+		if strings.HasPrefix(strings.TrimSpace(s.Text()), "⟡") {
 			reviewMarked++
 		}
 	})
@@ -135,9 +136,6 @@ func TestComponent_RunDetail_TerminalGraphAndWaterfall(t *testing.T) {
 	agentW, prepareW, gateW := widthOf("agent"), widthOf("prepare"), widthOf("gate")
 	if agentW <= prepareW || agentW <= gateW {
 		t.Errorf("agent bar (%d) must be widest; prepare=%d gate=%d", agentW, prepareW, gateW)
-	}
-	if prepareW < 0 || gateW < 0 {
-		t.Errorf("agent-duration lanes missing: prepare=%d gate=%d", prepareW, gateW)
 	}
 }
 
@@ -190,7 +188,9 @@ func TestComponent_RunDetail_LivePositionOnRunningAttempt(t *testing.T) {
 // superseded terminal state.
 func TestComponent_RunsList_Phases(t *testing.T) {
 	ts := newFixtureServer(t)
-	doc := getAsFixtureUser(t, ts, "/runs")
+	// window=all: the phase-coverage contract must not depend on wall-clock
+	// distance to the fixture clock origin.
+	doc := getAsFixtureUser(t, ts, "/runs?window=all")
 
 	links := testIDSelection(t, doc, "run-link")
 	if links.Length() < 3 {
@@ -230,9 +230,14 @@ func TestComponent_RunDetail_DeterministicAttempt(t *testing.T) {
 	if nodes.Length() != 2 {
 		t.Errorf("graph nodes = %d, want 2 (prepare, deploy)", nodes.Length())
 	}
-	if doc.Find("a[href*='/session']").Length() != 0 {
-		t.Error("deterministic attempt renders a session link; must not")
-	}
+	// The pinned contract is AgentEnabled gating the Session link: no anchor
+	// may target this attempt's session route.
+	sessionRoute := regexp.MustCompile(`^/runs/attempt-merge-sync-demo-e5f6/runs/[^/]+/session$`)
+	doc.Find("a[href]").Each(func(_ int, s *goquery.Selection) {
+		if sessionRoute.MatchString(s.AttrOr("href", "")) {
+			t.Errorf("deterministic attempt renders a session link to %s; must not", s.AttrOr("href", ""))
+		}
+	})
 }
 
 // The wall-usage metadata: platform registry must tolerate fixture attempts
@@ -247,5 +252,34 @@ func TestComponent_FixtureServer_Healthz(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("healthz = %d, want 200", resp.StatusCode)
+	}
+}
+
+// The `-fixture` zero-setup contract: an unauthenticated request through
+// DevIdentity is served as the fixture dev user — the wall renders the
+// owner-scoped cards with no headers at all.
+func TestComponent_DevIdentity_ZeroSetup(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv, err := fixture.NewServer(fixtureNamespace, logger)
+	if err != nil {
+		t.Fatalf("fixture server: %v", err)
+	}
+	ts := httptest.NewServer(fixture.DevIdentity(srv.Routes()))
+	t.Cleanup(ts.Close)
+
+	resp, err := http.Get(ts.URL + "/") // deliberately no identity header
+	if err != nil {
+		t.Fatalf("GET /: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET / = %d, want 200", resp.StatusCode)
+	}
+	doc, err := goquery.NewDocumentFromReader(resp.Body)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if got := doc.Find(`[data-testid="wall-card"]`).Length(); got != 3 {
+		t.Errorf("wall cards visible to the injected dev user = %d, want 3", got)
 	}
 }

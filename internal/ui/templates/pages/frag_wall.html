@@ -6,8 +6,8 @@
 	<div class="ds-card wall-card">
 		<a class="wall-card-link" href="{{.LastRunURL}}" data-testid="wall-card" data-subject="{{.Subject}}" aria-label="Open latest run of {{.Subject}}"></a>
 		<div class="wall-card-head">
-			{{if .IsReview}}<span class="wall-card-title">⟡ {{.Subject}}</span>
-			{{else}}<span class="wall-card-title"><code>{{.Subject}}</code></span>{{end}}
+			{{if .IsReview}}<span class="wall-card-title" data-testid="wall-card-title">⟡ {{.Subject}}</span>
+			{{else}}<span class="wall-card-title" data-testid="wall-card-title"><code>{{.Subject}}</code></span>{{end}}
 			{{if .IsReview}}
 				{{if eq .ClaimState "review in flight"}}<span class="ds-status-badge ds-status-badge--warning">● in flight</span>
 				{{else if eq .ClaimState "verdict posted"}}<span class="ds-status-badge ds-status-badge--positive">✓ verdict</span>

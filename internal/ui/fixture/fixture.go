@@ -11,6 +11,7 @@ import (
 	_ "embed"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strings"
 	"time"
 
@@ -180,6 +181,19 @@ func Attempts(namespace string) ([]ctrlclient.Object, error) {
 // client needs — the same scheme production uses.
 func Scheme() *runtime.Scheme {
 	return k8s.Scheme()
+}
+
+// DevIdentity injects the fixture dev user into requests that carry no
+// explicit identity — the zero-setup contract behind `harmostes-ui -fixture`
+// (no Authentik, no headers). Wrap Routes() with it in the binary; tests
+// wrap it to pin the contract.
+func DevIdentity(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Authentik-Username") == "" && r.Header.Get("X-Harmostes-Dev-User") == "" {
+			r.Header.Set("X-Harmostes-Dev-User", DevUser)
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // NewServer constructs a ui.Server over an in-memory seeded world: the fake

@@ -71,7 +71,7 @@ func main() {
 			logger.Error("seed fixture world", "err", err)
 			os.Exit(1)
 		}
-		serve(logger, addr, withDevIdentity(fixtureServer.Routes(), fixture.DevUser), namespace, true)
+		serve(logger, addr, fixture.DevIdentity(fixtureServer.Routes()), namespace, true)
 		return
 	}
 
@@ -131,19 +131,6 @@ func serve(logger *slog.Logger, addr string, handler http.Handler, namespace str
 		os.Exit(1)
 	}
 }
-
-// withDevIdentity injects the development identity so `-fixture` works with
-// zero external setup (no Authentik, no headers): every request without
-// explicit identity headers is served as the fixture dev user.
-func withDevIdentity(next http.Handler, devUser string) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("X-Authentik-Username") == "" && r.Header.Get("X-Harmostes-Dev-User") == "" {
-			r.Header.Set("X-Harmostes-Dev-User", devUser)
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
 func envOr(key, def string) string {
 	if v := os.Getenv(key); v != "" {
 		return v

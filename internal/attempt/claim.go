@@ -3,6 +3,7 @@ package attempt
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -12,8 +13,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
-
-	"log/slog"
 )
 
 // Review-Ready Gate claims (ADR-0007 phase 4): the Attempt IS the claim.

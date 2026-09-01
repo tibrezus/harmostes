@@ -217,21 +217,25 @@ func TestStatusCompactionByteBudgetEvictsFatEnvelopes(t *testing.T) {
 }
 
 // The attempt-level worker message is prose — clamped like every other
-// free-form field (#289 r2: one unbounded field defeats the cap).
+// free-form field (#289 r2: one unbounded field defeats the cap). Drives the
+// exported RecordRunOutcome against the fake client so deleting the
+// production clamp fails this test.
 func TestRecordRunOutcomeClampsMessage(t *testing.T) {
-	if MaxStatusMessageBytes < 1024 {
-		t.Fatalf("sanity: message bound %d suspiciously small", MaxStatusMessageBytes)
-	}
-	msg := strings.Repeat("m", MaxStatusMessageBytes+500)
-	a := &v1alpha1.Attempt{}
-	// The clamp is inlined in RecordRunOutcome's mutate closure; exercise the
-	// same bound directly (the closure is not exported).
-	if len(msg) > MaxStatusMessageBytes {
-		msg = msg[:MaxStatusMessageBytes]
-	}
-	a.Status.Message = msg
-	if len(a.Status.Message) != MaxStatusMessageBytes {
-		t.Errorf("message = %d bytes, want ≤ %d", len(a.Status.Message), MaxStatusMessageBytes)
+	ctx := context.Background()
+	c := newFakeClient(t)
+	wf := wikiWorkflow()
+	obj := DeriveObjective(wf, TriggerContext{Revision: "abc"})
+	opts := ResolveOptions{Namespace: "harmostes", Owner: wf, Scheme: wfScheme(t)}
+	a, _, _ := ResolveOrCreate(ctx, c, obj, opts)
+	_ = RecordRunStarted(ctx, c, "harmostes", a.Name, "run-1")
+
+	oversize := strings.Repeat("m", MaxStatusMessageBytes+500)
+	_ = RecordRunOutcome(ctx, c, "harmostes", a.Name, RunOutcome{
+		RunName: "run-1", Phase: "failed", Message: oversize,
+	})
+	got := getAttempt(t, ctx, c, a)
+	if len(got.Status.Message) != MaxStatusMessageBytes {
+		t.Errorf("stored message = %d bytes, want clamped to %d", len(got.Status.Message), MaxStatusMessageBytes)
 	}
 }
 

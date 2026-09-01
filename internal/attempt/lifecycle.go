@@ -11,9 +11,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
-	"github.com/tibrezus/harmostes/internal/claim"
-
 	"log/slog"
+
+	"github.com/tibrezus/harmostes/internal/claim"
 )
 
 // ResolveOptions parameterize ResolveOrCreate.
@@ -98,10 +98,11 @@ func AttemptSpecFromObjective(obj v1alpha1.ObjectiveSpec, opts ResolveOptions) v
 // /runs/{attempt}/runs/{run} redirect (handleRunLogs, handleWorkflowRunRedirect).
 const (
 	// MaxStatusNodeResults bounds the NodeResults tail by COUNT. A cycle of
-	// an N-node graph with R retries records up to N×R envelopes, so the
-	// count cap alone cannot guarantee the current cycle fits — the byte
-	// budget below is the structural bound (fan-out graphs simply trigger
-	// byte-side eviction sooner); this cap bounds the list length itself.
+	// an N-node graph with R retries records up to N×R envelopes — nothing
+	// bounds graph size — so this cap does NOT guarantee the current cycle
+	// fits; on extreme fan-out it may enter the cycle. What keeps the
+	// current cycle renderable is the byte budget (which fires first for fat
+	// shapes) plus the MinTailEnvelopes floor protecting the live position.
 	MaxStatusNodeResults = 200
 	// MaxStatusRuns bounds the Runs tail. A running run is by definition
 	// recent — the tail always contains every in-flight record.
@@ -173,6 +174,11 @@ func compactStatus(s *v1alpha1.AttemptStatus) (dropped int) {
 		dropped++
 	}
 	if drop := len(s.NodeResults) - MaxStatusNodeResults; drop > 0 {
+		for i := 0; i < drop; i++ {
+			if t := s.NodeResults[i].ProducedAt; t.After(s.CompactedThrough.Time) {
+				s.CompactedThrough = t
+			}
+		}
 		s.NodeResults = s.NodeResults[drop:]
 		s.CompactedNodeResults += drop
 		dropped += drop

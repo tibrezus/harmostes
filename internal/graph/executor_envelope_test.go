@@ -299,3 +299,18 @@ func (leakyExecutor) ExecutionClass() string { return "deterministic" }
 func (leakyExecutor) Execute(_ context.Context, _ v1alpha1.NodeSpec, _ NodeEnv) (NodeResult, error) {
 	return NodeResult{Status: StatusFailed, Feedback: "cloning https://user:secret@host/x.git failed"}, nil
 }
+
+// A measurable duration must survive synthesizeEnvelope (#298): the UI's
+// timing waterfall is only as honest as this field.
+func TestSynthesizeEnvelopeCarriesDuration(t *testing.T) {
+	e := &GraphExecutor{}
+	nr := NodeResult{Status: StatusGreen, Feedback: "done"}
+	env := e.synthesizeEnvelope("agent", "agent", nr, 781_000)
+	if env.DurationMs != 781_000 {
+		t.Errorf("DurationMs = %d, want 781000", env.DurationMs)
+	}
+	zero := e.synthesizeEnvelope("gate", "gate", nr, 0)
+	if zero.DurationMs != 0 {
+		t.Errorf("zero duration should stay zero (omitempty), got %d", zero.DurationMs)
+	}
+}

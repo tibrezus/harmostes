@@ -499,6 +499,17 @@ func TestRunDetailTimingWaterfall(t *testing.T) {
 	if !strings.Contains(strip, "13.0m") {
 		t.Error("agent duration not rendered")
 	}
+	// Geometry is precomputed in Go (templates cannot multiply): lane offsets
+	// must be exact multiples of the 22px lane height, and the viewBox height
+	// must equal lanes*22.
+	for i, offset := range []string{"translate(0, 0)", "translate(0, 22)", "translate(0, 44)", "translate(0, 66)"} {
+		if !strings.Contains(strip, offset) {
+			t.Errorf("lane %d geometry missing %q", i, offset)
+		}
+	}
+	if !strings.Contains(strip, `viewBox="0 0 640 88"`) {
+		t.Errorf("strip viewBox height wrong: want 88 (4 lanes x 22)")
+	}
 	// The hover panel carries the node duration too.
 	if !strings.Contains(body, `"duration"`) {
 		t.Error("nodeData missing duration field")
@@ -524,4 +535,20 @@ func extractTimingWidth(t *testing.T, body, label string) int {
 		t.Fatalf("width parse: %v", err)
 	}
 	return n
+}
+
+// All-zero durations degrade to no strip at all (nothing to proportion).
+func TestRunDetailTimingWaterfallZeroDurations(t *testing.T) {
+	att := wallReviewAttempt("attempt-pr-review-x-1", "pr-review-x")
+	base := time.Date(2026, 9, 1, 8, 0, 0, 0, time.UTC)
+	att.CreationTimestamp = metav1.NewTime(base)
+	att.Status.NodeResults = []v1alpha1.NodeResultEnvelope{
+		graphEnvelope("prepare", "ok", metav1.NewTime(base.Add(10*time.Second))),
+		graphEnvelope("agent", "ok", metav1.NewTime(base.Add(20*time.Second))),
+	}
+	s := newAttemptTestServer(t, graphSeedWorkflow("pr-review-x"), att)
+	view := s.buildRunGraph(context.Background(), att)
+	if view.Timing != nil || view.TimingH != 0 {
+		t.Errorf("zero-duration envelopes should yield an empty strip, got %d lanes h=%d", len(view.Timing), view.TimingH)
+	}
 }

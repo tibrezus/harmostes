@@ -21,9 +21,9 @@
 </svg>
 {{- with .Timing}}
 <div class="rg-timing-title">Step timing — bar width is wall-clock share</div>
-<svg class="rg-timing" role="img" aria-label="per-step timing waterfall" viewBox="0 0 640 {{len .}}22" width="100%" preserveAspectRatio="xMinYMin meet">
-	{{- range $i, $s := .}}
-	<g class="rg-timing-lane" transform="translate(0, {{$i}}22)">
+<svg class="rg-timing" role="img" aria-label="per-step timing waterfall" viewBox="0 0 640 {{$.Graph.TimingH}}" width="100%" preserveAspectRatio="xMinYMin meet">
+	{{- range $s := .}}
+	<g class="rg-timing-lane" transform="translate(0, {{$s.Y}})">
 		<text class="rg-timing-label" x="8" y="15">{{$s.Label}}</text>
 		<rect class="rg-timing-bar rg-state-{{$s.Status}}" x="{{$s.X}}" y="4" width="{{$s.Width}}" height="14" rx="3"><title>{{$s.Title}}</title></rect>
 		{{- if $s.Right}}

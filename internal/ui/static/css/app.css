@@ -2037,3 +2037,8 @@ code, pre {
 .rg-timing-dur { font-size: 10px; fill: var(--ink-soft); }
 .rg-timing-dur-in { fill: var(--paper); }
 .rg-timing-bar.rg-state-overhead { opacity: 0.4; }
+/* Waterfall bars share the node-graph state palette so a red run reads red. */
+.rg-timing-bar.rg-state-ok { fill: var(--ds-positive, #2e7d32); }
+.rg-timing-bar.rg-state-failed { fill: var(--ds-negative, #c62828); opacity: 0.9; }
+.rg-timing-bar.rg-state-skipped { fill: var(--ink-soft, #888); opacity: 0.5; }
+.rg-timing-bar.rg-state-running { fill: var(--ink, #222); opacity: 0.85; }

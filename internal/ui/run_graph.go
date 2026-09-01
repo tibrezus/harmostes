@@ -78,6 +78,7 @@ type runGraphView struct {
 	Edges     []graphEdgeView     `json:"edges"`
 	NodeData  map[string]nodeData `json:"nodeData"`         // hover/click payload
 	Timing    []timingSegment     `json:"timing,omitempty"` // per-step waterfall (#298)
+	TimingH   int                 `json:"timingH,omitempty"`
 }
 
 // nodeData is what pointing at a node yields: the live facts for that node.
@@ -158,6 +159,7 @@ func (s *Server) buildRunGraph(ctx context.Context, att *v1alpha1.Attempt) runGr
 		}
 	}
 	view.Timing = buildTimingStrip(att, view.Nodes, latest)
+	view.TimingH = len(view.Timing) * 22 // lane height lives here; templates stay arithmetic-free
 	return view
 }
 
@@ -168,6 +170,7 @@ type timingSegment struct {
 	Label  string `json:"label"`
 	Status string `json:"status"` // segment color class (rg-state-*)
 	X      int    `json:"x"`
+	Y      int    `json:"y"` // lane offset (index * laneHeight), precomputed
 	Width  int    `json:"width"`
 	// Precomputed text anchors (templates stay arithmetic-free).
 	TextX int    `json:"textX"`
@@ -231,6 +234,18 @@ func buildTimingStrip(att *v1alpha1.Attempt, nodes []graphNodeView, latest map[s
 	}
 
 	const stripW, barX, labelW = 640, 110, 520
+	// All-zero node durations (pre-#298 envelopes): nothing to proportion —
+	// an empty strip is more honest than 3px floors implying distribution.
+	timed := false
+	for _, l := range lanes {
+		if l.label != "queue+pod" && l.end.After(l.start) {
+			timed = true
+			break
+		}
+	}
+	if !timed {
+		return nil
+	}
 	segs := make([]timingSegment, 0, len(lanes))
 	for _, l := range lanes {
 		x := int(float64(l.start.Sub(spanStart)) / float64(total) * float64(labelW))
@@ -250,7 +265,9 @@ func buildTimingStrip(att *v1alpha1.Attempt, nodes []graphNodeView, latest map[s
 		})
 	}
 	// Short bars label to the right of the bar; long bars inside.
+	const laneH = 22
 	for i := range segs {
+		segs[i].Y = i * laneH // templates have no arithmetic: {{$i}}22 would concatenate
 		segs[i].TextX = segs[i].X + segs[i].Width + 5
 		segs[i].Right = segs[i].Width < 60
 		if !segs[i].Right {

@@ -162,6 +162,7 @@ spec:
                         type: object
                         x-kubernetes-preserve-unknown-fields: true
                       producedAt: { type: string }
+                      durationMs: { type: integer, format: int64 }
                       artifacts:
                         type: array
                         items:

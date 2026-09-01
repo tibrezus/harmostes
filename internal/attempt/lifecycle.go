@@ -83,6 +83,62 @@ func AttemptSpecFromObjective(obj v1alpha1.ObjectiveSpec, opts ResolveOptions) v
 	return spec
 }
 
+// Status compaction bounds (#289): attempt status patches are etcd requests
+// — past 1.5MB etcd rejects them outright, and deterministic classes (one
+// attempt per objective identity, kept forever) grow status without bound.
+// The CR keeps a bounded tail window plus monotonic counters; the durable
+// record is the timeline store (node boundaries are emitted there per run),
+// so compaction loses render-cache entries, never history.
+const (
+	// MaxStatusNodeResults bounds the NodeResults tail. A full reconciliation
+	// cycle records one envelope per node; 200 covers any real graph many
+	// times over, so the CURRENT cycle is always fully present.
+	MaxStatusNodeResults = 200
+	// MaxStatusRuns bounds the Runs tail. A running run is by definition
+	// recent — the tail always contains every in-flight record.
+	MaxStatusRuns = 400
+	// MaxStatusEvidence bounds the Evidence tail.
+	MaxStatusEvidence = 200
+	// MaxStatusPayloadBytes drops oversize opaque payloads at record time.
+	// Payload is node-type-specific diagnostics, opaque to the kernel; a
+	// single multi-hundred-KB payload defeats count-based caps.
+	MaxStatusPayloadBytes = 4 << 10
+	// MaxStatusSummaryBytes truncates summaries at record time.
+	MaxStatusSummaryBytes = 1 << 10
+)
+
+// compactStatus enforces the tail windows: entries leave from the HEAD
+// (oldest side — upserts append), the dropped counts accumulate in the
+// matching counters so totals stay derivable (AttemptStatus.TotalRuns et al).
+func compactStatus(s *v1alpha1.AttemptStatus) {
+	if drop := len(s.NodeResults) - MaxStatusNodeResults; drop > 0 {
+		s.NodeResults = s.NodeResults[drop:]
+		s.CompactedNodeResults += drop
+	}
+	if drop := len(s.Runs) - MaxStatusRuns; drop > 0 {
+		s.Runs = s.Runs[drop:]
+		s.CompactedRuns += drop
+	}
+	if drop := len(s.Evidence) - MaxStatusEvidence; drop > 0 {
+		s.Evidence = s.Evidence[drop:]
+		s.CompactedEvidence += drop
+	}
+}
+
+// boundEnvelope clamps the per-envelope size drivers at record time: oversize
+// opaque payloads are dropped entirely (a truncated byte blob is neither the
+// original nor valid anything), oversize summaries are truncated (prose
+// survives a cut). Count caps imply byte caps only if per-entry size is
+// bounded too (#289).
+func boundEnvelope(env *v1alpha1.NodeResultEnvelope) {
+	if len(env.Payload) > MaxStatusPayloadBytes {
+		env.Payload = nil
+	}
+	if len(env.Summary) > MaxStatusSummaryBytes {
+		env.Summary = env.Summary[:MaxStatusSummaryBytes]
+	}
+}
+
 // RecordRunStarted appends (or upserts) a RunRecord marked running into the
 // Attempt's status. Called by the controller right after it schedules a worker
 // Job. Idempotent on run name: re-scheduling the same run updates rather than
@@ -91,6 +147,7 @@ func RecordRunStarted(ctx context.Context, c client.Client, namespace, attemptNa
 	now := metav1.Now()
 	return mutateStatus(ctx, c, namespace, attemptName, func(a *v1alpha1.Attempt) {
 		upsertRun(&a.Status.Runs, v1alpha1.RunRecord{Name: runName, StartedAt: now, Phase: "running"})
+		compactStatus(&a.Status)
 		a.Status.LastRunAt = now
 	})
 }
@@ -119,12 +176,14 @@ func RecordRunOutcome(ctx context.Context, c client.Client, namespace, attemptNa
 		// Upsert (not append): envelopes already recorded incrementally as
 		// nodes completed are replaced in place; new ones append. Blind append
 		// would duplicate every envelope the OnNodeResult hook already landed.
-		for _, env := range outcome.Envelopes {
-			upsertNodeResult(&a.Status.NodeResults, env)
+		for i := range outcome.Envelopes {
+			boundEnvelope(&outcome.Envelopes[i])
+			upsertNodeResult(&a.Status.NodeResults, outcome.Envelopes[i])
 		}
 		for _, env := range outcome.Envelopes {
 			a.Status.Evidence = appendUniqueEvidence(a.Status.Evidence, env.References)
 		}
+		compactStatus(&a.Status)
 		a.Status.LastRunAt = now
 		switch outcome.Phase {
 		case "failed":
@@ -167,8 +226,10 @@ func mutateStatus(ctx context.Context, c client.Client, namespace, attemptName s
 // in place, so both incremental arrival and the outcome upsert are idempotent.
 // Best-effort caller: errors are returned but must not abort the run.
 func UpsertNodeResult(ctx context.Context, c client.Client, namespace, attemptName string, env v1alpha1.NodeResultEnvelope) error {
+	boundEnvelope(&env)
 	return mutateStatus(ctx, c, namespace, attemptName, func(a *v1alpha1.Attempt) {
 		upsertNodeResult(&a.Status.NodeResults, env)
+		compactStatus(&a.Status)
 	})
 }
 

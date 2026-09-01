@@ -158,6 +158,28 @@ type AttemptStatus struct {
 	// +listType=atomic
 	Evidence []EvidenceReference `json:"evidence,omitempty"`
 
+	// CompactedRuns counts RunRecords dropped from the head (oldest side) of
+	// Runs by status compaction (#289): the CR keeps a bounded tail window —
+	// etcd rejects status patches past 1.5MB, which deterministic classes
+	// (one attempt per objective identity, forever) hit after enough runs.
+	// Total runs ever = len(Runs) + CompactedRuns.
+	// +optional
+	CompactedRuns int `json:"compactedRuns,omitempty"`
+
+	// CompactedNodeResults counts NodeResultEnvelopes dropped from the head
+	// (oldest side) of NodeResults by status compaction (#289). Total
+	// envelopes ever = len(NodeResults) + CompactedNodeResults. The durable
+	// node-boundary log is the timeline store; the CR ledger is the render
+	// cache (ADR-0005 amendment).
+	// +optional
+	CompactedNodeResults int `json:"compactedNodeResults,omitempty"`
+
+	// CompactedEvidence counts EvidenceReferences dropped from the head
+	// (oldest side) of Evidence by status compaction (#289). Total ever =
+	// len(Evidence) + CompactedEvidence.
+	// +optional
+	CompactedEvidence int `json:"compactedEvidence,omitempty"`
+
 	// LastRunAt is when the most recent run in this attempt executed.
 	// +optional
 	LastRunAt metav1.Time `json:"lastRunAt,omitempty"`
@@ -221,6 +243,33 @@ type RunRecord struct {
 	// Phase is the run phase: running | succeeded | failed.
 	// +optional
 	Phase string `json:"phase,omitempty"`
+}
+
+// TotalRuns is runs ever executed on this attempt: the live tail plus every
+// compacted-away record (#289).
+func (s *AttemptStatus) TotalRuns() int {
+	if s == nil {
+		return 0
+	}
+	return len(s.Runs) + s.CompactedRuns
+}
+
+// TotalNodeResults is envelopes ever recorded: the live tail plus every
+// compacted-away envelope (#289).
+func (s *AttemptStatus) TotalNodeResults() int {
+	if s == nil {
+		return 0
+	}
+	return len(s.NodeResults) + s.CompactedNodeResults
+}
+
+// TotalEvidence is evidence references ever recorded: the live tail plus
+// every compacted-away reference (#289).
+func (s *AttemptStatus) TotalEvidence() int {
+	if s == nil {
+		return 0
+	}
+	return len(s.Evidence) + s.CompactedEvidence
 }
 
 // ---------------------------------------------------------------------------

@@ -8,6 +8,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
+
+	"fmt"
+	"strings"
 )
 
 // The ledger is keyed by (NodeID, RunID): new keys append (history preserved
@@ -82,5 +85,91 @@ func TestUpsertNodeResult_IncrementalArrivalThenOutcome(t *testing.T) {
 	if len(got.Status.NodeResults) != 2 {
 		t.Errorf("ledger = %d entries after incremental + outcome, want 2 (idempotent): %+v",
 			len(got.Status.NodeResults), got.Status.NodeResults)
+	}
+}
+
+// Status compaction (#289): the CR keeps a bounded tail plus monotonic
+// counters. Deterministic classes (one attempt per objective identity,
+// forever) grow status until the etcd 1.5MB request limit rejects the patch
+// — after which outcome recording fails permanently. The tail keeps the
+// CURRENT cycle fully rendered (latest envelope per node is what the UI
+// resolves); the counters keep totals derivable; the timeline store holds
+// the durable log.
+func TestStatusCompactionTailAndCounters(t *testing.T) {
+	mk := func(nodeID, runID, status string) v1alpha1.NodeResultEnvelope {
+		return v1alpha1.NodeResultEnvelope{NodeID: nodeID, RunID: runID, Status: status}
+	}
+
+	s := &v1alpha1.AttemptStatus{}
+	for i := 0; i < MaxStatusNodeResults+50; i++ {
+		upsertNodeResult(&s.NodeResults, mk("node", fmt.Sprintf("run-%d", i), "ok"))
+	}
+	upsertRun(&s.Runs, v1alpha1.RunRecord{Name: "r"})
+	for i := 0; i < MaxStatusEvidence+7; i++ {
+		s.Evidence = append(s.Evidence, v1alpha1.EvidenceReference{Kind: "k", Identifier: fmt.Sprintf("e%d", i)})
+	}
+	compactStatus(s)
+
+	if len(s.NodeResults) != MaxStatusNodeResults {
+		t.Fatalf("nodeResults tail = %d, want %d", len(s.NodeResults), MaxStatusNodeResults)
+	}
+	if s.CompactedNodeResults != 50 {
+		t.Errorf("compactedNodeResults = %d, want 50", s.CompactedNodeResults)
+	}
+	// The tail must be the NEWEST entries: the first surviving envelope is
+	// run-50 (the oldest 50 compacted away), the last is run-249.
+	if s.NodeResults[0].RunID != "run-50" || s.NodeResults[len(s.NodeResults)-1].RunID != "run-249" {
+		t.Errorf("tail window wrong: first=%s last=%s", s.NodeResults[0].RunID, s.NodeResults[len(s.NodeResults)-1].RunID)
+	}
+	if len(s.Runs) != 1 || s.CompactedRuns != 0 {
+		t.Errorf("runs under the cap must be untouched, got %d/%d", len(s.Runs), s.CompactedRuns)
+	}
+	if len(s.Evidence) != MaxStatusEvidence || s.CompactedEvidence != 7 {
+		t.Errorf("evidence tail=%d compacted=%d, want %d/7", len(s.Evidence), s.CompactedEvidence, MaxStatusEvidence)
+	}
+	// Totals stay derivable across compactions.
+	if s.TotalNodeResults() != MaxStatusNodeResults+50 || s.TotalEvidence() != MaxStatusEvidence+7 {
+		t.Errorf("totals lost history: nodeResults=%d evidence=%d", s.TotalNodeResults(), s.TotalEvidence())
+	}
+
+	// Compaction accumulates across rounds: 10 more upserts re-triggers and
+	// the counter grows.
+	for i := 250; i < 260; i++ {
+		upsertNodeResult(&s.NodeResults, mk("node", fmt.Sprintf("run-%d", i), "ok"))
+	}
+	compactStatus(s)
+	if s.CompactedNodeResults != 60 {
+		t.Errorf("compactedNodeResults after second round = %d, want 60", s.CompactedNodeResults)
+	}
+}
+
+// Per-envelope size clamps: count caps imply byte caps only if the size
+// drivers are bounded at record time (#289).
+func TestBoundEnvelopeClampsSizeDrivers(t *testing.T) {
+	big := &v1alpha1.NodeResultEnvelope{
+		Payload: make([]byte, MaxStatusPayloadBytes+1),
+		Summary: strings.Repeat("x", MaxStatusSummaryBytes+100),
+	}
+	boundEnvelope(big)
+	if big.Payload != nil {
+		t.Errorf("oversize payload must be dropped, got %d bytes", len(big.Payload))
+	}
+	if len(big.Summary) != MaxStatusSummaryBytes {
+		t.Errorf("oversize summary must truncate to %d, got %d", MaxStatusSummaryBytes, len(big.Summary))
+	}
+
+	small := &v1alpha1.NodeResultEnvelope{Payload: []byte("{}/"), Summary: "ok"}
+	boundEnvelope(small)
+	if string(small.Payload) != "{}/" || small.Summary != "ok" {
+		t.Errorf("within-bounds envelope must pass through untouched: %+v", small)
+	}
+}
+
+// Nil-receiver totals are zero, not a panic — the UI reads them on
+// partially-populated statuses.
+func TestTotalsNilSafe(t *testing.T) {
+	var s *v1alpha1.AttemptStatus
+	if s.TotalRuns() != 0 || s.TotalNodeResults() != 0 || s.TotalEvidence() != 0 {
+		t.Fatal("nil status totals must be 0")
 	}
 }

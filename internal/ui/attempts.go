@@ -154,7 +154,7 @@ func groupAttempts(attempts []v1alpha1.Attempt, cutoff time.Time) []attemptGroup
 			PrimarySubject: subject,
 			Phase:          a.Status.Phase,
 			LastRunAt:      lastRun,
-			RunCount:       len(a.Status.Runs),
+			RunCount:       a.Status.TotalRuns(),
 		})
 		if last.Format(time.RFC3339) > g.LastActivity {
 			g.LastActivity = last.Format(time.RFC3339)

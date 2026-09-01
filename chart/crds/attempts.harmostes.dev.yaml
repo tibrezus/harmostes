@@ -135,6 +135,9 @@ spec:
                     dispatchedAt:  { type: string }
                     released:      { type: boolean }
                     releaseReason: { type: string }
+                compactedRuns:        { type: integer, description: RunRecords dropped from the head of runs by status compaction (#289); total = len(runs) + compactedRuns }
+                compactedNodeResults: { type: integer, description: NodeResultEnvelopes dropped from the head of nodeResults by status compaction (#289) }
+                compactedEvidence:    { type: integer, description: EvidenceReferences dropped from the head of evidence by status compaction (#289) }
                 runs:
                   type: array
                   x-kubernetes-list-type: atomic

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"html/template"
 	"net/http"
 	"sort"
 	"time"
@@ -220,7 +221,9 @@ type attemptDetailData struct {
 	AgentEnabled   bool
 	Claim          *claimView // review-gate claim state (nil = not a gated attempt)
 	LastRunAt      string
-	TotalDuration  string // earliest run start → latest run end ("" if unknown)
+	TotalDuration  string       // earliest run start → latest run end ("" if unknown)
+	Graph          runGraphView // timeline graph: compiled workflow + node state
+	NodeDataJSON   template.JS  // hover payload (own json.Marshal output: safe raw)
 }
 
 // claimView is the review-gate claim state attached to a run.
@@ -341,6 +344,14 @@ func (s *Server) handleAttemptDetail(w http.ResponseWriter, r *http.Request) {
 			DispatchedAt:  formatMetaTimePtr(rv.DispatchedAt),
 		}
 	}
+	// The timeline graph: compiled workflow + per-node state + live position.
+	// The page includes the same fragment the SSE stream re-renders.
+	data.Graph = s.buildRunGraph(r.Context(), att)
+	nodeJSON, err := json.Marshal(data.Graph.NodeData)
+	if err != nil {
+		nodeJSON = []byte("{}")
+	}
+	data.NodeDataJSON = template.JS(nodeJSON)
 	s.render(w, r, "pages/attempt_detail.html", data)
 }
 

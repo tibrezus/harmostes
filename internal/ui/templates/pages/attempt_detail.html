@@ -24,6 +24,19 @@
 	</div>
 	{{end}}
 
+	<!-- Timeline graph: compiled workflow, node states, live position -->
+	<div class="ds-section" id="run-graph">
+		<h3 class="ds-section-heading">Timeline</h3>
+		<div class="run-graph-layout">
+			<div class="run-graph-stream" id="run-graph-frag">
+				{{template "pages/frag_run_graph.html" .}}
+			</div>
+			<aside class="rg-panel" id="rg-panel" aria-live="polite">
+				<div class="rg-panel-empty">Hover or click a node for its live data.</div>
+			</aside>
+		</div>
+	</div>
+
 	{{if .Claim}}
 	<!-- Review claim -->
 	<div class="ds-section">
@@ -136,5 +149,77 @@
 	</div>
 	{{end}}
 </div>
+
+<script id="run-graph-data-initial" type="application/json">{{.NodeDataJSON}}</script>
+<script>
+(function () {
+	var section = document.getElementById('run-graph');
+	if (!section) return;
+	var frag = document.getElementById('run-graph-frag');
+	var panel = document.getElementById('rg-panel');
+
+	function dataFor(id) {
+		var el = document.getElementById('run-graph-data') ||
+			document.getElementById('run-graph-data-initial');
+		if (!el) return null;
+		try {
+			return JSON.parse(el.textContent)[id] || null;
+		} catch (e) { return null; }
+	}
+
+	function stateLabel(status) {
+		return { ok: '✓ ok', failed: '✗ failed', skipped: '− skipped',
+			running: '↻ running', pending: '· pending', external: '◇ external' }[status] || status;
+	}
+
+	// Rows are built with createElement/textContent — NEVER innerHTML
+	// concatenation. Summaries originate in gate/plugin output, so they are
+	// attacker-influenced text; the DOM API keeps them inert.
+	function show(nodeID) {
+		var d = dataFor(nodeID);
+		if (!d) return;
+		panel.textContent = '';
+		var title = document.createElement('div');
+		title.className = 'rg-panel-title';
+		var code = document.createElement('code');
+		code.textContent = nodeID;
+		title.appendChild(code);
+		panel.appendChild(title);
+		var dl = document.createElement('dl');
+		dl.className = 'ds-definition-list';
+		function row(label, value) {
+			var dt = document.createElement('dt');
+			dt.textContent = label;
+			var dd = document.createElement('dd');
+			dd.textContent = value;
+			dl.appendChild(dt);
+			dl.appendChild(dd);
+		}
+		row('State', stateLabel(d.status));
+		if (d.summary) row('Summary', d.summary);
+		if (d.runID) row('Run', d.runID);
+		if (d.producedAt) row('Finished', d.producedAt);
+		if (d.claims) row('Claims', d.claims);
+		if (d.refs) row('Evidence refs', d.refs);
+		if (d.triggeredBy) row('Triggered by', d.triggeredBy);
+		panel.appendChild(dl);
+	}
+
+	section.addEventListener('mouseover', function (e) {
+		var g = e.target.closest('[data-node]');
+		if (g) show(g.getAttribute('data-node'));
+	});
+	section.addEventListener('click', function (e) {
+		var g = e.target.closest('[data-node]');
+		if (g) show(g.getAttribute('data-node'));
+	});
+
+	if (!window.EventSource) return;
+	var es = new EventSource(location.pathname + '/graph/events');
+	es.addEventListener('rungraph', function (e) {
+		frag.innerHTML = e.data;
+	});
+})();
+</script>
 
 {{end}}

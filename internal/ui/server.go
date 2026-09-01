@@ -116,6 +116,7 @@ func (s *Server) Routes() http.Handler {
 	// transcripts), and the legacy /attempts deep links.
 	pages.HandleFunc("GET /runs", s.handleAttemptList)
 	pages.HandleFunc("GET /runs/{name}", s.handleAttemptDetail)
+	pages.HandleFunc("GET /runs/{name}/graph/events", s.handleRunGraphSSE)
 	pages.HandleFunc("GET /runs/{name}/runs/{job}/logs", s.handleRunLogs)
 	pages.HandleFunc("GET /runs/{name}/runs/{job}/session", s.handleAttemptSession)
 	pages.HandleFunc("GET /runs/{name}/runs/{job}/pi-session", s.handleAttemptPiSession)
@@ -163,12 +164,7 @@ func parseTemplates() (*template.Template, error) {
 			}
 			return val
 		},
-		"truncate": func(s string, n int) string {
-			if len(s) > n {
-				return s[:n] + "…"
-			}
-			return s
-		},
+		"truncate": truncateRunes,
 
 		// kindClass maps a timeline event kind to a CSS-safe class suffix.
 		"kindClass": func(kind string) string {

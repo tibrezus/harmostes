@@ -4,7 +4,7 @@
 <div class="wall-grid">
 {{- range .Groups}}
 	<div class="ds-card wall-card">
-		<a class="wall-card-link" href="{{.LastRunURL}}" aria-label="Open latest run of {{.Subject}}"></a>
+		<a class="wall-card-link" href="{{.LastRunURL}}" data-testid="wall-card" data-subject="{{.Subject}}" aria-label="Open latest run of {{.Subject}}"></a>
 		<div class="wall-card-head">
 			{{if .IsReview}}<span class="wall-card-title">⟡ {{.Subject}}</span>
 			{{else}}<span class="wall-card-title"><code>{{.Subject}}</code></span>{{end}}

@@ -223,6 +223,10 @@ func NewServer(namespace string, logger *slog.Logger) (*ui.Server, error) {
 		WithStatusSubresource(&v1alpha1.Attempt{}).
 		Build()
 
+	// The clientset is cluster-scoped by design (client-go fakes have no
+	// namespace option in v0.31): the namespace reaches it per call —
+	// makeLogFetchFunc does Pods(namespace).GetLogs — so the seam stays
+	// exactly as production's. No pods are seeded; log streaming degrades.
 	var kubeClient kubernetes.Interface = fake.NewSimpleClientset()
 
 	return ui.New(k8sClient, namespace, logger, kubeClient, nil)

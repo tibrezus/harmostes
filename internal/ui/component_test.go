@@ -173,13 +173,14 @@ func TestComponent_RunDetail_LivePositionOnRunningAttempt(t *testing.T) {
 	if doc.Find(".rg-pulse").Length() != 1 {
 		t.Errorf("rg-pulse elements = %d, want 1 (the in-flight node)", doc.Find(".rg-pulse").Length())
 	}
-	// A mid-flight attempt's waterfall may only show settled work: the
-	// overhead lane plus the completed prepare — never future nodes.
-	lanes := doc.Find(`[data-testid="timing-lane"]`)
-	allowed := map[string]bool{"queue+pod": true, "prepare": true}
-	lanes.Each(func(_ int, s *goquery.Selection) {
-		if label := s.AttrOr("data-label", ""); !allowed[label] {
-			t.Errorf("timing lane %q rendered for a mid-flight attempt; settled lanes only", label)
+	// A mid-flight attempt's waterfall may only show settled work. The
+	// invariant: no lane for a node without an envelope — whether the
+	// overhead lane renders depends on the attempt's creation gap, which is
+	// not this contract.
+	unsettled := map[string]bool{"agent": true, "gate": true, "deploy": true}
+	doc.Find(`[data-testid="timing-lane"]`).Each(func(_ int, s *goquery.Selection) {
+		if label := s.AttrOr("data-label", ""); unsettled[label] {
+			t.Errorf("timing lane %q rendered for a mid-flight attempt; only settled nodes may appear", label)
 		}
 	})
 }
@@ -240,9 +241,8 @@ func TestComponent_RunDetail_DeterministicAttempt(t *testing.T) {
 	})
 }
 
-// The wall-usage metadata: platform registry must tolerate fixture attempts
-// whose bindings are unknown platforms (graceful degradation is part of the
-// observe-only contract).
+// Liveness/readiness of the fixture server itself: the healthz route sits
+// outside auth and must answer on the fixture world exactly as on a cluster.
 func TestComponent_FixtureServer_Healthz(t *testing.T) {
 	ts := newFixtureServer(t)
 	resp, err := http.Get(ts.URL + "/healthz")

@@ -353,3 +353,77 @@ func TestAttemptScopeForeignUser404(t *testing.T) {
 		t.Errorf("alice graph stream status = %d, want 200", resp.StatusCode)
 	}
 }
+
+// Attempt-scoped wake isolation (#295): a foreign attempt's event must NOT
+// re-render this stream (filtered at the hub, before the channel); the
+// attempt's own event and a legacy unattributed event must. Absence is
+// asserted with a bounded wait longer than the 500ms debounce.
+func TestRunGraphSSEAttemptScopedWake(t *testing.T) {
+	att := wallReviewAttempt("attempt-pr-review-x-1", "pr-review-x")
+	att.Status.NodeResults = []v1alpha1.NodeResultEnvelope{
+		graphEnvelope("prepare", "ok", metav1.Now()),
+	}
+	s := newAttemptTestServer(t, graphSeedWorkflow("pr-review-x"), att)
+
+	srv := httptest.NewServer(s.Routes())
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/runs/attempt-pr-review-x-1/graph/events", nil)
+	req.Header.Set("X-Authentik-Username", "alice")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("sse connect: %v", err)
+	}
+	defer resp.Body.Close()
+
+	reader := bufio.NewReader(resp.Body)
+	var buf bytes.Buffer
+	tmp := make([]byte, 8192)
+	wakeWithAttempt := func(attempt string) {
+		t.Helper()
+		body, _ := json.Marshal(map[string]any{
+			"data": map[string]any{"event": "node.completed", "pipeline": "pr-review-x", "node": "agent", "attempt": attempt},
+		})
+		post, err := http.Post(srv.URL+"/dapr/events", "application/json", bytes.NewReader(body))
+		if err != nil {
+			t.Fatalf("dapr post: %v", err)
+		}
+		post.Body.Close()
+	}
+	readUntilMarkers := func(n int) {
+		t.Helper()
+		deadline, _ := ctx.Deadline()
+		for time.Now().Before(deadline) {
+			if strings.Count(buf.String(), "event: rungraph") >= n {
+				return
+			}
+			nr, err := reader.Read(tmp)
+			if nr > 0 {
+				buf.Write(tmp[:nr])
+			}
+			if err != nil {
+				t.Fatalf("stream ended: %v", err)
+			}
+		}
+		t.Fatalf("deadline waiting for %d renders", n)
+	}
+
+	readUntilMarkers(1) // initial paint
+
+	// Foreign attempt: filtered at the hub — no re-render within the wait window.
+	wakeWithAttempt("attempt-pr-review-x-2")
+	time.Sleep(1500 * time.Millisecond) // > debounce; a wake would have rendered
+	if got := strings.Count(buf.String(), "event: rungraph"); got != 1 {
+		t.Fatalf("foreign attempt's event re-rendered the stream (%d renders), want 1", got)
+	}
+
+	// Own attempt: wakes.
+	wakeWithAttempt("attempt-pr-review-x-1")
+	readUntilMarkers(2)
+
+	// Legacy unattributed event: wakes conservatively (rolling-deploy safety).
+	wakeWithAttempt("")
+	readUntilMarkers(3)
+}

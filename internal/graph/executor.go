@@ -48,8 +48,16 @@ const DeadLetterTopic = "harmostes-dead-letter"
 // published to the Dapr pub/sub topic. The UI subscribes to these events to
 // drive real-time canvas updates (G7).
 type LifecycleEvent struct {
-	Event      string      `json:"event"`                // pipeline.started, node.started, node.completed, node.failed, pipeline.completed, pipeline.failed
-	Pipeline   string      `json:"pipeline"`             // pipeline CR name
+	Event    string `json:"event"`    // pipeline.started, node.started, node.completed, node.failed, pipeline.completed, pipeline.failed
+	Pipeline string `json:"pipeline"` // pipeline CR name
+
+	// Attempt is the Attempt CR name this execution belongs to (ADR-0007).
+	// Stamped by the worker (which knows it from HARMOSTES_ATTEMPT) so the UI
+	// can scope per-attempt subscriptions without guessing from envelopes —
+	// node.started events carry no envelope, but always carry this. Empty on
+	// events from pre-attribution workers (UI wakes conservatively on it).
+	Attempt string `json:"attempt,omitempty"`
+
 	Node       string      `json:"node,omitempty"`       // node ID (empty for pipeline-level events)
 	NodeType   string      `json:"nodeType,omitempty"`   // node type (agent, gate, plugin, etc.)
 	Status     string      `json:"status,omitempty"`     // green | failed (empty for started events)
@@ -126,6 +134,11 @@ type GraphExecutor struct {
 	// envelopes back to the run that produced them.
 	runID string
 
+	// attemptName is the Attempt CR name this execution belongs to (ADR-0007).
+	// Stamped on every lifecycle event so the UI can attribute events to the
+	// attempt without envelopes (node.started has none).
+	attemptName string
+
 	// wfCtx carries the Workflow context (source URL, namespace, workdir, etc.)
 	// into every node's NodeEnv. Without this, graph-native plugin nodes don't
 	// receive HARMOSTES_SOURCE_URL and other env vars that the declarative
@@ -199,6 +212,14 @@ func WithBindings(bindings []v1alpha1.ExternalSystemBinding) GraphExecutorOption
 // recorded, just without run linkage).
 func WithRunID(runID string) GraphExecutorOption {
 	return func(e *GraphExecutor) { e.runID = runID }
+}
+
+// WithAttemptName sets the Attempt CR name (ADR-0007) stamped on every
+// lifecycle event, letting the UI scope per-attempt event subscriptions.
+// The worker reads it from HARMOSTES_ATTEMPT. Empty by default (events are
+// still published, just unattributed — the UI treats those conservatively).
+func WithAttemptName(name string) GraphExecutorOption {
+	return func(e *GraphExecutor) { e.attemptName = name }
 }
 
 // WithWorkflowContext carries the Workflow-level context (source URL,
@@ -633,6 +654,7 @@ func (e *GraphExecutor) publishLifecycle(ctx context.Context, ev LifecycleEvent)
 	ev.Timestamp = time.Now().UTC()
 	ev.TriggeredBy = e.triggeredBy
 	ev.TriggerSource = e.triggerSource
+	ev.Attempt = e.attemptName
 	b, err := json.Marshal(ev)
 	if err != nil {
 		e.log("warn: publish %s: marshal: %v", ev.Event, err)

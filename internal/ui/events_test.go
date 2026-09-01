@@ -378,3 +378,45 @@ func waitFor(t *testing.T, cond func() bool) {
 	}
 	t.Fatal("condition not met within 2s")
 }
+
+// Attempt-scoped wake filtering (#295): a filtered subscriber receives its
+// attempt's events and legacy unattributed events, drops foreign attempts',
+// and unfiltered subscribers (wall/flows) still see everything.
+func TestEventHubSubscribeFilter(t *testing.T) {
+	hub := NewEventHub()
+
+	mine, cancelMine := hub.SubscribeFilter("wf", func(ev Event) bool {
+		return ev.Attempt == "" || ev.Attempt == "attempt-a"
+	})
+	defer cancelMine()
+	all, cancelAll := hub.Subscribe("wf")
+	defer cancelAll()
+
+	hub.Publish(Event{Event: "node.completed", Pipeline: "wf", Attempt: "attempt-b"})
+	hub.Publish(Event{Event: "node.completed", Pipeline: "wf", Attempt: "attempt-a"})
+	hub.Publish(Event{Event: "node.started", Pipeline: "wf"}) // legacy: no attribution
+
+	drain := func(sub *subscriber) []Event {
+		var got []Event
+		for {
+			select {
+			case ev, ok := <-sub.ch:
+				if !ok {
+					return got
+				}
+				got = append(got, ev)
+			default:
+				return got
+			}
+		}
+	}
+
+	mineEvents := drain(mine)
+	if len(mineEvents) != 2 || mineEvents[0].Attempt != "attempt-a" || mineEvents[1].Attempt != "" {
+		t.Errorf("filtered subscriber events = %+v, want attempt-a then legacy", mineEvents)
+	}
+	allEvents := drain(all)
+	if len(allEvents) != 3 {
+		t.Errorf("unfiltered subscriber events = %d, want 3 (sees everything)", len(allEvents))
+	}
+}

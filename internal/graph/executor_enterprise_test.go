@@ -222,3 +222,45 @@ func TestDeadLetterNotPublishedOnSuccess(t *testing.T) {
 		}
 	}
 }
+
+// TestAttemptInLifecycle verifies that lifecycle events carry the Attempt CR
+// name (ADR-0007) when the executor is constructed with WithAttemptName, so
+// the UI can scope per-attempt event subscriptions (#295).
+func TestAttemptInLifecycle(t *testing.T) {
+	registry := NewRegistry()
+	registry.Register(newRecording("plugin", NodeResult{Status: StatusGreen}))
+
+	daprClient := newFakeDaprClient()
+	exec := NewGraphExecutor(registry, daprClient,
+		WithProvenance("alice", "webhook"),
+		WithAttemptName("attempt-pr-review-rhesadox-0f034bedd3a0"),
+	)
+
+	graph := v1alpha1.GraphSpec{
+		Nodes: []v1alpha1.NodeSpec{
+			{ID: "build", Type: "plugin"},
+		},
+	}
+
+	if _, err := exec.Execute(context.Background(), graph, "test-attempt"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	lifecycleSeen := false
+	for _, msg := range daprClient.published {
+		if msg.Topic != LifecycleTopic {
+			continue
+		}
+		var ev LifecycleEvent
+		if err := json.Unmarshal([]byte(msg.Payload), &ev); err != nil {
+			t.Fatalf("lifecycle unmarshal: %v", err)
+		}
+		if ev.Attempt != "attempt-pr-review-rhesadox-0f034bedd3a0" {
+			t.Errorf("attempt = %q, want the configured Attempt CR name", ev.Attempt)
+		}
+		lifecycleSeen = true
+	}
+	if !lifecycleSeen {
+		t.Error("no lifecycle events published")
+	}
+}

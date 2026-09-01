@@ -23,12 +23,19 @@ func TestRPCSessionPersistenceArgs(t *testing.T) {
 	argsOut := filepath.Join(dir, "argv")
 
 	fake := filepath.Join(dir, "fake-pi")
-	// argv is written atomically (tmp + mv) so a concurrent reader never
-	// sees a partial spawn line.
-	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"" + argsOut + ".tmp\" && mv \"" + argsOut + ".tmp\" \"" + argsOut + "\"\n" +
+	// argv is recorded to a temp file first, session files are written
+	// next, and argv is published (tmp + mv, so readers never see a partial
+	// line) LAST. Publishing argv last makes the spawn atomic for the test:
+	// the moment readArgv returns, the session files are guaranteed to
+	// exist — without this ordering SessionFiles() raced the write and
+	// failed intermittently on slow runners (seen in CI on main).
+	script := "#!/bin/sh\n" +
+		"printf '%s\\n' \"$@\" > \"" + argsOut + ".tmp\"\n" +
 		"while [ $# -gt 0 ]; do\n" +
 		"  if [ \"$1\" = \"--session-dir\" ]; then echo '{\"fake\":1}' > \"$2/session.jsonl\"; fi\n" +
-		"  shift\ndone\nexit 0\n"
+		"  shift\ndone\n" +
+		"mv \"" + argsOut + ".tmp\" \"" + argsOut + "\"\n" +
+		"exit 0\n"
 	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}

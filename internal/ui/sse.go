@@ -15,10 +15,12 @@ import (
 // ---------------------------------------------------------------------------
 
 // streamFragments renders `eventName` fragments over SSE until the client
-// disconnects. `cancel` deregisters `sub` from the hub; `render` produces the
-// fragment HTML; `tickerInterval` (>0) forces periodic re-renders for
-// time-dependent content (e.g. relative ages).
-func (s *Server) streamFragments(w http.ResponseWriter, r *http.Request, sub *subscriber, cancel func(), eventName string, render func() (string, error), tickerInterval time.Duration) {
+// disconnects or isDone reports terminal (nil = never). `cancel` deregisters
+// `sub` from the hub; `render` produces the fragment HTML; `tickerInterval`
+// (>0) forces periodic re-renders for time-dependent content. Once a tick
+// observes isDone, the ticker stops: terminal content is static, so an idle
+// open tab costs nothing (a live event can still wake a final render).
+func (s *Server) streamFragments(w http.ResponseWriter, r *http.Request, sub *subscriber, cancel func(), eventName string, render func() (string, error), isDone func() bool, tickerInterval time.Duration) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		s.writeAPIError(w, http.StatusInternalServerError, "streaming not supported")
@@ -51,8 +53,9 @@ func (s *Server) streamFragments(w http.ResponseWriter, r *http.Request, sub *su
 	defer heartbeat.Stop()
 
 	var tickerC <-chan time.Time // nil = disabled (receive on nil blocks)
+	var ticker *time.Ticker
 	if tickerInterval > 0 {
-		ticker := time.NewTicker(tickerInterval)
+		ticker = time.NewTicker(tickerInterval)
 		defer ticker.Stop()
 		tickerC = ticker.C
 	}
@@ -75,13 +78,15 @@ func (s *Server) streamFragments(w http.ResponseWriter, r *http.Request, sub *su
 			fmt.Fprintf(w, ": heartbeat\n\n")
 			flusher.Flush()
 		case <-tickerC:
+			if isDone != nil && isDone() {
+				ticker.Stop()
+				tickerC = nil // converge silently; events can still wake
+				continue
+			}
 			send()
 		case <-kicks:
 			send()
-		case _, ok := <-sub.ch:
-			if !ok {
-				return
-			}
+		case <-sub.ch:
 			if debounce == nil {
 				debounce = time.AfterFunc(wallDebounce, func() {
 					select {

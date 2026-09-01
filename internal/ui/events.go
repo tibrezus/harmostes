@@ -41,7 +41,11 @@ type subscriber struct {
 
 func (s *subscriber) close() {
 	s.once.Do(func() {
-		close(s.ch)
+		// close(s.closed) only — NEVER close(s.ch). Publish copies subscriber
+		// pointers under RLock and sends after releasing it, so a channel close
+		// racing an in-flight send would panic ("send on closed channel").
+		// Consumers exit via the closed channel; the buffered ch is simply
+		// garbage-collected with the subscriber.
 		close(s.closed)
 	})
 }
@@ -262,11 +266,10 @@ func (s *Server) handlePipelineSSE(w http.ResponseWriter, r *http.Request) {
 		case <-ctx.Done():
 			// Client disconnected.
 			return
-
-		case ev, ok := <-sub.ch:
-			if !ok {
-				return
-			}
+		case <-sub.closed:
+			// Deregistered.
+			return
+		case ev := <-sub.ch:
 			data, err := json.Marshal(ev)
 			if err != nil {
 				s.logger.Error("sse marshal event", "err", err)

@@ -384,6 +384,9 @@ func (e *GraphExecutor) Execute(ctx context.Context, graph v1alpha1.GraphSpec, p
 			result.NodeResults[nodeID] = denied
 			deniedEnv := e.synthesizeEnvelope(nodeID, node.Type, denied, time.Since(startTime).Milliseconds())
 			result.NodeEnvelopes[nodeID] = deniedEnv
+			if e.onNodeResult != nil {
+				e.onNodeResult(ctx, deniedEnv)
+			}
 			e.checkpoint(ctx, pipelineName, nodeID, denied)
 			e.publishLifecycle(ctx, LifecycleEvent{
 				Event:      "node.failed",
@@ -438,6 +441,9 @@ func (e *GraphExecutor) Execute(ctx context.Context, graph v1alpha1.GraphSpec, p
 			result.NodeResults[nodeID] = errResult
 			result.NodeEnvelopes[nodeID] = e.synthesizeEnvelope(nodeID, node.Type, errResult, time.Since(startTime).Milliseconds())
 			errEnv := result.NodeEnvelopes[nodeID]
+			if e.onNodeResult != nil {
+				e.onNodeResult(ctx, errEnv)
+			}
 			e.publishLifecycle(ctx, LifecycleEvent{
 				Event:      "node.failed",
 				Pipeline:   pipelineName,

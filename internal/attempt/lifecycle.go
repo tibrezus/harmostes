@@ -160,7 +160,6 @@ func mutateStatus(ctx context.Context, c client.Client, namespace, attemptName s
 	return c.Status().Patch(ctx, &a, client.MergeFrom(base))
 }
 
-// upsertRun inserts or updates a RunRecord by Name (idempotent re-scheduling).
 // UpsertNodeResult records one node execution's envelope incrementally, as
 // the node completes rather than batched at outcome. The ledger is keyed by
 // (NodeID, RunID): a new key appends — preserving history across node retries
@@ -185,6 +184,7 @@ func upsertNodeResult(envelopes *[]v1alpha1.NodeResultEnvelope, env v1alpha1.Nod
 	*envelopes = append(*envelopes, env)
 }
 
+// upsertRun inserts or updates a RunRecord by Name (idempotent re-scheduling).
 func upsertRun(runs *[]v1alpha1.RunRecord, r v1alpha1.RunRecord) {
 	for i, existing := range *runs {
 		if existing.Name == r.Name {

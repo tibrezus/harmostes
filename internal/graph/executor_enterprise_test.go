@@ -306,3 +306,42 @@ func TestOnNodeResultHook(t *testing.T) {
 		t.Error("hook envelope diverges from the recorded run envelope")
 	}
 }
+
+// Failure paths fire the hook too: capability-denied and registry-error
+// envelopes are red on the UI as they happen, not batched at outcome.
+func TestOnNodeResultHookFailurePaths(t *testing.T) {
+	// Registry error: node type not registered.
+	registry := NewRegistry()
+	var hooked []v1alpha1.NodeResultEnvelope
+	exec := NewGraphExecutor(registry, nil, WithOnNodeResult(func(_ context.Context, env v1alpha1.NodeResultEnvelope) {
+		hooked = append(hooked, env)
+	}))
+	graph := v1alpha1.GraphSpec{Nodes: []v1alpha1.NodeSpec{{ID: "ghost", Type: "nonexistent"}}}
+	if _, err := exec.Execute(context.Background(), graph, "test-hook-err"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(hooked) != 1 || hooked[0].NodeID != "ghost" || hooked[0].Status != v1alpha1.NodeResultStatusFailed {
+		t.Errorf("registry-error envelope not hooked: %+v", hooked)
+	}
+
+	// Capability denial: node Requires a binding that isn't declared.
+	deniedEnv := []v1alpha1.NodeResultEnvelope(nil)
+	registry2 := NewRegistry()
+	registry2.Register(newRecording("plugin", NodeResult{Status: StatusGreen}))
+	exec2 := NewGraphExecutor(registry2, nil,
+		WithOnNodeResult(func(_ context.Context, env v1alpha1.NodeResultEnvelope) {
+			deniedEnv = append(deniedEnv, env)
+		}),
+		WithBindings(nil),
+	)
+	graph2 := v1alpha1.GraphSpec{Nodes: []v1alpha1.NodeSpec{{
+		ID: "locked", Type: "plugin",
+		Requires: requires("some-binding", "some.capability"),
+	}}}
+	if _, err := exec2.Execute(context.Background(), graph2, "test-hook-denied"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(deniedEnv) != 1 || deniedEnv[0].NodeID != "locked" || deniedEnv[0].Status != v1alpha1.NodeResultStatusFailed {
+		t.Errorf("capability-denied envelope not hooked: %+v", deniedEnv)
+	}
+}

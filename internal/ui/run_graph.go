@@ -76,7 +76,8 @@ type runGraphView struct {
 	Height    int                 `json:"height"`
 	Nodes     []graphNodeView     `json:"nodes"`
 	Edges     []graphEdgeView     `json:"edges"`
-	NodeData  map[string]nodeData `json:"nodeData"` // hover/click payload
+	NodeData  map[string]nodeData `json:"nodeData"`         // hover/click payload
+	Timing    []timingSegment     `json:"timing,omitempty"` // per-step waterfall (#298)
 }
 
 // nodeData is what pointing at a node yields: the live facts for that node.
@@ -85,6 +86,7 @@ type nodeData struct {
 	Summary     string `json:"summary,omitempty"`
 	RunID       string `json:"runID,omitempty"`
 	ProducedAt  string `json:"producedAt,omitempty"`
+	Duration    string `json:"duration,omitempty"` // humanized node execution time
 	Claims      int    `json:"claims,omitempty"`
 	Refs        int    `json:"refs,omitempty"`
 	TriggeredBy string `json:"triggeredBy,omitempty"`
@@ -145,7 +147,8 @@ func (s *Server) buildRunGraph(ctx context.Context, att *v1alpha1.Attempt) runGr
 				Status:      env.Status,
 				Summary:     env.Summary,
 				RunID:       env.RunID,
-				ProducedAt:  env.ProducedAt.Format("2006-01-02 15:04:05 MST"), // matches the run rows above
+				ProducedAt:  env.ProducedAt.Format("2006-01-02 15:04:05 MST"),                 // matches the run rows above
+				Duration:    formatDuration(time.Duration(env.DurationMs) * time.Millisecond), // naming.go helper
 				Claims:      len(env.Claims),
 				Refs:        len(env.References),
 				TriggeredBy: env.Provenance.TriggeredBy,
@@ -154,7 +157,107 @@ func (s *Server) buildRunGraph(ctx context.Context, att *v1alpha1.Attempt) runGr
 			view.NodeData[n.ID] = nodeData{Status: n.Status}
 		}
 	}
+	view.Timing = buildTimingStrip(att, view.Nodes, latest)
 	return view
+}
+
+// timingSegment is one bar in the waterfall strip: a node's execution window
+// (start = producedAt - duration, end = producedAt), or an overhead window
+// (trigger→pod→first node) before the first bar.
+type timingSegment struct {
+	Label  string `json:"label"`
+	Status string `json:"status"` // segment color class (rg-state-*)
+	X      int    `json:"x"`
+	Width  int    `json:"width"`
+	// Precomputed text anchors (templates stay arithmetic-free).
+	TextX int    `json:"textX"`
+	Right bool   `json:"right"` // label sits right of the bar (short bars)
+	Title string `json:"title"` // humanized duration
+}
+
+// buildTimingStrip computes the per-step waterfall: one lane per node in
+// graph order, bar width proportional to wall-clock share, plus an overhead
+// lane (attempt creation → first node start). Nodes without envelopes are
+// skipped (no timing known); an all-zero span degrades to an empty strip.
+func buildTimingStrip(att *v1alpha1.Attempt, nodes []graphNodeView, latest map[string]v1alpha1.NodeResultEnvelope) []timingSegment {
+	type lane struct {
+		label, status string
+		start, end    time.Time
+	}
+	var lanes []lane
+
+	// Overhead lane: attempt creation → earliest node start.
+	earliest := time.Time{}
+	ordered := make([]graphNodeView, 0, len(nodes))
+	for _, n := range nodes {
+		env, ok := latest[n.ID]
+		if !ok || env.ProducedAt.IsZero() || n.Status == "external" {
+			continue
+		}
+		ordered = append(ordered, n)
+		start := env.ProducedAt.Add(-time.Duration(env.DurationMs) * time.Millisecond)
+		if earliest.IsZero() || start.Before(earliest) {
+			earliest = start
+		}
+	}
+	if len(ordered) == 0 || att.CreationTimestamp.IsZero() || earliest.IsZero() {
+		return nil
+	}
+	if create := att.CreationTimestamp.Time; create.Before(earliest) {
+		lanes = append(lanes, lane{label: "queue+pod", status: "overhead", start: create, end: earliest})
+	}
+	for _, n := range ordered {
+		env := latest[n.ID]
+		lanes = append(lanes, lane{
+			label:  n.Label,
+			status: n.Status,
+			start:  env.ProducedAt.Add(-time.Duration(env.DurationMs) * time.Millisecond),
+			end:    env.ProducedAt.Time,
+		})
+	}
+
+	spanStart, spanEnd := lanes[0].start, lanes[0].end
+	for _, l := range lanes {
+		if l.start.Before(spanStart) {
+			spanStart = l.start
+		}
+		if l.end.After(spanEnd) {
+			spanEnd = l.end
+		}
+	}
+	total := spanEnd.Sub(spanStart)
+	if total <= 0 {
+		return nil
+	}
+
+	const stripW, barX, labelW = 640, 110, 520
+	segs := make([]timingSegment, 0, len(lanes))
+	for _, l := range lanes {
+		x := int(float64(l.start.Sub(spanStart)) / float64(total) * float64(labelW))
+		w := int(float64(l.end.Sub(l.start)) / float64(total) * float64(labelW))
+		if w < 3 {
+			w = 3 // sub-pixel bars stay visible
+		}
+		if x+w > labelW {
+			x = labelW - w
+		}
+		segs = append(segs, timingSegment{
+			Label:  truncateRunes(l.label, 14),
+			Status: l.status,
+			X:      barX + x,
+			Width:  w,
+			Title:  formatDuration(l.end.Sub(l.start)),
+		})
+	}
+	// Short bars label to the right of the bar; long bars inside.
+	for i := range segs {
+		segs[i].TextX = segs[i].X + segs[i].Width + 5
+		segs[i].Right = segs[i].Width < 60
+		if !segs[i].Right {
+			segs[i].TextX = segs[i].X + 5
+		}
+	}
+	return segs
 }
 
 // layoutGraph computes the layered layout: columns by longest-path depth,
@@ -253,7 +356,10 @@ func layoutGraph(gs v1alpha1.GraphSpec, latest map[string]v1alpha1.NodeResultEnv
 		if n.Type == "external" {
 			status = graphStateExternal
 		}
-		if env, ok := latest[n.ID]; ok {
+		// Envelope state never overrides the external classification: external
+		// nodes never execute, so any envelope they carry is conceptual and
+		// must not paint them failed.
+		if env, ok := latest[n.ID]; ok && status != graphStateExternal {
 			switch env.Status {
 			case "ok":
 				status = graphStateOK

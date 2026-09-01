@@ -19,6 +19,22 @@
 	</g>
 	{{end}}
 </svg>
+{{- with .Timing}}
+<div class="rg-timing-title">Step timing — bar width is wall-clock share</div>
+<svg class="rg-timing" role="img" aria-label="per-step timing waterfall" viewBox="0 0 640 {{len .}}22" width="100%" preserveAspectRatio="xMinYMin meet">
+	{{- range $i, $s := .}}
+	<g class="rg-timing-lane" transform="translate(0, {{$i}}22)">
+		<text class="rg-timing-label" x="8" y="15">{{$s.Label}}</text>
+		<rect class="rg-timing-bar rg-state-{{$s.Status}}" x="{{$s.X}}" y="4" width="{{$s.Width}}" height="14" rx="3"><title>{{$s.Title}}</title></rect>
+		{{- if $s.Right}}
+		<text class="rg-timing-dur" x="{{$s.TextX}}" y="15">{{$s.Title}}</text>
+		{{- else}}
+		<text class="rg-timing-dur rg-timing-dur-in" x="{{$s.TextX}}" y="15">{{$s.Title}}</text>
+		{{- end}}
+	</g>
+	{{- end}}
+</svg>
+{{- end}}
 {{- else}}
 <div class="ds-callout ds-callout--info">{{.Reason}}</div>
 {{- end}}

@@ -510,9 +510,13 @@ func TestRunDetailTimingWaterfall(t *testing.T) {
 	if !strings.Contains(strip, `viewBox="0 0 640 88"`) {
 		t.Errorf("strip viewBox height wrong: want 88 (4 lanes x 22)")
 	}
-	// The hover panel carries the node duration too.
+	// The hover panel carries the node duration too — both the payload key
+	// and the rendered row (a dead payload field satisfies neither).
 	if !strings.Contains(body, `"duration"`) {
 		t.Error("nodeData missing duration field")
+	}
+	if !strings.Contains(body, "row('Duration', d.duration)") {
+		t.Error("hover panel never renders the duration row")
 	}
 }
 
@@ -550,5 +554,25 @@ func TestRunDetailTimingWaterfallZeroDurations(t *testing.T) {
 	view := s.buildRunGraph(context.Background(), att)
 	if view.Timing != nil || view.TimingH != 0 {
 		t.Errorf("zero-duration envelopes should yield an empty strip, got %d lanes h=%d", len(view.Timing), view.TimingH)
+	}
+}
+
+// When the attempt object is created at/after the first node's start (slow
+// envelope reconciliation), the overhead lane is silently dropped — correct:
+// there is no measured queue+pod window to show.
+func TestRunDetailTimingWaterfallNoOverheadWhenCreatedLate(t *testing.T) {
+	att := wallReviewAttempt("attempt-pr-review-x-1", "pr-review-x")
+	base := time.Date(2026, 9, 1, 8, 0, 0, 0, time.UTC)
+	att.CreationTimestamp = metav1.NewTime(base.Add(30 * time.Second)) // after first node start
+	prepare := graphEnvelope("prepare", "ok", metav1.NewTime(base.Add(10*time.Second)))
+	prepare.DurationMs = 5000
+	att.Status.NodeResults = []v1alpha1.NodeResultEnvelope{prepare}
+	s := newAttemptTestServer(t, graphSeedWorkflow("pr-review-x"), att)
+	view := s.buildRunGraph(context.Background(), att)
+	if len(view.Timing) != 1 {
+		t.Fatalf("lanes = %d, want 1 (prepare only; no overhead lane)", len(view.Timing))
+	}
+	if view.Timing[0].Label == "queue+pod" {
+		t.Error("overhead lane rendered despite creation after node start")
 	}
 }

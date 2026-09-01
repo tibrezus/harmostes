@@ -79,6 +79,7 @@ type runGraphView struct {
 	NodeData  map[string]nodeData `json:"nodeData"`         // hover/click payload
 	Timing    []timingSegment     `json:"timing,omitempty"` // per-step waterfall (#298)
 	TimingH   int                 `json:"timingH,omitempty"`
+	TimingW   int                 `json:"timingW,omitempty"` // strip width; template viewBox reads this
 }
 
 // nodeData is what pointing at a node yields: the live facts for that node.
@@ -160,6 +161,7 @@ func (s *Server) buildRunGraph(ctx context.Context, att *v1alpha1.Attempt) runGr
 	}
 	view.Timing = buildTimingStrip(att, view.Nodes, latest)
 	view.TimingH = len(view.Timing) * 22 // lane height lives here; templates stay arithmetic-free
+	view.TimingW = 640
 	return view
 }
 
@@ -233,7 +235,7 @@ func buildTimingStrip(att *v1alpha1.Attempt, nodes []graphNodeView, latest map[s
 		return nil
 	}
 
-	const stripW, barX, labelW = 640, 110, 520
+	const barX, labelW = 110, 520
 	// All-zero node durations (pre-#298 envelopes): nothing to proportion —
 	// an empty strip is more honest than 3px floors implying distribution.
 	timed := false
@@ -253,11 +255,8 @@ func buildTimingStrip(att *v1alpha1.Attempt, nodes []graphNodeView, latest map[s
 		if w < 3 {
 			w = 3 // sub-pixel bars stay visible
 		}
-		if x+w > labelW {
-			x = labelW - w
-		}
 		segs = append(segs, timingSegment{
-			Label:  truncateRunes(l.label, 14),
+			Label:  truncateRunes(l.label, 12), // fits the 110px gutter
 			Status: l.status,
 			X:      barX + x,
 			Width:  w,

@@ -11,6 +11,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
+	"log/slog"
+
 	"github.com/tibrezus/harmostes/internal/claim"
 )
 
@@ -83,6 +85,131 @@ func AttemptSpecFromObjective(obj v1alpha1.ObjectiveSpec, opts ResolveOptions) v
 	return spec
 }
 
+// Status compaction bounds (#289): attempt status patches are etcd requests
+// — past 1.5MB etcd rejects them outright, and deterministic classes (one
+// attempt per objective identity, kept forever) grow status without bound.
+// The CR keeps a bounded tail window plus monotonic counters.
+//
+// Retention honesty: the tail + counters on the CR are the DURABLE record.
+// The timeline store bridges only ~7 days (DefaultTTL, "evidence, not
+// audit") — beyond that, compacted-away ledger entries are genuinely gone;
+// CompactedThrough marks the boundary. Known deep-link loss: run names
+// compacted beyond MaxStatusRuns 404 on both the log view and the
+// /runs/{attempt}/runs/{run} redirect (handleRunLogs, handleWorkflowRunRedirect).
+const (
+	// MaxStatusNodeResults bounds the NodeResults tail by COUNT. A cycle of
+	// an N-node graph with R retries records up to N×R envelopes — nothing
+	// bounds graph size — so this cap does NOT guarantee the current cycle
+	// fits; on extreme fan-out it may enter the cycle. What keeps the
+	// current cycle renderable is the byte budget (which fires first for fat
+	// shapes) plus the MinTailEnvelopes floor protecting the live position.
+	MaxStatusNodeResults = 200
+	// MaxStatusRuns bounds the Runs tail. A running run is by definition
+	// recent — the tail always contains every in-flight record.
+	MaxStatusRuns = 400
+	// MaxStatusEvidence bounds the Evidence tail.
+	MaxStatusEvidence = 200
+	// MaxStatusBytes is the byte budget for the serialized NodeResults tail
+	// (estimated, see envelopeBytes): eviction continues from the head while
+	// the estimate exceeds it. The 1.5MB etcd request limit covers the WHOLE
+	// status; runs/evidence tails are ~100B/entry (≤60KB combined), one
+	// Message ≤4KB, conditions bounded — the 1MiB envelope budget keeps the
+	// total structurally under the limit instead of by today's-shape luck.
+	MaxStatusBytes = 1 << 20
+	// MinTailEnvelopes is the floor the byte eviction never breaches —
+	// compaction must never empty the ledger (the live position and the
+	// current cycle's state resolve from it).
+	MinTailEnvelopes = 32
+	// MaxStatusPayloadBytes drops oversize opaque payloads at record time.
+	// Payload is node-type-specific diagnostics, opaque to the kernel; a
+	// single multi-hundred-KB payload defeats count-based caps.
+	MaxStatusPayloadBytes = 4 << 10
+	// MaxStatusSummaryBytes truncates summaries at record time. Byte-slicing
+	// can cut a multi-byte rune; JSON renders it U+FFFD — cosmetic, not
+	// corruption of any kernel-read field.
+	MaxStatusSummaryBytes = 1 << 10
+	// MaxStatusMessageBytes clamps the attempt-level worker message.
+	MaxStatusMessageBytes = 4 << 10
+)
+
+// envelopeBytes estimates an envelope's serialized size. It deliberately
+// counts every slice element (claims, references, artifacts, artifacts' and
+// claims' strings) — the whole point is that no field is assumed bounded
+// after the record-time clamps; whatever a plugin emits, the budget sees it.
+// Claims are NOT clamped or dropped anywhere: they are the promotion-decision
+// surface (claim.HasValidated), so their weight is paid here instead.
+func envelopeBytes(env *v1alpha1.NodeResultEnvelope) int {
+	n := len(env.NodeID) + len(env.RunID) + len(env.Status) + len(env.Summary) + len(env.Payload) + 64
+	for _, c := range env.Claims {
+		n += len(c.Type) + len(c.Binding) + len(c.ExternalID) + len(c.URL) + 32
+	}
+	for _, r := range env.References {
+		n += len(r.Kind) + len(r.Identifier) + len(r.URL) + 32
+	}
+	for _, a := range env.Artifacts {
+		n += len(a.Name) + len(a.Path) + len(a.Hash) + 32
+	}
+	return n
+}
+
+// compactStatus enforces the tail windows: entries leave from the HEAD
+// (oldest side — upserts append), the dropped counts accumulate in the
+// matching counters so totals stay derivable (AttemptStatus.TotalRuns et al).
+// NodeResults are additionally bounded by the byte budget — eviction there
+// continues while the estimated size exceeds MaxStatusBytes, stopping at
+// MinTailEnvelopes. Returns the number of dropped entries per list (for the
+// write-path log line).
+func compactStatus(s *v1alpha1.AttemptStatus) (dropped int) {
+	size := 0
+	for i := range s.NodeResults {
+		size += envelopeBytes(&s.NodeResults[i])
+	}
+	for len(s.NodeResults) > MinTailEnvelopes && size > MaxStatusBytes {
+		size -= envelopeBytes(&s.NodeResults[0])
+		if t := s.NodeResults[0].ProducedAt; t.After(s.CompactedThrough.Time) {
+			s.CompactedThrough = t
+		}
+		s.NodeResults = s.NodeResults[1:]
+		s.CompactedNodeResults++
+		dropped++
+	}
+	if drop := len(s.NodeResults) - MaxStatusNodeResults; drop > 0 {
+		for i := 0; i < drop; i++ {
+			if t := s.NodeResults[i].ProducedAt; t.After(s.CompactedThrough.Time) {
+				s.CompactedThrough = t
+			}
+		}
+		s.NodeResults = s.NodeResults[drop:]
+		s.CompactedNodeResults += drop
+		dropped += drop
+	}
+	if drop := len(s.Runs) - MaxStatusRuns; drop > 0 {
+		s.Runs = s.Runs[drop:]
+		s.CompactedRuns += drop
+		dropped += drop
+	}
+	if drop := len(s.Evidence) - MaxStatusEvidence; drop > 0 {
+		s.Evidence = s.Evidence[drop:]
+		s.CompactedEvidence += drop
+		dropped += drop
+	}
+	return dropped
+}
+
+// boundEnvelope clamps the per-envelope size drivers at record time: oversize
+// opaque payloads are dropped entirely (a truncated byte blob is neither the
+// original nor valid anything), oversize summaries are truncated (prose
+// survives a cut). Count caps imply byte caps only if per-entry size is
+// bounded too (#289).
+func boundEnvelope(env *v1alpha1.NodeResultEnvelope) {
+	if len(env.Payload) > MaxStatusPayloadBytes {
+		env.Payload = nil
+	}
+	if len(env.Summary) > MaxStatusSummaryBytes {
+		env.Summary = env.Summary[:MaxStatusSummaryBytes]
+	}
+}
+
 // RecordRunStarted appends (or upserts) a RunRecord marked running into the
 // Attempt's status. Called by the controller right after it schedules a worker
 // Job. Idempotent on run name: re-scheduling the same run updates rather than
@@ -119,8 +246,9 @@ func RecordRunOutcome(ctx context.Context, c client.Client, namespace, attemptNa
 		// Upsert (not append): envelopes already recorded incrementally as
 		// nodes completed are replaced in place; new ones append. Blind append
 		// would duplicate every envelope the OnNodeResult hook already landed.
-		for _, env := range outcome.Envelopes {
-			upsertNodeResult(&a.Status.NodeResults, env)
+		for i := range outcome.Envelopes {
+			boundEnvelope(&outcome.Envelopes[i])
+			upsertNodeResult(&a.Status.NodeResults, outcome.Envelopes[i])
 		}
 		for _, env := range outcome.Envelopes {
 			a.Status.Evidence = appendUniqueEvidence(a.Status.Evidence, env.References)
@@ -143,7 +271,12 @@ func RecordRunOutcome(ctx context.Context, c client.Client, namespace, attemptNa
 			}
 		}
 		if outcome.Message != "" {
+			// One unbounded field defeats the cap (#289 r2): the worker
+			// message is prose — truncation is safe.
 			a.Status.Message = outcome.Message
+			if len(a.Status.Message) > MaxStatusMessageBytes {
+				a.Status.Message = a.Status.Message[:MaxStatusMessageBytes]
+			}
 		}
 	})
 }
@@ -157,6 +290,18 @@ func mutateStatus(ctx context.Context, c client.Client, namespace, attemptName s
 	}
 	base := a.DeepCopy()
 	mutate(&a)
+	// Structural compaction (#289): every status writer funnels through a
+	// get-mutate-patch helper (this one, or claim.go's patchAttemptStatus) —
+	// enforcing the tail windows HERE makes the bound a property of the
+	// write path, not call-site discipline. Raw Status().Patch callers must
+	// not append to the bounded lists (today none do: the controller stamps
+	// ObservedGeneration/LastRunAt/conditions only).
+	if dropped := compactStatus(&a.Status); dropped > 0 {
+		// Compaction must never be silent again — the #289 failure ran
+		// unnoticed for 8 days.
+		slog.Warn("attempt status compacted", "attempt", attemptName, "dropped", dropped,
+			"through", a.Status.CompactedThrough.Time)
+	}
 	return c.Status().Patch(ctx, &a, client.MergeFrom(base))
 }
 
@@ -167,6 +312,7 @@ func mutateStatus(ctx context.Context, c client.Client, namespace, attemptName s
 // in place, so both incremental arrival and the outcome upsert are idempotent.
 // Best-effort caller: errors are returned but must not abort the run.
 func UpsertNodeResult(ctx context.Context, c client.Client, namespace, attemptName string, env v1alpha1.NodeResultEnvelope) error {
+	boundEnvelope(&env)
 	return mutateStatus(ctx, c, namespace, attemptName, func(a *v1alpha1.Attempt) {
 		upsertNodeResult(&a.Status.NodeResults, env)
 	})

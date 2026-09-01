@@ -75,7 +75,7 @@
 
 	<!-- Runs timeline -->
 	<div class="ds-section">
-		<h3 class="ds-section-heading">Runs ({{len .Runs}})</h3>
+		<h3 class="ds-section-heading">Runs ({{.TotalRuns}})</h3>
 		{{if .Runs}}
 		<div class="ds-timeline">
 			{{range .Runs}}
@@ -109,7 +109,7 @@
 	<!-- Node Result Envelopes -->
 	{{if .NodeResults}}
 	<div class="ds-section">
-		<h3 class="ds-section-heading">Node Results ({{len .NodeResults}})</h3>
+		<h3 class="ds-section-heading">Node Results ({{.TotalNodeRes}})</h3>
 		<div class="ds-card-list">
 			{{range .NodeResults}}
 			<div class="ds-card">
@@ -132,7 +132,7 @@
 	<!-- Evidence -->
 	{{if .Evidence}}
 	<div class="ds-section">
-		<h3 class="ds-section-heading">Evidence ({{len .Evidence}})</h3>
+		<h3 class="ds-section-heading">Evidence ({{.TotalEvidence}})</h3>
 		<div class="ds-card-list">
 			{{range .Evidence}}
 			<div class="ds-card">

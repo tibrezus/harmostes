@@ -3,6 +3,7 @@ package attempt
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -133,6 +134,12 @@ func patchAttemptStatus(ctx context.Context, c client.Client, namespace, attempt
 		}
 		base := at.DeepCopy()
 		mutate(&at.Status)
+		// Structural compaction (#289) — same rationale as mutateStatus:
+		// the bound is a property of the write path.
+		if dropped := compactStatus(&at.Status); dropped > 0 {
+			slog.Warn("attempt status compacted", "attempt", namespace+"/"+attemptName, "dropped", dropped,
+				"through", at.Status.CompactedThrough.Time)
+		}
 		patch := client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})
 		return c.Status().Patch(ctx, &at, patch)
 	})

@@ -173,3 +173,33 @@ func TestTotalsNilSafe(t *testing.T) {
 		t.Fatal("nil status totals must be 0")
 	}
 }
+
+// The Runs tail (the bound most likely to be tuned) and totals consistency
+// under replace-in-place upserts (#308 review follow-ups to #289).
+func TestStatusCompactionRunsTailAndUpsertTotals(t *testing.T) {
+	s := &v1alpha1.AttemptStatus{}
+	for i := 0; i < MaxStatusRuns+25; i++ {
+		// Same name re-upserted must NOT grow the list — totals count runs
+		// ever STARTED, not upsert calls.
+		name := fmt.Sprintf("run-%d", i)
+		upsertRun(&s.Runs, v1alpha1.RunRecord{Name: name, Phase: "running"})
+		upsertRun(&s.Runs, v1alpha1.RunRecord{Name: name, Phase: "succeeded", EndedAt: metav1.Now()})
+	}
+	compactStatus(s)
+
+	if len(s.Runs) != MaxStatusRuns {
+		t.Fatalf("runs tail = %d, want %d", len(s.Runs), MaxStatusRuns)
+	}
+	// 425 distinct names, each upserted twice (replace, not append).
+	if s.TotalRuns() != MaxStatusRuns+25 {
+		t.Errorf("TotalRuns = %d, want %d — in-place replacement must not double-count", s.TotalRuns(), MaxStatusRuns+25)
+	}
+	if s.CompactedRuns != 25 {
+		t.Errorf("compactedRuns = %d, want 25", s.CompactedRuns)
+	}
+	// The tail is the newest quarter-thousand runs; the re-upsert of an
+	// already-tailed run kept it in place (no reorder, no duplicate).
+	if s.Runs[0].Name != "run-25" || s.Runs[len(s.Runs)-1].Name != "run-424" {
+		t.Errorf("tail window wrong: first=%s last=%s", s.Runs[0].Name, s.Runs[len(s.Runs)-1].Name)
+	}
+}

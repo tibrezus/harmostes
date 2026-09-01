@@ -215,6 +215,9 @@ type attemptDetailData struct {
 	Message        string
 	WorkflowLink   string // platform prefix stripped — routable CR name
 	Runs           []runSummary
+	TotalRuns      int
+	TotalNodeRes   int
+	TotalEvidence  int
 	NodeResults    []v1alpha1.NodeResultEnvelope
 	Evidence       []v1alpha1.EvidenceReference
 	Owner          string
@@ -326,6 +329,9 @@ func (s *Server) handleAttemptDetail(w http.ResponseWriter, r *http.Request) {
 		Phase:          att.Status.Phase,
 		Message:        att.Status.Message,
 		Runs:           runs,
+		TotalRuns:      att.Status.TotalRuns(),
+		TotalNodeRes:   att.Status.TotalNodeResults(),
+		TotalEvidence:  att.Status.TotalEvidence(),
 		NodeResults:    att.Status.NodeResults,
 		Evidence:       att.Status.Evidence,
 		Owner:          att.Spec.Owner,

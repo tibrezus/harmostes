@@ -133,6 +133,9 @@ func patchAttemptStatus(ctx context.Context, c client.Client, namespace, attempt
 		}
 		base := at.DeepCopy()
 		mutate(&at.Status)
+		// Structural compaction (#289) — same rationale as mutateStatus:
+		// the bound is a property of the write path.
+		compactStatus(&at.Status)
 		patch := client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})
 		return c.Status().Patch(ctx, &at, patch)
 	})

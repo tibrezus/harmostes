@@ -226,3 +226,4 @@ spec:
                       reason:             { type: string }
                       message:            { type: string }
                       lastTransitionTime: { type: string }
+                      observedGeneration: { type: integer, format: int64 }

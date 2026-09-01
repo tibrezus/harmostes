@@ -264,3 +264,45 @@ func TestAttemptInLifecycle(t *testing.T) {
 		t.Error("no lifecycle events published")
 	}
 }
+
+// TestOnNodeResultHook verifies the incremental-recording hook fires once per
+// completing node with the exact envelope the run outcome will record (post
+// claim-enforcement, RunID stamped).
+func TestOnNodeResultHook(t *testing.T) {
+	registry := NewRegistry()
+	registry.Register(newRecording("plugin", NodeResult{Status: StatusGreen}))
+
+	var hooked []v1alpha1.NodeResultEnvelope
+	exec := NewGraphExecutor(registry, nil,
+		WithRunID("attempt-x-1-run"),
+		WithOnNodeResult(func(_ context.Context, env v1alpha1.NodeResultEnvelope) {
+			hooked = append(hooked, env)
+		}),
+	)
+
+	graph := v1alpha1.GraphSpec{
+		Nodes: []v1alpha1.NodeSpec{
+			{ID: "build", Type: "plugin"},
+			{ID: "check", Type: "plugin"},
+		},
+		Edges: []v1alpha1.EdgeSpec{{From: "build", To: "check"}},
+	}
+
+	result, err := exec.Execute(context.Background(), graph, "test-hook")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(hooked) != 2 {
+		t.Fatalf("hook fired %d times, want 2 (one per node)", len(hooked))
+	}
+	if hooked[0].NodeID != "build" || hooked[1].NodeID != "check" {
+		t.Errorf("hook order/nodes = %s,%s; want build,check", hooked[0].NodeID, hooked[1].NodeID)
+	}
+	if hooked[0].RunID != "attempt-x-1-run" {
+		t.Errorf("hook envelope RunID = %q, want the configured run", hooked[0].RunID)
+	}
+	// The hook sees the same envelope the outcome path records.
+	if result.NodeEnvelopes["build"].NodeID != hooked[0].NodeID {
+		t.Error("hook envelope diverges from the recorded run envelope")
+	}
+}

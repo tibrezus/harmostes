@@ -116,7 +116,12 @@ func RecordRunOutcome(ctx context.Context, c client.Client, namespace, attemptNa
 		upsertRun(&a.Status.Runs, v1alpha1.RunRecord{
 			Name: outcome.RunName, Phase: outcome.Phase, EndedAt: now,
 		})
-		a.Status.NodeResults = append(a.Status.NodeResults, outcome.Envelopes...)
+		// Upsert (not append): envelopes already recorded incrementally as
+		// nodes completed are replaced in place; new ones append. Blind append
+		// would duplicate every envelope the OnNodeResult hook already landed.
+		for _, env := range outcome.Envelopes {
+			upsertNodeResult(&a.Status.NodeResults, env)
+		}
 		for _, env := range outcome.Envelopes {
 			a.Status.Evidence = appendUniqueEvidence(a.Status.Evidence, env.References)
 		}
@@ -156,6 +161,30 @@ func mutateStatus(ctx context.Context, c client.Client, namespace, attemptName s
 }
 
 // upsertRun inserts or updates a RunRecord by Name (idempotent re-scheduling).
+// UpsertNodeResult records one node execution's envelope incrementally, as
+// the node completes rather than batched at outcome. The ledger is keyed by
+// (NodeID, RunID): a new key appends — preserving history across node retries
+// (one pod = one run = one envelope, ADR-0007) — and an existing key replaces
+// in place, so both incremental arrival and the outcome upsert are idempotent.
+// Best-effort caller: errors are returned but must not abort the run.
+func UpsertNodeResult(ctx context.Context, c client.Client, namespace, attemptName string, env v1alpha1.NodeResultEnvelope) error {
+	return mutateStatus(ctx, c, namespace, attemptName, func(a *v1alpha1.Attempt) {
+		upsertNodeResult(&a.Status.NodeResults, env)
+	})
+}
+
+// upsertNodeResult is the pure ledger merge: replace-in-place on a (NodeID,
+// RunID) match, append otherwise.
+func upsertNodeResult(envelopes *[]v1alpha1.NodeResultEnvelope, env v1alpha1.NodeResultEnvelope) {
+	for i := range *envelopes {
+		if (*envelopes)[i].NodeID == env.NodeID && (*envelopes)[i].RunID == env.RunID {
+			(*envelopes)[i] = env
+			return
+		}
+	}
+	*envelopes = append(*envelopes, env)
+}
+
 func upsertRun(runs *[]v1alpha1.RunRecord, r v1alpha1.RunRecord) {
 	for i, existing := range *runs {
 		if existing.Name == r.Name {

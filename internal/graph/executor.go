@@ -139,6 +139,11 @@ type GraphExecutor struct {
 	// attempt without envelopes (node.started has none).
 	attemptName string
 
+	// onNodeResult is invoked with each node's envelope as the node completes
+	// (after claim enforcement, so it matches what the outcome records).
+	// Optional: nil on Pipeline CRs and tests without recording.
+	onNodeResult func(context.Context, v1alpha1.NodeResultEnvelope)
+
 	// wfCtx carries the Workflow context (source URL, namespace, workdir, etc.)
 	// into every node's NodeEnv. Without this, graph-native plugin nodes don't
 	// receive HARMOSTES_SOURCE_URL and other env vars that the declarative
@@ -220,6 +225,14 @@ func WithRunID(runID string) GraphExecutorOption {
 // still published, just unattributed — the UI treats those conservatively).
 func WithAttemptName(name string) GraphExecutorOption {
 	return func(e *GraphExecutor) { e.attemptName = name }
+}
+
+// WithOnNodeResult sets a callback invoked with each node's envelope as the
+// node completes (post claim-enforcement — identical to what the run outcome
+// records). The worker uses it to land envelopes on the Attempt CR
+// incrementally; nil by default (Pipeline CRs, tests).
+func WithOnNodeResult(fn func(context.Context, v1alpha1.NodeResultEnvelope)) GraphExecutorOption {
+	return func(e *GraphExecutor) { e.onNodeResult = fn }
 }
 
 // WithWorkflowContext carries the Workflow-level context (source URL,
@@ -502,6 +515,13 @@ func (e *GraphExecutor) Execute(ctx context.Context, graph v1alpha1.GraphSpec, p
 			e.log("node %s: demoted %d self-validated claim(s) (non-deterministic node)", nodeID, demoted)
 		}
 		result.NodeEnvelopes[nodeID] = completedEnv
+		// Incremental recording: hand the envelope to the owner (the worker
+		// persists it to the Attempt CR) the moment the node completes, so the
+		// UI's live position advances node-by-node instead of everything
+		// landing in a batch at outcome. Nil-safe (Pipeline CRs / tests).
+		if e.onNodeResult != nil {
+			e.onNodeResult(ctx, completedEnv)
+		}
 		e.checkpoint(ctx, pipelineName, nodeID, nodeResult)
 		completedEvent := LifecycleEvent{
 			Event:      "node.completed",

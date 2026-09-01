@@ -375,6 +375,18 @@ func runOneShot() {
 		graph.WithBindings(wf.Spec.Bindings),
 		graph.WithRunID(runID),
 		graph.WithAttemptName(os.Getenv("HARMOSTES_ATTEMPT")),
+		// Incremental node-result recording: each envelope lands on the Attempt
+		// as its node completes, so the UI's live position advances
+		// node-by-node. No-op without an attempt context (non-Job runs).
+		graph.WithOnNodeResult(func(ctx context.Context, env v1alpha1.NodeResultEnvelope) {
+			attemptName := os.Getenv("HARMOSTES_ATTEMPT")
+			if attemptName == "" {
+				return
+			}
+			if err := attempt.UpsertNodeResult(ctx, cl, namespace, attemptName, env); err != nil {
+				logf("warn: upsert node result %s: %v", env.NodeID, err)
+			}
+		}),
 		graph.WithTimeline(runTL),
 		graph.WithWorkflowContext(graph.WorkflowContext{
 			Name:           wf.Name,

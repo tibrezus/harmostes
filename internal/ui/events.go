@@ -21,6 +21,7 @@ type Event struct {
 	Node       string         `json:"node,omitempty"`       // node ID (empty for pipeline-level)
 	NodeType   string         `json:"nodeType,omitempty"`   // node type (agent, gate, etc.)
 	Status     string         `json:"status,omitempty"`     // green | failed
+	Attempt    string         `json:"attempt,omitempty"`    // Attempt CR name (ADR-0007); empty from pre-attribution workers
 	Feedback   string         `json:"feedback,omitempty"`   // gate feedback or error message
 	Outputs    map[string]any `json:"outputs,omitempty"`    // node outputs (agent metrics, etc.)
 	DurationMs int64          `json:"durationMs,omitempty"` // execution duration in ms
@@ -28,15 +29,23 @@ type Event struct {
 }
 
 // subscriber is a single SSE client listening for events on a pipeline.
+// An optional match predicate filters at publish time — non-matching events
+// never reach the subscriber's channel (attempt-scoped streams use this so a
+// foreign attempt's events cost nothing).
 type subscriber struct {
 	ch     chan Event
+	match  func(Event) bool
 	closed chan struct{}
 	once   sync.Once
 }
 
 func (s *subscriber) close() {
 	s.once.Do(func() {
-		close(s.ch)
+		// close(s.closed) only — NEVER close(s.ch). Publish copies subscriber
+		// pointers under RLock and sends after releasing it, so a channel close
+		// racing an in-flight send would panic ("send on closed channel").
+		// Consumers exit via the closed channel; the buffered ch is simply
+		// garbage-collected with the subscriber.
 		close(s.closed)
 	})
 }
@@ -61,13 +70,22 @@ func NewEventHub() *EventHub {
 	}
 }
 
-// Subscribe registers a new SSE subscriber for the given pipeline. Returns the
-// subscriber channel and a cancel function to deregister. The channel has a
-// buffer of 64 events; if the client is slow, events are dropped (best-effort
+// Subscribe registers a new SSE subscriber for the given pipeline. Returns
+// the subscriber channel and a cancel function to deregister. The channel has
+// a buffer of 64 events; if the client is slow, events are dropped (best-effort
 // delivery — SSE is a live stream, not a durable queue).
 func (h *EventHub) Subscribe(pipeline string) (*subscriber, func()) {
+	return h.SubscribeFilter(pipeline, nil)
+}
+
+// SubscribeFilter registers a subscriber that receives only the pipeline's
+// events passing match (nil match = all events). Filtering happens at publish
+// time: a non-matching event is never queued, so filtered streams cost nothing
+// on foreign events.
+func (h *EventHub) SubscribeFilter(pipeline string, match func(Event) bool) (*subscriber, func()) {
 	sub := &subscriber{
 		ch:     make(chan Event, 64),
+		match:  match,
 		closed: make(chan struct{}),
 	}
 
@@ -116,6 +134,9 @@ func (h *EventHub) Publish(ev Event) {
 	h.mu.RUnlock()
 
 	for _, sub := range subs {
+		if sub.match != nil && !sub.match(ev) {
+			continue
+		}
 		select {
 		case sub.ch <- ev:
 		default:
@@ -245,11 +266,10 @@ func (s *Server) handlePipelineSSE(w http.ResponseWriter, r *http.Request) {
 		case <-ctx.Done():
 			// Client disconnected.
 			return
-
-		case ev, ok := <-sub.ch:
-			if !ok {
-				return
-			}
+		case <-sub.closed:
+			// Deregistered.
+			return
+		case ev := <-sub.ch:
 			data, err := json.Marshal(ev)
 			if err != nil {
 				s.logger.Error("sse marshal event", "err", err)

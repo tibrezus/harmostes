@@ -374,6 +374,7 @@ func runOneShot() {
 		),
 		graph.WithBindings(wf.Spec.Bindings),
 		graph.WithRunID(runID),
+		graph.WithAttemptName(os.Getenv("HARMOSTES_ATTEMPT")),
 		graph.WithTimeline(runTL),
 		graph.WithWorkflowContext(graph.WorkflowContext{
 			Name:           wf.Name,

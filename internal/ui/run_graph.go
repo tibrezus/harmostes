@@ -7,6 +7,7 @@ import (
 	"html/template"
 	"net/http"
 	"sort"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -337,23 +338,50 @@ func truncateRunes(s string, n int) string {
 }
 
 // handleRunGraphSSE streams the run-detail graph fragment for one attempt.
-// Events for the attempt's workflow wake a re-render; the render reads the
-// attempt's durable state fresh, so cross-attempt events are harmless noise.
+// The subscription is scoped to the attempt: events carrying a different
+// attempt's name are filtered at the hub and cost nothing. Legacy events
+// without attribution (pre-attribution workers) wake conservatively — during
+// a rolling deploy, correctness beats noise. A 15s ticker is the convergence
+// net for the pipeline.completed-before-outcome-recorded race: the last
+// event can re-render before the worker records the terminal run outcome,
+// and without a ticker the stale pulse would never be re-examined.
 func (s *Server) handleRunGraphSSE(w http.ResponseWriter, r *http.Request) {
 	att, ok := s.attemptOr404(w, r)
 	if !ok {
 		return
 	}
 	wfName := workflowCRName(att.Spec.WorkflowRef)
+	// Terminal tracking feeds the engine's isDone probe: once the attempt is
+	// terminal (or deleted — nothing left to converge on), the 15s ticker
+	// stops so an idle open tab on a finished run costs nothing. Single-writer
+	// (the stream's own select loop calls render), so a plain bool is safe.
+	terminal := false
 	render := func() (string, error) {
 		fresh, err := s.getAttempt(r, att.Name)
 		if err != nil {
+			if apierrors.IsNotFound(err) {
+				terminal = true
+			}
 			return "", err
 		}
+		terminal = attemptSettled(fresh)
 		return s.renderRunGraph(r, fresh)
 	}
-	sub, cancel := s.hub.Subscribe(wfName)
-	s.streamFragments(w, r, sub, cancel, runGraphEventName, render, 0)
+	sub, cancel := s.hub.SubscribeFilter(wfName, func(ev Event) bool {
+		return ev.Attempt == "" || ev.Attempt == att.Name
+	})
+	s.streamFragments(w, r, sub, cancel, runGraphEventName, render, func() bool { return terminal }, 15*time.Second)
+}
+
+// attemptSettled reports whether nothing in the attempt is in flight: the
+// spine for the graph's pulse (no running run = no live position to show).
+func attemptSettled(att *v1alpha1.Attempt) bool {
+	for _, run := range att.Status.Runs {
+		if run.Phase == "running" {
+			return false
+		}
+	}
+	return true
 }
 
 // attemptOr404 resolves the {name} path value to an attempt the caller owns:

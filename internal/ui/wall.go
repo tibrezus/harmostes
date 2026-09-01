@@ -191,7 +191,7 @@ func (s *Server) handleWallSSE(w http.ResponseWriter, r *http.Request) {
 	owner := identityFromContext(r.Context()).Username
 	render := func() (string, error) { return s.renderWallFragment(r, owner) }
 	sub, cancel := s.hub.Subscribe("")
-	s.streamFragments(w, r, sub, cancel, wallEventName, render, wallRerender)
+	s.streamFragments(w, r, sub, cancel, wallEventName, render, nil, wallRerender)
 }
 
 // jsonInt extracts an int from a JSON-roundtripped value (numbers decode as

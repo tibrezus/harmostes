@@ -56,7 +56,7 @@ func greenPRServer(t *testing.T) *httptest.Server {
 		switch {
 		case strings.Contains(req.URL.Path, "/pulls/"):
 			json.NewEncoder(w).Encode(map[string]any{
-				"state": "open", "head": map[string]string{"sha": "headabc123"},
+				"state": "open", "head": map[string]string{"sha": "deadbeef123"},
 				"base":   map[string]string{"ref": "main"},
 				"labels": []map[string]string{{"name": "needs-review"}},
 			})

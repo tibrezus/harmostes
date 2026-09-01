@@ -75,10 +75,10 @@ func wakeAnnotations(pr, action, sha string) map[string]string {
 	}
 }
 
-// greenPullBody is the green, labeled, open PR at headabc123.
+// greenPullBody is the green, labeled, open PR at deadbeef123.
 func greenPullBody() map[string]any {
 	return map[string]any{
-		"state": "open", "head": map[string]string{"sha": "headabc123"},
+		"state": "open", "head": map[string]string{"sha": "deadbeef123"},
 		"base":   map[string]string{"ref": "main"},
 		"labels": []map[string]string{{"name": "needs-review"}},
 	}
@@ -124,7 +124,7 @@ func consumedServer(t *testing.T) *httptest.Server {
 			json.NewEncoder(w).Encode([]map[string]any{{"number": 100, "updated_at": "2026-08-30T00:00:00Z", "labels": []map[string]string{{"name": "needs-review"}}}})
 		case strings.HasSuffix(req.URL.Path, "/pulls/99"):
 			json.NewEncoder(w).Encode(map[string]any{
-				"state": "open", "head": map[string]string{"sha": "headabc123"},
+				"state": "open", "head": map[string]string{"sha": "deadbeef123"},
 				"base":   map[string]string{"ref": "main"},
 				"labels": []map[string]string{},
 			})
@@ -132,7 +132,7 @@ func consumedServer(t *testing.T) *httptest.Server {
 			json.NewEncoder(w).Encode(greenPullBody())
 		case strings.Contains(req.URL.Path, "/comments"):
 			json.NewEncoder(w).Encode([]map[string]string{
-				{"body": "review done\n<!-- pr-review: APPROVE @ headabc123 -->", "created_at": "2026-08-30T01:00:00Z"},
+				{"body": "review done\n<!-- pr-review: APPROVE @ deadbeef123 -->", "created_at": "2026-08-30T01:00:00Z"},
 			})
 		case strings.Contains(req.URL.Path, "/branch_protections/"):
 			json.NewEncoder(w).Encode(map[string]any{"status_check_contexts": []string{"ci / build-test (push)"}})
@@ -154,7 +154,7 @@ func noLabelServer(t *testing.T) *httptest.Server {
 		switch {
 		case strings.Contains(req.URL.Path, "/pulls/"):
 			json.NewEncoder(w).Encode(map[string]any{
-				"state": "open", "head": map[string]string{"sha": "headabc123"},
+				"state": "open", "head": map[string]string{"sha": "deadbeef123"},
 				"base":   map[string]string{"ref": "main"},
 				"labels": []map[string]string{},
 			})
@@ -172,7 +172,7 @@ func TestMultiArmWaitingArmsClaimWithoutDispatch(t *testing.T) {
 	t.Cleanup(srv.Close)
 	pinReviewAPI(t, srv, true)
 	wf := gateWorkflow()
-	wf.Annotations = wakeAnnotations("git.rezus.cloud/tibrez/rhesadox#99", "labeled", "headabc123")
+	wf.Annotations = wakeAnnotations("git.rezus.cloud/tibrez/rhesadox#99", "labeled", "deadbeef123")
 	st := &fakeStatus{}
 	deps, ctx := gateEnv(t, wf, st)
 
@@ -203,10 +203,10 @@ func TestMultiArmInFlightNotReDispatched(t *testing.T) {
 	t.Cleanup(srv.Close)
 	pinReviewAPI(t, srv, true)
 	wf := gateWorkflow()
-	wf.Annotations = wakeAnnotations("git.rezus.cloud/tibrez/rhesadox#99", "labeled", "headabc123")
+	wf.Annotations = wakeAnnotations("git.rezus.cloud/tibrez/rhesadox#99", "labeled", "deadbeef123")
 	st := &fakeStatus{}
 	now := time.Now()
-	claim := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#99", "headabc123", now.Add(-2*time.Minute), &now)
+	claim := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#99", "deadbeef123", now.Add(-2*time.Minute), &now)
 	deps, ctx := gateEnv(t, wf, st, claim)
 
 	out, err := RunReviewGateSweep(ctx, deps, wf)
@@ -231,7 +231,7 @@ func TestMultiArmVerdictConsumesAndDrains(t *testing.T) {
 	wf := gateWorkflow()
 	st := &fakeStatus{}
 	now := time.Now()
-	claim := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#99", "headabc123", now.Add(-10*time.Minute), &now)
+	claim := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#99", "deadbeef123", now.Add(-10*time.Minute), &now)
 	deps, ctx := gateEnv(t, wf, st, claim)
 
 	out, err := RunReviewGateSweep(ctx, deps, wf)
@@ -258,10 +258,10 @@ func TestMultiArmDispatchTimeoutReleasesAndReArms(t *testing.T) {
 	pinReviewAPI(t, srv, true)
 	wf := gateWorkflow()
 	wf.Spec.ReviewReady.DispatchTimeout = "45m"
-	wf.Annotations = wakeAnnotations("git.rezus.cloud/tibrez/rhesadox#99", "labeled", "headabc123")
+	wf.Annotations = wakeAnnotations("git.rezus.cloud/tibrez/rhesadox#99", "labeled", "deadbeef123")
 	st := &fakeStatus{}
 	stale := time.Now().Add(-50 * time.Minute)
-	claim := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#99", "headabc123", stale, &stale)
+	claim := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#99", "deadbeef123", stale, &stale)
 	deps, ctx := gateEnv(t, wf, st, claim)
 
 	out, err := RunReviewGateSweep(ctx, deps, wf)
@@ -279,7 +279,7 @@ func TestMultiArmDispatchTimeoutReleasesAndReArms(t *testing.T) {
 	if err := deps.Client.Get(ctx, client.ObjectKey{Namespace: wf.Namespace, Name: out[0].Attempt}, &re); err != nil {
 		t.Fatalf("dispatched claim: %v", err)
 	}
-	if re.Status.Review == nil || re.Status.Review.Released || re.Status.Review.HeadSHA != "headabc123" {
+	if re.Status.Review == nil || re.Status.Review.Released || re.Status.Review.HeadSHA != "deadbeef123" {
 		t.Fatalf("dispatched claim must be armed at the head, got %+v", re.Status.Review)
 	}
 	if claim.Status.Review.Released == false {
@@ -297,11 +297,11 @@ func TestMultiArmDispatchTimeoutReleasesAndReArms(t *testing.T) {
 // supersedes the old claim and arms fresh at the new head. ──
 func TestMultiArmRequestWakeSupersedesMovedHead(t *testing.T) {
 	clearTriggerEnv(t)
-	srv := greenPRServer(t) // PR 99 green at NEW head headabc123
+	srv := greenPRServer(t) // PR 99 green at NEW head deadbeef123
 	t.Cleanup(srv.Close)
 	pinReviewAPI(t, srv, true)
 	wf := gateWorkflow()
-	wf.Annotations = wakeAnnotations("git.rezus.cloud/tibrez/rhesadox#99", "labeled", "headabc123")
+	wf.Annotations = wakeAnnotations("git.rezus.cloud/tibrez/rhesadox#99", "labeled", "deadbeef123")
 	st := &fakeStatus{}
 	armed := time.Now().Add(-5 * time.Minute)
 	claim := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#99", "oldhead000", armed, nil)
@@ -356,7 +356,7 @@ func TestMultiArmCapacityHoldsQueue(t *testing.T) {
 	wf.Spec.ReviewReady.MaxConcurrent = 1
 	st := &fakeStatus{}
 	now := time.Now()
-	inFlight := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#99", "headabc123", now.Add(-2*time.Minute), &now)
+	inFlight := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#99", "deadbeef123", now.Add(-2*time.Minute), &now)
 	deps, ctx := gateEnv(t, wf, st, inFlight)
 
 	out, err := RunReviewGateSweep(ctx, deps, wf)
@@ -378,7 +378,7 @@ func TestMultiArmLiveClaimSkipsCandidate(t *testing.T) {
 	wf := gateWorkflow()
 	st := &fakeStatus{}
 	armed := time.Now().Add(-time.Minute)
-	claim := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#99", "headabc123", armed, nil)
+	claim := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#99", "deadbeef123", armed, nil)
 	deps, ctx := gateEnv(t, wf, st, claim)
 
 	out, err := RunReviewGateSweep(ctx, deps, wf)
@@ -397,7 +397,7 @@ func TestMultiArmBarePointerNormalizesIntoClaim(t *testing.T) {
 	t.Cleanup(srv.Close)
 	pinReviewAPI(t, srv, true)
 	wf := gateWorkflow()
-	wf.Annotations = wakeAnnotations("tibrez/rhesadox#99", "labeled", "headabc123")
+	wf.Annotations = wakeAnnotations("tibrez/rhesadox#99", "labeled", "deadbeef123")
 	st := &fakeStatus{}
 	deps, ctx := gateEnv(t, wf, st)
 
@@ -421,7 +421,7 @@ func TestMultiArmOutOfScopeWakeIgnored(t *testing.T) {
 	t.Cleanup(srv.Close)
 	pinReviewAPI(t, srv, true)
 	wf := gateWorkflow()
-	wf.Annotations = wakeAnnotations("github.com/other/repo#7", "labeled", "headabc123")
+	wf.Annotations = wakeAnnotations("github.com/other/repo#7", "labeled", "deadbeef123")
 	st := &fakeStatus{}
 	deps, ctx := gateEnv(t, wf, st)
 
@@ -449,7 +449,7 @@ func TestMultiArmDispatchLostClaimRefilled(t *testing.T) {
 	pinReviewAPI(t, srv, true)
 	wf := gateWorkflow()
 	stale := time.Now().Add(-10 * time.Minute)
-	claim := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#99", "headabc123", stale, nil)
+	claim := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#99", "deadbeef123", stale, nil)
 	deps, ctx := gateEnv(t, wf, &fakeStatus{}, claim)
 
 	out, err := RunReviewGateSweep(ctx, deps, wf)
@@ -463,7 +463,7 @@ func TestMultiArmDispatchLostClaimRefilled(t *testing.T) {
 	if err := deps.Client.Get(ctx, client.ObjectKey{Namespace: wf.Namespace, Name: out[0].Attempt}, &re); err != nil {
 		t.Fatalf("re-armed claim: %v", err)
 	}
-	if re.Status.Review == nil || re.Status.Review.Released || re.Status.Review.HeadSHA != "headabc123" {
+	if re.Status.Review == nil || re.Status.Review.Released || re.Status.Review.HeadSHA != "deadbeef123" {
 		t.Fatalf("refilled claim must be armed at the head, got %+v", re.Status.Review)
 	}
 	var old v1alpha1.Attempt
@@ -484,7 +484,7 @@ func TestMultiArmFreshArmedClaimHoldsDuringGrace(t *testing.T) {
 	pinReviewAPI(t, srv, true)
 	wf := gateWorkflow()
 	fresh := time.Now().Add(-time.Minute)
-	claim := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#99", "headabc123", fresh, nil)
+	claim := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#99", "deadbeef123", fresh, nil)
 	deps, ctx := gateEnv(t, wf, &fakeStatus{}, claim)
 
 	out, err := RunReviewGateSweep(ctx, deps, wf)
@@ -512,7 +512,7 @@ func TestMultiArmDeadJobClaimRefilled(t *testing.T) {
 	pinReviewAPI(t, srv, true)
 	wf := gateWorkflow()
 	stale := time.Now().Add(-10 * time.Minute)
-	claim := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#99", "headabc123", stale, &stale)
+	claim := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#99", "deadbeef123", stale, &stale)
 	deps, ctx := gateEnv(t, wf, &fakeStatus{}, claim) // no Job seeded: the run died
 
 	out, err := RunReviewGateSweep(ctx, deps, wf)
@@ -540,7 +540,7 @@ func TestMultiArmLiveJobClaimHolds(t *testing.T) {
 	pinReviewAPI(t, srv, true)
 	wf := gateWorkflow()
 	stale := time.Now().Add(-10 * time.Minute)
-	claim := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#99", "headabc123", stale, &stale)
+	claim := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#99", "deadbeef123", stale, &stale)
 	liveJob := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{
 		Name: "attempt-claim-99-rx8sr", Namespace: wf.Namespace,
 		Labels: map[string]string{

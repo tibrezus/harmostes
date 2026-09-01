@@ -56,7 +56,7 @@ func gatedDispatchWorkflow() *v1alpha1.Workflow {
 	wf.Annotations = map[string]string{
 		"harmostes.dev/trigger-pr":       "git.rezus.cloud/tibrez/rhesadox#99",
 		"harmostes.dev/trigger-action":   "labeled",
-		"harmostes.dev/trigger-revision": "headabc123",
+		"harmostes.dev/trigger-revision": "deadbeef123",
 	}
 	return wf
 }
@@ -65,7 +65,7 @@ func dispatchRequest() RunRequest {
 	return RunRequest{
 		Workflow: "pr-review-harmostes", Namespace: "default",
 		Pr: "github.com/tibrezus/harmostes#99", Action: "labeled",
-		Revision: "headabc123", PrTitle: "t",
+		Revision: "deadbeef123", PrTitle: "t",
 	}
 }
 
@@ -125,7 +125,7 @@ func TestDispatchCapacityRefusalStaysQueued(t *testing.T) {
 	wf := gatedDispatchWorkflow()
 	wf.Spec.ReviewReady.MaxConcurrent = 1
 	now := time.Now()
-	inFlight := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#99", "headabc123", now.Add(-time.Minute), &now)
+	inFlight := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#99", "deadbeef123", now.Add(-time.Minute), &now)
 	other := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#100", "otherhead00", now.Add(-time.Minute), &now)
 	d, ctx := newTestDispatcher(t, wf, inFlight, other)
 
@@ -150,7 +150,7 @@ func TestDispatchWaitingCreatesNothing(t *testing.T) {
 		switch {
 		case strings.Contains(req.URL.Path, "/pulls/"):
 			json.NewEncoder(w).Encode(map[string]any{
-				"state": "open", "head": map[string]string{"sha": "headabc123"},
+				"state": "open", "head": map[string]string{"sha": "deadbeef123"},
 				"base":   map[string]string{"ref": "main"},
 				"labels": []map[string]string{}, // label absent
 			})

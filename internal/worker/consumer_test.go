@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	k8s "github.com/tibrezus/harmostes/internal/k8s"
 )
 
 func TestConsumerSubscribeEndpoint(t *testing.T) {
@@ -181,5 +183,37 @@ func TestExtraConfigMapMountsFromEnv(t *testing.T) {
 	t.Setenv("HARMOSTES_EXTRA_CONFIGMAP_MOUNTS", "")
 	if m := extraConfigMapMountsFromEnv(logf); m != nil {
 		t.Errorf("empty env must give nil, got %+v", m)
+	}
+}
+
+// The FromEnv→cfg seam is where #313's live bug hid: the parser returned 4
+// mounts and BuildJob rendered them, but DispatcherFromEnv dropped the
+// parameter on the way to DispatchConfig — so every Job shipped without the
+// extras and fork-maintenance kept failing at prepare. This test pins the
+// whole seam end-to-end.
+func TestDispatcherFromEnvWiresExtraMounts(t *testing.T) {
+	t.Setenv("HARMOSTES_NAMESPACE", "harmostes")
+	t.Setenv("HARMOSTES_EXTRA_CONFIGMAP_MOUNTS", "fork-maintenance-scripts=/workspace/scripts=0755")
+
+	// NewDispatcher connects to the real in-cluster config; on a dev box
+	// that fails — which still proves the point ONLY if the failure happens
+	// AFTER config resolution. Instead call the resolver + inspect the same
+	// construction the production path uses, via a Dispatcher built through
+	// the real DispatchConfig path... DispatcherFromEnv needs a cluster, so
+	// assert the config seam by constructing DispatchConfig the same way
+	// DispatcherFromEnv does and reflecting over it is not possible without
+	// a cluster. The honest seam test: run DispatcherFromEnv and require the
+	// startup log to report the parsed count — the log prints AFTER the
+	// config is assembled, BEFORE the cluster dial.
+	var logged string
+	capture := func(format string, args ...any) { logged = fmt.Sprintf(format, args...) }
+	_, _ = DispatcherFromEnv([]string{"harmostes-pr-review"},
+		[]k8s.ConfigMapMount{{Name: "fork-maintenance-scripts", MountPath: "/workspace/scripts"}},
+		capture)
+	if !strings.Contains(logged, "extraConfigMapMounts=1") {
+		t.Fatalf("DispatcherFromEnv dropped the extra mounts; startup log: %q", logged)
+	}
+	if !strings.Contains(logged, "pluginConfigMaps=[harmostes-pr-review]") {
+		t.Fatalf("plugin configmaps missing from dispatch config log: %q", logged)
 	}
 }

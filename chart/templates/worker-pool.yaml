@@ -75,6 +75,15 @@ spec:
             - name: HARMOSTES_PLUGIN_CONFIGMAPS
               value: {{ . | join "," | quote }}
             {{- end }}
+            {{- if .Values.forkMaintenance.enabled }}
+            {{- /* Pool-only mounts must reach the per-Attempt Jobs too, or
+                   pool-only plugins exec against missing files (#311). The
+                   ConfigMap names AND modes render from the same values the
+                   pool volumes consume — name=path=mode, mode octal, 0755
+                   when omitted. */}}
+            - name: HARMOSTES_EXTRA_CONFIGMAP_MOUNTS
+              value: "{{ .Values.forkMaintenance.scriptsConfigMap }}=/workspace/scripts=0755,{{ .Values.forkMaintenance.checksConfigMap }}=/workspace/checks=0755,{{ .Values.forkMaintenance.defsConfigMap }}=/workspace/forks=0644,{{ .Values.forkMaintenance.hooksConfigMap }}=/workspace/post-merge-hooks=0755"
+            {{- end }}
             - name: HARMOSTES_PUBSUB_NAME
               value: {{ .Values.workerPool.pubsubName | default "pubsub" | quote }}
             - name: HARMOSTES_TRIGGER_TOPIC

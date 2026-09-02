@@ -46,16 +46,18 @@ type Dispatcher struct {
 	jobTTLSeconds      *int32
 	daprdImage         string
 	pluginConfigMaps   []string
+	extraCMMounts      []k8s.ConfigMapMount
 }
 
 // DispatchConfig carries the dispatcher's fleet-level knobs (chart env).
 type DispatchConfig struct {
-	FleetMaxConcurrent int
-	JobImage           string
-	ServiceAccount     string
-	JobTTLSeconds      *int32
-	DaprdImage         string
-	PluginConfigMaps   []string
+	FleetMaxConcurrent   int
+	JobImage             string
+	ServiceAccount       string
+	JobTTLSeconds        *int32
+	DaprdImage           string
+	PluginConfigMaps     []string
+	ExtraConfigMapMounts []k8s.ConfigMapMount
 }
 
 // NewDispatcher builds the dispatcher, connecting the in-cluster client.
@@ -87,6 +89,7 @@ func NewDispatcher(ctx context.Context, cfg DispatchConfig, logf func(string, ..
 		jobTTLSeconds:      cfg.JobTTLSeconds,
 		daprdImage:         cfg.DaprdImage,
 		pluginConfigMaps:   cfg.PluginConfigMaps,
+		extraCMMounts:      cfg.ExtraConfigMapMounts,
 	}, nil
 }
 
@@ -95,7 +98,7 @@ func NewDispatcher(ctx context.Context, cfg DispatchConfig, logf func(string, ..
 // HARMOSTES_JOB_TTL_SECONDS (default 3600), the worker image (the Job runs
 // the same image as the pool), the plugin ConfigMaps, and the optional daprd
 // pin.
-func DispatcherFromEnv(pluginConfigMaps []string, logf func(string, ...any)) (*Dispatcher, error) {
+func DispatcherFromEnv(pluginConfigMaps []string, extraCMMounts []k8s.ConfigMapMount, logf func(string, ...any)) (*Dispatcher, error) {
 	cfg := DispatchConfig{
 		JobImage:         os.Getenv("HARMOSTES_WORKER_IMAGE"),
 		ServiceAccount:   os.Getenv("HARMOSTES_SERVICE_ACCOUNT"),
@@ -199,6 +202,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req RunRequest) error {
 			TTLSecondsAfterFinished: d.jobTTLSeconds,
 			DaprdImage:              d.daprdImage,
 			PluginConfigMaps:        d.pluginConfigMaps,
+			ExtraConfigMapMounts:    d.extraCMMounts,
 			ExtraEnv:                append(jobCredentialEnv(), dispatchEnv(req, &at, g.Envelope)...),
 		})
 		if err := d.cl.Create(ctx, job); err != nil {

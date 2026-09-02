@@ -44,6 +44,15 @@ type AttemptJobParams struct {
 	// convention as the worker-pool deployment.
 	PluginConfigMaps []string
 
+	// ExtraConfigMapMounts mounts additional ConfigMaps at explicit paths on
+	// the one-shot Job, mirroring named mounts the worker-pool Deployment
+	// carries. This is how pool-only plugins stay runnable in one-shot
+	// workers: a fork-maintenance plugin needs its plugin ConfigMap AND the
+	// engine scripts it execs (/workspace/scripts et al.) — mounts the pool
+	// has but the Job never did (#311: prepare died in 12ms on a missing
+	// script, empty message, forever).
+	ExtraConfigMapMounts []ConfigMapMount
+
 	// DaprdImage overrides the sidecar image when non-empty (fleet
 	// observability pinning, same knob as the worker-pool deployment).
 	DaprdImage string
@@ -52,6 +61,16 @@ type AttemptJobParams struct {
 	// trigger envelope (HARMOSTES_TRIGGER_*), as buildChildEnv passes to
 	// consumer children.
 	ExtraEnv []string
+}
+
+// ConfigMapMount is one additional ConfigMap volume: name (the ConfigMap and
+// volume name) and the absolute MountPath. Mode is the volume defaultMode
+// (0o755 when nil — mounts exist so the one-shot worker can exec their
+// contents; match the pool deployment's per-mount mode when it differs).
+type ConfigMapMount struct {
+	Name      string
+	MountPath string
+	Mode      *int32
 }
 
 // BuildJob renders the per-Attempt Job. Shape contract (pinned by
@@ -92,6 +111,21 @@ func BuildJob(p AttemptJobParams) *batchv1.Job {
 
 	volumes := []corev1.Volume{{Name: "workspace", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}}
 	mounts := []corev1.VolumeMount{{Name: "workspace", MountPath: "/workspace"}}
+	for _, m := range p.ExtraConfigMapMounts {
+		mode := int32(0o755)
+		if m.Mode != nil {
+			mode = *m.Mode
+		}
+		vol := "extra-cm-" + m.Name
+		volumes = append(volumes, corev1.Volume{
+			Name: vol,
+			VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
+				LocalObjectReference: corev1.LocalObjectReference{Name: m.Name},
+				DefaultMode:          ptr.To(mode),
+			}},
+		})
+		mounts = append(mounts, corev1.VolumeMount{Name: vol, MountPath: m.MountPath, ReadOnly: true})
+	}
 	for _, cm := range p.PluginConfigMaps {
 		vol := "plugin-cm-" + cm
 		volumes = append(volumes, corev1.Volume{

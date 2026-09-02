@@ -9,6 +9,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
+
+	"k8s.io/utils/ptr"
 )
 
 func jobTestAttempt() *v1alpha1.Attempt {
@@ -154,5 +156,54 @@ func TestBuildJobTTLNilOmitted(t *testing.T) {
 	}
 	if job.Annotations["dapr.io/sidecar-image"] != "" {
 		t.Fatalf("unset daprd image must not pin the sidecar, got %q", job.Annotations["dapr.io/sidecar-image"])
+	}
+}
+
+// Pool-only named mounts must reach the per-Attempt Job (#311): a
+// fork-maintenance plugin resolves to /plugins/<cm>/<name>.sh AND execs
+// engine scripts under /workspace — neither existed on attempt Jobs, so
+// prepare died in 12ms on every run of a UI-created fork-maintenance
+// instance.
+func TestBuildJobExtraConfigMapMounts(t *testing.T) {
+	job := BuildJob(AttemptJobParams{
+		Attempt:          jobTestAttempt(),
+		WorkflowName:     "fork-maintenance-forgejo",
+		Namespace:        "harmostes",
+		PluginConfigMaps: []string{"harmostes-pr-review"},
+		ExtraConfigMapMounts: []ConfigMapMount{
+			{Name: "fork-scripts", MountPath: "/workspace/scripts"},
+			{Name: "fork-defs", MountPath: "/workspace/forks", Mode: ptr.To(int32(0o644))},
+		},
+	})
+	c := job.Spec.Template.Spec.Containers[0]
+
+	var paths []string
+	for _, m := range c.VolumeMounts {
+		paths = append(paths, m.MountPath)
+	}
+	for _, want := range []string{"/plugins/harmostes-pr-review", "/workspace/scripts", "/workspace/forks"} {
+		found := false
+		for _, got := range paths {
+			if got == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("mount %s missing, have %v", want, paths)
+		}
+	}
+	// Extra mounts carry the pool's per-mount modes: scripts 0755 (exec
+	// targets — the #283 class), data 0644, exactly as the pool mounts them.
+	modes := map[string]int32{}
+	for _, v := range job.Spec.Template.Spec.Volumes {
+		if v.ConfigMap != nil && v.ConfigMap.DefaultMode != nil {
+			modes[v.Name] = *v.ConfigMap.DefaultMode
+		}
+	}
+	if modes["extra-cm-fork-scripts"] != 0o755 {
+		t.Errorf("fork-scripts mode = %o, want 755 — non-executable scripts are the #283 regression", modes["extra-cm-fork-scripts"])
+	}
+	if modes["extra-cm-fork-defs"] != 0o644 {
+		t.Errorf("fork-defs mode = %o, want 644 (must match the pool's mount)", modes["extra-cm-fork-defs"])
 	}
 }

@@ -75,6 +75,20 @@ func (e *PluginExecutor) Execute(ctx context.Context, node v1alpha1.NodeSpec, en
 
 	if runErr != nil {
 		span.SetStatus(codes.Error, "plugin exited non-zero")
+		// An exec that never started (missing script, permission denied)
+		// produces no output at all — the run error IS the only signal, so
+		// it becomes the feedback instead of an empty string (#311: prepare
+		// failed in 12ms with an empty message and nothing on the wall).
+		if strings.TrimSpace(out) == "" {
+			// Redacted before persistence, same as plugin tails (#115
+			// credential-echo class) — the error embeds resolved paths and
+			// can echo env-derived text. Truncated: an exec error is one
+			// line of signal, not a tail.
+			out = worker.Redact(runErr.Error())
+			if len(out) > 512 {
+				out = out[:512]
+			}
+		}
 		return NodeResult{
 			Status:   StatusFailed,
 			Feedback: out,

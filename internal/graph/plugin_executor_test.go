@@ -246,4 +246,7 @@ func TestPluginExecutorExecFailureSurfacesError(t *testing.T) {
 	if !strings.Contains(result.Feedback, "fork-sync.sh") {
 		t.Errorf("feedback should name the failing executable, got: %s", result.Feedback)
 	}
+	if len(result.Feedback) > 512 {
+		t.Errorf("feedback must be truncated, got %d bytes", len(result.Feedback))
+	}
 }

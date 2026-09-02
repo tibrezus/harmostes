@@ -13,6 +13,8 @@ import (
 	cloudevents "github.com/cloudevents/sdk-go/v2"
 
 	k8s "github.com/tibrezus/harmostes/internal/k8s"
+
+	"strconv"
 )
 
 // ---------------------------------------------------------------------------
@@ -257,10 +259,12 @@ func RunConsumer(ctx context.Context) error {
 // pluginConfigMapsFromEnv reads the comma-separated plugin ConfigMap list
 // the chart renders (HARMOSTES_PLUGIN_CONFIGMAPS) — the same mounts the pool
 // pod carries must reach the per-Attempt Jobs.
+
 // extraConfigMapMountsFromEnv parses HARMOSTES_EXTRA_CONFIGMAP_MOUNTS —
-// comma-separated ConfigMap=path pairs the chart renders for the named
-// mounts the pool carries but per-Attempt Jobs must ALSO carry for pool-only
-// plugins to run (#311). Malformed entries are skipped with a log line.
+// comma-separated ConfigMap=path[=mode] entries the chart renders for the
+// named mounts the pool carries but per-Attempt Jobs must ALSO carry for
+// pool-only plugins to run (#311). Mode is octal (0755 when omitted).
+// Malformed entries are skipped with a log line.
 func extraConfigMapMountsFromEnv(logf func(string, ...any)) []k8s.ConfigMapMount {
 	raw := os.Getenv("HARMOSTES_EXTRA_CONFIGMAP_MOUNTS")
 	if raw == "" {
@@ -268,12 +272,22 @@ func extraConfigMapMountsFromEnv(logf func(string, ...any)) []k8s.ConfigMapMount
 	}
 	var out []k8s.ConfigMapMount
 	for _, pair := range strings.Split(raw, ",") {
-		name, path, ok := strings.Cut(pair, "=")
-		if !ok || name == "" || path == "" || !strings.HasPrefix(path, "/") {
+		parts := strings.Split(pair, "=")
+		if len(parts) < 2 || parts[0] == "" || !strings.HasPrefix(parts[1], "/") {
 			logf("warn: HARMOSTES_EXTRA_CONFIGMAP_MOUNTS: skipping malformed entry %q", pair)
 			continue
 		}
-		out = append(out, k8s.ConfigMapMount{Name: name, MountPath: path})
+		m := k8s.ConfigMapMount{Name: parts[0], MountPath: parts[1]}
+		if len(parts) >= 3 {
+			mode, err := strconv.ParseInt(parts[2], 8, 32)
+			if err != nil {
+				logf("warn: HARMOSTES_EXTRA_CONFIGMAP_MOUNTS: bad mode in %q: %v", pair, err)
+				continue
+			}
+			mode32 := int32(mode)
+			m.Mode = &mode32
+		}
+		out = append(out, m)
 	}
 	return out
 }

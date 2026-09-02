@@ -64,11 +64,13 @@ type AttemptJobParams struct {
 }
 
 // ConfigMapMount is one additional ConfigMap volume: name (the ConfigMap and
-// volume name) and the absolute MountPath. Scripts default to 0755 — mounts
-// exist so the one-shot worker can exec them.
+// volume name) and the absolute MountPath. Mode is the volume defaultMode
+// (0o755 when nil — mounts exist so the one-shot worker can exec their
+// contents; match the pool deployment's per-mount mode when it differs).
 type ConfigMapMount struct {
 	Name      string
 	MountPath string
+	Mode      *int32
 }
 
 // BuildJob renders the per-Attempt Job. Shape contract (pinned by
@@ -110,12 +112,16 @@ func BuildJob(p AttemptJobParams) *batchv1.Job {
 	volumes := []corev1.Volume{{Name: "workspace", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}}
 	mounts := []corev1.VolumeMount{{Name: "workspace", MountPath: "/workspace"}}
 	for _, m := range p.ExtraConfigMapMounts {
+		mode := int32(0o755)
+		if m.Mode != nil {
+			mode = *m.Mode
+		}
 		vol := "extra-cm-" + m.Name
 		volumes = append(volumes, corev1.Volume{
 			Name: vol,
 			VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
 				LocalObjectReference: corev1.LocalObjectReference{Name: m.Name},
-				DefaultMode:          ptr.To(int32(0o755)),
+				DefaultMode:          ptr.To(mode),
 			}},
 		})
 		mounts = append(mounts, corev1.VolumeMount{Name: vol, MountPath: m.MountPath, ReadOnly: true})

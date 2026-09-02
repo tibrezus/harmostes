@@ -89,7 +89,7 @@ jobs:
       # (v0.19.0) so the bundled binaries match the client's API surface.
       - name: Install envtest binaries
         run: |
-          echo "KUBEBUILDER_ASSETS=$(go run sigs.k8s.io/controller-runtime/tools/setup-envtest@release-0.19 use 1.31.0 --bin-dir /tmp/envtest-bins | tail -1)" >> "$GITHUB_ENV"
+          echo "KUBEBUILDER_ASSETS=$(go run sigs.k8s.io/controller-runtime/tools/setup-envtest@release-0.19 use 1.31.0 --bin-dir /tmp/envtest-bins | tail -1 | sed 's/^Path: //')" >> "$GITHUB_ENV"
 
       - name: Integration tests (real API server · race)
         run: go test -race -tags=integration ./test/integration/...

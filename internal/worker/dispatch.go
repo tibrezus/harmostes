@@ -78,11 +78,6 @@ func NewDispatcher(ctx context.Context, cfg DispatchConfig, logf func(string, ..
 	if ns == "" {
 		ns = "harmostes"
 	}
-	// Startup config visibility: mount wiring problems (pool-vs-Job drift,
-	// #311) previously surfaced only as silent 12ms prepare failures — the
-	// dispatcher's resolved mounts must be observable at boot.
-	logf("dispatch config: image=%s serviceAccount=%s pluginConfigMaps=%v extraConfigMapMounts=%d",
-		cfg.JobImage, cfg.ServiceAccount, cfg.PluginConfigMaps, len(cfg.ExtraConfigMapMounts))
 	return &Dispatcher{
 		cl:                 cl,
 		scheme:             scheme,
@@ -111,6 +106,12 @@ func DispatcherFromEnv(pluginConfigMaps []string, extraCMMounts []k8s.ConfigMapM
 		PluginConfigMaps:     pluginConfigMaps,
 		ExtraConfigMapMounts: extraCMMounts,
 	}
+	// Startup config visibility: mount wiring problems (pool-vs-Job drift,
+	// #311) previously surfaced only as silent 12ms prepare failures — the
+	// dispatcher's resolved mounts must be observable at boot. Logged here,
+	// before the cluster dial, so it is hermetic and always emitted.
+	logf("dispatch config: image=%s serviceAccount=%s pluginConfigMaps=%v extraConfigMapMounts=%d",
+		cfg.JobImage, cfg.ServiceAccount, cfg.PluginConfigMaps, len(cfg.ExtraConfigMapMounts))
 	cfg.FleetMaxConcurrent = 3
 	if v := os.Getenv("HARMOSTES_MAX_CONCURRENT"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {

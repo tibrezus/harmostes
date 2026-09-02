@@ -9,6 +9,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
+
+	"k8s.io/utils/ptr"
 )
 
 func jobTestAttempt() *v1alpha1.Attempt {
@@ -170,7 +172,7 @@ func TestBuildJobExtraConfigMapMounts(t *testing.T) {
 		PluginConfigMaps: []string{"harmostes-pr-review"},
 		ExtraConfigMapMounts: []ConfigMapMount{
 			{Name: "fork-scripts", MountPath: "/workspace/scripts"},
-			{Name: "fork-defs", MountPath: "/workspace/forks"},
+			{Name: "fork-defs", MountPath: "/workspace/forks", Mode: ptr.To(int32(0o644))},
 		},
 	})
 	c := job.Spec.Template.Spec.Containers[0]
@@ -190,10 +192,18 @@ func TestBuildJobExtraConfigMapMounts(t *testing.T) {
 			t.Errorf("mount %s missing, have %v", want, paths)
 		}
 	}
-	// Extra mounts are exec targets: 0755, like the pool deployment's mounts.
+	// Extra mounts carry the pool's per-mount modes: scripts 0755 (exec
+	// targets — the #283 class), data 0644, exactly as the pool mounts them.
+	modes := map[string]int32{}
 	for _, v := range job.Spec.Template.Spec.Volumes {
-		if v.Name == "extra-cm-fork-scripts" && v.ConfigMap.DefaultMode == nil {
-			t.Error("extra mount missing defaultMode — scripts would be non-executable")
+		if v.ConfigMap != nil && v.ConfigMap.DefaultMode != nil {
+			modes[v.Name] = *v.ConfigMap.DefaultMode
 		}
+	}
+	if modes["extra-cm-fork-scripts"] != 0o755 {
+		t.Errorf("fork-scripts mode = %o, want 755 — non-executable scripts are the #283 regression", modes["extra-cm-fork-scripts"])
+	}
+	if modes["extra-cm-fork-defs"] != 0o644 {
+		t.Errorf("fork-defs mode = %o, want 644 (must match the pool's mount)", modes["extra-cm-fork-defs"])
 	}
 }

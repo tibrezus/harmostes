@@ -218,3 +218,32 @@ func TestPluginTailEmissionRedacts(t *testing.T) {
 		}
 	}
 }
+
+// An exec that never started (missing script, permission denied) produces no
+// output at all — the run error must become the feedback, or the failure is
+// invisible: "prepare failed: " with nothing on the wall (#311's live shape).
+func TestPluginExecutorExecFailureSurfacesError(t *testing.T) {
+	// The resolver returns a path that does not exist — the live #311 shape.
+	resolver := &fakeResolver{command: "/plugins/fork-maintenance-plugins/fork-sync.sh"}
+	exec := NewPluginExecutor(resolver)
+
+	node := v1alpha1.NodeSpec{
+		ID:     "prepare",
+		Type:   "plugin",
+		Config: mustJSON(t, PluginNodeConfig{Name: "fork-sync"}),
+	}
+
+	result, err := exec.Execute(context.Background(), node, NodeEnv{Workdir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if result.Status != StatusFailed {
+		t.Errorf("status = %q, want failed", result.Status)
+	}
+	if strings.TrimSpace(result.Feedback) == "" {
+		t.Fatal("exec failure with no plugin output must carry the run error as feedback")
+	}
+	if !strings.Contains(result.Feedback, "fork-sync.sh") {
+		t.Errorf("feedback should name the failing executable, got: %s", result.Feedback)
+	}
+}

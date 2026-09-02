@@ -11,6 +11,8 @@ import (
 	"time"
 
 	cloudevents "github.com/cloudevents/sdk-go/v2"
+
+	k8s "github.com/tibrezus/harmostes/internal/k8s"
 )
 
 // ---------------------------------------------------------------------------
@@ -234,7 +236,7 @@ type TriggerEvent struct {
 func RunConsumer(ctx context.Context) error {
 	logger := slog.Default().With("component", "harmostes-consumer")
 
-	dispatcher, err := DispatcherFromEnv(pluginConfigMapsFromEnv(), func(format string, args ...any) {
+	dispatcher, err := DispatcherFromEnv(pluginConfigMapsFromEnv(), extraConfigMapMountsFromEnv(logger.Info), func(format string, args ...any) {
 		logger.Info(fmt.Sprintf(format, args...))
 	})
 	if err != nil {
@@ -255,6 +257,27 @@ func RunConsumer(ctx context.Context) error {
 // pluginConfigMapsFromEnv reads the comma-separated plugin ConfigMap list
 // the chart renders (HARMOSTES_PLUGIN_CONFIGMAPS) — the same mounts the pool
 // pod carries must reach the per-Attempt Jobs.
+// extraConfigMapMountsFromEnv parses HARMOSTES_EXTRA_CONFIGMAP_MOUNTS —
+// comma-separated ConfigMap=path pairs the chart renders for the named
+// mounts the pool carries but per-Attempt Jobs must ALSO carry for pool-only
+// plugins to run (#311). Malformed entries are skipped with a log line.
+func extraConfigMapMountsFromEnv(logf func(string, ...any)) []k8s.ConfigMapMount {
+	raw := os.Getenv("HARMOSTES_EXTRA_CONFIGMAP_MOUNTS")
+	if raw == "" {
+		return nil
+	}
+	var out []k8s.ConfigMapMount
+	for _, pair := range strings.Split(raw, ",") {
+		name, path, ok := strings.Cut(pair, "=")
+		if !ok || name == "" || path == "" || !strings.HasPrefix(path, "/") {
+			logf("warn: HARMOSTES_EXTRA_CONFIGMAP_MOUNTS: skipping malformed entry %q", pair)
+			continue
+		}
+		out = append(out, k8s.ConfigMapMount{Name: name, MountPath: path})
+	}
+	return out
+}
+
 func pluginConfigMapsFromEnv() []string {
 	raw := os.Getenv("HARMOSTES_PLUGIN_CONFIGMAPS")
 	if raw == "" {

@@ -149,3 +149,31 @@ func TestConsumerTriggerEvent_EmptyWorkflow(t *testing.T) {
 		t.Errorf("workflow = %q, want empty", capturedWorkflow)
 	}
 }
+
+// Pool-only named mounts must parse into the dispatcher's extra-mount list
+// (#311): malformed entries are skipped with a log line, never fatal.
+func TestExtraConfigMapMountsFromEnv(t *testing.T) {
+	logs := []string{}
+	logf := func(format string, args ...any) { logs = append(logs, fmt.Sprintf(format, args...)) }
+
+	t.Setenv("HARMOSTES_EXTRA_CONFIGMAP_MOUNTS",
+		"fork-scripts=/workspace/scripts,fork-checks=/workspace/checks,bad-entry,also/bad=nope")
+	got := extraConfigMapMountsFromEnv(logf)
+	if len(got) != 2 {
+		t.Fatalf("parsed %d mounts, want 2 (valid entries only): %+v", len(got), got)
+	}
+	if got[0].Name != "fork-scripts" || got[0].MountPath != "/workspace/scripts" {
+		t.Errorf("first mount = %+v", got[0])
+	}
+	if got[1].Name != "fork-checks" || got[1].MountPath != "/workspace/checks" {
+		t.Errorf("second mount = %+v", got[1])
+	}
+	if len(logs) != 2 {
+		t.Errorf("malformed entries must be logged, got %v", logs)
+	}
+
+	t.Setenv("HARMOSTES_EXTRA_CONFIGMAP_MOUNTS", "")
+	if m := extraConfigMapMountsFromEnv(logf); m != nil {
+		t.Errorf("empty env must give nil, got %+v", m)
+	}
+}

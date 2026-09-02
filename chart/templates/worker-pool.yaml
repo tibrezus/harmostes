@@ -75,6 +75,12 @@ spec:
             - name: HARMOSTES_PLUGIN_CONFIGMAPS
               value: {{ . | join "," | quote }}
             {{- end }}
+            {{- if .Values.forkMaintenance.enabled }}
+            {{- /* Pool-only mounts must reach the per-Attempt Jobs too, or
+                   pool-only plugins exec against missing files (#311). */}}
+            - name: HARMOSTES_EXTRA_CONFIGMAP_MOUNTS
+              value: "fork-scripts=/workspace/scripts,fork-checks=/workspace/checks,fork-defs=/workspace/forks,fork-hooks=/workspace/post-merge-hooks"
+            {{- end }}
             - name: HARMOSTES_PUBSUB_NAME
               value: {{ .Values.workerPool.pubsubName | default "pubsub" | quote }}
             - name: HARMOSTES_TRIGGER_TOPIC

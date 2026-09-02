@@ -68,6 +68,9 @@ forkMaintenance:
 # ConfigMap: "<configmap-name>"}. Applied by k8s-config.
 pluginConfigMaps: []
   # - harmostes-pr-review   # mounts pr-fetch.sh, pr-review.sh, post-review.sh
+  # - fork-maintenance-plugins  # mounts fork-sync.sh — REQUIRED for
+  #   fork-maintenance instances: the one-shot Job mounts this list, and a
+  #   plugin absent from it fails instantly with no file (#311).
 
 # harmostes-ui: self-service multi-tenant web interface (HTMX + Go templates).
 # Authenticated via Authentik forward-auth. Each user sees only workflows

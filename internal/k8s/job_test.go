@@ -156,3 +156,44 @@ func TestBuildJobTTLNilOmitted(t *testing.T) {
 		t.Fatalf("unset daprd image must not pin the sidecar, got %q", job.Annotations["dapr.io/sidecar-image"])
 	}
 }
+
+// Pool-only named mounts must reach the per-Attempt Job (#311): a
+// fork-maintenance plugin resolves to /plugins/<cm>/<name>.sh AND execs
+// engine scripts under /workspace — neither existed on attempt Jobs, so
+// prepare died in 12ms on every run of a UI-created fork-maintenance
+// instance.
+func TestBuildJobExtraConfigMapMounts(t *testing.T) {
+	job := BuildJob(AttemptJobParams{
+		Attempt:          jobTestAttempt(),
+		WorkflowName:     "fork-maintenance-forgejo",
+		Namespace:        "harmostes",
+		PluginConfigMaps: []string{"harmostes-pr-review"},
+		ExtraConfigMapMounts: []ConfigMapMount{
+			{Name: "fork-scripts", MountPath: "/workspace/scripts"},
+			{Name: "fork-defs", MountPath: "/workspace/forks"},
+		},
+	})
+	c := job.Spec.Template.Spec.Containers[0]
+
+	var paths []string
+	for _, m := range c.VolumeMounts {
+		paths = append(paths, m.MountPath)
+	}
+	for _, want := range []string{"/plugins/harmostes-pr-review", "/workspace/scripts", "/workspace/forks"} {
+		found := false
+		for _, got := range paths {
+			if got == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("mount %s missing, have %v", want, paths)
+		}
+	}
+	// Extra mounts are exec targets: 0755, like the pool deployment's mounts.
+	for _, v := range job.Spec.Template.Spec.Volumes {
+		if v.Name == "extra-cm-fork-scripts" && v.ConfigMap.DefaultMode == nil {
+			t.Error("extra mount missing defaultMode — scripts would be non-executable")
+		}
+	}
+}

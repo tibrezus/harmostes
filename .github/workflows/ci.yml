@@ -66,6 +66,34 @@ jobs:
           go mod tidy
           git diff --exit-code -- go.mod go.sum
 
+  # Integration tier: the attempt ledger + review-claim lifecycles against
+  # a REAL API server (envtest — kube-apiserver + etcd) with the shipped
+  # chart CRDs applied. The tier fake clients cannot provide: CRD-schema
+  # pruning detection (the #277/#289 class), status-subresource semantics,
+  # real patch behavior. Build-tagged (integration) so the fast tier stays
+  # hermetic and fast.
+  integration:
+    name: Go (integration · envtest)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Version-pinned to the controller-runtime release branch in use
+      # (v0.19.0) so the bundled binaries match the client's API surface.
+      - name: Install envtest binaries
+        run: |
+          echo "KUBEBUILDER_ASSETS=$(go run sigs.k8s.io/controller-runtime/tools/setup-envtest@release-0.19 use 1.31.0 --bin-dir /tmp/envtest-bins | tail -1 | sed 's/^Path: //')" >> "$GITHUB_ENV"
+
+      - name: Integration tests (real API server · race)
+        run: go test -race -tags=integration ./test/integration/...
+
   # UI E2E tier: Playwright against harmostes-ui -fixture. The fixture
   # world is deterministic (process-start-relative clock, in-memory seeds),
   # so a failure is a real regression, not weather. Node is test tooling
@@ -106,6 +134,24 @@ jobs:
       # itself (go run) and waits for /healthz — one command runs the tier.
       - name: Playwright tests
         run: cd e2e && npx playwright test
+
+  # CI conformance — the dev-workflow five invariants (I1–I5) plus the
+  # checks-preservation diff against the default branch. Advisory: findings
+  # surface on every PR; the repo has not opted into strict gating
+  # (.ci-conformance strict). The validator ships in the dev-workflow skill,
+  # checked out via the .agents submodule.
+  ci-conformance:
+    name: CI conformance (I1–I5 · advisory)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Validate workflows against the invariants
+        run: python3 .agents/skills/dev-workflow/scripts/ci-conformance.py --repo . --base origin/main
 
   chart:
     name: Helm chart (lint · template)

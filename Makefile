@@ -26,6 +26,15 @@ test:
 	git submodule update --init --recursive
 	$(GO) test ./...
 
+## test-integration: integration tier — the attempt ledger + review-claim
+## lifecycles against a REAL API server (envtest) with the chart CRDs
+## applied. Catches CRD-schema pruning, which fake clients cannot see
+## (#315). Needs envtest binaries once:
+##   go run sigs.k8s.io/controller-runtime/tools/setup-envtest@release-0.19 use 1.31.0 --bin-dir /tmp/envtest-bins
+##   export KUBEBUILDER_ASSETS=/tmp/envtest-bins/k8s/1.31.0-linux-amd64
+test-integration:
+	$(GO) test -race -tags=integration ./test/integration/...
+
 ## test-ui: UI test framework — fixture-seeded goquery component tests
 ## plus the Playwright E2E tier against harmostes-ui -fixture.
 ## (e2e needs node/npm and Playwright browsers: npx playwright install chromium)

@@ -18,6 +18,7 @@
 package v1alpha1
 
 import (
+	"encoding/json"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -66,8 +67,14 @@ type NodeResultEnvelope struct {
 	Claims []Claim `json:"claims,omitempty"`
 
 	// Payload is the node-type-specific Node Payload (opaque to the kernel).
+	// json.RawMessage — NOT []byte: the CRD schema declares payload as an
+	// object, and []byte marshals as a base64 STRING, so any envelope that
+	// carried a payload failed the whole status write server-side (found by
+	// the CRD acceptance matrix, #315: the matrix writes real envelopes
+	// through the real API server). RawMessage passes the JSON through as
+	// the object the schema expects.
 	// +optional
-	Payload []byte `json:"payload,omitempty"`
+	Payload json.RawMessage `json:"payload,omitempty"`
 
 	// Provenance records who/what caused this execution.
 	// +optional

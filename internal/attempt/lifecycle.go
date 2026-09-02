@@ -7,6 +7,8 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
@@ -216,9 +218,9 @@ func boundEnvelope(env *v1alpha1.NodeResultEnvelope) {
 // duplicates.
 func RecordRunStarted(ctx context.Context, c client.Client, namespace, attemptName, runName string) error {
 	now := metav1.Now()
-	return mutateStatus(ctx, c, namespace, attemptName, func(a *v1alpha1.Attempt) {
-		upsertRun(&a.Status.Runs, v1alpha1.RunRecord{Name: runName, StartedAt: now, Phase: "running"})
-		a.Status.LastRunAt = now
+	return patchAttemptStatus(ctx, c, namespace, attemptName, func(s *v1alpha1.AttemptStatus) {
+		upsertRun(&s.Runs, v1alpha1.RunRecord{Name: runName, StartedAt: now, Phase: "running"})
+		s.LastRunAt = now
 	})
 }
 
@@ -239,8 +241,8 @@ type RunOutcome struct {
 // returned but must not abort the run.
 func RecordRunOutcome(ctx context.Context, c client.Client, namespace, attemptName string, outcome RunOutcome) error {
 	now := metav1.Now()
-	return mutateStatus(ctx, c, namespace, attemptName, func(a *v1alpha1.Attempt) {
-		upsertRun(&a.Status.Runs, v1alpha1.RunRecord{
+	return patchAttemptStatus(ctx, c, namespace, attemptName, func(s *v1alpha1.AttemptStatus) {
+		upsertRun(&s.Runs, v1alpha1.RunRecord{
 			Name: outcome.RunName, Phase: outcome.Phase, EndedAt: now,
 		})
 		// Upsert (not append): envelopes already recorded incrementally as
@@ -248,15 +250,15 @@ func RecordRunOutcome(ctx context.Context, c client.Client, namespace, attemptNa
 		// would duplicate every envelope the OnNodeResult hook already landed.
 		for i := range outcome.Envelopes {
 			boundEnvelope(&outcome.Envelopes[i])
-			upsertNodeResult(&a.Status.NodeResults, outcome.Envelopes[i])
+			upsertNodeResult(&s.NodeResults, outcome.Envelopes[i])
 		}
 		for _, env := range outcome.Envelopes {
-			a.Status.Evidence = appendUniqueEvidence(a.Status.Evidence, env.References)
+			s.Evidence = appendUniqueEvidence(s.Evidence, env.References)
 		}
-		a.Status.LastRunAt = now
+		s.LastRunAt = now
 		switch outcome.Phase {
 		case "failed":
-			a.Status.Phase = v1alpha1.AttemptPhaseFailed
+			s.Phase = v1alpha1.AttemptPhaseFailed
 		default:
 			// ADR-0004 promotion: a successful run that produced a
 			// deterministically-validated claim completes the objective's
@@ -265,44 +267,55 @@ func RecordRunOutcome(ctx context.Context, c client.Client, namespace, attemptNa
 			// (nothing was deterministically confirmed); the attempt keeps
 			// reconciling, allowing a failed attempt to recover on a later run.
 			if claim.HasValidated(outcome.Envelopes) {
-				a.Status.Phase = v1alpha1.AttemptPhaseValidated
+				s.Phase = v1alpha1.AttemptPhaseValidated
 			} else {
-				a.Status.Phase = v1alpha1.AttemptPhaseReconciling
+				s.Phase = v1alpha1.AttemptPhaseReconciling
 			}
 		}
 		if outcome.Message != "" {
 			// One unbounded field defeats the cap (#289 r2): the worker
 			// message is prose — truncation is safe.
-			a.Status.Message = outcome.Message
-			if len(a.Status.Message) > MaxStatusMessageBytes {
-				a.Status.Message = a.Status.Message[:MaxStatusMessageBytes]
+			s.Message = outcome.Message
+			if len(s.Message) > MaxStatusMessageBytes {
+				s.Message = s.Message[:MaxStatusMessageBytes]
 			}
 		}
 	})
 }
 
-// mutateStatus is the shared get-mutate-patch loop for Attempt status. It
-// re-reads on each call so concurrent recorders don't clobber each other.
-func mutateStatus(ctx context.Context, c client.Client, namespace, attemptName string, mutate func(*v1alpha1.Attempt)) error {
-	var a v1alpha1.Attempt
-	if err := c.Get(ctx, client.ObjectKey{Namespace: namespace, Name: attemptName}, &a); err != nil {
-		return fmt.Errorf("get attempt %s: %w", attemptName, err)
-	}
-	base := a.DeepCopy()
-	mutate(&a)
-	// Structural compaction (#289): every status writer funnels through a
-	// get-mutate-patch helper (this one, or claim.go's patchAttemptStatus) —
-	// enforcing the tail windows HERE makes the bound a property of the
-	// write path, not call-site discipline. Raw Status().Patch callers must
-	// not append to the bounded lists (today none do: the controller stamps
-	// ObservedGeneration/LastRunAt/conditions only).
-	if dropped := compactStatus(&a.Status); dropped > 0 {
-		// Compaction must never be silent again — the #289 failure ran
+// patchAttemptStatus is THE Attempt ledger's single status write primitive:
+// fresh Get → mutate → compact → resourceVersion-preconditioned patch,
+// retried on conflict. One primitive because every invariant here is a
+// property of the WRITE PATH, not of any caller: the #289 tail windows are
+// enforced below, and the #257 lost-update discipline (optimistic lock +
+// retry) protects the read-modify-write WINDOW — JSON merge-patch replaces
+// arrays wholesale, so two overlapping writers that read the same base
+// silently revert each other's appended Runs/NodeResults unless the patch
+// carries the precondition and the writer re-reads on conflict. ADR-0007's
+// multi-arm reviews and incremental UpsertNodeResult make exactly those
+// writes concurrent by design. (This unified the former mutateStatus, which
+// lacked both the lock and the retry — its "re-reads on each call" comment
+// was a stale justification; re-reading at call START does not close the
+// window.) Raw Status().Patch callers must not append to the bounded lists
+// (today none do: the controller stamps ObservedGeneration/conditions only).
+func patchAttemptStatus(ctx context.Context, c client.Client, namespace, attemptName string, mutate func(*v1alpha1.AttemptStatus)) error {
+	return retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		var at v1alpha1.Attempt
+		if err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: attemptName}, &at); err != nil {
+			return fmt.Errorf("get attempt %s: %w", attemptName, err)
+		}
+		base := at.DeepCopy()
+		mutate(&at.Status)
+		// Structural compaction (#289): the bound is a property of the write
+		// path. Compaction must never be silent — the #289 failure ran
 		// unnoticed for 8 days.
-		slog.Warn("attempt status compacted", "attempt", attemptName, "dropped", dropped,
-			"through", a.Status.CompactedThrough.Time)
-	}
-	return c.Status().Patch(ctx, &a, client.MergeFrom(base))
+		if dropped := compactStatus(&at.Status); dropped > 0 {
+			slog.Warn("attempt status compacted", "attempt", namespace+"/"+attemptName, "dropped", dropped,
+				"through", at.Status.CompactedThrough.Time)
+		}
+		patch := client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})
+		return c.Status().Patch(ctx, &at, patch)
+	})
 }
 
 // UpsertNodeResult records one node execution's envelope incrementally, as
@@ -313,8 +326,8 @@ func mutateStatus(ctx context.Context, c client.Client, namespace, attemptName s
 // Best-effort caller: errors are returned but must not abort the run.
 func UpsertNodeResult(ctx context.Context, c client.Client, namespace, attemptName string, env v1alpha1.NodeResultEnvelope) error {
 	boundEnvelope(&env)
-	return mutateStatus(ctx, c, namespace, attemptName, func(a *v1alpha1.Attempt) {
-		upsertNodeResult(&a.Status.NodeResults, env)
+	return patchAttemptStatus(ctx, c, namespace, attemptName, func(s *v1alpha1.AttemptStatus) {
+		upsertNodeResult(&s.NodeResults, env)
 	})
 }
 

@@ -3,13 +3,10 @@ package attempt
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
@@ -123,24 +120,6 @@ func LiveReviewClaims(ctx context.Context, c client.Client, namespace, workflowN
 	return out, nil
 }
 
-// patchAttemptStatus applies mutate to the attempt's status with lost-update
-// discipline (#257): fresh Get → mutate → resourceVersion-preconditioned
-// patch, retried on conflict.
-func patchAttemptStatus(ctx context.Context, c client.Client, namespace, attemptName string, mutate func(*v1alpha1.AttemptStatus)) error {
-	return retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-		var at v1alpha1.Attempt
-		if err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: attemptName}, &at); err != nil {
-			return err
-		}
-		base := at.DeepCopy()
-		mutate(&at.Status)
-		// Structural compaction (#289) — same rationale as mutateStatus:
-		// the bound is a property of the write path.
-		if dropped := compactStatus(&at.Status); dropped > 0 {
-			slog.Warn("attempt status compacted", "attempt", namespace+"/"+attemptName, "dropped", dropped,
-				"through", at.Status.CompactedThrough.Time)
-		}
-		patch := client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})
-		return c.Status().Patch(ctx, &at, patch)
-	})
-}
+// All claim writes go through patchAttemptStatus (lifecycle.go) — the
+// ledger's single write primitive, carrying the #257 lost-update discipline
+// (optimistic lock + retry) and the #289 structural bounds.

@@ -7,14 +7,9 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"strings"
 	"time"
 
 	cloudevents "github.com/cloudevents/sdk-go/v2"
-
-	k8s "github.com/tibrezus/harmostes/internal/k8s"
-
-	"strconv"
 )
 
 // ---------------------------------------------------------------------------
@@ -238,7 +233,7 @@ type TriggerEvent struct {
 func RunConsumer(ctx context.Context) error {
 	logger := slog.Default().With("component", "harmostes-consumer")
 
-	dispatcher, err := DispatcherFromEnv(pluginConfigMapsFromEnv(), extraConfigMapMountsFromEnv(logger.Info), func(format string, args ...any) {
+	dispatcher, err := DispatcherFromEnv(func(format string, args ...any) {
 		logger.Info(fmt.Sprintf(format, args...))
 	})
 	if err != nil {
@@ -256,55 +251,10 @@ func RunConsumer(ctx context.Context) error {
 	return consumer.Start(ctx)
 }
 
-// pluginConfigMapsFromEnv reads the comma-separated plugin ConfigMap list
-// the chart renders (HARMOSTES_PLUGIN_CONFIGMAPS) — the same mounts the pool
-// pod carries must reach the per-Attempt Jobs.
-
-// extraConfigMapMountsFromEnv parses HARMOSTES_EXTRA_CONFIGMAP_MOUNTS —
-// comma-separated ConfigMap=path[=mode] entries the chart renders for the
-// named mounts the pool carries but per-Attempt Jobs must ALSO carry for
-// pool-only plugins to run (#311). Mode is octal (0755 when omitted).
-// Malformed entries are skipped with a log line.
-func extraConfigMapMountsFromEnv(logf func(string, ...any)) []k8s.ConfigMapMount {
-	raw := os.Getenv("HARMOSTES_EXTRA_CONFIGMAP_MOUNTS")
-	if raw == "" {
-		return nil
-	}
-	var out []k8s.ConfigMapMount
-	for _, pair := range strings.Split(raw, ",") {
-		parts := strings.Split(pair, "=")
-		if len(parts) < 2 || parts[0] == "" || !strings.HasPrefix(parts[1], "/") {
-			logf("warn: HARMOSTES_EXTRA_CONFIGMAP_MOUNTS: skipping malformed entry %q", pair)
-			continue
-		}
-		m := k8s.ConfigMapMount{Name: parts[0], MountPath: parts[1]}
-		if len(parts) >= 3 {
-			mode, err := strconv.ParseInt(parts[2], 8, 32)
-			if err != nil {
-				logf("warn: HARMOSTES_EXTRA_CONFIGMAP_MOUNTS: bad mode in %q: %v", pair, err)
-				continue
-			}
-			mode32 := int32(mode)
-			m.Mode = &mode32
-		}
-		out = append(out, m)
-	}
-	return out
-}
-
-func pluginConfigMapsFromEnv() []string {
-	raw := os.Getenv("HARMOSTES_PLUGIN_CONFIGMAPS")
-	if raw == "" {
-		return nil
-	}
-	var cms []string
-	for _, name := range strings.Split(raw, ",") {
-		if name = strings.TrimSpace(name); name != "" {
-			cms = append(cms, name)
-		}
-	}
-	return cms
-}
+// The chart-env parsers (pluginConfigMapsFromEnv, extraConfigMapMountsFromEnv)
+// live in dispatch.go beside the DispatchConfig they feed — one module owns
+// env→config, so a parsed fact cannot be dropped between a parser and a
+// struct field (the #314 class).
 
 func envOr(key, def string) string {
 	if v := os.Getenv(key); v != "" {

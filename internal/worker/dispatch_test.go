@@ -35,13 +35,14 @@ func newTestDispatcher(t *testing.T, objects ...runtime.Object) (*Dispatcher, co
 		WithStatusSubresource(&v1alpha1.Attempt{}, &v1alpha1.Workflow{}).
 		WithRuntimeObjects(objects...).Build()
 	d := &Dispatcher{
-		cl:                 cl,
-		scheme:             scheme,
-		namespace:          "default",
-		logf:               t.Logf,
-		fleetMaxConcurrent: 3,
-		jobImage:           "harmostes-worker:test",
-		jobTTLSeconds:      nil,
+		cl:        cl,
+		scheme:    scheme,
+		namespace: "default",
+		logf:      t.Logf,
+		cfg: DispatchConfig{
+			FleetMaxConcurrent: 3,
+			JobImage:           "harmostes-worker:test",
+		},
 	}
 	return d, context.Background()
 }

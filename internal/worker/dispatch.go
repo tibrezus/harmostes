@@ -105,10 +105,11 @@ func NewDispatcher(ctx context.Context, cfg DispatchConfig, logf func(string, ..
 // pin.
 func DispatcherFromEnv(pluginConfigMaps []string, extraCMMounts []k8s.ConfigMapMount, logf func(string, ...any)) (*Dispatcher, error) {
 	cfg := DispatchConfig{
-		JobImage:         os.Getenv("HARMOSTES_WORKER_IMAGE"),
-		ServiceAccount:   os.Getenv("HARMOSTES_SERVICE_ACCOUNT"),
-		DaprdImage:       os.Getenv("HARMOSTES_DAPRD_IMAGE"),
-		PluginConfigMaps: pluginConfigMaps,
+		JobImage:             os.Getenv("HARMOSTES_WORKER_IMAGE"),
+		ServiceAccount:       os.Getenv("HARMOSTES_SERVICE_ACCOUNT"),
+		DaprdImage:           os.Getenv("HARMOSTES_DAPRD_IMAGE"),
+		PluginConfigMaps:     pluginConfigMaps,
+		ExtraConfigMapMounts: extraCMMounts,
 	}
 	cfg.FleetMaxConcurrent = 3
 	if v := os.Getenv("HARMOSTES_MAX_CONCURRENT"); v != "" {

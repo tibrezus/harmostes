@@ -40,16 +40,20 @@ type Dispatcher struct {
 	namespace string
 	logf      func(string, ...any)
 
-	fleetMaxConcurrent int
-	jobImage           string
-	serviceAccount     string
-	jobTTLSeconds      *int32
-	daprdImage         string
-	pluginConfigMaps   []string
-	extraCMMounts      []k8s.ConfigMapMount
+	// cfg is the fleet-level Job shape, carried as ONE value — the
+	// per-field copies this struct replaced are exactly where #314 hid.
+	cfg DispatchConfig
 }
 
-// DispatchConfig carries the dispatcher's fleet-level knobs (chart env).
+// DispatchConfig is the fleet-level half of the Worker Job shape: every
+// fact about how per-Attempt Jobs are built that comes from the chart
+// environment. It is the deep owner of the env→config→JobParams seam — a
+// config fact is parsed once here, validated once here, logged once here,
+// and derives the Job shape once here — so it cannot be dropped at a
+// hand-copied parameter hop. That drop is not hypothetical: #311 (pool
+// mounts never reached the one-shot Job), #312-r1, and #314
+// (DispatcherFromEnv accepted the extra-mount parameter and silently never
+// copied it into this struct) were all the same failure mode at this seam.
 type DispatchConfig struct {
 	FleetMaxConcurrent   int
 	JobImage             string
@@ -60,8 +64,120 @@ type DispatchConfig struct {
 	ExtraConfigMapMounts []k8s.ConfigMapMount
 }
 
+// DispatchConfigFromEnv resolves the fleet-level dispatch configuration
+// from the chart environment: HARMOSTES_WORKER_IMAGE (required — the Job
+// runs the same image as the pool), HARMOSTES_SERVICE_ACCOUNT,
+// HARMOSTES_MAX_CONCURRENT (default 3, ADR-0007), HARMOSTES_JOB_TTL_SECONDS
+// (default 3600), HARMOSTES_PLUGIN_CONFIGMAPS, HARMOSTES_EXTRA_CONFIGMAP_MOUNTS,
+// and the optional HARMOSTES_DAPRD_IMAGE pin.
+//
+// Malformed values are ERRORS, not warnings-with-fallback: a chart typo that
+// silently drops a mount or silently keeps a default is the #311 failure
+// mode — fail-fast at boot turns it into an immediate, visible crash-loop.
+// The resolved config is logged before the cluster dial so the log is
+// hermetic and always emitted, even where no kubeconfig exists (CI).
+func DispatchConfigFromEnv(logf func(string, ...any)) (DispatchConfig, error) {
+	cfg := DispatchConfig{
+		JobImage:           os.Getenv("HARMOSTES_WORKER_IMAGE"),
+		ServiceAccount:     os.Getenv("HARMOSTES_SERVICE_ACCOUNT"),
+		DaprdImage:         os.Getenv("HARMOSTES_DAPRD_IMAGE"),
+		FleetMaxConcurrent: 3,
+	}
+	var err error
+	if cfg.PluginConfigMaps, err = pluginConfigMapsFromEnv(); err != nil {
+		return cfg, err
+	}
+	if cfg.ExtraConfigMapMounts, err = extraConfigMapMountsFromEnv(); err != nil {
+		return cfg, err
+	}
+	if v := os.Getenv("HARMOSTES_MAX_CONCURRENT"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 {
+			return cfg, fmt.Errorf("HARMOSTES_MAX_CONCURRENT=%q: must be a positive integer", v)
+		}
+		cfg.FleetMaxConcurrent = n
+	}
+	ttl := int32(3600)
+	if v := os.Getenv("HARMOSTES_JOB_TTL_SECONDS"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			return cfg, fmt.Errorf("HARMOSTES_JOB_TTL_SECONDS=%q: must be a non-negative integer", v)
+		}
+		ttl = int32(n)
+	}
+	cfg.JobTTLSeconds = &ttl
+	if err := cfg.Validate(); err != nil {
+		return cfg, err
+	}
+	// Startup config visibility: mount wiring problems (pool-vs-Job drift,
+	// #311) previously surfaced only as silent 12ms prepare failures.
+	logf("dispatch config: image=%s serviceAccount=%s maxConcurrent=%d jobTTLSeconds=%d pluginConfigMaps=%v extraConfigMapMounts=%s",
+		cfg.JobImage, cfg.ServiceAccount, cfg.FleetMaxConcurrent, *cfg.JobTTLSeconds,
+		cfg.PluginConfigMaps, formatConfigMapMounts(cfg.ExtraConfigMapMounts))
+	return cfg, nil
+}
+
+// Validate rejects configurations that would dispatch Jobs that cannot run:
+// no image, or mount specs whose ConfigMap/path the Job cannot mount.
+func (c DispatchConfig) Validate() error {
+	if c.JobImage == "" {
+		return fmt.Errorf("dispatch config: worker image is required (HARMOSTES_WORKER_IMAGE) — an Attempt Job without an image can never run")
+	}
+	for _, cm := range c.PluginConfigMaps {
+		if cm == "" {
+			return fmt.Errorf("dispatch config: empty plugin ConfigMap name")
+		}
+	}
+	for _, m := range c.ExtraConfigMapMounts {
+		if m.Name == "" || !strings.HasPrefix(m.MountPath, "/") {
+			return fmt.Errorf("dispatch config: invalid ConfigMap mount %q (need name and absolute mount path)", m.Name+"="+m.MountPath)
+		}
+	}
+	return nil
+}
+
+// JobParams derives the STATIC Job shape from the fleet config. One method
+// so a config fact cannot be dropped at a struct-copy hop (#311/#314):
+// callers supply only the per-run fields (attempt, workflow, namespace,
+// extraEnv).
+func (c DispatchConfig) JobParams(at *v1alpha1.Attempt, workflow, namespace string, extraEnv []string) k8s.AttemptJobParams {
+	return k8s.AttemptJobParams{
+		Attempt:                 at,
+		WorkflowName:            workflow,
+		Namespace:               namespace,
+		Image:                   c.JobImage,
+		ServiceAccount:          c.ServiceAccount,
+		TTLSecondsAfterFinished: c.JobTTLSeconds,
+		DaprdImage:              c.DaprdImage,
+		PluginConfigMaps:        c.PluginConfigMaps,
+		ExtraConfigMapMounts:    c.ExtraConfigMapMounts,
+		ExtraEnv:                extraEnv,
+	}
+}
+
+// formatConfigMapMounts renders mounts name=path[=mode] for the startup
+// config log — the full specs, so operator-visible drift (a missing or
+// wrong-mode mount) is readable at boot.
+func formatConfigMapMounts(ms []k8s.ConfigMapMount) string {
+	if len(ms) == 0 {
+		return "none"
+	}
+	parts := make([]string, len(ms))
+	for i, m := range ms {
+		parts[i] = m.Name + "=" + m.MountPath
+		if m.Mode != nil {
+			parts[i] += fmt.Sprintf("=%#o", *m.Mode)
+		}
+	}
+	return "[" + strings.Join(parts, " ") + "]"
+}
+
 // NewDispatcher builds the dispatcher, connecting the in-cluster client.
 func NewDispatcher(ctx context.Context, cfg DispatchConfig, logf func(string, ...any)) (*Dispatcher, error) {
+	// The non-env construction path gets the same fail-fast checks.
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
 	restCfg, err := ctrl.GetConfig()
 	if err != nil {
 		return nil, fmt.Errorf("k8s config: %w", err)
@@ -79,52 +195,22 @@ func NewDispatcher(ctx context.Context, cfg DispatchConfig, logf func(string, ..
 		ns = "harmostes"
 	}
 	return &Dispatcher{
-		cl:                 cl,
-		scheme:             scheme,
-		namespace:          ns,
-		logf:               logf,
-		fleetMaxConcurrent: cfg.FleetMaxConcurrent,
-		jobImage:           cfg.JobImage,
-		serviceAccount:     cfg.ServiceAccount,
-		jobTTLSeconds:      cfg.JobTTLSeconds,
-		daprdImage:         cfg.DaprdImage,
-		pluginConfigMaps:   cfg.PluginConfigMaps,
-		extraCMMounts:      cfg.ExtraConfigMapMounts,
+		cl:        cl,
+		scheme:    scheme,
+		namespace: ns,
+		logf:      logf,
+		cfg:       cfg,
 	}, nil
 }
 
-// DispatcherFromEnv resolves the fleet-level dispatch knobs from the chart
-// environment: HARMOSTES_MAX_CONCURRENT (default 3, ADR-0007),
-// HARMOSTES_JOB_TTL_SECONDS (default 3600), the worker image (the Job runs
-// the same image as the pool), the plugin ConfigMaps, and the optional daprd
-// pin.
-func DispatcherFromEnv(pluginConfigMaps []string, extraCMMounts []k8s.ConfigMapMount, logf func(string, ...any)) (*Dispatcher, error) {
-	cfg := DispatchConfig{
-		JobImage:             os.Getenv("HARMOSTES_WORKER_IMAGE"),
-		ServiceAccount:       os.Getenv("HARMOSTES_SERVICE_ACCOUNT"),
-		DaprdImage:           os.Getenv("HARMOSTES_DAPRD_IMAGE"),
-		PluginConfigMaps:     pluginConfigMaps,
-		ExtraConfigMapMounts: extraCMMounts,
+// DispatcherFromEnv resolves the fleet-level configuration from the chart
+// environment (DispatchConfigFromEnv) and builds the dispatcher on top of
+// it.
+func DispatcherFromEnv(logf func(string, ...any)) (*Dispatcher, error) {
+	cfg, err := DispatchConfigFromEnv(logf)
+	if err != nil {
+		return nil, err
 	}
-	// Startup config visibility: mount wiring problems (pool-vs-Job drift,
-	// #311) previously surfaced only as silent 12ms prepare failures — the
-	// dispatcher's resolved mounts must be observable at boot. Logged here,
-	// before the cluster dial, so it is hermetic and always emitted.
-	logf("dispatch config: image=%s serviceAccount=%s pluginConfigMaps=%v extraConfigMapMounts=%d",
-		cfg.JobImage, cfg.ServiceAccount, cfg.PluginConfigMaps, len(cfg.ExtraConfigMapMounts))
-	cfg.FleetMaxConcurrent = 3
-	if v := os.Getenv("HARMOSTES_MAX_CONCURRENT"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.FleetMaxConcurrent = n
-		}
-	}
-	ttl := int32(3600)
-	if v := os.Getenv("HARMOSTES_JOB_TTL_SECONDS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			ttl = int32(n)
-		}
-	}
-	cfg.JobTTLSeconds = &ttl
 	return NewDispatcher(context.Background(), cfg, logf)
 }
 
@@ -145,7 +231,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req RunRequest) error {
 		Status:             k8s.StatusPatcher{Client: d.cl, Namespace: req.Namespace},
 		Client:             d.cl,
 		Scheme:             d.scheme,
-		FleetMaxConcurrent: d.fleetMaxConcurrent,
+		FleetMaxConcurrent: d.cfg.FleetMaxConcurrent,
 		Log:                d.logf,
 		TL: timeline.NewGateWriter(dapr.Tracing(dapr.New(os.Getenv("DAPR_HTTP_ENDPOINT"))),
 			envOr("HARMOSTES_STATE_STORE", "statestore"), wf.Name, "", triggerSubject(req)),
@@ -200,18 +286,8 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req RunRequest) error {
 		if err := d.cl.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: g.Attempt}, &at); err != nil {
 			return fmt.Errorf("get claim attempt %s: %w", g.Attempt, err)
 		}
-		job := k8s.BuildJob(k8s.AttemptJobParams{
-			Attempt:                 &at,
-			WorkflowName:            req.Workflow,
-			Namespace:               req.Namespace,
-			Image:                   d.jobImage,
-			ServiceAccount:          d.serviceAccount,
-			TTLSecondsAfterFinished: d.jobTTLSeconds,
-			DaprdImage:              d.daprdImage,
-			PluginConfigMaps:        d.pluginConfigMaps,
-			ExtraConfigMapMounts:    d.extraCMMounts,
-			ExtraEnv:                append(jobCredentialEnv(), dispatchEnv(req, &at, g.Envelope)...),
-		})
+		job := k8s.BuildJob(d.cfg.JobParams(&at, req.Workflow, req.Namespace,
+			append(jobCredentialEnv(), dispatchEnv(req, &at, g.Envelope)...)))
 		if err := d.cl.Create(ctx, job); err != nil {
 			if errors.IsAlreadyExists(err) {
 				d.logf("dispatch: job for attempt %s already exists — deduped", at.Name)
@@ -337,4 +413,53 @@ func FetchWorkflow(ctx context.Context, cl client.Client, namespace, name string
 		v1alpha1.ApplyTemplateDefaults(&wf, &tmpl)
 	}
 	return &wf, nil
+}
+
+// pluginConfigMapsFromEnv reads the comma-separated plugin ConfigMap list
+// the chart renders (HARMOSTES_PLUGIN_CONFIGMAPS) — the same mounts the pool
+// pod carries must reach the per-Attempt Jobs. Empty segments (trailing
+// commas) are ignored.
+func pluginConfigMapsFromEnv() ([]string, error) {
+	raw := os.Getenv("HARMOSTES_PLUGIN_CONFIGMAPS")
+	if raw == "" {
+		return nil, nil
+	}
+	var cms []string
+	for _, name := range strings.Split(raw, ",") {
+		if name = strings.TrimSpace(name); name != "" {
+			cms = append(cms, name)
+		}
+	}
+	return cms, nil
+}
+
+// extraConfigMapMountsFromEnv parses HARMOSTES_EXTRA_CONFIGMAP_MOUNTS —
+// comma-separated ConfigMap=path[=mode] entries the chart renders for the
+// named mounts the pool carries but per-Attempt Jobs must ALSO carry for
+// pool-only plugins to run (#311). Mode is octal (0755 when omitted).
+// Malformed entries are ERRORS: a silently-skipped entry is a silently
+// missing mount — the exact 12ms-forever prepare failure #311 produced.
+func extraConfigMapMountsFromEnv() ([]k8s.ConfigMapMount, error) {
+	raw := os.Getenv("HARMOSTES_EXTRA_CONFIGMAP_MOUNTS")
+	if raw == "" {
+		return nil, nil
+	}
+	var out []k8s.ConfigMapMount
+	for _, pair := range strings.Split(raw, ",") {
+		parts := strings.Split(pair, "=")
+		if len(parts) < 2 || parts[0] == "" || !strings.HasPrefix(parts[1], "/") {
+			return nil, fmt.Errorf("HARMOSTES_EXTRA_CONFIGMAP_MOUNTS: malformed entry %q (want ConfigMap=/absolute/path[=octal-mode])", pair)
+		}
+		m := k8s.ConfigMapMount{Name: parts[0], MountPath: parts[1]}
+		if len(parts) >= 3 {
+			mode, err := strconv.ParseInt(parts[2], 8, 32)
+			if err != nil {
+				return nil, fmt.Errorf("HARMOSTES_EXTRA_CONFIGMAP_MOUNTS: bad octal mode in %q: %w", pair, err)
+			}
+			mode32 := int32(mode)
+			m.Mode = &mode32
+		}
+		out = append(out, m)
+	}
+	return out, nil
 }

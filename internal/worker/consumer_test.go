@@ -6,10 +6,14 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
 	k8s "github.com/tibrezus/harmostes/internal/k8s"
 )
 
@@ -153,16 +157,17 @@ func TestConsumerTriggerEvent_EmptyWorkflow(t *testing.T) {
 }
 
 // Pool-only named mounts must parse into the dispatcher's extra-mount list
-// (#311): malformed entries are skipped with a log line, never fatal.
+// (#311). Malformed entries are ERRORS (#320): a silently-skipped entry is a
+// silently missing mount — the 12ms-forever prepare failure class.
 func TestExtraConfigMapMountsFromEnv(t *testing.T) {
-	logs := []string{}
-	logf := func(format string, args ...any) { logs = append(logs, fmt.Sprintf(format, args...)) }
-
 	t.Setenv("HARMOSTES_EXTRA_CONFIGMAP_MOUNTS",
-		"fork-scripts=/workspace/scripts=0755,fork-checks=/workspace/checks,bad-entry,also/bad=nope,defs=/workspace/forks=999x")
-	got := extraConfigMapMountsFromEnv(logf)
+		"fork-scripts=/workspace/scripts=0755,fork-checks=/workspace/checks")
+	got, err := extraConfigMapMountsFromEnv()
+	if err != nil {
+		t.Fatalf("valid specs rejected: %v", err)
+	}
 	if len(got) != 2 {
-		t.Fatalf("parsed %d mounts, want 2 (valid entries only): %+v", len(got), got)
+		t.Fatalf("parsed %d mounts, want 2: %+v", len(got), got)
 	}
 	if got[0].Name != "fork-scripts" || got[0].MountPath != "/workspace/scripts" {
 		t.Errorf("first mount = %+v", got[0])
@@ -176,44 +181,73 @@ func TestExtraConfigMapMountsFromEnv(t *testing.T) {
 	if got[1].Name != "fork-checks" || got[1].MountPath != "/workspace/checks" {
 		t.Errorf("second mount = %+v", got[1])
 	}
-	if len(logs) != 3 {
-		t.Errorf("malformed entries must be logged, got %v", logs)
+
+	for _, bad := range []string{"bad-entry", "also/bad=nope", "defs=/workspace/forks=999x", "=/workspace/x"} {
+		t.Setenv("HARMOSTES_EXTRA_CONFIGMAP_MOUNTS", bad)
+		if _, err := extraConfigMapMountsFromEnv(); err == nil {
+			t.Errorf("malformed entry %q must be a construction error, got nil", bad)
+		}
 	}
 
 	t.Setenv("HARMOSTES_EXTRA_CONFIGMAP_MOUNTS", "")
-	if m := extraConfigMapMountsFromEnv(logf); m != nil {
-		t.Errorf("empty env must give nil, got %+v", m)
+	if m, err := extraConfigMapMountsFromEnv(); m != nil || err != nil {
+		t.Errorf("empty env must give nil,nil, got %+v, %v", m, err)
 	}
 }
 
-// The FromEnv→cfg seam is where #313's live bug hid: the parser returned 4
-// mounts and BuildJob rendered them, but DispatcherFromEnv dropped the
-// parameter on the way to DispatchConfig — so every Job shipped without the
-// extras and fork-maintenance kept failing at prepare. This test pins the
-// whole seam end-to-end.
+// The env→config→JobParams seam is where #314's live bug hid: the parser
+// returned 4 mounts and BuildJob rendered them, but DispatcherFromEnv
+// dropped the parameter on the way to DispatchConfig — so every Job shipped
+// without the extras and fork-maintenance kept failing at prepare. Since
+// #320 the config resolves BEFORE the cluster dial, so the whole seam is
+// directly testable: env → DispatchConfigFromEnv → JobParams → BuildJob,
+// asserting the mounts reach the rendered Job.
 func TestDispatcherFromEnvWiresExtraMounts(t *testing.T) {
-	t.Setenv("HARMOSTES_NAMESPACE", "harmostes")
+	t.Setenv("HARMOSTES_WORKER_IMAGE", "harmostes:it")
+	t.Setenv("HARMOSTES_PLUGIN_CONFIGMAPS", "harmostes-pr-review")
 	t.Setenv("HARMOSTES_EXTRA_CONFIGMAP_MOUNTS", "fork-maintenance-scripts=/workspace/scripts=0755")
 
-	// NewDispatcher connects to the real in-cluster config; on a dev box
-	// that fails — which still proves the point ONLY if the failure happens
-	// AFTER config resolution. Instead call the resolver + inspect the same
-	// construction the production path uses, via a Dispatcher built through
-	// the real DispatchConfig path... DispatcherFromEnv needs a cluster, so
-	// assert the config seam by constructing DispatchConfig the same way
-	// DispatcherFromEnv does and reflecting over it is not possible without
-	// a cluster. The honest seam test: run DispatcherFromEnv and require the
-	// startup log to report the parsed count — the log prints AFTER the
-	// config is assembled, BEFORE the cluster dial.
 	var logged string
-	capture := func(format string, args ...any) { logged = fmt.Sprintf(format, args...) }
-	_, _ = DispatcherFromEnv([]string{"harmostes-pr-review"},
-		[]k8s.ConfigMapMount{{Name: "fork-maintenance-scripts", MountPath: "/workspace/scripts"}},
-		capture)
-	if !strings.Contains(logged, "extraConfigMapMounts=1") {
-		t.Fatalf("DispatcherFromEnv dropped the extra mounts; startup log: %q", logged)
+	cfg, err := DispatchConfigFromEnv(func(format string, args ...any) { logged = fmt.Sprintf(format, args...) })
+	if err != nil {
+		t.Fatalf("config from env: %v", err)
 	}
-	if !strings.Contains(logged, "pluginConfigMaps=[harmostes-pr-review]") {
-		t.Fatalf("plugin configmaps missing from dispatch config log: %q", logged)
+	if len(cfg.ExtraConfigMapMounts) != 1 || cfg.ExtraConfigMapMounts[0].Name != "fork-maintenance-scripts" {
+		t.Fatalf("config dropped the extra mounts: %+v", cfg.ExtraConfigMapMounts)
+	}
+	if len(cfg.PluginConfigMaps) != 1 || cfg.PluginConfigMaps[0] != "harmostes-pr-review" {
+		t.Fatalf("config dropped the plugin configmaps: %+v", cfg.PluginConfigMaps)
+	}
+	if !strings.Contains(logged, "extraConfigMapMounts=[fork-maintenance-scripts=/workspace/scripts=0755]") {
+		t.Errorf("startup log must carry the full mount specs (drift must be readable at boot): %q", logged)
+	}
+
+	// The seam's final hop: config → params → rendered Job.
+	at := &v1alpha1.Attempt{ObjectMeta: metav1.ObjectMeta{Name: "attempt-seam", Namespace: "default"}}
+	job := k8s.BuildJob(cfg.JobParams(at, "pr-review-harmostes", "default", nil))
+
+	var volNames []string
+	for _, v := range job.Spec.Template.Spec.Volumes {
+		volNames = append(volNames, v.Name)
+	}
+	want := []string{"plugin-cm-harmostes-pr-review", "extra-cm-fork-maintenance-scripts"}
+	for _, w := range want {
+		if !slices.Contains(volNames, w) {
+			t.Fatalf("rendered Job lost volume %q; volumes = %v", w, volNames)
+		}
+	}
+}
+
+// A config fact dropped inside DispatchConfigFromEnv must surface as a
+// construction error or a missing render — never a silently-degraded Job.
+func TestDispatchConfigRejectsUnrunnable(t *testing.T) {
+	t.Setenv("HARMOSTES_WORKER_IMAGE", "")
+	if _, err := DispatchConfigFromEnv(func(string, ...any) {}); err == nil {
+		t.Fatal("missing worker image must fail construction — an imageless Job can never run")
+	}
+	t.Setenv("HARMOSTES_MAX_CONCURRENT", "zero")
+	t.Setenv("HARMOSTES_WORKER_IMAGE", "harmostes:it")
+	if _, err := DispatchConfigFromEnv(func(string, ...any) {}); err == nil {
+		t.Fatal("non-numeric HARMOSTES_MAX_CONCURRENT must fail construction, not silently keep the default")
 	}
 }

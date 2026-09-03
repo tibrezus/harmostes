@@ -609,8 +609,8 @@ func TestSweepDeadDispatchCountsAndFinalizes(t *testing.T) {
 	if got.Status.Phase != v1alpha1.AttemptPhaseFailed {
 		t.Fatalf("phase = %q, want failed (the gate is the death observer)", got.Status.Phase)
 	}
-	if !strings.Contains(got.Status.Message, "dispatch lost") {
-		t.Fatalf("message = %q, want the honest dispatch-lost reason", got.Status.Message)
+	if !strings.Contains(got.Status.Message, "run ended without a verdict") {
+		t.Fatalf("message = %q, want the honest no-verdict reason", got.Status.Message)
 	}
 	for _, run := range got.Status.Runs {
 		if run.Name == "run-lost-1" && run.Phase != "failed" {
@@ -641,7 +641,7 @@ func TestSweepBreakerBlocksReDispatch(t *testing.T) {
 		if err := attempt.MarkClaimDispatched(ctx, deps.Client, wf.Namespace, at.Name); err != nil {
 			t.Fatalf("dispatch %d: %v", i+1, err)
 		}
-		if err := attempt.ReleaseClaimDead(ctx, deps.Client, wf.Namespace, at.Name, "dispatch-lost"); err != nil {
+		if _, _, err := attempt.ReleaseClaimDead(ctx, deps.Client, wf.Namespace, at.Name, "dispatch-lost"); err != nil {
 			t.Fatalf("dead release %d: %v", i+1, err)
 		}
 	}
@@ -658,6 +658,21 @@ func TestSweepBreakerBlocksReDispatch(t *testing.T) {
 	}
 	if !strings.Contains(st.last.ReviewReady.LastReason, "dead-dispatch breaker") {
 		t.Fatalf("reason = %q, want the breaker explanation", st.last.ReviewReady.LastReason)
+	}
+	// The evidence survived the refused arm — the sweep must not clobber it.
+	obj := attempt.DeriveObjective(wf, attempt.TriggerContext{Revision: "deadbeef123"})
+	at2, _, err := attempt.ResolveOrCreate(ctx, deps.Client, obj, attempt.ResolveOptions{
+		Namespace: wf.Namespace, WorkflowRef: wf.Namespace + "/" + wf.Name, Scheme: deps.Scheme,
+	})
+	if err != nil {
+		t.Fatalf("resolve claim: %v", err)
+	}
+	var got v1alpha1.Attempt
+	if err := deps.Client.Get(ctx, client.ObjectKey{Namespace: wf.Namespace, Name: at2.Name}, &got); err != nil {
+		t.Fatalf("get claim: %v", err)
+	}
+	if got.Status.Review.DeadDispatches != v1alpha1.MaxDeadDispatchesPerHead {
+		t.Fatalf("dead dispatches after refused arm = %d, want %d (evidence preserved)", got.Status.Review.DeadDispatches, v1alpha1.MaxDeadDispatchesPerHead)
 	}
 }
 
@@ -706,7 +721,7 @@ func TestSweepBreakerHumanOverrideDispatches(t *testing.T) {
 			t.Fatalf("arm %d: %v", i+1, err)
 		}
 		_ = attempt.MarkClaimDispatched(ctx, deps.Client, wf.Namespace, at.Name)
-		_ = attempt.ReleaseClaimDead(ctx, deps.Client, wf.Namespace, at.Name, "dispatch-lost")
+		_, _, _ = attempt.ReleaseClaimDead(ctx, deps.Client, wf.Namespace, at.Name, "dispatch-lost")
 	}
 
 	out, err := RunReviewGateWake(ctx, deps, wf)
@@ -716,4 +731,114 @@ func TestSweepBreakerHumanOverrideDispatches(t *testing.T) {
 	if len(out) != 1 {
 		t.Fatalf("human override must dispatch, got %d", len(out))
 	}
+	claims, err := attempt.LiveReviewClaims(ctx, deps.Client, wf.Namespace, wf.Name)
+	if err != nil || len(claims) != 1 {
+		t.Fatalf("override must leave a live claim, got %d (%v)", len(claims), err)
+	}
+	if claims[0].Status.Review.DeadDispatches != 0 {
+		t.Fatalf("override must reset the counter, got %d", claims[0].Status.Review.DeadDispatches)
+	}
+}
+
+// ── #328 blocking finding: the two release passes (timer + job-death) both
+// observe a claim dispatched 46m ago with a dead Job — the death must be
+// counted ONCE (idempotent ReleaseClaimDead), or MaxDeadDispatchesPerHead
+// is secretly 2 cycles. ──
+func TestSweepDeadDispatchCountedOnceAcrossPasses(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := noVerdictServer(t)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	st := &fakeStatus{}
+	now := time.Now()
+	disp := now.Add(-46 * time.Minute) // past DispatchTimeout (45m) AND jobDeathGrace (2m)
+	claim := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#99", "deadbeef123", now.Add(-46*time.Minute), &disp)
+	claim.Status.Phase = v1alpha1.AttemptPhaseReconciling
+	claim.Status.Runs = []v1alpha1.RunRecord{
+		{Name: "run-lost-x", StartedAt: metav1.NewTime(disp), Phase: "running"},
+	}
+	deps, ctx := gateEnv(t, wf, st, claim)
+
+	if _, err := RunReviewGateSweep(ctx, deps, wf); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+
+	var got v1alpha1.Attempt
+	if err := deps.Client.Get(ctx, client.ObjectKey{Namespace: wf.Namespace, Name: claim.Name}, &got); err != nil {
+		t.Fatalf("get claim: %v", err)
+	}
+	if got.Status.Review.DeadDispatches != 1 {
+		t.Fatalf("one death counted %d times — double-count halves the breaker's budget", got.Status.Review.DeadDispatches)
+	}
+	if got.Status.Review.ReleaseReason != "dispatch-timeout" {
+		t.Fatalf("first observer wins the classification, got %q", got.Status.Review.ReleaseReason)
+	}
+	if got.Status.Phase != v1alpha1.AttemptPhaseFailed {
+		t.Fatalf("phase = %q, want failed", got.Status.Phase)
+	}
+}
+
+// ── #328: the override fires even when a claim is LIVE at the same head
+// (armed with prior deaths): the labeled wake supersedes (uncounted),
+// re-arms, and resets the counter. ──
+func TestSweepBreakerOverrideThroughLiveClaim(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := greenPRServer(t)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	wf.Annotations = wakeAnnotations("git.rezus.cloud/tibrez/rhesadox#99", "labeled", "deadbeef123")
+	st := &fakeStatus{}
+	deps, ctx := gateEnv(t, wf, st)
+	// Two deaths, then a re-arm: a LIVE claim holding a partial count.
+	for i := 0; i < 2; i++ {
+		at, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf,
+			"git.rezus.cloud/tibrez/rhesadox#99", "deadbeef123", "needs-review", false)
+		if err != nil {
+			t.Fatalf("arm %d: %v", i+1, err)
+		}
+		_ = attempt.MarkClaimDispatched(ctx, deps.Client, wf.Namespace, at.Name)
+		_, _, _ = attempt.ReleaseClaimDead(ctx, deps.Client, wf.Namespace, at.Name, "dispatch-lost")
+	}
+	if _, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf,
+		"git.rezus.cloud/tibrez/rhesadox#99", "deadbeef123", "needs-review", false); err != nil {
+		t.Fatalf("re-arm: %v", err)
+	}
+
+	out, err := RunReviewGateWake(ctx, deps, wf)
+	if err != nil {
+		t.Fatalf("wake sweep: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("labeled wake through a live partial-count claim must dispatch, got %d", len(out))
+	}
+	claims, err := attempt.LiveReviewClaims(ctx, deps.Client, wf.Namespace, wf.Name)
+	if err != nil || len(claims) != 1 {
+		t.Fatalf("exactly one live claim after override, got %d (%v)", len(claims), err)
+	}
+	if claims[0].Status.Review.DeadDispatches != 0 {
+		t.Fatalf("override must reset the counter, got %d", claims[0].Status.Review.DeadDispatches)
+	}
+}
+
+// neverVerdictServer: the single-PR fetch answers, the verdict check finds
+// no comments — the in-flight claim stays, waiting.
+func noVerdictServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(req.URL.Path, "/pulls/"):
+			json.NewEncoder(w).Encode(map[string]any{
+				"state": "open", "head": map[string]string{"sha": "deadbeef123"},
+				"base":   map[string]string{"ref": "main"},
+				"labels": []map[string]string{{"name": "needs-review"}},
+			})
+		case strings.Contains(req.URL.Path, "/comments"):
+			json.NewEncoder(w).Encode([]any{})
+		default:
+			http.NotFound(w, req)
+		}
+	}))
 }

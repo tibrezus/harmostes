@@ -196,3 +196,38 @@ func TestHandleAttemptList_StatusFilter(t *testing.T) {
 		}
 	}
 }
+
+// The breaker's evidence must be visible where the operator looks (#328):
+// a claim with dead dispatches renders the counter, and a stood-down head
+// names its escape hatches.
+func TestAttemptDetail_RendersDeadDispatchCounter(t *testing.T) {
+	att := &v1alpha1.Attempt{
+		ObjectMeta: metav1.ObjectMeta{Name: "attempt-brk", Namespace: "test-ns",
+			Labels:            map[string]string{v1alpha1.OwnerLabel: "tibrez"},
+			CreationTimestamp: metav1.Now()},
+		Spec: v1alpha1.AttemptSpec{WorkflowRef: "wf", Objective: v1alpha1.ObjectiveSpec{
+			Kind: v1alpha1.ObjectiveKindPRReview}},
+		Status: v1alpha1.AttemptStatus{Phase: v1alpha1.AttemptPhaseFailed,
+			Message: "run ended without a verdict (dispatch-lost)",
+			Review: &v1alpha1.ReviewClaimStatus{PR: "git.rezus.cloud/tibrez/rhesadox#1800",
+				HeadSHA: "b41fb712", Released: true, ReleaseReason: "dispatch-lost",
+				DeadDispatches: v1alpha1.MaxDeadDispatchesPerHead}},
+	}
+	wf := &v1alpha1.Workflow{ObjectMeta: metav1.ObjectMeta{Name: "wf", Namespace: "test-ns"}}
+	s := adminTestServer(t, wf, att)
+	req := httptest.NewRequest(http.MethodGet, "/runs/attempt-brk", nil).WithContext(
+		withIdentity(context.Background(), idWith("tibrez", "harmostes-admins")))
+	req.SetPathValue("name", "attempt-brk")
+	rec := httptest.NewRecorder()
+	s.handleAttemptDetail(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("detail render: %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "Dead Dispatches") || !strings.Contains(body, "3/3") {
+		t.Error("dead-dispatch counter must render with the budget")
+	}
+	if !strings.Contains(body, "new push or re-label to retry") {
+		t.Error("stood-down head must name the escape hatches")
+	}
+}

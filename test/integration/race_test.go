@@ -161,7 +161,7 @@ func TestConcurrentDeadDispatchAccounting(t *testing.T) {
 		if err := attempt.MarkClaimDispatched(ctx, c, "default", name); err != nil {
 			t.Errorf("competing dispatch: %v", err)
 		}
-		if err := attempt.ReleaseClaimDead(ctx, c, "default", name, "dispatch-lost"); err != nil {
+		if _, _, err := attempt.ReleaseClaimDead(ctx, c, "default", name, "dispatch-lost"); err != nil {
 			t.Errorf("competing dead release: %v", err)
 		}
 	}
@@ -181,7 +181,7 @@ func TestConcurrentDeadDispatchAccounting(t *testing.T) {
 	if err := attempt.MarkClaimDispatched(ctx, c, "default", name); err != nil {
 		t.Fatalf("dispatch 2: %v", err)
 	}
-	if err := attempt.ReleaseClaimDead(ctx, c, "default", name, "dispatch-timeout"); err != nil {
+	if _, _, err := attempt.ReleaseClaimDead(ctx, c, "default", name, "dispatch-timeout"); err != nil {
 		t.Fatalf("dead release 2: %v", err)
 	}
 	if err := c.Get(ctx, client.ObjectKey{Namespace: "default", Name: name}, &got); err != nil {

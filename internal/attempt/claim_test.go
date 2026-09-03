@@ -59,7 +59,7 @@ func TestArmClaim_BreakerOpensAndResets(t *testing.T) {
 		if err := MarkClaimDispatched(ctx, c, "harmostes", name); err != nil {
 			t.Fatalf("dispatch %d: %v", i, err)
 		}
-		if err := ReleaseClaimDead(ctx, c, "harmostes", name, "dispatch-lost"); err != nil {
+		if _, _, err := ReleaseClaimDead(ctx, c, "harmostes", name, "dispatch-lost"); err != nil {
 			t.Fatalf("dead release %d: %v", i, err)
 		}
 		// Re-arm between cycles (what the backlog sweep does).
@@ -117,7 +117,7 @@ func TestArmClaim_HeadChangeResetsBreaker(t *testing.T) {
 	}
 	for i := 0; i < v1alpha1.MaxDeadDispatchesPerHead; i++ {
 		_ = MarkClaimDispatched(ctx, c, "harmostes", name)
-		_ = ReleaseClaimDead(ctx, c, "harmostes", name, "dispatch-timeout")
+		_, _, _ = ReleaseClaimDead(ctx, c, "harmostes", name, "dispatch-timeout")
 		_, _ = armFor(t, ctx, c, wf, pr, "sha-v1", "needs-review", false)
 	}
 	if _, err := armFor(t, ctx, c, wf, pr, "sha-v1", "needs-review", false); !errors.Is(err, ErrDeadDispatchBreaker) {
@@ -148,7 +148,7 @@ func TestReleaseClaimDead_LedgerFinalization(t *testing.T) {
 	_ = RecordRunStarted(ctx, c, "harmostes", name, "run-dead-1")
 	_ = MarkClaimDispatched(ctx, c, "harmostes", name)
 
-	if err := ReleaseClaimDead(ctx, c, "harmostes", name, "dispatch-lost"); err != nil {
+	if _, _, err := ReleaseClaimDead(ctx, c, "harmostes", name, "dispatch-lost"); err != nil {
 		t.Fatalf("dead release: %v", err)
 	}
 
@@ -160,8 +160,8 @@ func TestReleaseClaimDead_LedgerFinalization(t *testing.T) {
 	if a.Status.Phase != v1alpha1.AttemptPhaseFailed {
 		t.Errorf("phase = %q, want failed (the gate is the death observer)", a.Status.Phase)
 	}
-	if !strings.Contains(a.Status.Message, "dispatch lost") {
-		t.Errorf("message = %q, want the honest dispatch-lost reason", a.Status.Message)
+	if !strings.Contains(a.Status.Message, "run ended without a verdict") {
+		t.Errorf("message = %q, want the honest no-verdict reason", a.Status.Message)
 	}
 	for _, run := range a.Status.Runs {
 		if run.Name == "run-dead-1" && run.Phase != "failed" {
@@ -192,7 +192,7 @@ func TestReleaseClaimDead_PreservesWorkerWrittenFailure(t *testing.T) {
 		}
 	})
 
-	if err := ReleaseClaimDead(ctx, c, "harmostes", name, "dispatch-timeout"); err != nil {
+	if _, _, err := ReleaseClaimDead(ctx, c, "harmostes", name, "dispatch-timeout"); err != nil {
 		t.Fatalf("dead release: %v", err)
 	}
 
@@ -220,7 +220,7 @@ func TestReleaseClaimDead_TimeoutDeathsCountTowardBreaker(t *testing.T) {
 	}
 	for i := 0; i < v1alpha1.MaxDeadDispatchesPerHead; i++ {
 		_ = MarkClaimDispatched(ctx, c, "harmostes", name)
-		if err := ReleaseClaimDead(ctx, c, "harmostes", name, "dispatch-timeout"); err != nil {
+		if _, _, err := ReleaseClaimDead(ctx, c, "harmostes", name, "dispatch-timeout"); err != nil {
 			t.Fatalf("dead release %d: %v", i+1, err)
 		}
 		if i < v1alpha1.MaxDeadDispatchesPerHead-1 {
@@ -245,7 +245,7 @@ func TestReleaseClaimDead_NeverDispatchedDoesNotCount(t *testing.T) {
 	// is nil — infrastructure weather, not a dead review. The primitive's
 	// guard makes the mis-call harmless by construction.
 	for i := 0; i < v1alpha1.MaxDeadDispatchesPerHead+1; i++ {
-		if err := ReleaseClaimDead(ctx, c, "harmostes", name, "dispatch-lost"); err != nil {
+		if _, _, err := ReleaseClaimDead(ctx, c, "harmostes", name, "dispatch-lost"); err != nil {
 			t.Fatalf("release %d: %v", i+1, err)
 		}
 		_, _ = armFor(t, ctx, c, wf, "git.rezus.cloud/tibrez/rhesadox#1805", "sha-q", "needs-review", false)

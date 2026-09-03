@@ -355,6 +355,10 @@ type claimView struct {
 	DispatchedAt  string
 	Released      bool
 	ReleaseReason string
+	// DeadDispatches renders only when > 0: the breaker's evidence, so a
+	// stood-down head answers "why" without kubectl (#328).
+	DeadDispatches int
+	MaxDead        int
 }
 
 type runSummary struct {
@@ -457,13 +461,15 @@ func (s *Server) handleAttemptDetail(w http.ResponseWriter, r *http.Request) {
 	}
 	if rv := att.Status.Review; rv != nil {
 		data.Claim = &claimView{
-			PR:            rv.PR,
-			HeadSHA:       rv.HeadSHA,
-			State:         claimState(rv),
-			Released:      rv.Released,
-			ReleaseReason: rv.ReleaseReason,
-			ArmedSince:    formatMetaTimePtr(rv.ArmedSince),
-			DispatchedAt:  formatMetaTimePtr(rv.DispatchedAt),
+			PR:             rv.PR,
+			HeadSHA:        rv.HeadSHA,
+			State:          claimState(rv),
+			Released:       rv.Released,
+			ReleaseReason:  rv.ReleaseReason,
+			ArmedSince:     formatMetaTimePtr(rv.ArmedSince),
+			DispatchedAt:   formatMetaTimePtr(rv.DispatchedAt),
+			DeadDispatches: rv.DeadDispatches,
+			MaxDead:        v1alpha1.MaxDeadDispatchesPerHead,
 		}
 	}
 	// The timeline graph: compiled workflow + per-node state + live position.

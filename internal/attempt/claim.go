@@ -151,16 +151,31 @@ func ReleaseClaim(ctx context.Context, c client.Client, namespace, attemptName, 
 // A worker-written failure (graceful agent exit, e.g. "agent failed after 4
 // attempt(s), …") is preserved verbatim — it carries the specific signal;
 // only the stale running records are finalized.
-func ReleaseClaimDead(ctx context.Context, c client.Client, namespace, attemptName, reason string) error {
-	return patchAttemptStatus(ctx, c, namespace, attemptName, func(s *v1alpha1.AttemptStatus) {
+//
+// IDEMPOTENT: an already-released claim is never re-counted. The gate's
+// sweep runs two release passes (timer-based and job-based) over the same
+// claim snapshot; a death discovered by both must count once — the first
+// observer records it, the second is a no-op. It returns whether this call
+// recorded the death and the post-patch count (the fetch-time snapshot
+// callers hold is stale by one death by construction).
+func ReleaseClaimDead(ctx context.Context, c client.Client, namespace, attemptName, reason string) (recorded bool, deadDispatches int, err error) {
+	err = patchAttemptStatus(ctx, c, namespace, attemptName, func(s *v1alpha1.AttemptStatus) {
 		if s.Review == nil {
 			s.Review = &v1alpha1.ReviewClaimStatus{}
+		}
+		if s.Review.Released {
+			// First observer already recorded this death (or the claim was
+			// released for an unrelated reason) — never count twice.
+			deadDispatches = s.Review.DeadDispatches
+			return
 		}
 		s.Review.Released = true
 		s.Review.ReleaseReason = reason
 		if s.Review.DispatchedAt != nil {
 			s.Review.DeadDispatches++
+			recorded = true
 		}
+		deadDispatches = s.Review.DeadDispatches
 		now := metav1.NewTime(time.Now())
 		for i := range s.Runs {
 			if s.Runs[i].Phase == "" || s.Runs[i].Phase == "running" {
@@ -170,9 +185,10 @@ func ReleaseClaimDead(ctx context.Context, c client.Client, namespace, attemptNa
 		}
 		if s.Phase == "" || s.Phase == v1alpha1.AttemptPhaseReconciling {
 			s.Phase = v1alpha1.AttemptPhaseFailed
-			s.Message = fmt.Sprintf("dispatch lost: run ended without a verdict (%s)", reason)
+			s.Message = fmt.Sprintf("run ended without a verdict (%s)", reason)
 		}
 	})
+	return recorded, deadDispatches, err
 }
 
 // LiveReviewClaims returns the workflow's unreleased review claims, oldest

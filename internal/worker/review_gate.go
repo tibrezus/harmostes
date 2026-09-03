@@ -90,6 +90,10 @@ type candidate struct {
 	sha     string // wake revision, when the wake carried one
 	isWake  bool
 	request bool // request-shaped (label touched): may supersede a live claim
+	// labeled: the wake was the label being APPLIED — the breaker's human
+	// override. unlabeled/label_updated touch the label without asking for
+	// a retry, so they must not reset the dead-dispatch counter (#328).
+	labeled bool
 }
 
 func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly bool) ([]GateDispatch, error) {
@@ -269,7 +273,14 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 			}
 			claimFor := findClaim(claims, cand.pointer)
 			if claimFor != nil && claimFor.Status.Review.HeadSHA == candSha(cand) {
-				continue // same head — nothing to re-request
+				// Same head — nothing to re-request, UNLESS this is the
+				// breaker's human override: an explicit label re-apply on
+				// a head that has recorded dead dispatches (#328). The
+				// supersede below is uncounted; the re-arm resets the
+				// counter and spends a fresh dispatch.
+				if !(cand.labeled && claimFor.Status.Review.DeadDispatches > 0) {
+					continue
+				}
 			}
 			if claimFor != nil {
 				if err := attempt.ReleaseClaim(ctx, deps.Client, wf.Namespace, claimFor.Name, "superseded"); err != nil {
@@ -296,7 +307,7 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 		switch res.Decision {
 		case review.DecisionProceed:
 			sha := res.Envelope.HeadSHA
-			at, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf, cand.pointer, sha, label, cand.request)
+			at, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf, cand.pointer, sha, label, cand.labeled)
 			if err != nil {
 				if errors.Is(err, attempt.ErrDeadDispatchBreaker) {
 					// Surface the breaker as the decision, not a failure:
@@ -318,7 +329,7 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 			if sha == "" {
 				sha = candSha(cand)
 			}
-			if _, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf, cand.pointer, sha, label, cand.request); err != nil {
+			if _, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf, cand.pointer, sha, label, cand.labeled); err != nil {
 				log("review-ready: arm claim %s failed: %v", cand.pointer, err)
 			}
 			lastDecision, lastReason = string(res.Decision), res.Reason
@@ -371,6 +382,7 @@ func parseWake(wf *v1alpha1.Workflow) *candidate {
 		repo: repo, pr: pr, pointer: fmt.Sprintf("%s#%d", repo, pr), sha: sha,
 		isWake:  true,
 		request: action == "labeled" || action == "unlabeled" || action == "label_updated",
+		labeled: action == "labeled",
 	}
 }
 
@@ -412,12 +424,19 @@ func releaseClaim(ctx context.Context, deps GateDeps, at v1alpha1.Attempt, reaso
 
 // releaseDeadClaim releases a dispatched claim that died without a verdict:
 // the breaker counts the death and the ledger finalizes the run (#328).
+// Idempotent — when both release passes observe the same death, the second
+// is a no-op and says so.
 func releaseDeadClaim(ctx context.Context, deps GateDeps, at v1alpha1.Attempt, reason string, log func(string, ...any)) {
-	if err := attempt.ReleaseClaimDead(ctx, deps.Client, at.Namespace, at.Name, reason); err != nil {
+	recorded, dead, err := attempt.ReleaseClaimDead(ctx, deps.Client, at.Namespace, at.Name, reason)
+	if err != nil {
 		log("review-ready: dead release %s failed: %v", at.Name, err)
 		return
 	}
-	log("review-ready: claim %s released (%s, dead dispatch #%d)", at.Name, reason, at.Status.Review.DeadDispatches+1)
+	if recorded {
+		log("review-ready: claim %s released (%s, dead dispatch #%d)", at.Name, reason, dead)
+		return
+	}
+	log("review-ready: claim %s already released — death already recorded (#%d)", at.Name, dead)
 }
 
 // emitGateTransition records state CHANGES only: a re-evaluation that repeats

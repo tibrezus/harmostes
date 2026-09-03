@@ -224,6 +224,11 @@ func TestPluginTailEmissionRedacts(t *testing.T) {
 // invisible: "prepare failed: " with nothing on the wall (#311's live shape).
 func TestPluginExecutorExecFailureSurfacesError(t *testing.T) {
 	// The resolver returns a path that does not exist — the live #311 shape.
+	// The path lives in a git submodule: without it vendored the resolver's
+	// fallback finds an unrelated host script and the fixture is meaningless.
+	if _, err := os.Stat("/plugins/fork-maintenance-plugins/fork-sync.sh"); err != nil {
+		t.Skip("plugin scripts not vendored (.agents submodule missing)")
+	}
 	resolver := &fakeResolver{command: "/plugins/fork-maintenance-plugins/fork-sync.sh"}
 	exec := NewPluginExecutor(resolver)
 

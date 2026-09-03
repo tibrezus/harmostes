@@ -50,6 +50,10 @@
 			{{end}}
 			<dt>Claim State</dt>
 			<dd>{{.Claim.State}}{{if .Claim.Released}} ({{.Claim.ReleaseReason}}){{end}}</dd>
+			{{if gt .Claim.DeadDispatches 0}}
+			<dt>Dead Dispatches</dt>
+			<dd>{{.Claim.DeadDispatches}}/{{.Claim.MaxDead}}{{if ge .Claim.DeadDispatches .Claim.MaxDead}} — stood down; new push or re-label to retry{{end}}</dd>
+			{{end}}
 			{{if .Claim.ArmedSince}}
 			<dt>Armed</dt>
 			<dd>{{.Claim.ArmedSince}}</dd>

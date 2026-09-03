@@ -205,11 +205,17 @@ func (s *Server) handleWorkflowRunRedirect(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	owner := identityFromContext(r.Context()).Username
+	owner := s.visibleOwner(identityFromContext(r.Context()))
 	var atts v1alpha1.AttemptList
-	if err := s.k8sClient.List(r.Context(), &atts,
+	listOpts := []client.ListOption{
 		client.InNamespace(s.namespace),
-		client.MatchingLabels{v1alpha1.OwnerLabel: owner, v1alpha1.WorkflowLabel: workflowName},
+		client.MatchingLabels{v1alpha1.WorkflowLabel: workflowName},
+	}
+	if owner != "" {
+		listOpts = append(listOpts, client.MatchingLabels{v1alpha1.OwnerLabel: owner})
+	}
+	if err := s.k8sClient.List(r.Context(), &atts,
+		listOpts...,
 	); err != nil {
 		s.logger.Error("list attempts for run redirect", "workflow", workflowName, "err", err)
 		s.renderError(w, r, "Failed to resolve run: "+err.Error())

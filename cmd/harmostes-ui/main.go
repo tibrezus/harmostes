@@ -97,6 +97,13 @@ func main() {
 		logger.Error("create ui server", "err", err)
 		os.Exit(1)
 	}
+	// Authentik groups whose members see across all owner labels (see
+	// Server.SetAdminGroups — owner labels have churned before; without the
+	// bypass one mismatch bricks every page for the operator).
+	if groups := ui.ParseAdminGroups(os.Getenv("HARMOSTES_UI_ADMIN_GROUPS")); len(groups) > 0 {
+		server.SetAdminGroups(groups)
+		logger.Info("admin groups configured", "groups", groups)
+	}
 
 	// Wire the Dapr client for reading session transcripts from the worker's
 	// state store. resolveDaprEndpoint prefers the explicit DAPR_HTTP_ENDPOINT

@@ -32,11 +32,7 @@ type workflowGraphResponse struct {
 //
 // Route: GET /api/workflows/{name}/graph
 func (s *Server) handleWorkflowGraphAPI(w http.ResponseWriter, r *http.Request) {
-	owner := identityFromContext(r.Context())
-	ownerName := ""
-	if owner != nil {
-		ownerName = owner.Username
-	}
+	ownerName := s.visibleOwner(identityFromContext(r.Context()))
 
 	name := r.PathValue("name")
 	var wf v1alpha1.Workflow

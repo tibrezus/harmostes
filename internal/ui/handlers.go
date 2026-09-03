@@ -10,7 +10,7 @@ import (
 )
 
 func (s *Server) handleWorkflowList(w http.ResponseWriter, r *http.Request) {
-	owner := identityFromContext(r.Context()).Username
+	owner := s.visibleOwner(identityFromContext(r.Context()))
 	workflows, err := s.listWorkflows(r, owner)
 	if err != nil {
 		s.logger.Error("list workflows", "owner", owner, "err", err)
@@ -100,7 +100,7 @@ func (s *Server) workflowNames(r *http.Request, owner string) []string {
 
 // handleWorkflowDetail renders a single workflow with its run history.
 func (s *Server) handleWorkflowDetail(w http.ResponseWriter, r *http.Request) {
-	owner := identityFromContext(r.Context()).Username
+	owner := s.visibleOwner(identityFromContext(r.Context()))
 	name := r.PathValue("name")
 	if name == "" {
 		http.NotFound(w, r)
@@ -116,10 +116,12 @@ func (s *Server) handleWorkflowDetail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Enforce owner isolation: a workflow without an owner label is
-	// "unmanaged" (GitOps-created system workflow) and is NOT surfaced in
-	// the self-service UI. A workflow with a non-matching owner label is
-	// treated as not found.
-	if wf.Labels[v1alpha1.OwnerLabel] != owner {
+	// "unmanaged" (GitOps-created system workflow, e.g. fork-maintenance-
+	// forgejo) and is NOT surfaced in the self-service UI. A workflow with a
+	// non-matching owner label is treated as not found. Admins are the
+	// deliberate exception (#324): system workflows are exactly what an
+	// operator needs on an incident.
+	if wf.Labels[v1alpha1.OwnerLabel] != owner && !s.isAdmin(identityFromContext(r.Context())) {
 		http.NotFound(w, r)
 		return
 	}

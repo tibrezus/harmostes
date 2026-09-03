@@ -118,7 +118,7 @@ func (s *Server) handleWall(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	owner := identityFromContext(r.Context()).Username
+	owner := s.visibleOwner(identityFromContext(r.Context()))
 	groups, err := s.wallGroups(r, owner, true)
 	if err != nil {
 		s.renderError(w, r, "Failed to load wall: "+err.Error())
@@ -188,7 +188,7 @@ func (s *Server) renderWallFragment(r *http.Request, owner string) (string, erro
 // (debounced), plus a slow ticker that keeps relative ages fresh without
 // events. Rendering is cache-only — never the state store.
 func (s *Server) handleWallSSE(w http.ResponseWriter, r *http.Request) {
-	owner := identityFromContext(r.Context()).Username
+	owner := s.visibleOwner(identityFromContext(r.Context()))
 	render := func() (string, error) { return s.renderWallFragment(r, owner) }
 	sub, cancel := s.hub.Subscribe("")
 	s.streamFragments(w, r, sub, cancel, wallEventName, render, nil, wallRerender)

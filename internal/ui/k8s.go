@@ -63,10 +63,15 @@ func (k *k8sClient) GetWorkflow(ctx context.Context, name string) (*v1alpha1.Wor
 	return wf, nil
 }
 
-// ListWorkflows lists all Workflows for a given owner.
+// ListWorkflows lists all Workflows for a given owner; empty owner lists
+// across all owners.
 func (k *k8sClient) ListWorkflows(ctx context.Context, owner string) ([]v1alpha1.Workflow, error) {
 	var list v1alpha1.WorkflowList
-	if err := k.client.List(ctx, &list, client.MatchingLabels{v1alpha1.OwnerLabel: owner}); err != nil {
+	opts := []client.ListOption{}
+	if owner != "" {
+		opts = append(opts, client.MatchingLabels{v1alpha1.OwnerLabel: owner})
+	}
+	if err := k.client.List(ctx, &list, opts...); err != nil {
 		return nil, fmt.Errorf("list workflows: %w", err)
 	}
 	return list.Items, nil
@@ -81,10 +86,15 @@ func (k *k8sClient) GetAttempt(ctx context.Context, name string) (*v1alpha1.Atte
 	return att, nil
 }
 
-// ListAttempts lists all Attempts for a given owner.
+// ListAttempts lists all Attempts for a given owner; empty owner lists
+// across all owners.
 func (k *k8sClient) ListAttempts(ctx context.Context, owner string) ([]v1alpha1.Attempt, error) {
 	var list v1alpha1.AttemptList
-	if err := k.client.List(ctx, &list, client.MatchingLabels{v1alpha1.OwnerLabel: owner}); err != nil {
+	opts := []client.ListOption{}
+	if owner != "" {
+		opts = append(opts, client.MatchingLabels{v1alpha1.OwnerLabel: owner})
+	}
+	if err := k.client.List(ctx, &list, opts...); err != nil {
 		return nil, fmt.Errorf("list attempts: %w", err)
 	}
 	return list.Items, nil

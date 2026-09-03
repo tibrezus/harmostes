@@ -74,9 +74,12 @@ pluginConfigMaps: []
 
 # harmostes-ui: self-service multi-tenant web interface (HTMX + Go templates).
 # Authenticated via Authentik forward-auth. Each user sees only workflows
-# labeled harmostes.dev/owner=<their-username>.
+# labeled harmostes.dev/owner=<their-username>; members of ui.adminGroups see
+# everything (owner labels have churned historically — the bypass keeps the
+# operator's UI alive through identity drift).
 ui:
   enabled: true
+  adminGroups: "harmostes-admins"
   image: ghcr.io/tibrezus/harmostes-ui:dev
   serviceAccount: harmostes-ui
   host: harmostes.rezus.cloud   # Gateway API HTTPRoute hostname (behind Authentik forward-auth)

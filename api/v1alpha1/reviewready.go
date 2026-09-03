@@ -11,6 +11,16 @@ import (
 // without a verdict is provably dead. Keep in sync with the consumer.
 const OneShotRunBound = 30 * time.Minute
 
+// MaxDeadDispatchesPerHead is the dead-dispatch circuit breaker (#328): a
+// head whose dispatched reviews died without a verdict this many times is
+// not re-armed automatically. Every recovery mechanism involved (job-death
+// release, dispatch timeout, backlog re-arm) is individually correct, but
+// composed they loop forever on reviews whose honest duration exceeds
+// OneShotRunBound — observed live: 19 dead runs over 12 hours on one PR.
+// The breaker converts the silent burn into a bounded, visible standdown.
+// It resets on a new head push or an explicit label wake (human override).
+const MaxDeadDispatchesPerHead = 3
+
 // MinDispatchMargin is the minimum delivery/queue margin a configured
 // DispatchTimeout must leave over OneShotRunBound. Enforced (not merely
 // documented) so no configurable value can re-dispatch while a run may

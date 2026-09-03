@@ -566,3 +566,154 @@ func TestMultiArmLiveJobClaimHolds(t *testing.T) {
 		t.Fatalf("live-job claim must stay dispatched, got %+v", got.Status.Review)
 	}
 }
+
+// ── #328: a dispatched claim with no live job is a dead dispatch — the
+// sweeper counts it, releases the slot, and finalizes the ledger (the
+// SIGKILLed worker can never write its own outcome). ──
+func TestSweepDeadDispatchCountsAndFinalizes(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := noLabelServer(t)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	st := &fakeStatus{}
+	now := time.Now()
+	disp := now.Add(-3 * time.Minute) // past jobDeathGrace: the Job is provably gone
+	claim := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#99", "deadbeef123", now.Add(-3*time.Minute), &disp)
+	claim.Status.Phase = v1alpha1.AttemptPhaseReconciling
+	claim.Status.Message = ""
+	claim.Status.Runs = []v1alpha1.RunRecord{
+		{Name: "run-lost-1", StartedAt: metav1.NewTime(now.Add(-3 * time.Minute)), Phase: "running"},
+	}
+	deps, ctx := gateEnv(t, wf, st, claim)
+
+	out, err := RunReviewGateSweep(ctx, deps, wf)
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if len(out) != 0 {
+		t.Fatalf("dead claim must not dispatch, got %d", len(out))
+	}
+
+	var got v1alpha1.Attempt
+	if err := deps.Client.Get(ctx, client.ObjectKey{Namespace: wf.Namespace, Name: claim.Name}, &got); err != nil {
+		t.Fatalf("get claim: %v", err)
+	}
+	r := got.Status.Review
+	if !r.Released || r.ReleaseReason != "dispatch-lost" {
+		t.Fatalf("claim = released:%v reason:%q, want released dispatch-lost", r.Released, r.ReleaseReason)
+	}
+	if r.DeadDispatches != 1 {
+		t.Fatalf("dead dispatches = %d, want 1", r.DeadDispatches)
+	}
+	if got.Status.Phase != v1alpha1.AttemptPhaseFailed {
+		t.Fatalf("phase = %q, want failed (the gate is the death observer)", got.Status.Phase)
+	}
+	if !strings.Contains(got.Status.Message, "dispatch lost") {
+		t.Fatalf("message = %q, want the honest dispatch-lost reason", got.Status.Message)
+	}
+	for _, run := range got.Status.Runs {
+		if run.Name == "run-lost-1" && run.Phase != "failed" {
+			t.Fatalf("stale running record not finalized: %+v", run)
+		}
+	}
+}
+
+// ── #328: at MaxDeadDispatchesPerHead the breaker refuses the automatic
+// re-arm and the sweep surfaces it as the decision, not a failure. ──
+func TestSweepBreakerBlocksReDispatch(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := labeledGreenServer(t)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	st := &fakeStatus{}
+	// Build the dead-dispatch history through the REAL primitives — the
+	// breaker lives on the deterministic attempt ArmClaim will resolve,
+	// so a hand-built fixture under a guessed name would never be found.
+	deps, ctx := gateEnv(t, wf, st)
+	for i := 0; i < v1alpha1.MaxDeadDispatchesPerHead; i++ {
+		at, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf,
+			"git.rezus.cloud/tibrez/rhesadox#100", "deadbeef123", "needs-review", false)
+		if err != nil {
+			t.Fatalf("arm %d: %v", i+1, err)
+		}
+		if err := attempt.MarkClaimDispatched(ctx, deps.Client, wf.Namespace, at.Name); err != nil {
+			t.Fatalf("dispatch %d: %v", i+1, err)
+		}
+		if err := attempt.ReleaseClaimDead(ctx, deps.Client, wf.Namespace, at.Name, "dispatch-lost"); err != nil {
+			t.Fatalf("dead release %d: %v", i+1, err)
+		}
+	}
+
+	out, err := RunReviewGateSweep(ctx, deps, wf)
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if len(out) != 0 {
+		t.Fatalf("breaker must block dispatch, got %d", len(out))
+	}
+	if st.last.ReviewReady == nil || st.last.ReviewReady.LastDecision != "standdown" {
+		t.Fatalf("aggregates must surface the breaker, got %+v", st.last.ReviewReady)
+	}
+	if !strings.Contains(st.last.ReviewReady.LastReason, "dead-dispatch breaker") {
+		t.Fatalf("reason = %q, want the breaker explanation", st.last.ReviewReady.LastReason)
+	}
+}
+
+// labeledGreenServer: the labeled scan finds PR 100, and everything about
+// it is green — the drain proceeds to the arm, where the breaker lives.
+func labeledGreenServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(req.URL.Path, "/pulls"):
+			json.NewEncoder(w).Encode([]map[string]any{
+				{"number": 100, "updated_at": "2026-08-30T00:00:00Z", "labels": []map[string]string{{"name": "needs-review"}}},
+			})
+		case strings.Contains(req.URL.Path, "/pulls/100"):
+			json.NewEncoder(w).Encode(greenPullBody())
+		case strings.Contains(req.URL.Path, "/comments"):
+			json.NewEncoder(w).Encode([]any{})
+		case strings.Contains(req.URL.Path, "/branch_protections/"):
+			json.NewEncoder(w).Encode(map[string]any{"status_check_contexts": []string{"ci / build-test (push)"}})
+		case strings.HasSuffix(req.URL.Path, "/statuses"):
+			json.NewEncoder(w).Encode([]map[string]string{
+				{"context": "ci / build-test (push)", "status": "success"},
+			})
+		default:
+			http.NotFound(w, req)
+		}
+	}))
+}
+
+// ── #328 escape hatch: an explicit label wake on a breaker-open head is
+// the human override — it resets the counter and dispatches. ──
+func TestSweepBreakerHumanOverrideDispatches(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := greenPRServer(t)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	wf.Annotations = wakeAnnotations("git.rezus.cloud/tibrez/rhesadox#99", "labeled", "deadbeef123")
+	st := &fakeStatus{}
+	deps, ctx := gateEnv(t, wf, st)
+	for i := 0; i < v1alpha1.MaxDeadDispatchesPerHead; i++ {
+		at, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf,
+			"git.rezus.cloud/tibrez/rhesadox#99", "deadbeef123", "needs-review", false)
+		if err != nil {
+			t.Fatalf("arm %d: %v", i+1, err)
+		}
+		_ = attempt.MarkClaimDispatched(ctx, deps.Client, wf.Namespace, at.Name)
+		_ = attempt.ReleaseClaimDead(ctx, deps.Client, wf.Namespace, at.Name, "dispatch-lost")
+	}
+
+	out, err := RunReviewGateWake(ctx, deps, wf)
+	if err != nil {
+		t.Fatalf("wake sweep: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("human override must dispatch, got %d", len(out))
+	}
+}

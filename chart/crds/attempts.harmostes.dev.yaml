@@ -135,6 +135,7 @@ spec:
                     dispatchedAt:  { type: string }
                     released:      { type: boolean }
                     releaseReason: { type: string }
+                    deadDispatches: { type: integer, minimum: 0, description: Dispatched reviews of this claim that died without a verdict (#328 breaker) }
                 # NOTE: CRDs under chart/crds/ are installed by `helm install`
                 # but NOT upgraded by `helm upgrade` — re-apply this file with
                 # `kubectl apply -f chart/crds/` on upgrade or the API server

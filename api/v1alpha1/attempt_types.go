@@ -233,6 +233,12 @@ type ReviewClaimStatus struct {
 
 	// ReleaseReason: consumed | horizon | dispatch-timeout | superseded | closed.
 	ReleaseReason string `json:"releaseReason,omitempty"`
+
+	// DeadDispatches counts dispatched reviews of this claim that provably
+	// died without a verdict (dispatch-lost / dispatch-timeout). The gate's
+	// breaker (#328) refuses to re-arm a head at MaxDeadDispatchesPerHead;
+	// a head change or an explicit label wake resets it.
+	DeadDispatches int `json:"deadDispatches,omitempty"`
 }
 
 // RunRecord is one Workflow Run (job) executed inside an attempt.

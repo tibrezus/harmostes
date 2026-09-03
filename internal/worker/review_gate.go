@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -141,7 +142,14 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 		p.DispatchedAt = r.DispatchedAt.Time
 		res := review.Evaluate(ctx, api, p)
 		if res.Decision == review.DecisionStanddown {
-			releaseClaim(ctx, deps, c, classifyRelease(res.Reason), log)
+			if reason := classifyRelease(res.Reason); reason == "dispatch-timeout" {
+				// A dispatched review presumed dead without a verdict IS a
+				// dead dispatch: the breaker counts it and the ledger
+				// finalizes the run (#328).
+				releaseDeadClaim(ctx, deps, c, reason, log)
+			} else {
+				releaseClaim(ctx, deps, c, reason, log)
+			}
 			emitGate(ctx, deps.TL, liveAgg, res, repo, pr)
 			liveDispatched--
 		}
@@ -175,7 +183,7 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 			}
 			if !live {
 				log("review-ready: claim %s (%s) has no live job — releasing as dispatch-lost", c.Name, r.PR)
-				releaseClaim(ctx, deps, c, "dispatch-lost", log)
+				releaseDeadClaim(ctx, deps, c, "dispatch-lost", log)
 			}
 		}
 	}
@@ -197,6 +205,8 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 		if time.Since(arm) <= reDispatchGrace {
 			continue // fresh arm: its sweep's dispatch loop is still in flight
 		}
+		// Never dispatched: infrastructure weather, not a dead review —
+		// the breaker must NOT count it (only dispatched deaths do).
 		log("review-ready: claim %s (%s) never dispatched — releasing as dispatch-lost", c.Name, r.PR)
 		releaseClaim(ctx, deps, c, "dispatch-lost", log)
 	}
@@ -286,8 +296,15 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 		switch res.Decision {
 		case review.DecisionProceed:
 			sha := res.Envelope.HeadSHA
-			at, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf, cand.pointer, sha, label)
+			at, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf, cand.pointer, sha, label, cand.request)
 			if err != nil {
+				if errors.Is(err, attempt.ErrDeadDispatchBreaker) {
+					// Surface the breaker as the decision, not a failure:
+					// the system stopped ON PURPOSE and says why (#328).
+					log("review-ready: %s: %v", cand.pointer, err)
+					lastDecision, lastReason = "standdown", err.Error()
+					continue
+				}
 				log("review-ready: arm claim %s failed: %v", cand.pointer, err)
 				lastDecision, lastReason = string(res.Decision), res.Reason
 				continue
@@ -301,7 +318,7 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 			if sha == "" {
 				sha = candSha(cand)
 			}
-			if _, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf, cand.pointer, sha, label); err != nil {
+			if _, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf, cand.pointer, sha, label, cand.request); err != nil {
 				log("review-ready: arm claim %s failed: %v", cand.pointer, err)
 			}
 			lastDecision, lastReason = string(res.Decision), res.Reason
@@ -391,6 +408,16 @@ func releaseClaim(ctx context.Context, deps GateDeps, at v1alpha1.Attempt, reaso
 		return
 	}
 	log("review-ready: claim %s released (%s)", at.Name, reason)
+}
+
+// releaseDeadClaim releases a dispatched claim that died without a verdict:
+// the breaker counts the death and the ledger finalizes the run (#328).
+func releaseDeadClaim(ctx context.Context, deps GateDeps, at v1alpha1.Attempt, reason string, log func(string, ...any)) {
+	if err := attempt.ReleaseClaimDead(ctx, deps.Client, at.Namespace, at.Name, reason); err != nil {
+		log("review-ready: dead release %s failed: %v", at.Name, err)
+		return
+	}
+	log("review-ready: claim %s released (%s, dead dispatch #%d)", at.Name, reason, at.Status.Review.DeadDispatches+1)
 }
 
 // emitGateTransition records state CHANGES only: a re-evaluation that repeats

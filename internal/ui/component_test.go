@@ -89,14 +89,9 @@ func TestComponent_Wall_RendersAllFixtureSubjects(t *testing.T) {
 			t.Error("wall card without data-subject")
 		}
 	})
-	reviewMarked := 0
-	doc.Find(`[data-testid="wall-card-title"]`).Each(func(_ int, s *goquery.Selection) {
-		if strings.HasPrefix(strings.TrimSpace(s.Text()), "⟡") {
-			reviewMarked++
-		}
-	})
+	reviewMarked := doc.Find(`[data-testid="wall-card"][data-review="true"]`).Length()
 	if reviewMarked != 2 {
-		t.Errorf("review-marked titles = %d, want 2", reviewMarked)
+		t.Errorf("review-marked rows = %d, want 2", reviewMarked)
 	}
 }
 

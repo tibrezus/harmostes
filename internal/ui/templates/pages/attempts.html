@@ -1,55 +1,97 @@
 {{define "pages/attempts.html"}}
-{{- /* attempts.html — agent execution history (iterative loop). */ -}}
-<div class="view-description">
-	<strong>Attempts</strong> — Agent execution history: the iterative loop where the agent works toward the gate objective. Each attempt tracks the prepare output → agent work → gate validation cycle. Multiple attempts per run when <code>maxFixes &gt; 1</code>. Deterministic workflows have no attempts.
-</div>
-{{- $owner := .Owner -}}
-<div class="page-content">
-	<div class="ds-card-list">
-		{{range .Groups}}
-		<details class="ds-card ds-card--link" {{if or .IsReview (eq .Count 1)}}open{{end}}>
-			<summary class="ds-card-header" style="cursor: pointer; list-style: none;">
-				<span class="ds-card-title">
-					{{if .IsReview}}⟡ {{.Subject}}{{else}}<code>{{.Subject}}</code>{{end}}
-				</span>
-				{{if .IsReview}}
-					{{if eq .ClaimState "review in flight"}}<span class="ds-status-badge ds-status-badge--warning">● In flight</span>
-					{{else if eq .ClaimState "verdict posted"}}<span class="ds-status-badge ds-status-badge--positive">✓ Verdict posted</span>
-					{{else if eq .ClaimState "queued"}}<span class="ds-status-badge ds-status-badge--neutral">◌ Queued</span>
-					{{else}}<span class="ds-status-badge ds-status-badge--neutral">{{.ClaimState}}</span>{{end}}
-				{{else if eq .LatestPhase "validated"}}<span class="ds-status-badge ds-status-badge--positive">✓ Validated</span>
-				{{else if eq .LatestPhase "reconciling"}}<span class="ds-status-badge ds-status-badge--warning">↻ Reconciling</span>
-				{{else if eq .LatestPhase "failed"}}<span class="ds-status-badge ds-status-badge--negative">✗ Failed</span>
-				{{else if eq .LatestPhase "superseded"}}<span class="ds-status-badge ds-status-badge--neutral">↪ Superseded</span>
-				{{else}}<span class="ds-status-badge ds-status-badge--neutral">{{.LatestPhase}}</span>{{end}}
-			</summary>
-			<div class="ds-card-body">
-				<span class="ds-card-meta">{{.WorkflowRef}}</span>
-				<span class="ds-card-meta">·</span>
-				<span class="ds-card-meta">{{.Count}} attempt{{if ne .Count 1}}s{{end}}</span>
-				{{if .LastActivity}}
-				<span class="ds-card-meta">·</span>
-				<span class="ds-card-meta">{{.LastActivity}}</span>
-				{{end}}
-			</div>
-			<div style="padding: 0 1rem 0.75rem;">
-				{{range .Attempts}}
-				<div style="display: flex; gap: 0.75rem; align-items: baseline; padding: 0.25rem 0; border-top: 1px solid var(--ds-border-faint);">
-					<a href="/runs/{{.Name}}" class="ds-link" data-testid="run-link" data-phase="{{.Phase}}" style="min-width: 14rem;"><code>{{.Name}}</code></a>
-					<span class="ds-card-meta">{{.Phase}}</span>
-					<span class="ds-card-meta">{{.RunCount}} run{{if ne .RunCount 1}}s{{end}}</span>
-					{{if .LastRunAt}}<span class="ds-card-meta">{{.LastRunAt}}</span>{{end}}
-				</div>
-				{{end}}
-			</div>
-		</details>
-		{{else}}
-		<div class="ds-empty-state">
-			<p>No attempts in this window. Attempts appear when a workflow runs.</p>
-			<p><a href="/runs?window=all" class="ds-link">Show all</a> · <a href="/workflows" class="ds-link">View workflows →</a></p>
-		</div>
-		{{end}}
+{{- /* attempts.html — agent execution history. v2: one row per subject,
+      rollups only, attempts expand per row. Pattern: Argo/Temporal list. */ -}}
+{{- $win := .Window -}}
+{{- $status := .Status -}}
+<div class="filterbar">
+	<div class="tabs" role="tablist" aria-label="Filter runs by state">
+		<a class="tab {{if or (eq $status "") (eq $status "all")}}tab--active{{end}}" href="/runs?window={{$win}}&status=all" data-testid="tab-all">All <span class="tab-count">{{.Counts.Total}}</span></a>
+		<a class="tab {{if eq $status "failed"}}tab--active{{end}}" href="/runs?window={{$win}}&status=failed" data-testid="tab-failed">Failed <span class="tab-count">{{.Counts.Failed}}</span></a>
+		<a class="tab {{if eq $status "inflight"}}tab--active{{end}}" href="/runs?window={{$win}}&status=inflight" data-testid="tab-inflight">In flight <span class="tab-count">{{.Counts.InFlight}}</span></a>
+		<a class="tab {{if eq $status "verdicts"}}tab--active{{end}}" href="/runs?window={{$win}}&status=verdicts" data-testid="tab-verdicts">Verdicts <span class="tab-count">{{.Counts.Verdicts}}</span></a>
+	</div>
+	<div class="seg" aria-label="Time window">
+		<a class="{{if eq $win "24h"}}seg--active{{end}}" href="/runs?window=24h&status={{$status}}">24h</a>
+		<a class="{{if eq $win "7d"}}seg--active{{end}}" href="/runs?window=7d&status={{$status}}">7d</a>
+		<a class="{{if eq $win "all"}}seg--active{{end}}" href="/runs?window=all&status={{$status}}">all</a>
 	</div>
 </div>
 
+<div class="page-content">
+{{if .Groups}}
+	<div class="tbl-wrap">
+		<table class="tbl">
+			<thead>
+				<tr>
+					<th></th>
+					<th>State</th>
+					<th>Subject</th>
+					<th>Workflow</th>
+					<th class="num">Attempts</th>
+					<th class="time">Last activity</th>
+				</tr>
+			</thead>
+			<tbody>
+				{{range $gi, $g := .Groups}}
+				{{- $state := groupState $g -}}
+				<tr {{if eq $state "failed"}}class="is-failed"{{end}}>
+					<td class="exp" data-group="{{$gi}}" title="Show attempts" role="button" aria-label="Toggle attempts">▸</td>
+					<td>{{template "state-chip" $state}}</td>
+					<td data-testid="subject-cell">
+						{{if $g.IsReview}}<strong>{{$g.Subject}}</strong>{{else}}<span class="ids">{{$g.Subject}}</span>{{end}}
+					</td>
+					<td><span class="ids">{{$g.WorkflowRef}}</span></td>
+					<td class="num">{{$g.Count}}</td>
+					<td class="time">{{$g.LastActivity}}</td>
+				</tr>
+				{{range $g.Attempts}}
+				<tr class="subrow" data-group="{{$gi}}">
+					<td></td>
+					<td>{{template "state-chip" (chipState .Phase)}}</td>
+					<td colspan="4">
+						<a href="/runs/{{.Name}}" data-testid="run-link" data-phase="{{.Phase}}">{{shortName .Name}}</a>
+						<span style="color:var(--fg-muted)"> · {{.RunCount}} run{{if ne .RunCount 1}}s{{end}}{{if .LastRunAt}} · {{.LastRunAt}}{{end}}</span>
+					</td>
+					<td></td>
+				</tr>
+				{{end}}
+				{{end}}
+			</tbody>
+		</table>
+	</div>
+	<script>
+	// Expand/collapse attempt sub-rows per group. Server renders them
+	// hidden: the list stays a table, the history stays one click away.
+	document.querySelectorAll('.tbl .exp').forEach(function (el) {
+		el.addEventListener('click', function () {
+			var gi = el.dataset.group;
+			var open = el.textContent === '▾';
+			el.textContent = open ? '▸' : '▾';
+			document.querySelectorAll('.tbl tr.subrow[data-group="' + gi + '"]').forEach(function (r) {
+				r.classList.toggle('is-open', !open);
+			});
+		});
+	});
+	</script>
+{{else}}
+	<div class="ds-empty-state">
+		<p>No runs in this window. Runs appear when a workflow fires.</p>
+		<p><a href="/runs?window=all&status={{$status}}">Show all</a> · <a href="/workflows">Workflows →</a></p>
+	</div>
+{{end}}
+</div>
+{{end}}
+
+{{- /* state-chip: one chip vocabulary for every state in the console. */ -}}
+{{define "state-chip"}}
+{{- if eq . "failed"}}<span class="chip chip--fail">failed</span>
+{{- else if eq . "in flight"}}<span class="chip chip--run">in flight</span>
+{{- else if eq . "reconciling"}}<span class="chip chip--run">reconciling</span>
+{{- else if eq . "verdict"}}<span class="chip chip--ok">verdict</span>
+{{- else if eq . "validated"}}<span class="chip chip--ok">validated</span>
+{{- else if eq . "armed"}}<span class="chip chip--warn">armed</span>
+{{- else if eq . "queued"}}<span class="chip chip--warn">queued</span>
+{{- else if eq . "dispatch lost"}}<span class="chip chip--fail">dispatch lost</span>
+{{- else if eq . "superseded"}}<span class="chip chip--neutral">superseded</span>
+{{- else}}<span class="chip chip--neutral">{{.}}</span>{{end}}
 {{end}}

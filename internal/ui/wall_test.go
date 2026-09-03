@@ -85,7 +85,7 @@ func TestWallRendersGroups(t *testing.T) {
 	body := rec.Body.String()
 	for _, want := range []string{
 		"wall-grid",
-		"⟡ 1710",                             // review subject
+		"1710",                               // review subject
 		"in flight",                          // claim state badge
 		"abcdef1",                            // short head SHA
 		"pr-review-x",                        // workflow ref

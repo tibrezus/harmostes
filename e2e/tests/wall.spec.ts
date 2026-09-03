@@ -11,16 +11,15 @@ test('the wall renders every fixture subject with review marks and direct links'
   const cards = page.getByTestId('wall-card');
   await expect(cards).toHaveCount(3);
 
-  // Review subjects carry the ⟡ mark in their title; deterministic ones render as code.
-  const titles = page.getByTestId('wall-card-title');
-  await expect(titles.filter({ hasText: '⟡' })).toHaveCount(2);
-  await expect(titles.locator('code')).toHaveCount(1);
+  // Review subjects are marked on their row; the deterministic subject is one row too.
+  await expect(page.locator('[data-testid="wall-card"][data-review="true"]')).toHaveCount(2);
+  await expect(page.getByTestId('wall-card-title').locator('.ids')).toHaveCount(1);
 
   // Every card links directly to its latest run — no clicks to find it.
   const subjects = ['demo-rezuscloud/harmostes#42', 'demo-rezuscloud/harmostes#43', 'demo-rezuscloud/harmostes'];
   for (const subject of subjects) {
     await expect(page.locator(`[data-testid="wall-card"][data-subject="${subject}"]`)).toHaveCount(1);
   }
-  await expect(page.locator('[data-testid="wall-card"][data-subject="demo-rezuscloud/harmostes#42"]'))
+  await expect(page.locator('[data-testid="wall-card"][data-subject="demo-rezuscloud/harmostes#42"] [data-testid="wall-card-title"]'))
     .toHaveAttribute('href', '/runs/attempt-pr-review-demo-42a1');
 });

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -235,4 +236,34 @@ func relTime(rfc3339 string, now time.Time) string {
 	default:
 		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
 	}
+}
+
+// wallState collapses a wall row to the shared console state vocabulary —
+// the same chips the runs list speaks, so the whole UI reads as one system.
+func wallState(g wallGroup) string {
+	if g.IsReview {
+		if strings.Contains(g.ClaimState, "dispatch lost") {
+			return "dispatch lost"
+		}
+		switch g.ClaimState {
+		case "review in flight":
+			return "in flight"
+		case "verdict posted":
+			return "verdict"
+		case "queued":
+			return "queued"
+		}
+		return "queued"
+	}
+	switch g.Phase {
+	case "failed":
+		return "failed"
+	case "reconciling":
+		return "reconciling"
+	case "validated":
+		return "validated"
+	case "superseded":
+		return "superseded"
+	}
+	return g.Phase
 }

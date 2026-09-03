@@ -10,6 +10,7 @@ import (
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -841,4 +842,50 @@ func noVerdictServer(t *testing.T) *httptest.Server {
 			http.NotFound(w, req)
 		}
 	}))
+}
+
+// #331: the dispatch-timeout bound presumes death, but if the attempt's Job
+// is observably still alive, the fact wins — no count, no release, the claim
+// stays live for the job-death pass to classify from fact.
+func TestSweepDispatchTimeoutWithAliveJobNotCounted(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := noVerdictServer(t)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	st := &fakeStatus{}
+	now := time.Now()
+	disp := now.Add(-46 * time.Minute) // past DispatchTimeout (45m)
+	claim := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#101", "deadbeef321", now.Add(-46*time.Minute), &disp)
+	claim.Status.Phase = v1alpha1.AttemptPhaseReconciling
+	job := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "attempt-job-alive", Namespace: wf.Namespace,
+			Labels: map[string]string{
+				"app.kubernetes.io/name": "harmostes",
+				"harmostes.dev/workflow": wf.Name,
+				"harmostes.dev/attempt":  claim.Name,
+			},
+		},
+		Spec: batchv1.JobSpec{Template: *(&corev1.PodTemplateSpec{}).DeepCopy()},
+	}
+	deps, ctx := gateEnv(t, wf, st, claim, job)
+
+	if _, err := RunReviewGateSweep(ctx, deps, wf); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+
+	var got v1alpha1.Attempt
+	if err := deps.Client.Get(ctx, client.ObjectKey{Namespace: wf.Namespace, Name: claim.Name}, &got); err != nil {
+		t.Fatalf("get claim: %v", err)
+	}
+	if got.Status.Review.Released {
+		t.Fatal("an observably alive run must not be released by the timer pass")
+	}
+	if got.Status.Review.DeadDispatches != 0 {
+		t.Fatalf("dead dispatches = %d, want 0 — a live run counted dead burns breaker budget", got.Status.Review.DeadDispatches)
+	}
+	if got.Status.Phase == v1alpha1.AttemptPhaseFailed {
+		t.Fatal("ledger finalized a failed phase while the run is still alive")
+	}
 }

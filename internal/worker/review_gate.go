@@ -119,6 +119,33 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 		return nil, fmt.Errorf("list claims: %w", err)
 	}
 
+	// One lazily-fetched active-Job snapshot per sweep, shared by the timer
+	// pass (dispatch-timeout) and the job-death pass: a run that is
+	// observably alive is never counted dead (#331).
+	var (
+		jobSnapshot []batchv1.Job
+		jobListErr  error
+		jobsFetched bool
+	)
+	activeJobs := func() []batchv1.Job {
+		if !jobsFetched {
+			jobSnapshot, jobListErr = k8s.ListActiveJobs(ctx, deps.Client, wf.Namespace, wf.Name)
+			if jobListErr != nil {
+				log("review-ready: live-job list failed (%v) — deferring to the dispatch-timeout bound", jobListErr)
+			}
+			jobsFetched = true
+		}
+		return jobSnapshot
+	}
+	jobAlive := func(attemptName string) bool {
+		for _, j := range activeJobs() {
+			if j.Labels["harmostes.dev/attempt"] == attemptName {
+				return true
+			}
+		}
+		return false
+	}
+
 	// ── A. In-flight claims: consume / expiry / refresh — never dispatch. ──
 	liveDispatched := 0
 	liveOn := map[string]bool{} // normalized pointer → live claim present
@@ -146,6 +173,14 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 		p.DispatchedAt = r.DispatchedAt.Time
 		res := review.Evaluate(ctx, api, p)
 		if res.Decision == review.DecisionStanddown {
+			if reason := classifyRelease(res.Reason); reason == "dispatch-timeout" && jobAlive(c.Name) {
+				// The bound presumes death, but the Job is observably still
+				// alive (slow deadline enforcement, clock skew): the fact wins.
+				// Leave the claim live — the job-death pass or the next sweep
+				// classifies once the Job is terminal (#331).
+				log("review-ready: claim %s (%s) past DispatchTimeout but its Job is still alive — not counting a death", c.Name, r.PR)
+				continue
+			}
 			if reason := classifyRelease(res.Reason); reason == "dispatch-timeout" {
 				// A dispatched review presumed dead without a verdict IS a
 				// dead dispatch: the breaker counts it and the ledger
@@ -161,31 +196,22 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 	// A dispatched claim whose Job is already terminal does not wait out
 	// the DispatchTimeout: Job-per-attempt makes the death observable, so
 	// recovery is fact-based (ListActiveJobs), not timer-based (#285).
-	var liveJobs []batchv1.Job
+	// Shares the sweep's one job snapshot with the timer pass (#331).
+	fetched := false
 	for _, c := range claims {
 		if r := c.Status.Review; r.DispatchedAt != nil && time.Since(r.DispatchedAt.Time) > jobDeathGrace {
-			var err error
-			liveJobs, err = k8s.ListActiveJobs(ctx, deps.Client, wf.Namespace, wf.Name)
-			if err != nil {
-				log("review-ready: live-job list failed (%v) — deferring to the dispatch-timeout bound", err)
-			}
+			activeJobs()
+			fetched = true
 			break
 		}
 	}
-	if liveJobs != nil {
+	if fetched && jobListErr == nil {
 		for _, c := range claims {
 			r := c.Status.Review
 			if r.DispatchedAt == nil || time.Since(r.DispatchedAt.Time) <= jobDeathGrace {
 				continue
 			}
-			live := false
-			for _, j := range liveJobs {
-				if j.Labels["harmostes.dev/attempt"] == c.Name {
-					live = true
-					break
-				}
-			}
-			if !live {
+			if !jobAlive(c.Name) {
 				log("review-ready: claim %s (%s) has no live job — releasing as dispatch-lost", c.Name, r.PR)
 				releaseDeadClaim(ctx, deps, c, "dispatch-lost", log)
 			}

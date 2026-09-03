@@ -125,3 +125,88 @@ func TestConcurrentLedgerWritersBothSurvive(t *testing.T) {
 		t.Errorf("envelopes = %d, want 2 (run-a's stale array must not revert run-b's envelope)", len(got.Status.NodeResults))
 	}
 }
+
+// TestConcurrentDeadDispatchAccounting (#328): the breaker counter lives on
+// the same claim the gate re-arms, so a death recording must survive a
+// re-arm racing it — the same lost-update class as #318, but scalar. The
+// hook client runs a complete dispatched-death (dispatch → dead release)
+// inside an ArmClaim's get→patch window. The optimistic lock forces the arm
+// to re-read; the death's count must survive both the conflict and the
+// re-arm's Released=false reset.
+func TestConcurrentDeadDispatchAccounting(t *testing.T) {
+	c := startEnv(t)
+	ctx := context.Background()
+
+	wf := fixtureWorkflow(t, c, "breaker-race")
+	const pr = "git.rezus.cloud/tibrez/rhesadox#328"
+	const sha = "3aceb000"
+
+	arm := func(cl client.Client) string {
+		t.Helper()
+		at, err := attempt.ArmClaim(ctx, cl, k8s.Scheme(), wf, pr, sha, "needs-review", false)
+		if err != nil {
+			t.Fatalf("ArmClaim: %v", err)
+		}
+		return at.Name
+	}
+	name := arm(c)
+
+	// Death #1 recorded inside a racing re-arm's write window.
+	disp1 := false
+	interfere := func() {
+		if disp1 {
+			return
+		}
+		disp1 = true
+		if err := attempt.MarkClaimDispatched(ctx, c, "default", name); err != nil {
+			t.Errorf("competing dispatch: %v", err)
+		}
+		if _, _, err := attempt.ReleaseClaimDead(ctx, c, "default", name, "dispatch-lost"); err != nil {
+			t.Errorf("competing dead release: %v", err)
+		}
+	}
+	hooked := &hookClient{Client: c, interfere: interfere}
+	arm(hooked)
+
+	var got v1alpha1.Attempt
+	if err := c.Get(ctx, client.ObjectKey{Namespace: "default", Name: name}, &got); err != nil {
+		t.Fatalf("get attempt: %v", err)
+	}
+	if got.Status.Review.DeadDispatches != 1 {
+		t.Fatalf("dead dispatches after racing re-arm = %d, want 1 — the death was reverted by the arm's stale patch", got.Status.Review.DeadDispatches)
+	}
+
+	// Death #2 lands on the re-armed claim: the count accumulates across
+	// full arm→dispatch→death cycles.
+	if err := attempt.MarkClaimDispatched(ctx, c, "default", name); err != nil {
+		t.Fatalf("dispatch 2: %v", err)
+	}
+	if _, _, err := attempt.ReleaseClaimDead(ctx, c, "default", name, "dispatch-timeout"); err != nil {
+		t.Fatalf("dead release 2: %v", err)
+	}
+	if err := c.Get(ctx, client.ObjectKey{Namespace: "default", Name: name}, &got); err != nil {
+		t.Fatalf("get attempt 2: %v", err)
+	}
+	if got.Status.Review.DeadDispatches != 2 {
+		t.Fatalf("dead dispatches after second death = %d, want 2", got.Status.Review.DeadDispatches)
+	}
+
+	// A head change resolves a NEW attempt (objective identity includes the
+	// SHA, ADR-0005) — its claim must open with a fresh counter while the
+	// old attempt keeps its history.
+	fresh, err := attempt.ArmClaim(ctx, c, k8s.Scheme(), wf, pr, "newer-head", "needs-review", false)
+	if err != nil {
+		t.Fatalf("arm at new head: %v", err)
+	}
+	if fresh.Name == name {
+		t.Fatal("a new head must resolve a new attempt, got the same one")
+	}
+	// ArmClaim returns the pre-patch snapshot (create-time status is empty
+	// on the real API server, #277) — re-read for the persisted claim.
+	if err := c.Get(ctx, client.ObjectKey{Namespace: "default", Name: fresh.Name}, &got); err != nil {
+		t.Fatalf("get fresh attempt: %v", err)
+	}
+	if got.Status.Review == nil || got.Status.Review.DeadDispatches != 0 {
+		t.Fatalf("fresh head's claim must open with a nil/zero counter, got %+v", got.Status.Review)
+	}
+}

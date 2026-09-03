@@ -7,6 +7,7 @@ import (
 	"html/template"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -72,6 +73,7 @@ func (s *Server) handleAttemptList(w http.ResponseWriter, r *http.Request) {
 	if window == "" {
 		window = "24h"
 	}
+	status := r.URL.Query().Get("status")
 	cutoff := windowCutoff(window, time.Now())
 
 	groups := groupAttempts(attempts, cutoff)
@@ -79,10 +81,111 @@ func (s *Server) handleAttemptList(w http.ResponseWriter, r *http.Request) {
 		return groups[i].LastActivity > groups[j].LastActivity
 	})
 
+	// The strip counts the WHOLE window; the tabs filter it. Rank order
+	// floats failures to the top regardless of activity (the orchestration-
+	// list convention: failed first, then by recency).
+	counts := runCounts{Total: len(groups)}
+	for _, g := range groups {
+		switch groupState(g) {
+		case "failed", "dispatch lost":
+			counts.Failed++
+		case "in flight", "reconciling", "queued":
+			counts.InFlight++
+		case "verdict", "validated":
+			counts.Verdicts++
+		}
+	}
+
+	if status == "failed" || status == "inflight" || status == "verdicts" {
+		filtered := groups[:0]
+		for _, g := range groups {
+			st := groupState(g)
+			ok := (status == "failed" && (st == "failed" || st == "dispatch lost")) ||
+				(status == "inflight" && (st == "in flight" || st == "reconciling" || st == "queued")) ||
+				(status == "verdicts" && (st == "verdict" || st == "validated"))
+			if ok {
+				filtered = append(filtered, g)
+			}
+		}
+		groups = filtered
+	}
+	sort.SliceStable(groups, func(i, j int) bool {
+		return stateRank(groupState(groups[i])) < stateRank(groupState(groups[j]))
+	})
+
 	s.render(w, r, "pages/attempts.html", map[string]any{
 		"Groups": groups,
 		"Window": window,
+		"Status": status,
+		"Counts": counts,
 	})
+}
+
+// runCounts feeds the summary strip: the window at a glance.
+type runCounts struct {
+	Total    int
+	Failed   int
+	InFlight int
+	Verdicts int
+}
+
+// groupState collapses a group to one console state — the single vocabulary
+// every list, chip, and rank in the UI shares.
+func groupState(g attemptGroup) string {
+	if g.IsReview {
+		switch g.ClaimState {
+		case claimDispatchLost:
+			return "dispatch lost"
+		case claimInFlight:
+			return "in flight"
+		case claimVerdict:
+			return "verdict"
+		case claimQueued, claimHorizon, claimExpired:
+			return "queued"
+		case claimSuperseded:
+			return "superseded"
+		}
+		return "queued"
+	}
+	switch g.LatestPhase {
+	case "failed":
+		return "failed"
+	case "reconciling":
+		return "reconciling"
+	case "validated":
+		return "validated"
+	case "superseded":
+		return "superseded"
+	}
+	return g.LatestPhase
+}
+
+// stateRank: failures first, then work in motion, then outcomes, then history.
+func stateRank(state string) int {
+	switch state {
+	case "failed", "dispatch lost":
+		return 0
+	case "in flight", "reconciling", "queued":
+		return 1
+	case "verdict", "validated":
+		return 2
+	default:
+		return 3
+	}
+}
+
+// shortAttemptName renders an attempt CR name for humans: the workflow's
+// tail plus a short hash. The full name stays one click away.
+func shortAttemptName(name string) string {
+	n := strings.TrimPrefix(name, "attempt-")
+	if i := strings.LastIndex(n, "-"); i > 0 {
+		wf, hash := n[:i], n[i+1:]
+		if len(hash) > 8 {
+			hash = hash[:8]
+		}
+		return wf + " · " + hash
+	}
+	return n
 }
 
 // attemptGroup is one rollup row: a PR (review class) or a workflow
@@ -177,28 +280,42 @@ func groupAttempts(attempts []v1alpha1.Attempt, cutoff time.Time) []attemptGroup
 	return groups
 }
 
+// Claim-state vocabulary — written by claimState, classified by groupState
+// and wallState. One set of constants: the classifiers match exactly, so
+// copy drift upstream is a compile-time miss, not a silent relabel.
+const (
+	claimQueued       = "queued"
+	claimInFlight     = "review in flight"
+	claimVerdict      = "verdict posted"
+	claimSuperseded   = "superseded by newer head"
+	claimExpired      = "run expired"
+	claimDispatchLost = "dispatch lost, re-arming"
+	claimHorizon      = "horizon reached"
+	claimReleased     = "released"
+)
+
 // claimState renders the gate claim's human state (ADR-0007).
 func claimState(r *v1alpha1.ReviewClaimStatus) string {
 	switch {
 	case r.Released:
 		switch r.ReleaseReason {
 		case "consumed":
-			return "verdict posted"
+			return claimVerdict
 		case "superseded":
-			return "superseded by newer head"
+			return claimSuperseded
 		case "dispatch-timeout":
-			return "run expired"
+			return claimExpired
 		case "dispatch-lost":
-			return "dispatch lost, re-arming"
+			return claimDispatchLost
 		case "horizon":
-			return "horizon reached"
+			return claimHorizon
 		default:
-			return "released"
+			return claimReleased
 		}
 	case r.DispatchedAt != nil:
-		return "review in flight"
+		return claimInFlight
 	default:
-		return "queued"
+		return claimQueued
 	}
 }
 
@@ -605,4 +722,18 @@ func (s *Server) handleAttemptPiSession(w http.ResponseWriter, r *http.Request) 
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="pi-session-%s.jsonl"`, jobName))
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	_, _ = w.Write(raw)
+}
+
+// chipState maps an attempt phase onto the shared chip vocabulary.
+func chipState(phase string) string {
+	switch phase {
+	case "failed":
+		return "failed"
+	case "validated":
+		return "validated"
+	case "superseded":
+		return "superseded"
+	default:
+		return "reconciling"
+	}
 }

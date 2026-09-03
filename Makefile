@@ -8,12 +8,11 @@ IMG_CONTROLLER ?= ghcr.io/tibrezus/harmostes-controller
 IMG_WORKER     ?= ghcr.io/tibrezus/harmostes-worker
 IMG_UI         ?= ghcr.io/tibrezus/harmostes-ui
 TAG           ?= dev
-DS_SRC        ?= ../rezuscloud/design-system
 
 BIN_DIR       := bin
 GO            := go
 
-.PHONY: all build test test-ui vet tidy generate manifests controller-worker docker docker-push docker-ui ui-css-sync clean
+.PHONY: all build test test-ui vet tidy generate manifests controller-worker docker docker-push docker-ui clean
 
 all: test build
 
@@ -87,18 +86,6 @@ web-build:
 web-dev:
 	cd web && npm run dev
 
-## ui-css-sync: re-extract component CSS from the design system repo.
-##   Run after updating the design system: make ui-css-sync DS_SRC=../rezuscloud/design-system
-##   Fails without writing if DS_SRC resolves to no component HTML (empty-glob guard).
-ui-css-sync:
-	@python3 -c "\
-	import re, glob; \
-		files = sorted(glob.glob('$(DS_SRC)/components/*.html')) or __import__('sys').exit('ui-css-sync: no components/*.html under DS_SRC=$(DS_SRC) - refusing to truncate components.css'); \
-		parts = []; \
-		[parts.extend(re.findall(r'<style>(.*?)</style>', open(f).read(), re.DOTALL)) for f in files]; \
-		parts or __import__('sys').exit('ui-css-sync: ' + str(len(files)) + ' component file(s) under DS_SRC=$(DS_SRC) contain no <style> blocks - refusing to truncate components.css'); \
-		css = '\n\n'.join(p.strip() for p in parts); \
-		open('internal/ui/static/css/components.css', 'w').write('/* Consolidated component styles — extracted from rezuscloud/design-system/components/*.html\n   Do not edit by hand. Regenerate with: make ui-css-sync\n   Source: ' + str(len(parts)) + ' component style blocks */\n\n' + css + '\n'); \
-		print(f'Synced {len(files)} components / {len(parts)} style blocks')"
+##: re-extract component CSS from the design system repo.
 clean:
 	rm -rf $(BIN_DIR)

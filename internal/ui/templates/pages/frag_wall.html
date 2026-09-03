@@ -1,41 +1,53 @@
 {{define "pages/frag_wall.html"}}
-{{- /* frag_wall.html — the wall grid. Rendered by the page AND streamed as an
-      SSE fragment on every lifecycle event (one template, one truth). */ -}}
+{{- /* frag_wall.html — the live console: one row per active workflow.
+      Rendered by the page AND streamed as an SSE fragment (one truth).
+      Repeated dispatch-losses aggregate into an alert line instead of
+      repeating as indistinguishable rows. */ -}}
+{{- $lost := 0 -}}
+{{- range .Groups}}{{if eq (wallState .) "dispatch lost"}}{{$lost = add $lost 1}}{{end}}{{end -}}
+{{- if gt $lost 1}}
+<div class="alertline" data-testid="wall-alert">
+	<span class="alertline-icon"><svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 1L15 14H1L8 1zm0 4.5L4.6 11.5h6.8L8 5.5zM8 9a.9.9 0 01.9.9v.7a.9.9 0 01-1.8 0v-.7A.9.9 0 018 9zm0 2.2a.8.8 0 110 1.6.8.8 0 010-1.6z" fill-rule="evenodd"/></svg></span>
+	<span><b>{{$lost}}</b> subjects have lost dispatches and are re-arming — the schedule is converging, but this is worth a look.</span>
+	<a href="/runs?window=24h&status=failed">View in Runs →</a>
+</div>
+{{- end -}}
 <div class="wall-grid">
-{{- range .Groups}}
-	<div class="ds-card wall-card">
-		<a class="wall-card-link" href="{{.LastRunURL}}" data-testid="wall-card" data-subject="{{.Subject}}" aria-label="Open latest run of {{.Subject}}"></a>
-		<div class="wall-card-head">
-			{{if .IsReview}}<span class="wall-card-title" data-testid="wall-card-title">⟡ {{.Subject}}</span>
-			{{else}}<span class="wall-card-title" data-testid="wall-card-title"><code>{{.Subject}}</code></span>{{end}}
-			{{if .IsReview}}
-				{{if eq .ClaimState "review in flight"}}<span class="ds-status-badge ds-status-badge--warning">● in flight</span>
-				{{else if eq .ClaimState "verdict posted"}}<span class="ds-status-badge ds-status-badge--positive">✓ verdict</span>
-				{{else if eq .ClaimState "queued"}}<span class="ds-status-badge ds-status-badge--neutral">◌ armed</span>
-				{{else}}<span class="ds-status-badge ds-status-badge--neutral">{{.ClaimState}}</span>{{end}}
-			{{else if eq .Phase "validated"}}<span class="ds-status-badge ds-status-badge--positive">✓ validated</span>
-			{{else if eq .Phase "reconciling"}}<span class="ds-status-badge ds-status-badge--warning">↻ running</span>
-			{{else if eq .Phase "failed"}}<span class="ds-status-badge ds-status-badge--negative">✗ failed</span>
-			{{else}}<span class="ds-status-badge ds-status-badge--neutral">{{.Phase}}</span>{{end}}
-		</div>
-		<div class="wall-card-meta">
-			<span>{{.WorkflowRef}}</span>
-			{{if .HeadSHA}}<span>· <code>{{.HeadSHA}}</code></span>{{end}}
-			{{if .Count}}<span>· {{.Count}} run{{if ne .Count 1}}s{{end}}</span>{{end}}
-			{{if .LastActivity}}<span>· {{.LastActivity}}</span>{{end}}
-		</div>
-		{{if .Usage}}
-		<div class="wall-card-meta wall-card-usage">
-			{{if .Usage.Model}}<span class="wall-usage-model">{{.Usage.Model}}</span>{{end}}
-			<span>↑{{.Usage.InputTokens}} ↓{{.Usage.OutputTokens}}</span>
-			{{if .Usage.Turns}}<span>· {{.Usage.Turns}} turns</span>{{end}}
-		</div>
-		{{end}}
+{{- if .Groups}}
+	<div class="tbl-wrap">
+		<table class="tbl">
+			<thead>
+				<tr>
+					<th>State</th>
+					<th>Subject</th>
+					<th>Workflow</th>
+					<th class="num">Runs</th>
+					<th class="num">Tokens</th>
+					<th class="time">Updated</th>
+				</tr>
+			</thead>
+			<tbody>
+			{{- range .Groups}}
+				{{- $st := wallState . -}}
+				<tr data-testid="wall-card" data-subject="{{.Subject}}" {{if .IsReview}}data-review="true"{{end}} {{if eq $st "failed"}}class="is-failed"{{end}}>
+					<td>{{template "state-chip" $st}}</td>
+					<td>
+						<a href="{{.LastRunURL}}" data-testid="wall-card-title">{{if .IsReview}}<strong>{{.Subject}}</strong>{{else}}<span class="ids">{{.Subject}}</span>{{end}}</a>
+						{{if .HeadSHA}} <span class="ids" style="color:var(--fg-muted)">{{.HeadSHA}}</span>{{end}}
+					</td>
+					<td><span class="ids">{{.WorkflowRef}}</span></td>
+					<td class="num">{{.Count}}</td>
+					<td class="num">{{if .Usage}}<span {{if .Usage.Model}}title="{{.Usage.Model}}"{{end}}>↑{{.Usage.InputTokens}} ↓{{.Usage.OutputTokens}}</span>{{if .Usage.Model}} <span class="wall-usage-model ids" style="color:var(--ink-soft)">{{.Usage.Model}}</span>{{end}}{{end}}</td>
+					<td class="time">{{.LastActivity}}</td>
+				</tr>
+			{{- end}}
+			</tbody>
+		</table>
 	</div>
 {{- else}}
 	<div class="ds-empty-state">
-		<p>Nothing has run yet. The wall lights up when a workflow runs.</p>
-		<p><a href="/workflows" class="ds-link">View workflows →</a></p>
+		<p>Nothing has run yet. The console lights up when a workflow fires.</p>
+		<p><a href="/workflows">View workflows →</a></p>
 	</div>
 {{- end}}
 </div>

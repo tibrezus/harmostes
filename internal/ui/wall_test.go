@@ -85,7 +85,7 @@ func TestWallRendersGroups(t *testing.T) {
 	body := rec.Body.String()
 	for _, want := range []string{
 		"wall-grid",
-		"⟡ 1710",                             // review subject
+		"1710",                               // review subject
 		"in flight",                          // claim state badge
 		"abcdef1",                            // short head SHA
 		"pr-review-x",                        // workflow ref
@@ -297,4 +297,50 @@ func TestRelTime(t *testing.T) {
 			t.Errorf("relTime(%q) = %q, want %q", c.rfc, got, c.want)
 		}
 	}
+}
+
+// Repeated dispatch-losses — the signal that motivated the alert line —
+// aggregate into ONE banner instead of repeating as indistinguishable rows.
+// A single lost dispatch stays quiet.
+func TestWallAlertAggregatesDispatchLosses(t *testing.T) {
+	lost := func(name, wf, pr string) *v1alpha1.Attempt {
+		att := wallReviewAttempt(name, wf)
+		att.Status.Review = &v1alpha1.ReviewClaimStatus{
+			PR:            pr,
+			Released:      true,
+			ReleaseReason: "dispatch-lost",
+		}
+		return att
+	}
+
+	t.Run("two losses collapse into one alert", func(t *testing.T) {
+		s := wallTestServer(t,
+			lost("attempt-pr-review-a-1", "pr-review-a", "1700"),
+			lost("attempt-pr-review-b-1", "pr-review-b", "1701"),
+		)
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.Header.Set("X-Authentik-Username", "alice")
+		rec := httptest.NewRecorder()
+		s.Routes().ServeHTTP(rec, req)
+
+		body := rec.Body.String()
+		if !strings.Contains(body, "data-testid=\"wall-alert\"") {
+			t.Error("wall missing the dispatch-loss alert line")
+		}
+		if got := strings.Count(body, "dispatch lost"); got != 2 {
+			t.Errorf("dispatch-lost chips = %d, want 2 (one per subject, no more)", got)
+		}
+	})
+
+	t.Run("one loss stays quiet", func(t *testing.T) {
+		s := wallTestServer(t, lost("attempt-pr-review-a-1", "pr-review-a", "1700"))
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.Header.Set("X-Authentik-Username", "alice")
+		rec := httptest.NewRecorder()
+		s.Routes().ServeHTTP(rec, req)
+
+		if strings.Contains(rec.Body.String(), "data-testid=\"wall-alert\"") {
+			t.Error("a single loss must not raise the alert line")
+		}
+	})
 }

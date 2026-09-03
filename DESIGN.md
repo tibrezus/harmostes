@@ -2,105 +2,48 @@
 
 ## Visual Theme
 
-Dual-era retro computing (RezusCloud Design System). Mac System 1 (1984) light mode: warm amber-tinted neutrals, 1px rule borders, paper texture feel. NeXTSTEP (1988) dark mode: cool slate neutrals, beveled 2px borders, teal accent. The theme toggle shifts between two chapters of the same computing story.
+**Operations console** — the visual language of k8s control-plane tooling: `kubectl -o wide` density with ergonomic finishing. Neutral graphite surfaces, monospace identifiers, status color as the only expressive device. The direction is deliberately copied from the orchestration canon (Argo Workflows, Temporal, Conductor, GitHub Actions) at the operator's direction: one row per execution, status chip first, nothing decorative.
+
+Dark is the default theme (operators on consoles); a tuned light theme ships alongside via the toggle (`html.dark`).
 
 ## Color Palette (OKLCH)
 
-### Mac mode (light)
+Neutral ground, one blue accent, four semantic status hues. Everything else is grayscale.
 
-| Token | Value | Role |
-|-------|-------|------|
-| paper | `oklch(99.5% 0.004 85)` | Page background |
-| surface | `oklch(95.5% 0.004 85)` | Card/panel background |
-| surface-strong | `oklch(88.5% 0.006 85)` | Sidebar, headers |
-| ink | `oklch(14% 0.008 65)` | Primary text |
-| ink-muted | `oklch(30% 0.008 65)` | Secondary text |
-| rule | `oklch(72% 0.005 85)` | Borders, dividers |
-| accent-gold | `oklch(78% 0.16 75)` | Accent, links |
-
-### NeXT mode (dark)
-
-| Token | Value | Role |
-|-------|-------|------|
-| next-black | `oklch(6% 0.005 270)` | Page background |
-| next-dark | `oklch(20% 0.006 270)` | Sidebar, panels |
-| next-mid | `oklch(34% 0.006 270)` | Surface variation |
-| next-light | `oklch(58% 0.006 270)` | Borders, secondary text |
-| next-white | `oklch(88% 0.004 270)` | Primary text |
-| next-teal | `oklch(60% 0.08 170)` | Accent, active states |
-
-### Semantic
-
-| Token | Mac | NeXT |
-|-------|-----|------|
-| positive | `oklch(55% 0.12 150)` | `oklch(75% 0.14 150)` |
-| negative | `oklch(50% 0.12 25)` | `oklch(65% 0.14 25)` |
+- **Ground (dark):** bg `oklch(14.5% 0.006 250)`, elevated `17.5%`, tertiary `22%`
+- **Ground (light):** bg `oklch(97% 0.002 250)`, elevated white
+- **Foreground:** fg `oklch(92% 0.004 250)` / muted `64%` (dark); ink `21%` / muted `47%` (light)
+- **Border:** `27%` (dark), `90%` (light) — hairlines, 1px
+- **Accent (interactive):** blue `oklch(0.68 0.14 250)` dark / `0.55 0.16 253` light — links, active nav, running state
+- **Status:** success `oklch(0.72 0.15 152)`, warning `oklch(0.78 0.14 80)`, danger `oklch(0.68 0.18 25)`, running = accent, neutral gray
+- **Chips** render status at low opacity over the ground (`--chip-*-bg` ~12–14%) — color-coded, never color-only (chips pair color + label)
 
 ## Typography
 
-| Family | Font | Weight | Purpose |
-|--------|------|--------|---------|
-| display | Silkscreen | 700 | Headings, labels, nav, badges |
-| body | system-ui | 400 | Paragraph copy, descriptions |
-| mono | VT323 | 400 | Terminal output, code, timestamps, tool results |
+System stacks only. Display faces are retired.
 
-### Scale
-
-| Level | Size | Usage |
-|-------|------|-------|
-| Display | text-8xl | (not used in product UI) |
-| Headline | text-2xl to text-3xl | Page titles |
-| Title | text-lg to text-xl | Section headings |
-| Body | text-sm to text-lg | Descriptions, content |
-| Label | text-xs, uppercase, tracking-widest | Nav links, badges, status, meta |
-| Mono | text-sm to text-base | Code, timestamps, tool I/O |
+- **UI:** `system-ui, -apple-system, "Segoe UI", Roboto, …`
+- **Identifiers, timestamps, counts:** `ui-monospace, "SF Mono", "Cascadia Mono", …` — every CR name, hash, and time is mono; attempt names render short (`workflow · hash8`), full names live one click away
+- **Scale:** 0.72 / 0.8 / 0.85 / 0.9 / 1.05 / 1.25 rem; table body 0.8rem; page titles 1.25rem at weight 650
 
 ## Components
 
-### Sidebar
-- Width: 14rem
-- Mac: surface-strong bg, 1px right border, active pill bg
-- NeXT: next-dark bg, 2px beveled right border, beveled active state
-
-### Data Table
-- Mac: 1px rule borders, alternating paper/surface rows
-- NeXT: minimal borders, alternating next-black/next-dark rows
-- Cell padding: 0.75rem horizontal, 0.5rem vertical
-
-### Status Indicators
-- Status dot: small colored circle + text label (never color alone)
-- Positive: green dot + "Green"/"Validated"/"Ready"
-- Negative: red dot + "Failed"/"Error"
-- Warning: amber dot + "Reconciling"/"Running"
-- Neutral: gray dot + "Idle"/"Superseded"
-
-### Buttons
-- Primary: accent bg (gold/teal), ink/next-black text
-- Secondary: surface bg, 1px/2px border
-- Danger: negative bg
-- XS variant: text-xs, 0.125rem 0.5rem padding
-
-### Code/Terminal Blocks
-- VT323 font, surface/next-black bg
-- No border radius (retro sharp corners)
-- Scrollable with max-height
+- **`.tbl`** — the primary object. Dense table: sticky uppercase micro-headers, 32px rows, hairline row borders, hover highlight, right-aligned tabular-numeric time/count columns, `.is-failed` row tint. Sub-rows (`.subrow`) render hidden and expand per-group via the chevron cell.
+- **`.chip`** — status vocabulary shared by every view: `failed`, `in flight`, `reconciling`, `queued`, `armed`, `dispatch lost`, `verdict`, `validated`, `superseded`. One chip component, dot + label, soft background.
+- **`.tabs` / `.seg`** — filter tabs (state) and window segmented control (24h · 7d · all), always with counts; the tab counts ARE the window summary.
+- **`.alertline`** — aggregated recurring failures (e.g. multiple dispatch losses) as one actionable banner with an SVG marker. Repetition is collapsed, never repeated as rows.
+- **Sidebar** — slim 190px, mono logo, icon+label links, active state = inset accent bar + tint, count badges where useful.
+- **Empty states** — dashed-border card, one sentence, one next action.
 
 ## Layout
 
-- App shell: fixed sidebar (14rem) + scrollable main content
-- Page header: title + meta + actions, separated by 1px/2px border
-- Content sections: separated by border, no cards
-- Dense spacing: 0.5rem to 1rem between elements, not 2rem+
+`app-layout` flex: 190px sidebar + fluid main (max 1400px, 1rem/1.5rem padding). Page header: title left, identity + theme toggle right. Below 900px the sidebar becomes a top bar and tables scroll horizontally inside their wrap.
 
-## Motion
+## Principles
 
-- Easings: ease-out-quart/quint/expo
-- No bounce, no elastic
-- Full reduced-motion support
-- Minimal animation (status changes, expand/collapse)
-
-## Borders
-
-- Mac mode: 1px solid rule color
-- NeXT mode: 2px beveled (light top-left, dark bottom-right)
-- No border-radius (retro sharp corners) except where the design system explicitly uses it
+1. **The table is the product.** Every list is a real table with column headers — no text walls, ever.
+2. **Failed first.** Failures rank above in-flight work, which ranks above outcomes and history, on every list.
+3. **Humans read labels, machines read hashes.** Subjects render as PR numbers/targets; hashes and full CR names are drill-down.
+4. **Repetition is a defect.** Identical rows collapse into counts; recurring failures collapse into one alert.
+5. **Status color is the only decoration.** One blue accent for interactivity; every other hue is semantic.
+6. **k8s-native density.** Console rows, tabular numerals, relative time. Density is respect — but it is *organized* density.

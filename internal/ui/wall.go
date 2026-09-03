@@ -236,3 +236,34 @@ func relTime(rfc3339 string, now time.Time) string {
 		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
 	}
 }
+
+// wallState collapses a wall row to the shared console state vocabulary —
+// the same chips the runs list speaks, so the whole UI reads as one system.
+func wallState(g wallGroup) string {
+	if g.IsReview {
+		switch g.ClaimState {
+		case claimDispatchLost:
+			return "dispatch lost"
+		case claimInFlight:
+			return "in flight"
+		case claimVerdict:
+			return "verdict"
+		case claimQueued, claimHorizon, claimExpired:
+			return "queued"
+		case claimSuperseded:
+			return "superseded"
+		}
+		return "queued"
+	}
+	switch g.Phase {
+	case "failed":
+		return "failed"
+	case "reconciling":
+		return "reconciling"
+	case "validated":
+		return "validated"
+	case "superseded":
+		return "superseded"
+	}
+	return g.Phase
+}

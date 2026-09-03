@@ -229,6 +229,11 @@ func parseTemplates() (*template.Template, error) {
 		// stale map.js/styles across releases (no cache headers are set), and a
 		// new chart must ship its fixed assets to every client.
 		"assetVersion": func() string { return version.String() },
+		"groupState":   groupState,
+		"chipState":    chipState,
+		"shortName":    shortAttemptName,
+		"wallState":    wallState,
+		"add":          func(a, b int) int { return a + b },
 		"statusClass":  statusClass,
 		"statusText":   statusText,
 		"splitLines":   splitLines,

@@ -35,7 +35,7 @@
 				{{range $gi, $g := .Groups}}
 				{{- $state := groupState $g -}}
 				<tr {{if eq $state "failed"}}class="is-failed"{{end}}>
-					<td class="exp" data-group="{{$gi}}" title="Show attempts" role="button" aria-label="Toggle attempts">▸</td>
+					<td class="exp" data-group="{{$gi}}" title="Show attempts" role="button" tabindex="0" aria-label="Toggle attempts" aria-expanded="false">▸</td>
 					<td>{{template "state-chip" $state}}</td>
 					<td data-testid="subject-cell">
 						{{if $g.IsReview}}<strong>{{$g.Subject}}</strong>{{else}}<span class="ids">{{$g.Subject}}</span>{{end}}
@@ -48,31 +48,16 @@
 				<tr class="subrow" data-group="{{$gi}}">
 					<td></td>
 					<td>{{template "state-chip" (chipState .Phase)}}</td>
-					<td colspan="4">
+					<td colspan="3">
 						<a href="/runs/{{.Name}}" data-testid="run-link" data-phase="{{.Phase}}">{{shortName .Name}}</a>
 						<span style="color:var(--fg-muted)"> · {{.RunCount}} run{{if ne .RunCount 1}}s{{end}}{{if .LastRunAt}} · {{.LastRunAt}}{{end}}</span>
 					</td>
-					<td></td>
 				</tr>
 				{{end}}
 				{{end}}
 			</tbody>
 		</table>
 	</div>
-	<script>
-	// Expand/collapse attempt sub-rows per group. Server renders them
-	// hidden: the list stays a table, the history stays one click away.
-	document.querySelectorAll('.tbl .exp').forEach(function (el) {
-		el.addEventListener('click', function () {
-			var gi = el.dataset.group;
-			var open = el.textContent === '▾';
-			el.textContent = open ? '▸' : '▾';
-			document.querySelectorAll('.tbl tr.subrow[data-group="' + gi + '"]').forEach(function (r) {
-				r.classList.toggle('is-open', !open);
-			});
-		});
-	});
-	</script>
 {{else}}
 	<div class="ds-empty-state">
 		<p>No runs in this window. Runs appear when a workflow fires.</p>

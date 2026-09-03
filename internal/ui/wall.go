@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
-	"strings"
 	"time"
 )
 
@@ -242,16 +241,17 @@ func relTime(rfc3339 string, now time.Time) string {
 // the same chips the runs list speaks, so the whole UI reads as one system.
 func wallState(g wallGroup) string {
 	if g.IsReview {
-		if strings.Contains(g.ClaimState, "dispatch lost") {
-			return "dispatch lost"
-		}
 		switch g.ClaimState {
-		case "review in flight":
+		case claimDispatchLost:
+			return "dispatch lost"
+		case claimInFlight:
 			return "in flight"
-		case "verdict posted":
+		case claimVerdict:
 			return "verdict"
-		case "queued":
+		case claimQueued, claimHorizon, claimExpired:
 			return "queued"
+		case claimSuperseded:
+			return "superseded"
 		}
 		return "queued"
 	}

@@ -233,7 +233,6 @@ func parseTemplates() (*template.Template, error) {
 		"chipState":    chipState,
 		"shortName":    shortAttemptName,
 		"wallState":    wallState,
-		"contains":     strings.Contains,
 		"add":          func(a, b int) int { return a + b },
 		"statusClass":  statusClass,
 		"statusText":   statusText,

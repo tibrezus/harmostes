@@ -133,16 +133,17 @@ type runCounts struct {
 // every list, chip, and rank in the UI shares.
 func groupState(g attemptGroup) string {
 	if g.IsReview {
-		if strings.Contains(g.ClaimState, "dispatch lost") {
-			return "dispatch lost"
-		}
 		switch g.ClaimState {
-		case "review in flight":
+		case claimDispatchLost:
+			return "dispatch lost"
+		case claimInFlight:
 			return "in flight"
-		case "verdict posted":
+		case claimVerdict:
 			return "verdict"
-		case "queued":
+		case claimQueued, claimHorizon, claimExpired:
 			return "queued"
+		case claimSuperseded:
+			return "superseded"
 		}
 		return "queued"
 	}
@@ -279,28 +280,42 @@ func groupAttempts(attempts []v1alpha1.Attempt, cutoff time.Time) []attemptGroup
 	return groups
 }
 
+// Claim-state vocabulary — written by claimState, classified by groupState
+// and wallState. One set of constants: the classifiers match exactly, so
+// copy drift upstream is a compile-time miss, not a silent relabel.
+const (
+	claimQueued       = "queued"
+	claimInFlight     = "review in flight"
+	claimVerdict      = "verdict posted"
+	claimSuperseded   = "superseded by newer head"
+	claimExpired      = "run expired"
+	claimDispatchLost = "dispatch lost, re-arming"
+	claimHorizon      = "horizon reached"
+	claimReleased     = "released"
+)
+
 // claimState renders the gate claim's human state (ADR-0007).
 func claimState(r *v1alpha1.ReviewClaimStatus) string {
 	switch {
 	case r.Released:
 		switch r.ReleaseReason {
 		case "consumed":
-			return "verdict posted"
+			return claimVerdict
 		case "superseded":
-			return "superseded by newer head"
+			return claimSuperseded
 		case "dispatch-timeout":
-			return "run expired"
+			return claimExpired
 		case "dispatch-lost":
-			return "dispatch lost, re-arming"
+			return claimDispatchLost
 		case "horizon":
-			return "horizon reached"
+			return claimHorizon
 		default:
-			return "released"
+			return claimReleased
 		}
 	case r.DispatchedAt != nil:
-		return "review in flight"
+		return claimInFlight
 	default:
-		return "queued"
+		return claimQueued
 	}
 }
 

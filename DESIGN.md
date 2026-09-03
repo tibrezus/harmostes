@@ -30,8 +30,7 @@ System stacks only. Display faces are retired.
 
 - **`.tbl`** — the primary object. Dense table: sticky uppercase micro-headers, 32px rows, hairline row borders, hover highlight, right-aligned tabular-numeric time/count columns, `.is-failed` row tint. Sub-rows (`.subrow`) render hidden and expand per-group via the chevron cell.
 - **`.chip`** — status vocabulary shared by every view: `failed`, `in flight`, `reconciling`, `queued`, `armed`, `dispatch lost`, `verdict`, `validated`, `superseded`. One chip component, dot + label, soft background.
-- **`.tabs` / `.seg`** — filter tabs (state) and window segmented control (24h · 7d · all), always with counts.
-- **`.strip`** — the window at a glance: total / failed / in flight / verdicts.
+- **`.tabs` / `.seg`** — filter tabs (state) and window segmented control (24h · 7d · all), always with counts; the tab counts ARE the window summary.
 - **`.alertline`** — aggregated recurring failures (e.g. multiple dispatch losses) as one actionable banner with an SVG marker. Repetition is collapsed, never repeated as rows.
 - **Sidebar** — slim 190px, mono logo, icon+label links, active state = inset accent bar + tint, count badges where useful.
 - **Empty states** — dashed-border card, one sentence, one next action.

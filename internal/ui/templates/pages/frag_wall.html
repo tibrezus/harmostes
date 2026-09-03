@@ -4,7 +4,7 @@
       Repeated dispatch-losses aggregate into an alert line instead of
       repeating as indistinguishable rows. */ -}}
 {{- $lost := 0 -}}
-{{- range .Groups}}{{if contains .ClaimState "dispatch lost"}}{{$lost = add $lost 1}}{{end}}{{end -}}
+{{- range .Groups}}{{if eq (wallState .) "dispatch lost"}}{{$lost = add $lost 1}}{{end}}{{end -}}
 {{- if gt $lost 1}}
 <div class="alertline" data-testid="wall-alert">
 	<span class="alertline-icon"><svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 1L15 14H1L8 1zm0 4.5L4.6 11.5h6.8L8 5.5zM8 9a.9.9 0 01.9.9v.7a.9.9 0 01-1.8 0v-.7A.9.9 0 018 9zm0 2.2a.8.8 0 110 1.6.8.8 0 010-1.6z" fill-rule="evenodd"/></svg></span>

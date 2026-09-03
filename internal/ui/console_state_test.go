@@ -6,7 +6,12 @@ package ui
 // silent-degrade hazard (#326).
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -119,6 +124,75 @@ func TestShortAttemptName(t *testing.T) {
 	for in, want := range cases {
 		if got := shortAttemptName(in); got != want {
 			t.Errorf("shortAttemptName(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// The status filter (the feature the tabs render) is Go logic — tested at
+// the handler level over the fake client: selection correctness, tab-count
+// consistency, and unknown values behaving as "all".
+func TestHandleAttemptList_StatusFilter(t *testing.T) {
+	// review builds a claim whose DERIVED state is the given vocabulary.
+	review := func(state, pr string) *v1alpha1.ReviewClaimStatus {
+		switch state {
+		case claimDispatchLost:
+			return &v1alpha1.ReviewClaimStatus{PR: pr, Released: true, ReleaseReason: "dispatch-lost"}
+		case claimInFlight:
+			return &v1alpha1.ReviewClaimStatus{PR: pr, DispatchedAt: &metav1.Time{Time: time.Now()}}
+		case claimVerdict:
+			return &v1alpha1.ReviewClaimStatus{PR: pr, Released: true, ReleaseReason: "consumed"}
+		default:
+			return &v1alpha1.ReviewClaimStatus{PR: pr}
+		}
+	}
+	mk := func(name, owner, phase string, rc *v1alpha1.ReviewClaimStatus) *v1alpha1.Attempt {
+		return &v1alpha1.Attempt{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: name, Namespace: "test-ns",
+				Labels:            map[string]string{v1alpha1.OwnerLabel: owner},
+				CreationTimestamp: metav1.Now(),
+			},
+			Spec: v1alpha1.AttemptSpec{WorkflowRef: "wf", Objective: v1alpha1.ObjectiveSpec{
+				Kind: v1alpha1.ObjectiveKindPRReview,
+			}},
+			Status: v1alpha1.AttemptStatus{Phase: phase, Review: rc},
+		}
+	}
+
+	s := adminTestServer(t,
+		mk("attempt-wf-lost", "tibrez", "reconciling", review(claimDispatchLost, "1")),
+		mk("attempt-wf-flight", "tibrez", "reconciling", review(claimInFlight, "2")),
+		mk("attempt-wf-verdict", "tibrez", "validated", review(claimVerdict, "3")),
+	)
+
+	get := func(status string) (int, string) {
+		req := httptest.NewRequest(http.MethodGet, "/runs?window=all&status="+status, nil).WithContext(
+			withIdentity(context.Background(), idWith("tibrez", "harmostes-admins")))
+		rec := httptest.NewRecorder()
+		s.handleAttemptList(rec, req)
+		return rec.Code, rec.Body.String()
+	}
+
+	code, body := get("failed")
+	if code != http.StatusOK {
+		t.Fatalf("status filter failed: %d", code)
+	}
+	if !strings.Contains(body, "attempt-wf-lost") || strings.Contains(body, "attempt-wf-flight") {
+		t.Error("failed tab must select only dispatch-lost groups")
+	}
+	_, body = get("inflight")
+	if !strings.Contains(body, "attempt-wf-flight") || strings.Contains(body, "attempt-wf-lost") {
+		t.Error("inflight tab must select only in-flight groups")
+	}
+	_, body = get("verdicts")
+	if !strings.Contains(body, "attempt-wf-verdict") || strings.Contains(body, "attempt-wf-lost") {
+		t.Error("verdicts tab must select only verdict groups")
+	}
+	// Unknown values behave as "all": every group renders.
+	_, body = get("garbage")
+	for _, want := range []string{"attempt-wf-lost", "attempt-wf-flight", "attempt-wf-verdict"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("unknown status must render all; missing %q", want)
 		}
 	}
 }

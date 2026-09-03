@@ -2,7 +2,7 @@
  * harmostes UI components — v2 "operations console".
  *
  * The kit is table-first: dense tables, status chips, filter tabs, summary
- * strips. Copied from the orchestration canon (Argo / Temporal / Conductor /
+ * Copied from the orchestration canon (Argo / Temporal / Conductor /
  * Actions), not invented: one row per execution, chip leads, mono IDs,
  * relative time, failed-first.
  */
@@ -167,38 +167,6 @@
 
 .page-content { min-width: 0; }
 
-/* ===== Summary strip — the state of the window in one line ===== */
-.strip {
-	display: flex;
-	align-items: center;
-	gap: var(--sp-4);
-	padding: var(--sp-2) var(--sp-3);
-	background: var(--bg-alt);
-	border: 1px solid var(--border);
-	border-radius: var(--radius-lg);
-	margin-bottom: var(--sp-3);
-	font-size: var(--fs-sm);
-	flex-wrap: wrap;
-}
-
-.strip-item {
-	display: inline-flex;
-	align-items: center;
-	gap: var(--sp-2);
-	color: var(--fg-muted);
-}
-
-.strip-item b {
-	font-family: var(--font-mono);
-	font-size: var(--fs-md);
-	color: var(--fg);
-	font-weight: 600;
-}
-
-.strip-item--fail b { color: var(--danger); }
-.strip-item--run b { color: var(--running); }
-.strip-item--ok b { color: var(--success); }
-
 /* ===== Filter bar — tabs left, window segmented right ===== */
 .filterbar {
 	display: flex;
@@ -274,6 +242,7 @@
 	border: 1px solid var(--border);
 	border-radius: var(--radius-lg);
 	overflow: auto;
+	max-height: 72vh; /* sticky headers need a scrolling region to stick in */
 }
 
 .tbl {
@@ -508,7 +477,6 @@
 
 .wall-grid { min-width: 0; }
 
-#wall-grid.stale,
 .wall-stale { opacity: 0.45; }
 
 /* ===== Misc legacy, re-skinned ===== */

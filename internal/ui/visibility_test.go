@@ -3,7 +3,9 @@ package ui
 // The owner label is a single point of failure for UI visibility: it has
 // churned historically (tibrezus → tibrez) and automation-written CRs carry
 // no owner at all. Admin groups see across owner labels (#324); everyone
-// else keeps the strictly-scoped view.
+// else keeps the strictly-scoped view. The privilege gate requires an
+// Authentik-authoritative identity — the X-Forwarded-* fallback headers are
+// client-suppliable and never grant the bypass.
 
 import (
 	"context"
@@ -39,7 +41,33 @@ func attemptOwned(name, owner string) *v1alpha1.Attempt {
 }
 
 func idWith(name string, groups ...string) *Identity {
+	return &Identity{Username: name, Groups: groups, Authoritative: true}
+}
+
+// forwardedIdentity simulates an identity that arrived only via the legacy
+// X-Forwarded-* fallback headers — client-suppliable, never privileged.
+func forwardedIdentity(name string, groups ...string) *Identity {
 	return &Identity{Username: name, Groups: groups}
+}
+
+func workflowOwned(name, owner string) *v1alpha1.Workflow {
+	labels := map[string]string{v1alpha1.WorkflowLabel: name}
+	if owner != "" {
+		labels[v1alpha1.OwnerLabel] = owner
+	}
+	return &v1alpha1.Workflow{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "test-ns", Labels: labels},
+	}
+}
+
+func TestParseAdminGroups(t *testing.T) {
+	if got := ParseAdminGroups(""); got != nil {
+		t.Errorf("empty env → %v, want nil", got)
+	}
+	got := ParseAdminGroups(" harmostes-admins , ops ,, ")
+	if len(got) != 2 || got[0] != "harmostes-admins" || got[1] != "ops" {
+		t.Errorf("ParseAdminGroups = %v, want [harmostes-admins ops]", got)
+	}
 }
 
 func TestVisibleOwner(t *testing.T) {
@@ -52,6 +80,15 @@ func TestVisibleOwner(t *testing.T) {
 	regular := idWith("tibrez", "users")
 	if got := s.visibleOwner(regular); got != "tibrez" {
 		t.Errorf("regular visibleOwner = %q, want \"tibrez\"", got)
+	}
+	// Fail-closed: a missing identity must never widen the list.
+	if got := s.visibleOwner(nil); got == "" {
+		t.Error("nil identity visibleOwner must not be unrestricted")
+	}
+	// A forwarded-only identity never holds the bypass, even with the group.
+	spoof := forwardedIdentity("tib", "harmostes-admins")
+	if got := s.visibleOwner(spoof); got != "tib" {
+		t.Errorf("forwarded-only identity visibleOwner = %q, want scoped \"tib\"", got)
 	}
 	// A server without admin groups configured keeps everyone scoped.
 	plain := &Server{}
@@ -67,7 +104,7 @@ func TestAttemptList_AdminSeesAcrossOwnerLabels(t *testing.T) {
 		attemptOwned("attempt-ownerless", ""), // automation-written CRs carry no owner
 	)
 
-	req := httptest.NewRequest(http.MethodGet, "/runs", nil).WithContext(
+	req := httptest.NewRequest(http.MethodGet, "/runs?window=all", nil).WithContext(
 		withIdentity(context.Background(), idWith("tib", "harmostes-admins")))
 	atts, err := s.listAttempts(req, s.visibleOwner(idWith("tib", "harmostes-admins")))
 	if err != nil {
@@ -88,6 +125,37 @@ func TestAttemptList_AdminSeesAcrossOwnerLabels(t *testing.T) {
 	}
 }
 
+// Handler-layer proof (the shipping path): an admin rendering /runs sees
+// attempts across owner labels; a regular identity sees only their own.
+func TestHandleAttemptList_AdminHandlerView(t *testing.T) {
+	s := adminTestServer(t,
+		attemptOwned("attempt-alice", "alice"),
+		attemptOwned("attempt-bob", "bob"),
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "/runs?window=all", nil).WithContext(
+		withIdentity(context.Background(), idWith("tib", "harmostes-admins")))
+	rec := httptest.NewRecorder()
+	s.handleAttemptList(rec, req)
+	body := rec.Body.String()
+	for _, want := range []string{"attempt-alice", "attempt-bob"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("admin /runs missing %q", want)
+		}
+	}
+
+	req2 := httptest.NewRequest(http.MethodGet, "/runs?window=all", nil).WithContext(
+		withIdentity(context.Background(), idWith("bob", "users")))
+	rec2 := httptest.NewRecorder()
+	s.handleAttemptList(rec2, req2)
+	if strings.Contains(rec2.Body.String(), "attempt-alice") {
+		t.Error("regular identity must not see another owner's attempts")
+	}
+	if !strings.Contains(rec2.Body.String(), "attempt-bob") {
+		t.Error("regular identity must see their own attempts")
+	}
+}
+
 func TestMayViewAttempt(t *testing.T) {
 	s := adminTestServer(t)
 	admin := idWith("tib", "harmostes-admins")
@@ -100,12 +168,42 @@ func TestMayViewAttempt(t *testing.T) {
 	if s.mayViewAttempt(ownerless, other) {
 		t.Error("non-admin must NOT view ownerless attempts")
 	}
+	if s.mayViewAttempt(ownerless, nil) {
+		t.Error("nil identity must not view attempts (fail-closed)")
+	}
 	owned := attemptOwned("attempt-alice", "alice")
 	if !s.mayViewAttempt(owned, idWith("alice")) {
 		t.Error("owner must view own attempt")
 	}
 	if s.mayViewAttempt(nil, admin) {
 		t.Error("nil attempt must not be viewable")
+	}
+}
+
+// Unmanaged (ownerless, GitOps-created) system workflows are invisible to
+// the self-service UI but deliberately visible to admins (#324): system
+// workflows are exactly what an operator needs on an incident.
+func TestHandleWorkflowDetail_AdminSeesUnmanaged(t *testing.T) {
+	s := adminTestServer(t, workflowOwned("fork-maintenance-forgejo", ""))
+
+	req := httptest.NewRequest(http.MethodGet, "/workflows/fork-maintenance-forgejo", nil).
+		WithContext(withIdentity(context.Background(), idWith("tib", "harmostes-admins")))
+	req.SetPathValue("name", "fork-maintenance-forgejo")
+	rec := httptest.NewRecorder()
+	s.handleWorkflowDetail(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("admin workflow-detail status = %d, want 200", rec.Code)
+	}
+
+	// Regular identities still get 404 for unmanaged workflows.
+	s2 := adminTestServer(t, workflowOwned("fork-maintenance-forgejo", ""))
+	req2 := httptest.NewRequest(http.MethodGet, "/workflows/fork-maintenance-forgejo", nil).
+		WithContext(withIdentity(context.Background(), idWith("alice", "users")))
+	req2.SetPathValue("name", "fork-maintenance-forgejo")
+	rec2 := httptest.NewRecorder()
+	s2.handleWorkflowDetail(rec2, req2)
+	if rec2.Code != http.StatusNotFound {
+		t.Errorf("regular workflow-detail status = %d, want 404", rec2.Code)
 	}
 }
 
@@ -116,7 +214,7 @@ func TestAuthMiddleware_401ShapeFollowsAccept(t *testing.T) {
 	}))
 
 	t.Run("browser navigation gets HTML with re-auth link", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/runs", nil)
+		req := httptest.NewRequest(http.MethodGet, "/runs?x=1&y=2", nil)
 		req.Header.Set("Accept", "text/html,application/xhtml+xml")
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
@@ -127,10 +225,15 @@ func TestAuthMiddleware_401ShapeFollowsAccept(t *testing.T) {
 			t.Errorf("content-type = %q, want text/html", ct)
 		}
 		body := rec.Body.String()
-		for _, want := range []string{"<html", "Sign in again", "/outpost.goauthentik.io/start?rd=%2Fruns"} {
+		for _, want := range []string{"<html", "Sign in again", "rd=%2Fruns%3Fx%3D1%26y%3D2"} {
 			if !strings.Contains(body, want) {
 				t.Errorf("401 page missing %q in body:\n%s", want, body)
 			}
+		}
+		// The rd value must be query-escaped INSIDE the attribute: no raw
+		// & that would invent a second attribute.
+		if strings.Contains(body, `rd=/runs`) || strings.Contains(body, `&y=`) {
+			t.Errorf("rd parameter not escaped: %s", body)
 		}
 	})
 

@@ -18,6 +18,12 @@ type Identity struct {
 	Username string
 	Email    string
 	Groups   []string
+	// Authoritative is true only when the identity came from Authentik's
+	// X-Authentik-* headers — headers the outpost (not the client) sets.
+	// The X-Forwarded-* fallbacks are accepted for compatibility but remain
+	// unprivileged: privilege gates (admin visibility) require an
+	// authoritative identity.
+	Authoritative bool
 }
 
 // authMiddleware extracts the user identity from Authentik forward-auth headers.
@@ -95,6 +101,11 @@ func extractIdentity(r *http.Request) *Identity {
 		return nil
 	}
 
+	// Authentik's own headers are the authoritative identity source; the
+	// X-Forwarded-* fallbacks (accepted above for legacy proxies) never
+	// grant privilege.
+	authoritative := r.Header.Get("X-Authentik-Username") != ""
+
 	groups := []string{}
 	if groupsRaw != "" {
 		for _, grp := range strings.Split(groupsRaw, groupSep) {
@@ -106,9 +117,10 @@ func extractIdentity(r *http.Request) *Identity {
 	}
 
 	return &Identity{
-		Username: username,
-		Email:    email,
-		Groups:   groups,
+		Username:      username,
+		Email:         email,
+		Groups:        groups,
+		Authoritative: authoritative,
 	}
 }
 

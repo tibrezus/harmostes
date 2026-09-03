@@ -27,7 +27,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 
 	"k8s.io/client-go/kubernetes"
@@ -94,22 +93,16 @@ func main() {
 	}
 
 	server, err := ui.New(k8sClient, namespace, logger, kubeClient, platformConfigs)
-	// Authentik groups whose members see across all owner labels (see
-	// Server.SetAdminGroups — owner labels have churned before; without the
-	// bypass one mismatch bricks every page for the operator).
-	if adminGroups := os.Getenv("HARMOSTES_UI_ADMIN_GROUPS"); adminGroups != "" {
-		var groups []string
-		for _, g := range strings.Split(adminGroups, ",") {
-			if g = strings.TrimSpace(g); g != "" {
-				groups = append(groups, g)
-			}
-		}
-		server.SetAdminGroups(groups)
-		logger.Info("admin groups configured", "groups", groups)
-	}
 	if err != nil {
 		logger.Error("create ui server", "err", err)
 		os.Exit(1)
+	}
+	// Authentik groups whose members see across all owner labels (see
+	// Server.SetAdminGroups — owner labels have churned before; without the
+	// bypass one mismatch bricks every page for the operator).
+	if groups := ui.ParseAdminGroups(os.Getenv("HARMOSTES_UI_ADMIN_GROUPS")); len(groups) > 0 {
+		server.SetAdminGroups(groups)
+		logger.Info("admin groups configured", "groups", groups)
 	}
 
 	// Wire the Dapr client for reading session transcripts from the worker's

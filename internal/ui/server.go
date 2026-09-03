@@ -71,19 +71,45 @@ func (s *Server) SetAdminGroups(groups []string) {
 	s.adminGroups = m
 }
 
+// noIdentityOwner is the fail-closed sentinel for a missing identity: it can
+// never equal a real owner label, so a nil identity yields an empty list —
+// never an unscoped one.
+const noIdentityOwner = "\x00no-identity"
+
 // visibleOwner resolves the owner filter an identity may use. Empty string
 // means unrestricted: the Server-level list helpers already treat it as no
-// label filter. Non-admin identities keep today's strictly-scoped view.
+// label filter. Non-admin identities keep today's strictly-scoped view; a
+// missing identity fails closed.
 func (s *Server) visibleOwner(id *Identity) string {
-	if id == nil || s.isAdmin(id) {
+	if id == nil {
+		return noIdentityOwner
+	}
+	if s.isAdmin(id) {
 		return ""
 	}
 	return id.Username
 }
 
-// isAdmin reports whether the identity belongs to any configured admin group.
+// ParseAdminGroups splits the comma-separated admin-group env value.
+func ParseAdminGroups(env string) []string {
+	if env == "" {
+		return nil
+	}
+	var groups []string
+	for _, g := range strings.Split(env, ",") {
+		if g = strings.TrimSpace(g); g != "" {
+			groups = append(groups, g)
+		}
+	}
+	return groups
+}
+
+// isAdmin reports whether the identity belongs to any configured admin
+// group. Only Authentik-authoritative identities qualify: the X-Forwarded-*
+// fallback headers are client-suppliable unless the ingress chain strips
+// them, so a forwarded-only identity can never hold the cross-tenant bypass.
 func (s *Server) isAdmin(id *Identity) bool {
-	if id == nil || len(s.adminGroups) == 0 {
+	if id == nil || !id.Authoritative || len(s.adminGroups) == 0 {
 		return false
 	}
 	for _, g := range id.Groups {
@@ -98,7 +124,7 @@ func (s *Server) isAdmin(id *Identity) bool {
 // everything (including ownerless automation-written attempts), others only
 // their own.
 func (s *Server) mayViewAttempt(att *v1alpha1.Attempt, id *Identity) bool {
-	if att == nil {
+	if att == nil || id == nil {
 		return false
 	}
 	return s.isAdmin(id) || att.Labels[v1alpha1.OwnerLabel] == id.Username

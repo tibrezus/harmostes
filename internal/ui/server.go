@@ -43,16 +43,65 @@ type logFetchFunc func(ctx context.Context, namespace, podName, container string
 
 // Server is the harmostes-ui HTTP server.
 type Server struct {
-	k8sClient client.Client
-	logFetch  logFetchFunc
-	namespace string
-	logger    *slog.Logger
-	templates *template.Template
-	hub       *EventHub
-	platforms *platformRegistry // display config for git platforms (plug-and-play)
-	dapr      DaprClient        // optional: reads session transcripts + usage from worker state store
-	wallMu    sync.Mutex
-	wallMeta  map[string]*wallUsage // workflow → cached agent metadata (live wall)
+	k8sClient   client.Client
+	logFetch    logFetchFunc
+	namespace   string
+	logger      *slog.Logger
+	templates   *template.Template
+	hub         *EventHub
+	platforms   *platformRegistry // display config for git platforms (plug-and-play)
+	dapr        DaprClient        // optional: reads session transcripts + usage from worker state store
+	wallMu      sync.Mutex
+	wallMeta    map[string]*wallUsage // workflow → cached agent metadata (live wall)
+	adminGroups map[string]bool       // identities in any of these groups see across all owner labels
+}
+
+// SetAdminGroups configures the Authentik groups whose members see every
+// workflow and attempt regardless of owner label. Owner labels have already
+// churned twice in this platform's history (tibrezus → tibrez) and some
+// automation-written CRs carry no owner at all — without the bypass, one
+// label/identity mismatch bricks the entire UI for the operator.
+func (s *Server) SetAdminGroups(groups []string) {
+	m := make(map[string]bool, len(groups))
+	for _, g := range groups {
+		if g = strings.TrimSpace(g); g != "" {
+			m[g] = true
+		}
+	}
+	s.adminGroups = m
+}
+
+// visibleOwner resolves the owner filter an identity may use. Empty string
+// means unrestricted: the Server-level list helpers already treat it as no
+// label filter. Non-admin identities keep today's strictly-scoped view.
+func (s *Server) visibleOwner(id *Identity) string {
+	if id == nil || s.isAdmin(id) {
+		return ""
+	}
+	return id.Username
+}
+
+// isAdmin reports whether the identity belongs to any configured admin group.
+func (s *Server) isAdmin(id *Identity) bool {
+	if id == nil || len(s.adminGroups) == 0 {
+		return false
+	}
+	for _, g := range id.Groups {
+		if s.adminGroups[g] {
+			return true
+		}
+	}
+	return false
+}
+
+// mayViewAttempt is the ownership guard for single-attempt views: admins see
+// everything (including ownerless automation-written attempts), others only
+// their own.
+func (s *Server) mayViewAttempt(att *v1alpha1.Attempt, id *Identity) bool {
+	if att == nil {
+		return false
+	}
+	return s.isAdmin(id) || att.Labels[v1alpha1.OwnerLabel] == id.Username
 }
 
 // New creates a Server with parsed templates and the given k8s client.

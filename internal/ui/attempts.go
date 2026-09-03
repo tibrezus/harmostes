@@ -57,7 +57,7 @@ func (s *Server) getAttempt(r *http.Request, name string) (*v1alpha1.Attempt, er
 // the authenticated user, ordered by most recent activity.
 func (s *Server) handleAttemptList(w http.ResponseWriter, r *http.Request) {
 	identity := identityFromContext(r.Context())
-	attempts, err := s.listAttempts(r, identity.Username)
+	attempts, err := s.listAttempts(r, s.visibleOwner(identity))
 	if err != nil {
 		s.renderError(w, r, "Failed to list attempts: "+err.Error())
 		return
@@ -271,8 +271,7 @@ func (s *Server) handleAttemptDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	identity := identityFromContext(r.Context())
-	if att.Labels[v1alpha1.OwnerLabel] != identity.Username {
+	if !s.mayViewAttempt(att, identityFromContext(r.Context())) {
 		s.renderError(w, r, "attempt not found")
 		return
 	}
@@ -437,8 +436,7 @@ func (s *Server) handleAttemptSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	identity := identityFromContext(r.Context())
-	if att.Labels[v1alpha1.OwnerLabel] != identity.Username {
+	if !s.mayViewAttempt(att, identityFromContext(r.Context())) {
 		s.renderError(w, r, "attempt not found")
 		return
 	}
@@ -582,7 +580,7 @@ func (s *Server) handleAttemptPiSession(w http.ResponseWriter, r *http.Request) 
 		http.NotFound(w, r)
 		return
 	}
-	if att.Labels[v1alpha1.OwnerLabel] != identityFromContext(r.Context()).Username {
+	if !s.mayViewAttempt(att, identityFromContext(r.Context())) {
 		http.NotFound(w, r)
 		return
 	}

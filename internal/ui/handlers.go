@@ -10,7 +10,7 @@ import (
 )
 
 func (s *Server) handleWorkflowList(w http.ResponseWriter, r *http.Request) {
-	owner := identityFromContext(r.Context()).Username
+	owner := s.visibleOwner(identityFromContext(r.Context()))
 	workflows, err := s.listWorkflows(r, owner)
 	if err != nil {
 		s.logger.Error("list workflows", "owner", owner, "err", err)
@@ -100,7 +100,7 @@ func (s *Server) workflowNames(r *http.Request, owner string) []string {
 
 // handleWorkflowDetail renders a single workflow with its run history.
 func (s *Server) handleWorkflowDetail(w http.ResponseWriter, r *http.Request) {
-	owner := identityFromContext(r.Context()).Username
+	owner := s.visibleOwner(identityFromContext(r.Context()))
 	name := r.PathValue("name")
 	if name == "" {
 		http.NotFound(w, r)

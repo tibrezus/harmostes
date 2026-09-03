@@ -2,7 +2,9 @@ package ui
 
 import (
 	"context"
+	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 )
 
@@ -38,6 +40,19 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id := extractIdentity(r)
 		if id == nil {
+			// Browsers get a real page with a re-auth link — a bare-text 401
+			// reads as 'the UI is broken'. API/SSE consumers keep plain text.
+			if strings.Contains(r.Header.Get("Accept"), "text/html") {
+				w.Header().Set("Content-Type", "text/html; charset=utf-8")
+				w.WriteHeader(http.StatusUnauthorized)
+				fmt.Fprintf(w, `<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>harmostes — sign in</title>
+<style>body{font-family:system-ui,sans-serif;display:grid;place-items:center;min-height:90vh;margin:0}main{text-align:center}a{color:teal}</style></head>
+<body><main><h1>harmostes</h1><p>Your session has ended or was not established.</p>
+<p><a href="/outpost.goauthentik.io/start?rd=%s">Sign in again</a></p></main></body></html>`,
+					url.QueryEscape(r.URL.RequestURI()))
+				return
+			}
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			w.WriteHeader(http.StatusUnauthorized)
 			w.Write([]byte("401 Unauthorized — no Authentik identity headers\n"))

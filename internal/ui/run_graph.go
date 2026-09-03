@@ -525,7 +525,7 @@ func (s *Server) attemptOr404(w http.ResponseWriter, r *http.Request) (*v1alpha1
 		s.renderError(w, r, "Failed to get attempt: "+err.Error())
 		return nil, false
 	}
-	if att.Labels[v1alpha1.OwnerLabel] != identityFromContext(r.Context()).Username {
+	if !s.mayViewAttempt(att, identityFromContext(r.Context())) {
 		http.NotFound(w, r)
 		return nil, false
 	}

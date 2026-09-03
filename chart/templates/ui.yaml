@@ -53,6 +53,10 @@ spec:
           env:
             - name: HARMOSTES_NAMESPACE
               value: {{ .Values.namespace }}
+            {{- if .Values.ui.adminGroups }}
+            - name: HARMOSTES_UI_ADMIN_GROUPS
+              value: {{ .Values.ui.adminGroups | quote }}
+            {{- end }}
           ports:
             - name: http
               containerPort: 8083

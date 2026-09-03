@@ -6,6 +6,11 @@ test('the runs list surfaces all phases and navigates into a run', async ({ page
 
   // v2 console list: attempts live in collapsed sub-rows, rendered with
   // short human labels (workflow · hash). The DOM carries them all.
+  // The filter tabs carry the window summary: total, failed, in flight.
+  await expect(page.getByTestId('tab-all')).toHaveText(/All\s*3/);
+  await expect(page.getByTestId('tab-failed')).toHaveText(/Failed\s*0/);
+  await expect(page.getByTestId('tab-inflight')).toHaveText(/In flight\s*2/);
+
   const links = page.getByTestId('run-link');
   await expect(links.filter({ hasText: 'pr-review-demo · 42a1' })).toHaveCount(1);
   await expect(links.filter({ hasText: 'pr-review-demo · 43c2' })).toHaveCount(1);

@@ -87,7 +87,5 @@ web-dev:
 	cd web && npm run dev
 
 ##: re-extract component CSS from the design system repo.
-##   Run after updating the design system: make DS_SRC=../rezuscloud/design-system
-##   Fails without writing if DS_SRC resolves to no component HTML (empty-glob guard).
 clean:
 	rm -rf $(BIN_DIR)

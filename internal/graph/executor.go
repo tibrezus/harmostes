@@ -139,6 +139,16 @@ type GraphExecutor struct {
 	// attempt without envelopes (node.started has none).
 	attemptName string
 
+	// prior holds green results recorded by earlier runs of the same attempt
+	// (ADR-0008), offered to resume-enabled nodes. Nil-safe: absent/empty map
+	// means nothing to resume.
+	prior map[string]PriorResult
+
+	// handoff is an optional brief describing what interrupted predecessor
+	// runs of this attempt accomplished (ADR-0008). Appended to agent task
+	// prompts so a successor continues rather than restarts.
+	handoff string
+
 	// onNodeResult is invoked with each node's envelope as the node completes
 	// (after claim enforcement, so it matches what the outcome records).
 	// Optional: nil on Pipeline CRs and tests without recording.
@@ -225,6 +235,27 @@ func WithRunID(runID string) GraphExecutorOption {
 // still published, just unattributed — the UI treats those conservatively).
 func WithAttemptName(name string) GraphExecutorOption {
 	return func(e *GraphExecutor) { e.attemptName = name }
+}
+
+// WithPriorResults seeds the executor with green results recorded by earlier
+// runs of the SAME attempt (ADR-0008). Only nodes whose spec opts in via
+// resume:"green" consult this map; everything else executes normally.
+func WithPriorResults(prior map[string]PriorResult) GraphExecutorOption {
+	return func(e *GraphExecutor) { e.prior = prior }
+}
+
+// WithHandoff sets the handoff brief appended to agent task prompts
+// (ADR-0008): what interrupted predecessor runs of this attempt accomplished
+// and where they stopped. Empty by default (no handoff).
+func WithHandoff(brief string) GraphExecutorOption {
+	return func(e *GraphExecutor) { e.handoff = brief }
+}
+
+// PriorResult is a node result recorded by an earlier run of the same
+// attempt, offered to resume-enabled nodes (ADR-0008).
+type PriorResult struct {
+	Result NodeResult
+	RunID  string // the run that produced it (stamped into resumed outputs)
 }
 
 // WithOnNodeResult sets a callback invoked with each node's envelope as the
@@ -368,6 +399,7 @@ func (e *GraphExecutor) Execute(ctx context.Context, graph v1alpha1.GraphSpec, p
 			Shadow:         e.wfCtx.Shadow,
 			State:          e.wfCtx.State,
 			ExtraEnv:       e.wfCtx.ExtraEnv,
+			Handoff:        e.handoff,
 		}
 
 		// Capability Policy enforcement (ADR-0003, ADR-0001): the deterministic
@@ -431,6 +463,51 @@ func (e *GraphExecutor) Execute(ctx context.Context, graph v1alpha1.GraphSpec, p
 			Node:     nodeID,
 			NodeType: node.Type,
 		})
+
+		// Attempt-scoped resumption (ADR-0008): a node marked resume:"green"
+		// reuses the green result an earlier run of this attempt recorded
+		// instead of re-executing. Validity rests on attempt determinism (same
+		// attempt ⇒ same trigger identity ⇒ same inputs). The reused result is
+		// recorded under THIS run — stamped with resumed/resumedFrom outputs so
+		// the ledger and downstream nodes see reuse, not invisibility. Applies
+		// at every visit: a loop edge re-entering a resumed node reuses too
+		// (the node is deterministic by the same argument). Never applies to
+		// gate nodes: a validator's verdict is only trustworthy fresh (#336
+		// r1 4.2 — ADR-0004 promotion).
+		if node.Resume == v1alpha1.NodeResumeGreen && node.Type != "gate" {
+			if prior, ok := e.prior[nodeID]; ok && prior.Result.Status == StatusGreen {
+				reused := prior.Result
+				if reused.Outputs == nil {
+					reused.Outputs = NodeOutputs{}
+				}
+				reused.Outputs["resumed"] = true
+				reused.Outputs["resumedFrom"] = prior.RunID
+				result.NodeResults[nodeID] = reused
+				reusedEnv := e.synthesizeEnvelope(nodeID, node.Type, reused, 0)
+				result.NodeEnvelopes[nodeID] = reusedEnv
+				if e.onNodeResult != nil {
+					e.onNodeResult(ctx, reusedEnv)
+				}
+				e.checkpoint(ctx, pipelineName, nodeID, reused)
+				e.publishLifecycle(ctx, LifecycleEvent{
+					Event:      "node.completed",
+					Pipeline:   pipelineName,
+					Node:       nodeID,
+					NodeType:   node.Type,
+					Status:     string(StatusGreen),
+					DurationMs: 0,
+					Feedback:   "resumed from run " + prior.RunID,
+					Envelope:   &reusedEnv,
+				})
+				e.log("node %s: resumed green result from run %s", nodeID, prior.RunID)
+				for _, edge := range outEdges[nodeID] {
+					if e.shouldTraverse(edge, reused, result.NodeResults) {
+						e.enqueueEdge(&queue, edge, edgeCount, nodeMap)
+					}
+				}
+				continue
+			}
+		}
 
 		// Execute via registry.
 		exec, err := e.registry.Get(node.Type)
@@ -778,6 +855,29 @@ func (e *GraphExecutor) synthesizeEnvelope(nodeID, nodeType string, nr NodeResul
 		},
 		ProducedAt: now,
 	}
+	// Graph-level outputs ride the envelope (ADR-0008): they are the data
+	// downstream nodes consume, and the durable form a later run of the same
+	// attempt resumes from. Non-scalar values are stringified.
+	if len(nr.Outputs) > 0 {
+		outputs := make(map[string]string, len(nr.Outputs))
+		for k, v := range nr.Outputs {
+			switch t := v.(type) {
+			case string:
+				outputs[k] = t
+			case bool:
+				outputs[k] = fmt.Sprintf("%t", t)
+			case nil:
+				// skip
+			default:
+				if b, err := json.Marshal(t); err == nil {
+					outputs[k] = string(b)
+				}
+			}
+		}
+		if len(outputs) > 0 {
+			env.Outputs = outputs
+		}
+	}
 	if nr.Envelope != nil {
 		// Executor-provided enrichment wins for these fields.
 		env.Summary = nr.Envelope.Summary
@@ -856,4 +956,41 @@ func truncateForTimeline(s string, n int) string {
 		cut--
 	}
 	return s[:cut] + "…"
+}
+
+// PriorResultsFromEnvelopes converts an attempt's recorded envelope ledger
+// into the seed map for WithPriorResults (ADR-0008): the latest envelope per
+// node, green only, excluding the current run's own envelopes. Envelope
+// outputs (stringified) restore the node's graph-level outputs so downstream
+// nodes consume them unchanged; readers accept string bools natively.
+// Nil when there is nothing to resume.
+func PriorResultsFromEnvelopes(envelopes []v1alpha1.NodeResultEnvelope, currentRun string) map[string]PriorResult {
+	if len(envelopes) == 0 {
+		return nil
+	}
+	latest := make(map[string]v1alpha1.NodeResultEnvelope)
+	for _, env := range envelopes {
+		if env.RunID == currentRun {
+			continue
+		}
+		latest[env.NodeID] = env // append order: later overwrites
+	}
+	out := make(map[string]PriorResult, len(latest))
+	for id, env := range latest {
+		if env.Status != v1alpha1.NodeResultStatusOK {
+			continue
+		}
+		outputs := NodeOutputs{}
+		for k, v := range env.Outputs {
+			outputs[k] = v
+		}
+		out[id] = PriorResult{
+			Result: NodeResult{Status: StatusGreen, Outputs: outputs, Feedback: env.Summary},
+			RunID:  env.RunID,
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }

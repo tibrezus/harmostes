@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // ---------------------------------------------------------------------------
@@ -20,16 +22,18 @@ type recordingExecutor struct {
 	visits   []string
 	result   NodeResult
 	execType string
+	lastEnv  NodeEnv
 }
 
 func newRecording(typ string, result NodeResult) *recordingExecutor {
 	return &recordingExecutor{execType: typ, result: result}
 }
 
-func (r *recordingExecutor) Execute(_ context.Context, node v1alpha1.NodeSpec, _ NodeEnv) (NodeResult, error) {
+func (r *recordingExecutor) Execute(_ context.Context, node v1alpha1.NodeSpec, env NodeEnv) (NodeResult, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.visits = append(r.visits, node.ID)
+	r.lastEnv = env
 	return r.result, nil
 }
 
@@ -1051,5 +1055,147 @@ func TestExternalOnlyGraph_HasNoEntry(t *testing.T) {
 	}
 	if result.Status != StatusFailed {
 		t.Errorf("status = %q, want failed", result.Status)
+	}
+}
+
+// ===========================================================================
+// Attempt-scoped resumption (ADR-0008): resume:"green" nodes reuse prior
+// green results; everything else executes normally.
+// ===========================================================================
+
+func TestResumeGreenSkipsExecutionAndCarriesOutputs(t *testing.T) {
+	execPrepare := newRecording("prepare", NodeResult{Status: StatusGreen, Outputs: NodeOutputs{"ctx": "pr-context.json"}})
+	execAgent := newRecording("agent", NodeResult{Status: StatusGreen})
+
+	registry := registryWith(map[string]NodeExecutor{
+		"prepare": execPrepare, "agent": execAgent,
+	})
+
+	graph := v1alpha1.GraphSpec{
+		Nodes: []v1alpha1.NodeSpec{
+			{ID: "prepare", Type: "prepare", Resume: "green"},
+			{ID: "agent", Type: "agent"},
+		},
+		Edges: []v1alpha1.EdgeSpec{{From: "prepare", To: "agent"}},
+	}
+
+	exec := NewGraphExecutor(registry, nil,
+		WithPriorResults(map[string]PriorResult{
+			"prepare": {
+				Result: NodeResult{Status: StatusGreen, Outputs: NodeOutputs{"ctx": "pr-context.json"}, Feedback: "workspace ready"},
+				RunID:  "run-1",
+			},
+		}),
+		WithRunID("run-2"),
+	)
+	result, err := exec.Execute(context.Background(), graph, "test")
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if result.Status != StatusGreen {
+		t.Errorf("status = %q, want green", result.Status)
+	}
+	if execPrepare.visitCount() != 0 {
+		t.Errorf("resume-enabled node executed %d times, want 0 — reuse must skip execution", execPrepare.visitCount())
+	}
+	if execAgent.visitCount() != 1 {
+		t.Errorf("agent visited %d times, want 1", execAgent.visitCount())
+	}
+	// Downstream consumes the prior outputs (snapshotInputs), plus the
+	// resume markers recorded on the reused node.
+	agentResult := result.NodeResults["agent"]
+	if agentResult.Status != StatusGreen {
+		t.Errorf("agent result = %+v, want green", agentResult)
+	}
+	ctxOut := execAgent.lastEnv.Inputs["prepare"]["ctx"]
+	if ctxOut != "pr-context.json" {
+		t.Errorf("agent inputs from prepare = %v, want the prior run's pr-context.json", execAgent.lastEnv.Inputs["prepare"])
+	}
+	// The reused node's recorded result carries the markers.
+	reused := result.NodeResults["prepare"]
+	if reused.Status != StatusGreen || reused.Outputs["resumed"] != true || reused.Outputs["resumedFrom"] != "run-1" {
+		t.Errorf("reused result = %+v, want green with resumed/resumedFrom markers", reused)
+	}
+	// The envelope records the reuse under THIS run (ledger completeness).
+	env := result.NodeEnvelopes["prepare"]
+	if env.RunID != "run-2" || env.Status != "ok" {
+		t.Errorf("envelope runID/status = %q/%q, want run-2/ok", env.RunID, env.Status)
+	}
+	if env.Outputs["resumed"] != "true" || env.Outputs["resumedFrom"] != "run-1" {
+		t.Errorf("envelope outputs = %v, want resumed markers", env.Outputs)
+	}
+}
+
+func TestResumeWithoutMarkerExecutes(t *testing.T) {
+	execPrepare := newRecording("prepare", NodeResult{Status: StatusGreen})
+
+	registry := registryWith(map[string]NodeExecutor{"prepare": execPrepare})
+	graph := v1alpha1.GraphSpec{
+		Nodes: []v1alpha1.NodeSpec{{ID: "prepare", Type: "prepare"}},
+	}
+
+	exec := NewGraphExecutor(registry, nil,
+		WithPriorResults(map[string]PriorResult{
+			"prepare": {Result: NodeResult{Status: StatusGreen}, RunID: "run-1"},
+		}),
+	)
+	if _, err := exec.Execute(context.Background(), graph, "test"); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if execPrepare.visitCount() != 1 {
+		t.Errorf("node without resume marker executed %d times, want 1 — reuse is opt-in", execPrepare.visitCount())
+	}
+}
+
+func TestResumeNonGreenPriorReexecutes(t *testing.T) {
+	execPrepare := newRecording("prepare", NodeResult{Status: StatusGreen, Outputs: NodeOutputs{"ctx": "fresh"}})
+
+	registry := registryWith(map[string]NodeExecutor{"prepare": execPrepare})
+	graph := v1alpha1.GraphSpec{
+		Nodes: []v1alpha1.NodeSpec{{ID: "prepare", Type: "prepare", Resume: "green"}},
+	}
+
+	exec := NewGraphExecutor(registry, nil,
+		WithPriorResults(map[string]PriorResult{
+			"prepare": {Result: NodeResult{Status: StatusFailed, Feedback: "clone boom"}, RunID: "run-1"},
+		}),
+	)
+	result, err := exec.Execute(context.Background(), graph, "test")
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if execPrepare.visitCount() != 1 {
+		t.Errorf("non-green prior must re-execute, got %d executions", execPrepare.visitCount())
+	}
+	if result.NodeResults["prepare"].Outputs["ctx"] != "fresh" {
+		t.Errorf("outputs = %v, want the fresh execution's", result.NodeResults["prepare"].Outputs)
+	}
+}
+
+func TestPriorResultsFromEnvelopes(t *testing.T) {
+	now := metav1.Now()
+	envelopes := []v1alpha1.NodeResultEnvelope{
+		{NodeID: "prepare", RunID: "run-1", Status: "ok", ProducedAt: now, Outputs: map[string]string{"ctx": "pr-context.json"}},
+		{NodeID: "agent", RunID: "run-1", Status: "failed", ProducedAt: now},
+		// Later run overwrites the prepare entry (latest wins).
+		{NodeID: "prepare", RunID: "run-2", Status: "failed", ProducedAt: metav1.NewTime(now.Add(time.Minute))},
+	}
+	// Current run = run-3: run-2's failed prepare is latest but non-green →
+	// no seed; agent is failed → no seed. Nothing to resume.
+	if got := PriorResultsFromEnvelopes(envelopes, "run-3"); got != nil {
+		t.Errorf("non-green latest results must not seed, got %v", got)
+	}
+	// Drop run-2's failure: run-1's green prepare is now the latest green.
+	got := PriorResultsFromEnvelopes(envelopes[:1], "run-3")
+	if len(got) != 1 {
+		t.Fatalf("want 1 seed, got %d", len(got))
+	}
+	p := got["prepare"]
+	if p.Result.Status != StatusGreen || p.RunID != "run-1" || p.Result.Outputs["ctx"] != "pr-context.json" {
+		t.Errorf("seed = %+v, want green run-1 with ctx output", p)
+	}
+	// Current run's own envelopes are excluded.
+	if got := PriorResultsFromEnvelopes(envelopes[:1], "run-1"); got != nil {
+		t.Errorf("current run's envelopes must be excluded, got %v", got)
 	}
 }

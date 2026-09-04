@@ -234,6 +234,7 @@ spec:
                         properties:
                           name: { type: string }
                           key:  { type: string }
+                runBound: { type: string }                  # ADR-0008: max wall-clock duration for one run. Empty (default) = 2h wedged-run reaper; "0" = truly unlimited; a duration ("90m") sets a tighter bound.
 
                 # Graph-native mode: explicit directed graph of nodes + edges.
                 # If present, the worker uses the graph executor and ignores
@@ -259,6 +260,10 @@ spec:
                           outputs: { type: array, items: { type: string } }
                           when: { type: string }
                           timeout: { type: string }
+                          resume:
+                            type: string
+                            description: "ADR-0008 attempt-scoped resumption: reuse a green result recorded by an earlier run of the SAME attempt instead of re-executing. Empty = never resume."
+                            enum: ["", green]
                           requires:                                  # ADR-0003: Surface Capabilities this node needs
                             type: array
                             items:

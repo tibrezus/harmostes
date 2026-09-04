@@ -62,6 +62,15 @@ type NodeSpec struct {
 	//+optional
 	Timeout string `json:"timeout,omitempty"`
 
+	// Resume enables attempt-scoped resumption (ADR-0008): the node may reuse
+	// a green result recorded by an earlier run of the SAME attempt instead of
+	// re-executing. Empty (default) = never resume. "green" = reuse the
+	// latest green result for this node from the attempt's ledger. Validity
+	// rests on attempt determinism: same attempt ⇒ same trigger identity ⇒
+	// same inputs for deterministic nodes (e.g. workspace prepare).
+	//+optional
+	Resume string `json:"resume,omitempty"`
+
 	// Requires declares the Surface Capabilities this node needs against
 	// declared External System Bindings (ADR-0003). The kernel enforces, before
 	// execution, that each named binding exists and grants the requested

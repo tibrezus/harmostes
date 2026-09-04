@@ -36,8 +36,6 @@ import (
 	"regexp"
 	"strings"
 	"time"
-
-	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
 )
 
 // Decision is the gate outcome.
@@ -639,7 +637,7 @@ func Evaluate(ctx context.Context, api API, p Params) Result {
 			return Result{Evaluation: standdown("verdict posted — consumed"), NewArmedSha: ""}
 		}
 		if p.DispatchTimeout > 0 && now.Sub(p.DispatchedAt) >= p.DispatchTimeout {
-			return Result{Evaluation: standdown(fmt.Sprintf("dispatch presumed dead (no verdict after %s; run bound %s) — backlog will re-arm", p.DispatchTimeout, v1alpha1.OneShotRunBound)), NewArmedSha: ""}
+			return Result{Evaluation: standdown(fmt.Sprintf("dispatch presumed dead (no verdict after %s; runs are fact-checked against live jobs before counting) — backlog will re-arm", p.DispatchTimeout)), NewArmedSha: ""}
 		}
 		return Result{Evaluation: waiting("review in flight — dispatched, verdict pending"), NewArmedSha: pr.HeadSHA, NewArmedAt: armedAt}
 	}

@@ -85,6 +85,13 @@ func (e *AgentExecutor) Execute(ctx context.Context, node v1alpha1.NodeSpec, env
 		task = task + "\n\n" + cfg.Scope
 	}
 
+	// Append the attempt handoff brief (ADR-0008): what interrupted
+	// predecessor runs of this attempt accomplished. The brief carries its
+	// own framing (CONTINUE vs SUMMARY) — the executor is only the transport.
+	if env.Handoff != "" {
+		task = task + "\n\n" + env.Handoff
+	}
+
 	// Build the gate (optional).
 	var gate agent.Gate
 	if cfg.Gate != nil {

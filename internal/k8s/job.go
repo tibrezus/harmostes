@@ -82,6 +82,23 @@ type ConfigMapMount struct {
 // their pods self-clean.
 func BuildJob(p AttemptJobParams) *batchv1.Job {
 	attemptName := p.Attempt.Name
+	// Wall-clock bound (ADR-0008): a finite runBound on the attempt is
+	// honored verbatim. Empty (the platform default) sets the 2h wedged-run
+	// reaper — runs complete in minutes; a run this old is hung, not
+	// working, and would hold its claim slot forever. Malformed values
+	// degrade to the reaper, never to unlimited.
+	bound := v1alpha1.DefaultRunBound
+	if d, err := time.ParseDuration(p.Attempt.Spec.RunBound); err == nil {
+		if d == 0 {
+			bound = 0 // explicit "0" = truly unlimited (documented escape hatch)
+		} else if d > 0 {
+			bound = d
+		}
+	}
+	var deadline *int64
+	if bound > 0 {
+		deadline = ptr.To(int64(bound / time.Second))
+	}
 	labels := map[string]string{
 		"app.kubernetes.io/name":      "harmostes",
 		"app.kubernetes.io/component": "attempt-runner",
@@ -111,6 +128,33 @@ func BuildJob(p AttemptJobParams) *batchv1.Job {
 
 	volumes := []corev1.Volume{{Name: "workspace", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}}
 	mounts := []corev1.VolumeMount{{Name: "workspace", MountPath: "/workspace"}}
+
+	// Toolchain caches (ADR-0008/#336): when the attempt declares a cache,
+	// mount the shared PVC and point the toolchains at it — a warm GOCACHE/
+	// GOMODCACHE turns a cold `go test -race` from minutes into seconds,
+	// which is the difference between a review fitting its budget and dying
+	// at it. Namespaced subpaths keep workflows from trampling each other.
+	if c := p.Attempt.Spec.Cache; c != nil && c.PVC != "" {
+		volumes = append(volumes, corev1.Volume{
+			Name:         "toolchain-cache",
+			VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: c.PVC}},
+		})
+		// SubPath per namespace/workflow: the module cache's extraction path
+		// does not tolerate cross-pod writers on one shared volume.
+		mounts = append(mounts, corev1.VolumeMount{
+			Name: "toolchain-cache", MountPath: "/toolchain-cache",
+			SubPath: p.Namespace + "/" + p.WorkflowName,
+		})
+		if c.Go {
+			env = append(env,
+				corev1.EnvVar{Name: "GOCACHE", Value: "/toolchain-cache/go-build"},
+				corev1.EnvVar{Name: "GOMODCACHE", Value: "/toolchain-cache/go-mod"},
+			)
+		}
+		if c.NPM {
+			env = append(env, corev1.EnvVar{Name: "npm_config_cache", Value: "/toolchain-cache/npm"})
+		}
+	}
 	for _, m := range p.ExtraConfigMapMounts {
 		mode := int32(0o755)
 		if m.Mode != nil {
@@ -154,9 +198,12 @@ func BuildJob(p AttemptJobParams) *batchv1.Job {
 		},
 		Spec: batchv1.JobSpec{
 			BackoffLimit: new(int32), // 0: retries are the dispatcher's re-arm
-			// The wall-clock bound follows the run out of the pool pod
-			// (was the consumer's run context; OneShotRunBound unchanged).
-			ActiveDeadlineSeconds:   ptr.To(int64(v1alpha1.OneShotRunBound / time.Second)),
+			// Wall-clock bound (ADR-0008): OPT-IN. A finite runBound on the
+			// attempt sets activeDeadlineSeconds; empty (the platform default)
+			// sets none — a run completes or fails on its own, the kernel does
+			// not kill it. The review-ready breaker bounds zombie claims, and
+			// attempt-scoped resumption covers real crashes (OOM, node loss).
+			ActiveDeadlineSeconds:   deadline,
 			TTLSecondsAfterFinished: p.TTLSecondsAfterFinished,
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: labels, Annotations: annotations},

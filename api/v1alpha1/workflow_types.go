@@ -95,6 +95,7 @@ type WorkflowSpec struct {
 	Deploy        DeploySpec              `json:"deploy,omitempty"`
 	Graph         *GraphSpec              `json:"graph,omitempty"`       // graph-native mode: explicit nodes + edges (overrides Prepare/Agent/Deploy)
 	ReviewReady   *ReviewReadySpec        `json:"reviewReady,omitempty"` // event-armed Review-Ready Gate (ADR-0006): label ∧ merge-rule contexts green at head
+	RunBound      string                  `json:"runBound,omitempty"`    // ADR-0008: max wall-clock duration for one run. Empty = unlimited — runs complete or fail on their own; the kernel does not kill them. A Go duration ("90m") opts back into the deadline.
 	Bindings      []ExternalSystemBinding `json:"bindings,omitempty"`    // ADR-0003: external system authority boundary (static; runtime may not expand)
 	Events        *EventsSpec             `json:"events,omitempty"`
 	Cache         *CacheSpec              `json:"cache,omitempty"`
@@ -217,7 +218,6 @@ type EventsSpec struct {
 // CacheSpec declares which caches the worker should mount.
 type CacheSpec struct {
 	PVC string `json:"pvc,omitempty"`
-	Git bool   `json:"git,omitempty"`
 	Go  bool   `json:"go,omitempty"`
 	NPM bool   `json:"npm,omitempty"`
 }

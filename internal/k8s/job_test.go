@@ -207,3 +207,71 @@ func TestBuildJobExtraConfigMapMounts(t *testing.T) {
 		t.Errorf("fork-defs mode = %o, want 644 (must match the pool's mount)", modes["extra-cm-fork-defs"])
 	}
 }
+
+// ADR-0008 decision 2: runs don't die by default. Empty runBound sets the
+// 2h wedged-run reaper (a real review finishes in minutes; a 2h-old run is
+// hung). A finite bound is honored verbatim; "0" is truly unlimited.
+func TestBuildJobRunBound(t *testing.T) {
+	// Default: the 2h wedged-run reaper.
+	job := BuildJob(AttemptJobParams{Attempt: jobTestAttempt(), WorkflowName: "w", Namespace: "harmostes", Image: "img"})
+	if job.Spec.ActiveDeadlineSeconds == nil || *job.Spec.ActiveDeadlineSeconds != int64((v1alpha1.DefaultRunBound).Seconds()) {
+		t.Errorf("empty runBound → 2h reaper, got %v", job.Spec.ActiveDeadlineSeconds)
+	}
+
+	// Finite bound: honored.
+	at := jobTestAttempt()
+	at.Spec.RunBound = "90m"
+	job = BuildJob(AttemptJobParams{Attempt: at, WorkflowName: "w", Namespace: "harmostes", Image: "img"})
+	if job.Spec.ActiveDeadlineSeconds == nil || *job.Spec.ActiveDeadlineSeconds != 5400 {
+		t.Errorf("runBound 90m → activeDeadlineSeconds 5400, got %v", job.Spec.ActiveDeadlineSeconds)
+	}
+
+	// Explicit "0": truly unlimited.
+	at.Spec.RunBound = "0"
+	job = BuildJob(AttemptJobParams{Attempt: at, WorkflowName: "w", Namespace: "harmostes", Image: "img"})
+	if job.Spec.ActiveDeadlineSeconds != nil {
+		t.Errorf("runBound \"0\" must set no deadline, got %ds", *job.Spec.ActiveDeadlineSeconds)
+	}
+
+	// Malformed bound: degrade to the reaper (never unlimited by surprise).
+	at.Spec.RunBound = "not-a-duration"
+	job = BuildJob(AttemptJobParams{Attempt: at, WorkflowName: "w", Namespace: "harmostes", Image: "img"})
+	if job.Spec.ActiveDeadlineSeconds == nil || *job.Spec.ActiveDeadlineSeconds != int64((v1alpha1.DefaultRunBound).Seconds()) {
+		t.Errorf("malformed runBound must degrade to the 2h reaper, got %v", job.Spec.ActiveDeadlineSeconds)
+	}
+}
+
+// #336: spec.cache mounts the shared toolchain-cache PVC and points the
+// toolchains at namespaced subpaths — warm GOCACHE/GOMODCACHE is the
+// difference between a review fitting its budget and dying at it.
+func TestBuildJobCacheMounts(t *testing.T) {
+	at := jobTestAttempt()
+	at.Spec.Cache = &v1alpha1.CacheSpec{PVC: "harmostes-toolchain-cache", Go: true, NPM: true}
+	job := BuildJob(AttemptJobParams{Attempt: at, WorkflowName: "w", Namespace: "harmostes", Image: "img"})
+
+	volNames := map[string]bool{}
+	for _, v := range job.Spec.Template.Spec.Volumes {
+		volNames[v.Name] = true
+	}
+	if !volNames["toolchain-cache"] {
+		t.Fatal("cache PVC volume missing")
+	}
+	env := map[string]string{}
+	for _, e := range job.Spec.Template.Spec.Containers[0].Env {
+		env[e.Name] = e.Value
+	}
+	if env["GOCACHE"] != "/toolchain-cache/go-build" || env["GOMODCACHE"] != "/toolchain-cache/go-mod" {
+		t.Errorf("Go cache env missing: %v", env)
+	}
+	if env["npm_config_cache"] != "/toolchain-cache/npm" {
+		t.Errorf("npm cache env missing: %v", env)
+	}
+
+	// No cache declared: none of it appears.
+	job = BuildJob(AttemptJobParams{Attempt: jobTestAttempt(), WorkflowName: "w", Namespace: "harmostes", Image: "img"})
+	for _, e := range job.Spec.Template.Spec.Containers[0].Env {
+		if e.Name == "GOCACHE" {
+			t.Error("GOCACHE must not be set without spec.cache")
+		}
+	}
+}

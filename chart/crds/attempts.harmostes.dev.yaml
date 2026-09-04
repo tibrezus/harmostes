@@ -110,6 +110,15 @@ spec:
                         properties:
                           name: { type: string }
                           key:  { type: string }
+
+                runBound:  { type: string }            # ADR-0008: snapshot of the Workflow's run bound — empty = unlimited (runs complete or fail on their own)
+                cache:                                     # ADR-0008/#336: snapshot of the Workflow's toolchain-cache config
+                  type: object
+                  properties:
+                    pvc: { type: string }                  # shared cache PVC (mounted at /toolchain-cache, subPath per namespace/workflow)
+                    go:  { type: boolean }                 # GOCACHE/GOMODCACHE → PVC subpaths
+                    npm: { type: boolean }                 # npm_config_cache → PVC subpath
+
             status:
               type: object
               properties:
@@ -168,6 +177,9 @@ spec:
                       runID:      { type: string }
                       status:     { type: string }
                       summary:    { type: string }
+                      outputs:                                    # ADR-0008: graph-level outputs (stringified) — the data a later run of the same attempt resumes from
+                        type: object
+                        additionalProperties: { type: string }
                       payload:                                    # node-type-specific Node Payload (opaque to the kernel)
                         type: object
                         x-kubernetes-preserve-unknown-fields: true

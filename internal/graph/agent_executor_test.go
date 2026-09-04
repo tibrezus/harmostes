@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
@@ -200,5 +201,39 @@ func TestLooksLikeRef(t *testing.T) {
 				t.Errorf("looksLikeRef(%q) = %v, want %v", tt.input, got, tt.want)
 			}
 		})
+	}
+}
+
+// ADR-0008: the handoff brief rides NodeEnv.Handoff and is appended to the
+// agent's task text — the executor is only the transport; the brief carries
+// its own framing.
+func TestAgentExecutorAppendsHandoff(t *testing.T) {
+	runner := &fakeAgentRunner{result: agent.Result{Green: true, Attempts: 1}}
+	exec := NewAgentExecutor(runner, nil, nil, nil, "")
+
+	node := v1alpha1.NodeSpec{
+		ID:   "writer",
+		Type: "agent",
+		Config: mustJSON(t, AgentNodeConfig{
+			Model: "zai/glm-5.2",
+			Task:  "Do the thing",
+		}),
+	}
+
+	if _, err := exec.Execute(context.Background(), node, NodeEnv{Handoff: "## Handoff — CONTINUE interrupted work"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(runner.lastTask, "Do the thing") || !strings.Contains(runner.lastTask, "CONTINUE interrupted work") {
+		t.Errorf("task + handoff = %q", runner.lastTask)
+	}
+
+	// No handoff: the task text is unchanged.
+	runner2 := &fakeAgentRunner{result: agent.Result{Green: true, Attempts: 1}}
+	exec2 := NewAgentExecutor(runner2, nil, nil, nil, "")
+	if _, err := exec2.Execute(context.Background(), node, NodeEnv{}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if strings.Contains(runner2.lastTask, "Handoff") {
+		t.Errorf("empty handoff must not append anything, got %q", runner2.lastTask)
 	}
 }

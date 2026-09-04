@@ -65,7 +65,11 @@ jobs:
         run: go test -race -cover ./...
 
       - name: extensions (node --test · rig-query)
-        run: make test-extensions
+        run: |
+          # typebox is the one runtime import of the wrapper — install it so the
+          # registration gate RUNS here rather than skipping (see queries.test.ts).
+          npm install --prefix extensions/rig-query --no-audit --no-fund --silent
+          make test-extensions
 
       # Compares the COMMITTED fixture's canonical hash against a fresh build
       # in a tempdir — it must NOT regenerate the committed file first, or the

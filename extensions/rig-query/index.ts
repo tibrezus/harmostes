@@ -19,12 +19,14 @@ import { Type } from "typebox"; // pi aliases typebox for extensions — NO npm 
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { openRig, resolveRigDb, resolveRigDbCandidates, rigQuery, type RigParams } from "./queries.ts";
 
-let probedEmitted = false;
-
 export default function (pi: ExtensionAPI) {
 	// Handles keyed by path + file identity (ino/mtime): the producer's
 	// write_db unlinks and recreates the file (a NEW inode), so a resume/retry
 	// re-emitting the same path must not keep serving the stale graph (#338 r2).
+	// Per-session: pi keeps one process across sessions, so anything the
+	// absence/telemetry contract treats as "first call" must reset when the
+	// session does (#338 r19 P7.1).
+	let probedEmitted = false;
 	const handles = new Map<string, { db: ReturnType<typeof openRig>; ino: number; mtimeMs: number; size: number }>();
 
 	const open = (path: string): ReturnType<typeof openRig> => {
@@ -42,6 +44,10 @@ export default function (pi: ExtensionAPI) {
 		handles.set(path, { db, ino: st.ino, mtimeMs: st.mtimeMs, size: st.size });
 		return db;
 	};
+
+	pi.on("session_start", async () => {
+		probedEmitted = false; // a new session measures its own first call
+	});
 
 	// Session-scoped resources are closed via an idempotent session_shutdown
 	// handler (pi extension convention).
@@ -141,6 +147,12 @@ Prefer this over find/grep for ANY "where is X" or "what uses Y" question; drop 
 					}
 				}
 			} catch {
+				if (process.env.RIG_EXPECTED_SHA) {
+					// Prepare was expected to stamp and did not — the failure the
+					// ADR exists to prevent; refuse rather than answer unverified
+					// (#338 r19 P7.2).
+					throw new Error("no rig.db.sha provenance stamp for this graph — prepare did not stamp it (or the file was moved); refusing to navigate an unverifiable graph");
+				}
 				rigSha = "absent";
 				shaState = "absent"; // distinct from stamped-but-wrong
 			}

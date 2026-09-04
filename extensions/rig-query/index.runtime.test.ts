@@ -89,11 +89,20 @@ test("wrapper: session_shutdown closes every handle (idempotent)", async () => {
 	}
 });
 
-test("wrapper: the container fallback list contains prepare's emit target (#338 r6 B2)", () => {
-	// The cross-repo contract, asserted so it fails loudly in CI: ops
-	// workspace.sh writes $WORKDIR/rig.db and the worker WORKDIR is /workspace.
-	const src = readFileSync(fileURLToPath(new URL("./index.ts", import.meta.url)), "utf8");
-	assert.match(src, /"\/workspace\/rig\.db"/, "index.ts fallback must include prepare's /workspace/rig.db emit target");
+test("wrapper: the container fallback walk is real and suppressible (#338 r6 B2 / r16 C1)", async () => {
+	// Behaviour, not source text: with the fallback walk active and no env
+	// override, resolution lands on the container path prepare emits to.
+	// RIG_DB_TEST_CANDIDATES (empty) suppresses the walk — the hermeticity
+	// hatch the absence tests rely on inside a worker pod.
+	const { resolveRigDb, resolveRigDbCandidates } = await import("./queries.ts");
+	const candidates = resolveRigDbCandidates(undefined, "/nonexistent-cwd", ["/workspace/rig.db", "/workspace/repo/rig.db"]);
+	assert.ok(candidates.includes("/workspace/rig.db"), "the container contract must stay in the walk");
+	process.env.RIG_DB_TEST_CANDIDATES = "";
+	try {
+		assert.equal(resolveRigDb(undefined, "/nonexistent-cwd"), null, "empty override suppresses the fallback walk");
+	} finally {
+		delete process.env.RIG_DB_TEST_CANDIDATES;
+	}
 });
 
 test("sha provenance: stamped / mismatch / malformed / absent (#338 r9 B2)", async () => {
@@ -140,6 +149,9 @@ test("sha provenance: stamped / mismatch / malformed / absent (#338 r9 B2)", asy
 test("details key-set is an interface — uniform on success and absence (#338 r9)", async () => {
 	const dir = tmpdir();
 	process.env.RIG_DB = `${dir}/rig-missing-${process.pid}.db`;
+	// Hermeticity hatch (r16 C1): suppress the container fallback walk so this
+	// test cannot resolve a graph that exists in the pod it runs in.
+	process.env.RIG_DB_TEST_CANDIDATES = "";
 	try {
 		const mod = await import("./index.ts");
 		const tools: Array<{ execute: (id: string, params: unknown, s: unknown, u: unknown, ctx: { cwd: string }) => Promise<{ details: Record<string, unknown> }> }> = [];

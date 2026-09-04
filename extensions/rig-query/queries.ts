@@ -174,7 +174,9 @@ function overview(db: DatabaseSync, stats: { more: number }): string {
 	const symCount = db.prepare("SELECT COUNT(*) n FROM symbols").get();
 	const lines: string[] = [];
 	const proj = meta(db, "repo_name") || meta(db, "project");
-	lines.push(`graph: ${proj || "project"} — ${comps.length} components, ${row(symCount?.n)} symbols`);
+	lines.push(
+		`graph: ${proj || "(unnamed graph — no repo_name meta)"} — ${comps.length} components, ${row(symCount?.n)} symbols`,
+	);
 	for (const c of comps.slice(0, OVERVIEW_ROWS)) {
 		const flags: string[] = [];
 		if (Number(c.entrypoint) === 1) flags.push("entry");
@@ -344,7 +346,7 @@ function search(db: DatabaseSync, target: string | undefined, stats: { more: num
 	// Component names are searchable too — an agent asking for "harmostes-worker"
 	// is navigating, and components never appear in symbols (#338 r16 F9).
 	for (const c of db
-		.prepare("SELECT id, name, type FROM components WHERE name LIKE ? || '%' ORDER BY seq LIMIT 3")
+		.prepare("SELECT id, name, type FROM components WHERE name LIKE ? || '%' ESCAPE '\\' ORDER BY seq LIMIT 3")
 		.all(likeTerm) as Row[]) {
 		hits.set(`comp:${row(c.id)}`, {
 			file: `[component] ${row(c.name)}`,

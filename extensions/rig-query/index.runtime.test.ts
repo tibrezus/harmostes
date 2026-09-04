@@ -47,6 +47,12 @@ test("wrapper: execute answers from the graph and reports provenance + identity"
 		const first = await execute({ command: "overview" });
 		assert.match(first.content[0].text, /fixture-repo/);
 		assert.equal(first.details.graph, true, "present graph flagged");
+		// The details KEY SET is the #336 join interface — asserted in FULL on
+		// both branches so a rename is a test failure, not a silent missing
+		// column (#338 r17 M7).
+		assert.deepEqual(Object.keys(first.details).sort(), [
+			"chars", "command", "db", "graph", "probed", "rig_sha", "sha_state", "target", "truncated",
+		]);
 
 		// Producer-style re-emit: unlink + write = a NEW inode at the same path.
 		// The (ino, mtime) identity check must reopen, not serve the stale handle.
@@ -107,7 +113,7 @@ test("sha provenance: stamped / mismatch / malformed / absent (#338 r9 B2)", asy
 		assert.equal(r.details.rig_sha, "0123abcd");
 		assert.equal(r.details.sha_state, "unchecked");
 		// stamped + verified against the expected SHA
-		process.env.RIG_EXPECTED_SHA = "0123abcd";
+		process.env.RIG_EXPECTED_SHA = "0123abcd"; // the env name is pinned by main.go's injection — a rename breaks this test
 		r = await execute({ command: "overview" });
 		assert.equal(r.details.sha_state, "verified");
 		// mismatch — REFUSED with structured telemetry (r15): the refusal is a
@@ -146,6 +152,9 @@ test("details key-set is an interface — uniform on success and absence (#338 r
 		assert.equal(absent.details.graph, false);
 		assert.equal(absent.details.command, "overview", "absence keeps the telemetry shape");
 		assert.equal(absent.details.truncated, false);
+		assert.deepEqual(Object.keys(absent.details).sort(), [
+			"chars", "command", "db", "graph", "probed", "rig_sha", "sha_state", "target", "truncated",
+		], "absence and success must expose the SAME key set");
 	} finally {
 		delete process.env.RIG_DB;
 	}

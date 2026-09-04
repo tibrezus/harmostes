@@ -113,9 +113,10 @@ RUN git config --global user.name 'harmostes-bot' && \
 #   best-practice/CVE lookup). Auto-discovered via settings.json packages.
 COPY extensions/litellm-provider /extensions/litellm-provider
 COPY extensions/rig-query        /extensions/rig-query
-# Load gate: pi swallows extension load errors and continues — a dead
-# rig-query would mean NO agent has the rig tool while task contracts
-# mandate it. This build fails instead (#338 r6 B1).
+# Startup smoke gate (r17 M12): pi exits 1 for parse errors, thrown load
+# errors and missing -e paths, so a non-zero rc fails the build. What it
+# cannot see is a load that registers nothing — that contract is pinned
+# by the extension's TS tests and CI. (#338 r6 B1 / r14 O1 / r17 M12.)
 RUN PI_SKIP_VERSION_CHECK=1 timeout 60 pi -e /extensions/rig-query --mode rpc </dev/null >/tmp/pi-load.log 2>&1; rc=$?; \
     if [ $rc -ne 0 ]; then \
       echo "rig-query load probe failed (pi exit $rc):"; cat /tmp/pi-load.log; exit 1; \

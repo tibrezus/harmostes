@@ -38,6 +38,7 @@ test-extensions:
 		extensions/rig-query/queries.test.ts \
 		extensions/rig-query/index.parse.test.ts \
 		extensions/rig-query/index.runtime.test.ts
+	python3 extensions/rig-query/fixtures/freshness.py
 
 ## test-integration: integration tier — the attempt ledger + review-claim
 ## lifecycles against a REAL API server (envtest) with the chart CRDs

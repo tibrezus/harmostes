@@ -77,8 +77,15 @@ func TestPiArgsDropsMissingExtension(t *testing.T) {
 	if strings.Contains(joined, "rig-query") || strings.Contains(joined, "rig") {
 		t.Errorf("missing extension must be dropped from -e AND --tools, got: %s", joined)
 	}
-	if !strings.Contains(joined, "--tools bash") || strings.Contains(joined, "rig") {
-		t.Errorf("missing extension must vanish from -e and --tools, got: %s", joined)
+	for i, a := range args {
+		if a == "--tools" {
+			// The --tools VALUE must equal exactly the user's list — a whole-
+			// string Contains can pass on the -e flag alone, which is how
+			// r14-B1 hid behind its neighbour (#338 r17 M10).
+			if args[i+1] != "bash" {
+				t.Errorf("--tools value must be exactly the user's list, got: %s", args[i+1])
+			}
+		}
 	}
 }
 
@@ -87,6 +94,7 @@ func TestPiArgsDropsMissingExtension(t *testing.T) {
 // any of them is fleet-wide — a missing COPY kills every agent at pi startup,
 // a missing -e silently drops the tool (#338 r9). This test pins them all.
 func TestExtensionsSingleSource(t *testing.T) {
+	py := string(mustRead(t, "../../harmostes.py"))
 	for _, ext := range Extensions {
 		dockerfile := string(mustRead(t, "../../Dockerfile.worker"))
 		release := string(mustRead(t, "../../.github/Dockerfile.worker.release"))
@@ -98,8 +106,17 @@ func TestExtensionsSingleSource(t *testing.T) {
 		if !strings.Contains(release, " "+ext) {
 			t.Errorf(".github/Dockerfile.worker.release (the published image) does not COPY %s", ext)
 		}
-		if !strings.Contains(string(mustRead(t, "../../harmostes.py")), "\""+ext+"\"") {
+		if !strings.Contains(py, "\""+ext+"\"") {
 			t.Errorf("harmostes.py does not load %s — the standalone primitive drifts from the worker", ext)
+		}
+		// The tool the extension registers must match the allowlist the Python
+		// path builds — value drift is the r17 M4 class (a path can load while
+		// the tool it registers never enters --tools).
+		if tool, ok := map[string]string{"/extensions/rig-query": "rig"}[ext]; ok {
+			entry := "\"" + ext + "\": \"" + tool + "\""
+			if !strings.Contains(py, entry) {
+				t.Errorf("harmostes.py extension_tools is missing %s", entry)
+			}
 		}
 		args := buildPiArgs(v1alpha1.AgentSpec{Skill: "s", Model: "m"}, Extensions, alwaysPresent)
 		if !strings.Contains(strings.Join(args, " "), ext) {

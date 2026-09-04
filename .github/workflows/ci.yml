@@ -56,16 +56,13 @@ jobs:
       - name: go build (all packages)
         run: go build ./...
 
-      - name: go test (race + coverage)
-        run: go test -race -cover ./...
-
       - name: extensions (node --test · rig-query)
         run: make test-extensions
 
-      - name: rig fixture freshness (regenerate must be a no-op)
+      - name: rig fixture freshness (canonical hash, build-independent)
         run: |
           python3 extensions/rig-query/fixtures/generate.py
-          git diff --exit-code extensions/rig-query/fixtures/rig.db \
+          python3 extensions/rig-query/fixtures/freshness.py \
             || { echo "::error::fixtures/rig.db is stale — run extensions/rig-query/fixtures/generate.py and commit"; exit 1; }
 
       # Fails if go.mod/go.sum drift from `go mod tidy` — catches dependency

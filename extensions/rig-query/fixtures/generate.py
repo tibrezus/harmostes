@@ -94,11 +94,17 @@ files = [
 ]
 
 
+def build() -> tuple[dict, list[dict], list[dict]]:
+    """The fixture content — also consumed by freshness.py (CI drift check)."""
+    return rig, symbols, files
+
+
 def main() -> None:
     out = Path(__file__).resolve().parent / "rig.db"
-    rig_db.write_db(rig, out)
-    rig_db.add_symbols(out, symbols)
-    rig_db.add_files(out, files)
+    r, s, f = build()
+    rig_db.write_db(r, out)
+    rig_db.add_symbols(out, s)
+    rig_db.add_files(out, f)
     print(f"fixture written: {out} ({out.stat().st_size} bytes)")
 
 

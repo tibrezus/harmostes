@@ -33,7 +33,7 @@ test:
 ## (python3 extensions/rig-query/fixtures/generate.py) and committed; CI
 ## regenerates and fails on drift.
 test-extensions:
-	node --test --experimental-strip-types extensions/rig-query/queries.test.ts
+	node --test --experimental-strip-types 		extensions/rig-query/queries.test.ts 		extensions/rig-query/index.parse.test.ts
 
 ## test-integration: integration tier — the attempt ledger + review-claim
 ## lifecycles against a REAL API server (envtest) with the chart CRDs

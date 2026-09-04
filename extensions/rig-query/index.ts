@@ -59,7 +59,7 @@ export default function (pi: ExtensionAPI) {
 		label: "RIG",
 		description: `Query the project's architecture graph (rig.db): components as build targets, dependency edges, every file and symbol with file:line precision — a targeted question costs a few hundred tokens, not a filesystem grep.
 
-Workflow: start with command="overview" (whole graph, ~300 tokens), then locate code with command="search" (FTS5 over symbol names/signatures/docs; prefix match: "executor*"), then read the exact file:line ranges the hits give you. drill into a single component with command="component" (its files + dependency edges) or command="deps" (reverse = blast radius). command="files" lists files by path glob.
+Workflow: start with command="overview" (the whole graph in one screen — roughly 400 tokens on a mid-size repo), then locate code with command="search" (symbol names/signatures/docs; trailing * is prefix syntax: "executor*"), then read the exact file:line ranges the hits give you. drill into a single component with command="component" (its files + dependency edges) or command="deps" (reverse = blast radius). command="files" lists files by path glob ('%' wildcards).
 
 Prefer this over find/grep for ANY "where is X" or "what uses Y" question; drop to bash only for reading the specific ranges search points at.`,
 		promptSnippet: "Query the project architecture graph (rig.db): components, deps, symbol search with file:line precision",
@@ -92,20 +92,19 @@ Prefer this over find/grep for ANY "where is X" or "what uses Y" question; drop 
 							text: "no rig.db in this workspace (looked at $RIG_DB, ./rig.db, /workspace/rig.db) — the graph was not generated for this run; navigate with bash.",
 						},
 					],
-					details: {},
+					details: { graph: false }, // structured: telemetry branches on presence without parsing text
 				};
 			}
 			let db: ReturnType<typeof openRig>;
 			try {
 				db = open(path); // get-or-open; the (ino, mtime) identity check lives HERE only
 			} catch (e) {
-					// Throw, don't return text: a corrupt/version-mismatched graph must
-					// surface as a FAILED tool call in the session and telemetry, not
-					// as a silent no-op indistinguishable from the tool working (#338 r1).
-					// The agent cannot regenerate a graph — prepare owns emission — so
-					// point at the run, not the emitter.
-					throw new Error(`rig.db at ${path} is not readable as a RIG database: ${String(e)} — if this run should have a graph, check the prepare phase logs`);
-				}
+				// Throw, don't return text: a corrupt/version-mismatched graph must
+				// surface as a FAILED tool call in the session and telemetry, not
+				// as a silent no-op indistinguishable from the tool working (#338 r1).
+				// The agent cannot regenerate a graph — prepare owns emission — so
+				// point at the run, not the emitter.
+				throw new Error(`rig.db at ${path} is not readable as a RIG database: ${String(e)} — if this run should have a graph, check the prepare phase logs`);
 			}
 			try {
 				const { text, truncated } = rigQuery(db, p);

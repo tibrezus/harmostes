@@ -40,6 +40,14 @@ export function resolveRigDb(explicit?: string, cwd?: string, extra: string[] = 
 }
 
 const MAX_RESULT_CHARS = 4000; // ~1k tokens — sized for a full one-screen overview (a 23-component repo renders ~1.7k chars)
+
+// Truncation markers, single-sourced: builders render them, rigQuery detects
+// them for the `truncated` telemetry flag. Rewording one must reword both —
+// a regex over prose was how the partial-answer signal could silently die
+// (#338 r3 pillar 7).
+const MORE_ROWS = (n: number): string => `  …+${n} more`;
+const MORE_HITS = " …more hits — refine the term";
+const rowTruncated = (text: string): boolean => text.includes("…+") || text.includes(MORE_HITS);
 const MAX_ROWS = 12;
 /** Search returns exactly this many hits; say so when the pool was bigger. */
 const SEARCH_LIMIT = 8;
@@ -108,10 +116,7 @@ export function openRig(path: string): DatabaseSync {
 export function rigQuery(db: DatabaseSync, p: RigParams): { text: string; truncated: boolean } {
 	const run = (fn: () => string): { text: string; truncated: boolean } => {
 		const text = cap(fn());
-		// Row-level truncation ("…+N more" / "…more hits") counts too — a session
-		// that got a partial answer must not look complete in telemetry (#338 r3).
-		const rowTruncated = /…\+\d+ more|…more hits/.test(text);
-		return { text, truncated: rowTruncated || text.length >= MAX_RESULT_CHARS };
+		return { text, truncated: rowTruncated(text) || text.length >= MAX_RESULT_CHARS };
 	};
 	switch (p.command) {
 		case "overview":
@@ -160,7 +165,7 @@ function overview(db: DatabaseSync): string {
 		const names = namesById(db);
 		const rendered = edges.map((e) => `${nameOf(names, row(e.src))} → ${nameOf(names, row(e.dst))}`);
 		lines.push(
-			`deps (${edges.length}): ${rendered.slice(0, MAX_ROWS).join(", ")}${edges.length > MAX_ROWS ? ` …+${edges.length - MAX_ROWS} more` : ""}`,
+			`deps (${edges.length}): ${rendered.slice(0, MAX_ROWS).join(", ")}${edges.length > MAX_ROWS ? MORE_ROWS(edges.length - MAX_ROWS) : ""}`,
 		);
 	}
 	lines.push('drill down: rig component <name-tail> | rig search \'<term>\' (symbol FTS) | rig deps <name-tail>');
@@ -230,19 +235,19 @@ function component(db: DatabaseSync, target: string | undefined): string {
 		.all(c.id, MAX_ROWS) as Row[]) {
 		lines.push(`  ${row(f.path)} (${row(f.lines)}L)`);
 	}
-	if (fileTotal > MAX_ROWS) lines.push(`  …+${fileTotal - MAX_ROWS} more files — narrow with rig files '<glob>'`);
+	if (fileTotal > MAX_ROWS) lines.push(`${MORE_ROWS(fileTotal - MAX_ROWS)} files — narrow with rig files '<glob>'`);
 	const edgeTotal = (d: string): number =>
 		Number(db.prepare(`SELECT COUNT(*) n FROM deps WHERE ${d} = ?`).get(c.id)?.n ?? 0);
 	const out = db.prepare("SELECT dst FROM deps WHERE src = ? LIMIT ?").all(c.id, MAX_ROWS) as Row[];
 	if (out.length) {
 		const total = edgeTotal("src");
-		lines.push(`deps out: ${out.map((e) => label(e.dst)).join(", ")}${total > MAX_ROWS ? ` …+${total - MAX_ROWS} more` : ""}`);
+		lines.push(`deps out: ${out.map((e) => label(e.dst)).join(", ")}${total > MAX_ROWS ? MORE_ROWS(total - MAX_ROWS) : ""}`);
 	}
 	const inc = db.prepare("SELECT src FROM deps WHERE dst = ? LIMIT ?").all(c.id, MAX_ROWS) as Row[];
 	if (inc.length) {
 		const total = edgeTotal("dst");
 		lines.push(
-			`deps in (reverse blast radius): ${inc.map((e) => label(e.src)).join(", ")}${total > MAX_ROWS ? ` …+${total - MAX_ROWS} more` : ""}`,
+			`deps in (reverse blast radius): ${inc.map((e) => label(e.src)).join(", ")}${total > MAX_ROWS ? MORE_ROWS(total - MAX_ROWS) : ""}`,
 		);
 	}
 	return lines.join("\n");
@@ -260,9 +265,10 @@ function search(db: DatabaseSync, target: string | undefined): string {
 	// 1. Name-prefix first: the agent's term is almost always a name stem
 	// ("executor", "envelope"). LIKE gives camelCase-honest matching that FTS
 	// tokenization cannot ("envelope" must find NodeResultEnvelope).
+	const likeTerm = term.replace(/[%_]/g, "\\$0"); // literal %/_ in a target must not widen the match
 	const pre = db
-		.prepare("SELECT file, line, kind, name, signature, doc FROM symbols WHERE name LIKE ? || '%' ORDER BY seq LIMIT ?")
-		.all(term, SEARCH_LIMIT) as Row[];
+		.prepare("SELECT file, line, kind, name, signature, doc FROM symbols WHERE name LIKE ? || '%' ESCAPE '\\' ORDER BY seq LIMIT ?")
+		.all(likeTerm, SEARCH_LIMIT) as Row[];
 	for (const r of pre) hits.set(`${row(r.file)}:${row(r.line)}:${row(r.name)}`, r);
 	let ftsFilled = false;
 	// 2. FTS (rank over name/signature/doc) fills the rest.
@@ -287,11 +293,11 @@ function search(db: DatabaseSync, target: string | undefined): string {
 	// 3. Broad substring sweep fills what is left (doc/signature matches).
 	let sweptBeyondLimit = false;
 	if (hits.size < SEARCH_LIMIT) {
-		const like = `%${term}%`;
+		const like = `%${likeTerm}%`;
 		const likeRows = db
 			.prepare(
 				`SELECT file, line, kind, name, signature, doc FROM symbols
-				 WHERE name LIKE ? OR signature LIKE ? OR doc LIKE ? ORDER BY seq LIMIT ?`,
+				 WHERE name LIKE ? ESCAPE '\\' OR signature LIKE ? ESCAPE '\\' OR doc LIKE ? ESCAPE '\\' ORDER BY seq LIMIT ?`,
 			)
 			.all(like, like, like, SEARCH_LIMIT + 1) as Row[];
 		for (const r of likeRows) {
@@ -353,7 +359,7 @@ function deps(db: DatabaseSync, target: string | undefined, reverse: boolean): s
 		.prepare(`SELECT ${peerCol} AS peer FROM deps WHERE ${filterCol} = ? ORDER BY ${peerCol} LIMIT ?`)
 		.all(c.id, MAX_ROWS) as Row[];
 	const arrow = reverse ? "←" : "→";
-	if (rows.length === 0) return `${label(c.id)} has no ${reverse ? "reverse" : ""} dependencies.`;
+	if (rows.length === 0) return `${label(c.id)} — no ${reverse ? "incoming (reverse)" : "outgoing"} dependencies.`;
 	return [
 		`${label(c.id)} ${arrow}`,
 		...rows.map((r) => `  ${arrow} ${label(r.peer)}`),

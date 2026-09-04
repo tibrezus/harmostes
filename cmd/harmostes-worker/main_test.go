@@ -2,11 +2,14 @@ package main
 
 import (
 	"context"
-	"github.com/tibrezus/harmostes/internal/timeline"
+	"strings"
 	"testing"
 	"time"
 
+	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
 	"github.com/tibrezus/harmostes/internal/observability"
+	"github.com/tibrezus/harmostes/internal/timeline"
+	"github.com/tibrezus/harmostes/internal/worker"
 )
 
 // TestFlushTelemetryCallsShutdown: the worker's exit path flushes telemetry —
@@ -149,5 +152,80 @@ func TestSubjectFromEnv(t *testing.T) {
 				t.Fatalf("subjectFromEnv() = %+v, want %+v", got, tc.want)
 			}
 		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ADR-0008: handoff brief + mode classification
+// ---------------------------------------------------------------------------
+
+func TestClassifyHandoff(t *testing.T) {
+	at := &v1alpha1.Attempt{Status: v1alpha1.AttemptStatus{
+		Runs: []v1alpha1.RunRecord{
+			{Name: "run-1", Phase: "failed"},
+			{Name: "run-2", Phase: "running"}, // superseded/killed
+		},
+	}}
+	prior := priorRuns(at, "run-3")
+	if len(prior) != 2 {
+		t.Fatalf("prior runs = %d, want 2 (current run excluded)", len(prior))
+	}
+	// Interrupted predecessors + automatic re-arm → CONTINUE.
+	if got := classifyHandoff(at, "", prior); got != "continue" {
+		t.Errorf("interrupted predecessors: mode = %q, want continue", got)
+	}
+	// Human label wake ⇒ deliberate ⇒ SUMMARY.
+	if got := classifyHandoff(at, "labeled", prior); got != "summary" {
+		t.Errorf("labeled wake: mode = %q, want summary", got)
+	}
+	// Claim consumed (verdict landed once) ⇒ deliberate ⇒ SUMMARY even with
+	// failed predecessors in between.
+	at.Status.Review = &v1alpha1.ReviewClaimStatus{Released: true, ReleaseReason: "consumed"}
+	if got := classifyHandoff(at, "", prior); got != "summary" {
+		t.Errorf("consumed claim: mode = %q, want summary", got)
+	}
+	// A predecessor that SUCCEEDED ⇒ its work concluded ⇒ SUMMARY.
+	at2 := &v1alpha1.Attempt{Status: v1alpha1.AttemptStatus{
+		Runs: []v1alpha1.RunRecord{{Name: "run-1", Phase: "succeeded"}},
+	}}
+	if got := classifyHandoff(at2, "", priorRuns(at2, "run-2")); got != "summary" {
+		t.Errorf("succeeded predecessor: mode = %q, want summary", got)
+	}
+}
+
+func TestBuildHandoffBriefModes(t *testing.T) {
+	at := &v1alpha1.Attempt{Status: v1alpha1.AttemptStatus{
+		Runs: []v1alpha1.RunRecord{
+			{Name: "run-1", Phase: "failed"},
+			{Name: "run-2", Phase: "running"},
+		},
+		NodeResults: []v1alpha1.NodeResultEnvelope{
+			{NodeID: "prepare", RunID: "run-1", Status: "ok", Summary: "workspace ready"},
+		},
+	}}
+	brief := buildHandoffBrief(at, worker.Deps{}, "pr-review", "run-3")
+	if !strings.Contains(brief, "CONTINUE interrupted work") {
+		t.Errorf("interrupted predecessors must produce CONTINUE framing, got:\n%s", brief)
+	}
+	if !strings.Contains(brief, "prepare: workspace ready") {
+		t.Errorf("brief must carry completed-node facts, got:\n%s", brief)
+	}
+	if strings.Contains(brief, "run-3") && strings.Contains(brief, "Prior runs: 3") {
+		t.Errorf("current run must be excluded from prior facts")
+	}
+
+	// Deliberate restart framing.
+	at.Status.Review = &v1alpha1.ReviewClaimStatus{Released: true, ReleaseReason: "consumed"}
+	brief = buildHandoffBrief(at, worker.Deps{}, "pr-review", "run-3")
+	if !strings.Contains(brief, "deliberate restart") {
+		t.Errorf("consumed claim must produce SUMMARY framing, got:\n%s", brief)
+	}
+
+	// No prior runs ⇒ no brief at all.
+	at2 := &v1alpha1.Attempt{Status: v1alpha1.AttemptStatus{
+		Runs: []v1alpha1.RunRecord{{Name: "run-3", Phase: "running"}},
+	}}
+	if got := buildHandoffBrief(at2, worker.Deps{}, "pr-review", "run-3"); got != "" {
+		t.Errorf("no prior runs must produce no brief, got:\n%s", got)
 	}
 }

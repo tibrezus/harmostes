@@ -94,6 +94,14 @@ type NodeResultEnvelope struct {
 	// per-step timing views (issue #298).
 	// +optional
 	DurationMs int64 `json:"durationMs,omitempty"`
+
+	// Outputs are the node's graph-level outputs, stringified. This is the
+	// data downstream nodes consume (snapshotOutputs) — recorded so a later
+	// run of the SAME attempt can resume this node's result without
+	// re-executing it (ADR-0008). Bools marshal as "true"/"false"; downstream
+	// readers accept both string and native bool.
+	// +optional
+	Outputs map[string]string `json:"outputs,omitempty"`
 }
 
 // Claim is a typed, reference-backed statement describing an observable

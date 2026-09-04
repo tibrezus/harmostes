@@ -72,6 +72,7 @@ type NodeEnv struct {
 	State          string                 // Dapr state key prefix
 	ExtraEnv       []string               // extra env vars for plugin subprocesses
 	Inputs         map[string]NodeOutputs // upstream node outputs: nodeID → outputs
+	Handoff        string                 // ADR-0008 handoff brief: what interrupted predecessor runs of this attempt accomplished; appended to agent task prompts. Empty = none.
 }
 
 // NodeOutputs holds the outputs of a single node, available to downstream nodes

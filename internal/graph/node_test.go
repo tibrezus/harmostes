@@ -183,11 +183,13 @@ func (f *fakeResolver) Resolve(_ context.Context, _ v1alpha1.PluginRef, _ string
 }
 
 type fakeAgentRunner struct {
-	result agent.Result
-	err    error
+	result   agent.Result
+	err      error
+	lastTask string
 }
 
-func (f *fakeAgentRunner) Run(_ context.Context, _ string, _ agent.Gate, _ int, _ agent.Logger, _ ...agent.TaskOption) (agent.Result, error) {
+func (f *fakeAgentRunner) Run(_ context.Context, task string, _ agent.Gate, _ int, _ agent.Logger, _ ...agent.TaskOption) (agent.Result, error) {
+	f.lastTask = task
 	return f.result, f.err
 }
 

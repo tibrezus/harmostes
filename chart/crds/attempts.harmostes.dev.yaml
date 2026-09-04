@@ -168,6 +168,9 @@ spec:
                       runID:      { type: string }
                       status:     { type: string }
                       summary:    { type: string }
+                      outputs:                                    # ADR-0008: graph-level outputs (stringified) — the data a later run of the same attempt resumes from
+                        type: object
+                        additionalProperties: { type: string }
                       payload:                                    # node-type-specific Node Payload (opaque to the kernel)
                         type: object
                         x-kubernetes-preserve-unknown-fields: true

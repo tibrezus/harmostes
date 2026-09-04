@@ -344,13 +344,19 @@ func runOneShot() {
 	graphCtx, graphCancel := context.WithTimeout(graphCtx, runTimeout(wf))
 	defer graphCancel()
 
-	// Record the run as started BEFORE executing: without this the Attempt's
+	// record the run as started BEFORE executing: without this the Attempt's
 	// run list only ever shows terminal records, so the UI cannot show a live
 	// tail for an in-flight run (the dispatcher does not record starts). Best-
 	// effort and idempotent (upsertRun) — mirrors recordAttemptOutcome below,
 	// and runName() here equals the name the outcome upserts, so a crash that
 	// never reaches the outcome path leaves an honest 'running' record.
 	recordAttemptStarted(ctx, cl)
+
+	// Attempt-scoped resumption (ADR-0008): seed the executor with green
+	// results earlier runs of this attempt recorded, and hand the agent a
+	// brief (CONTINUE vs SUMMARY) describing what they accomplished.
+	// Best-effort — any failure degrades to a fresh run, never a failed one.
+	resumeSeed, handoffBrief := buildAttemptResume(ctx, cl, namespace, deps, workflow, runID)
 
 	graphDeps := graph.Dependencies{
 		PluginResolver: deps.Plugins,
@@ -375,6 +381,8 @@ func runOneShot() {
 		graph.WithBindings(wf.Spec.Bindings),
 		graph.WithRunID(runID),
 		graph.WithAttemptName(os.Getenv("HARMOSTES_ATTEMPT")),
+		graph.WithPriorResults(resumeSeed),
+		graph.WithHandoff(handoffBrief),
 		// Incremental node-result recording: each envelope lands on the Attempt
 		// as its node completes, so the UI's live position advances
 		// node-by-node. No-op without an attempt context (non-Job runs).

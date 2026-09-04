@@ -118,6 +118,28 @@ func BuildJob(p AttemptJobParams) *batchv1.Job {
 
 	volumes := []corev1.Volume{{Name: "workspace", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}}
 	mounts := []corev1.VolumeMount{{Name: "workspace", MountPath: "/workspace"}}
+
+	// Toolchain caches (ADR-0008/#336): when the attempt declares a cache,
+	// mount the shared PVC and point the toolchains at it — a warm GOCACHE/
+	// GOMODCACHE turns a cold `go test -race` from minutes into seconds,
+	// which is the difference between a review fitting its budget and dying
+	// at it. Namespaced subpaths keep workflows from trampling each other.
+	if c := p.Attempt.Spec.Cache; c != nil && c.PVC != "" {
+		volumes = append(volumes, corev1.Volume{
+			Name:         "toolchain-cache",
+			VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: c.PVC}},
+		})
+		mounts = append(mounts, corev1.VolumeMount{Name: "toolchain-cache", MountPath: "/toolchain-cache"})
+		if c.Go {
+			env = append(env,
+				corev1.EnvVar{Name: "GOCACHE", Value: "/toolchain-cache/go-build"},
+				corev1.EnvVar{Name: "GOMODCACHE", Value: "/toolchain-cache/go-mod"},
+			)
+		}
+		if c.NPM {
+			env = append(env, corev1.EnvVar{Name: "npm_config_cache", Value: "/toolchain-cache/npm"})
+		}
+	}
 	for _, m := range p.ExtraConfigMapMounts {
 		mode := int32(0o755)
 		if m.Mode != nil {

@@ -84,6 +84,10 @@ func AttemptSpecFromObjective(obj v1alpha1.ObjectiveSpec, opts ResolveOptions) v
 	if opts.Owner != nil {
 		spec.Bindings = append([]v1alpha1.ExternalSystemBinding(nil), opts.Owner.Spec.Bindings...)
 		spec.RunBound = opts.Owner.Spec.RunBound
+		if opts.Owner.Spec.Cache != nil {
+			c := *opts.Owner.Spec.Cache
+			spec.Cache = &c
+		}
 	}
 	return spec
 }

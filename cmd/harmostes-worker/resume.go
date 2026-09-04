@@ -100,6 +100,14 @@ func buildHandoffBrief(at *v1alpha1.Attempt, deps worker.Deps, workflow, runID s
 		}
 	}
 
+	// Run clock (#336): the agent paces itself against the bound instead of
+	// discovering it at kill time. Unlimited runs get the soft target.
+	if bound := at.Spec.RunBound; bound != "" {
+		b.WriteString(fmt.Sprintf("\nRun clock: hard bound %s from dispatch — the review MUST be written before it expires.\n", bound))
+	} else {
+		b.WriteString("\nRun clock: no hard bound, but the review is expected within ~10 minutes — write it while the findings are fresh.\n")
+	}
+
 	// Transcript orientation from the most recent predecessor's session
 	// (best-effort: missing/corrupt session degrades to the facts above).
 	if sess := priorSession(deps, workflow, prior); sess != nil && len(sess.Turns) > 0 {

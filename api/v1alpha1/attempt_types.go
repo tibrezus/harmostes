@@ -99,6 +99,13 @@ type AttemptSpec struct {
 	// +optional
 	RunBound string `json:"runBound,omitempty"`
 
+	// Cache is the snapshot of the Workflow's cache configuration
+	// (ADR-0008): warm toolchain caches (Go build/module, npm) mounted into
+	// the run so verification commands pay seconds, not minutes. Copied at
+	// attempt creation like Bindings/RunBound.
+	// +optional
+	Cache *CacheSpec `json:"cache,omitempty"`
+
 	// Owner is the user this attempt belongs to (mirrors Workflow
 	// harmostes.dev/owner label; drives UI isolation).
 	// +optional

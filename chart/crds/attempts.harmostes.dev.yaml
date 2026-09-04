@@ -112,6 +112,13 @@ spec:
                           key:  { type: string }
 
                 runBound:  { type: string }            # ADR-0008: snapshot of the Workflow's run bound — empty = unlimited (runs complete or fail on their own)
+                cache:                                     # ADR-0008/#336: snapshot of the Workflow's toolchain-cache config
+                  type: object
+                  properties:
+                    pvc: { type: string }                  # shared cache PVC (mounted at /toolchain-cache)
+                    git: { type: boolean }
+                    go:  { type: boolean }                 # GOCACHE/GOMODCACHE → PVC subpaths
+                    npm: { type: boolean }                 # npm_config_cache → PVC subpath
 
             status:
               type: object

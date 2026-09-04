@@ -233,3 +233,38 @@ func TestBuildJobRunBound(t *testing.T) {
 		t.Errorf("malformed runBound must degrade to no deadline, got %ds", *job.Spec.ActiveDeadlineSeconds)
 	}
 }
+
+// #336: spec.cache mounts the shared toolchain-cache PVC and points the
+// toolchains at namespaced subpaths — warm GOCACHE/GOMODCACHE is the
+// difference between a review fitting its budget and dying at it.
+func TestBuildJobCacheMounts(t *testing.T) {
+	at := jobTestAttempt()
+	at.Spec.Cache = &v1alpha1.CacheSpec{PVC: "harmostes-toolchain-cache", Go: true, NPM: true}
+	job := BuildJob(AttemptJobParams{Attempt: at, WorkflowName: "w", Namespace: "harmostes", Image: "img"})
+
+	volNames := map[string]bool{}
+	for _, v := range job.Spec.Template.Spec.Volumes {
+		volNames[v.Name] = true
+	}
+	if !volNames["toolchain-cache"] {
+		t.Fatal("cache PVC volume missing")
+	}
+	env := map[string]string{}
+	for _, e := range job.Spec.Template.Spec.Containers[0].Env {
+		env[e.Name] = e.Value
+	}
+	if env["GOCACHE"] != "/toolchain-cache/go-build" || env["GOMODCACHE"] != "/toolchain-cache/go-mod" {
+		t.Errorf("Go cache env missing: %v", env)
+	}
+	if env["npm_config_cache"] != "/toolchain-cache/npm" {
+		t.Errorf("npm cache env missing: %v", env)
+	}
+
+	// No cache declared: none of it appears.
+	job = BuildJob(AttemptJobParams{Attempt: jobTestAttempt(), WorkflowName: "w", Namespace: "harmostes", Image: "img"})
+	for _, e := range job.Spec.Template.Spec.Containers[0].Env {
+		if e.Name == "GOCACHE" {
+			t.Error("GOCACHE must not be set without spec.cache")
+		}
+	}
+}

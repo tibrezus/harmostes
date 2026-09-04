@@ -10,19 +10,26 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
-import { unlinkSync } from "node:fs";
+import { copyFileSync, rmSync, unlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { openRig, rigQuery, type RigParams } from "./queries.ts";
+import { openRig, resolveRigDb, rigQuery, type RigParams } from "./queries.ts";
 
 const FIXTURE = fileURLToPath(new URL("./fixtures/rig.db", import.meta.url));
 
 function q(params: RigParams): string {
-	return rigQuery(openRig(FIXTURE), params);
+	const db = openRig(FIXTURE);
+	try {
+		return rigQuery(db, params);
+	} finally {
+		db.close(); // these tests are the example the next extension copies
+	}
 }
 
 test("openRig asserts the producer schema version", () => {
-	// Build a rig.db-shaped file carrying a future schema version.
-	const bad = fileURLToPath(new URL("./fixtures/bad-version.db", import.meta.url));
+	// Build a rig.db-shaped file carrying a future schema version — in tmpdir:
+	// a worker checkout is a place git-push operates; never litter it (#338 r2).
+	const bad = `${tmpdir()}/rig-query-bad-version-${process.pid}-${Date.now()}.db`;
 	const badDb = new DatabaseSync(bad);
 	badDb.exec("CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)");
 	badDb.prepare("INSERT INTO meta VALUES ('db_schema_version', '9')").run();
@@ -72,6 +79,40 @@ test("deps reverse blast radius is named and id-free", () => {
 	assert.match(out, /internal\/model ←/);
 	assert.match(out, /← internal\/worker/);
 	assert.doesNotMatch(out, /comp-\d+/);
+});
+
+test("documented trailing-* syntax works on the LIKE paths too (#338 r2 4.1)", () => {
+	const starred = q({ command: "search", target: "Executor*" });
+	const plain = q({ command: "search", target: "Executor" });
+	assert.match(starred, /ExecutorMain/);
+	assert.equal(starred, plain, "the * is syntax, not a literal — results must be identical");
+});
+
+test("search degrades gracefully when FTS5 is absent (#338 r2 4.1)", () => {
+	const noFts = `${tmpdir()}/rig-query-no-fts-${process.pid}-${Date.now()}.db`;
+	copyFileSync(FIXTURE, noFts);
+	try {
+		const db = new DatabaseSync(noFts);
+		db.exec("DROP TABLE IF EXISTS symbols_fts"); // what _fts5_available() false produces
+		db.close();
+		const out = rigQuery(openRig(noFts), { command: "search", target: "Executor" });
+		assert.match(out, /Executor/);
+		assert.match(out, /internal\/worker\/exec\.go/);
+	} finally {
+		rmSync(noFts, { force: true });
+	}
+});
+
+test("component file listings say …+N more instead of silently truncating (#338 r2 4.2)", () => {
+	const out = q({ command: "component", target: "internal/worker" });
+	assert.match(out, /…\+\d+ more files/);
+	assert.match(out, /narrow with rig files/);
+});
+
+test("files lists bare prefixes and names components (#338 r2 4.5)", () => {
+	const out = q({ command: "files", target: "internal/worker" });
+	assert.match(out, /internal\/worker\/exec\.go/);
+	assert.match(out, /internal\/worker/); // component name, not comp-N
 });
 
 test("openRig rejects a non-rig.db file with a readable error", () => {

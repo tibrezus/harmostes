@@ -52,6 +52,8 @@ rig = {
             "external_packages_ids": [],
             "evidence_ids": [],
             "artifacts": [],
+            "source_files": ["internal/worker/exec.go"]
+                + [f"internal/worker/part{i:02d}.go" for i in range(13)],
         },
         {
             "id": "comp-3",
@@ -85,6 +87,10 @@ files = [
     {"path": "cmd/worker/main.go", "component_id": "comp-1", "language": "go", "bytes": 100, "lines": 9, "doc": ""},
     {"path": "internal/worker/exec.go", "component_id": "comp-2", "language": "go", "bytes": 80, "lines": 6, "doc": ""},
     {"path": "internal/model/types.go", "component_id": "comp-3", "language": "go", "bytes": 120, "lines": 50, "doc": ""},
+    # 13 files in comp-2 — the silent-truncation case: a component listing must
+    # say "…+N more files" when MAX_ROWS caps it (#338 r2 4.2).
+    *[{"path": f"internal/worker/part{i:02d}.go", "component_id": "comp-2", "language": "go",
+       "bytes": 50, "lines": 10 + i, "doc": ""} for i in range(13)],
 ]
 
 

@@ -35,7 +35,7 @@ export function resolveRigDb(explicit?: string, cwd?: string): string | null {
 	return null;
 }
 
-const MAX_RESULT_CHARS = 1600;
+const MAX_RESULT_CHARS = 4000; // ~1k tokens — sized for a full one-screen overview (a 23-component repo renders ~1.7k chars)
 const MAX_ROWS = 12;
 /** Search returns exactly this many hits; say so when the pool was bigger. */
 const SEARCH_LIMIT = 8;
@@ -110,7 +110,7 @@ export function rigQuery(db: DatabaseSync, p: RigParams): string {
 		case "deps":
 			return cap(deps(db, p.target, p.reverse === true));
 		default:
-			return `unknown command ${JSON.stringify((p as { command?: string }).command)}`;
+			throw new Error(`unknown rig command ${JSON.stringify((p as { command?: string }).command)}`);
 	}
 }
 
@@ -144,7 +144,9 @@ function overview(db: DatabaseSync): string {
 	if (edges.length) {
 		const names = namesById(db);
 		const rendered = edges.map((e) => `${nameOf(names, row(e.src))} → ${nameOf(names, row(e.dst))}`);
-		lines.push(`deps (${edges.length}): ${rendered.slice(0, MAX_ROWS).join(", ")}${rendered.length > MAX_ROWS ? " …" : ""}`);
+		lines.push(
+			`deps (${edges.length}): ${rendered.slice(0, MAX_ROWS).join(", ")}${edges.length > MAX_ROWS ? ` …+${edges.length - MAX_ROWS} more` : ""}`,
+		);
 	}
 	lines.push('drill down: rig component <name-tail> | rig search \'<term>\' (symbol FTS) | rig deps <name-tail>');
 	return lines.join("\n");
@@ -179,16 +181,19 @@ function resolveComponent(db: DatabaseSync, target: string | undefined): Array<{
 	// component ids are opaque (comp-N), names are import paths. Ambiguity is an
 	// answer, not a coin flip: a review tool must never print a confident blast
 	// radius for the wrong component (#338 r1).
+	// LIMIT 3: two matches are "2 match"; a third means the honest answer is
+	// "at least 3" — never print a count derived from a capped list (#338 r2 4.3).
 	return db
-		.prepare("SELECT id, name, type FROM components WHERE id LIKE ? OR name LIKE ? ORDER BY seq LIMIT 2")
+		.prepare("SELECT id, name, type FROM components WHERE id LIKE ? OR name LIKE ? ORDER BY seq LIMIT 3")
 		.all(`%${target}`, `%${target}`) as Array<{ id: string; name: string; type: unknown }>;
 }
 
 /** Shared ambiguity renderer — a confident answer for the wrong component is worse than an error. */
 function ambiguous(matches: Array<{ id: string; name: string; type: unknown }>): string | null {
 	if (matches.length <= 1) return null;
+	const count = matches.length >= 3 ? "at least 3" : String(matches.length);
 	return (
-		`ambiguous — ${matches.length} components match, be more specific:\n` +
+		`ambiguous — ${count} components match, be more specific:\n` +
 		matches.map((c) => `  ${short(row(c.name) || c.id)} (${row(c.type) || "component"})`).join("\n")
 	);
 }
@@ -196,33 +201,46 @@ function ambiguous(matches: Array<{ id: string; name: string; type: unknown }>):
 function component(db: DatabaseSync, target: string | undefined): string {
 	const matches = resolveComponent(db, target);
 	if (matches.length === 0) return `no component matching ${JSON.stringify(target ?? "")} — use rig overview for names.`;
-	if (matches.length > 1) {
-		return (
-			`"${target}" is ambiguous — ${matches.length}+ components match. Be more specific:\n` +
-			matches.map((c) => `  ${short(row(c.name) || c.id)} (${row(c.type) || "component"})`).join("\n")
-		);
-	}
+	const amb = ambiguous(matches);
+	if (amb) return amb;
 	const c = matches[0];
 	const lines: string[] = [`component ${short(row(c.name) || c.id)} (${row(c.type) || "component"}, id ${c.id})`];
 	const names = namesById(db);
 	const label = (id: unknown): string => names.get(row(id)) ?? short(row(id));
+	const fileTotal = Number(db.prepare("SELECT COUNT(*) n FROM component_files WHERE component_id = ?").get(c.id)?.n ?? 0);
 	for (const f of db
 		.prepare(
 			"SELECT f.path, f.lines FROM component_files cf JOIN files f ON f.path = cf.path WHERE cf.component_id = ? ORDER BY cf.seq LIMIT ?",
 		)
-		.all(c.id, MAX_ROWS)) {
+		.all(c.id, MAX_ROWS) as Row[]) {
 		lines.push(`  ${row(f.path)} (${row(f.lines)}L)`);
 	}
+	if (fileTotal > MAX_ROWS) lines.push(`  …+${fileTotal - MAX_ROWS} more files — narrow with rig files '<glob>'`);
+	const edgeTotal = (d: string): number =>
+		Number(db.prepare(`SELECT COUNT(*) n FROM deps WHERE ${d} = ?`).get(c.id)?.n ?? 0);
 	const out = db.prepare("SELECT dst FROM deps WHERE src = ? LIMIT ?").all(c.id, MAX_ROWS) as Row[];
-	if (out.length) lines.push(`deps out: ${out.map((e) => label(e.dst)).join(", ")}`);
+	if (out.length) {
+		const total = edgeTotal("src");
+		lines.push(`deps out: ${out.map((e) => label(e.dst)).join(", ")}${total > MAX_ROWS ? ` …+${total - MAX_ROWS} more` : ""}`);
+	}
 	const inc = db.prepare("SELECT src FROM deps WHERE dst = ? LIMIT ?").all(c.id, MAX_ROWS) as Row[];
-	if (inc.length) lines.push(`deps in (reverse blast radius): ${inc.map((e) => label(e.src)).join(", ")}`);
+	if (inc.length) {
+		const total = edgeTotal("dst");
+		lines.push(
+			`deps in (reverse blast radius): ${inc.map((e) => label(e.src)).join(", ")}${total > MAX_ROWS ? ` …+${total - MAX_ROWS} more` : ""}`,
+		);
+	}
 	return lines.join("\n");
 }
 
 function search(db: DatabaseSync, target: string | undefined): string {
 	if (!target || !target.trim()) return "search: give a symbol term (prefix match supported: 'executor*').";
-	const term = target.trim().replace(/"/g, "");
+	// The documented syntax carries a trailing *; LIKE arms must not inherit it
+	// ("executor*" → "executor*%" matches nothing) — strip it here, keep it for
+	// the FTS phrase (#338 r2 4.1: the documented syntax worked only when FTS
+	// was available, i.e. graceful degradation failed on its own syntax).
+	const term = target.trim().replace(/"/g, "").replace(/\*+$/, "");
+	const ftsTerm = `${term}*`;
 	const hits = new Map<string, Row>();
 	// 1. Name-prefix first: the agent's term is almost always a name stem
 	// ("executor", "envelope"). LIKE gives camelCase-honest matching that FTS
@@ -241,7 +259,7 @@ function search(db: DatabaseSync, target: string | undefined): string {
 					 FROM symbols_fts f JOIN symbols s ON s.seq = f.rowid
 					 WHERE symbols_fts MATCH ? ORDER BY rank LIMIT ?`,
 				)
-				.all(`"${term}"*`, SEARCH_LIMIT) as Row[];
+				.all(`"${ftsTerm}"`, SEARCH_LIMIT) as Row[];
 			for (const r of rows) {
 				if (hits.size >= SEARCH_LIMIT) break;
 				hits.set(`${row(r.file)}:${row(r.line)}:${row(r.name)}`, r);
@@ -290,14 +308,16 @@ function search(db: DatabaseSync, target: string | undefined): string {
 
 function files(db: DatabaseSync, target: string | undefined): string {
 	if (!target) return "files: give a path glob, e.g. 'internal/graph/%' or '%executor%'.";
-	const like = target.replace(/\*/g, "%").replace(/\?/g, "_");
+	let like = target.replace(/\*/g, "%").replace(/\?/g, "_");
+	if (!like.includes("%") && !like.includes("_")) like = `%${like}%`; // bare prefix — don't answer nothing for it
 	const rows = db
 		.prepare("SELECT path, lines, language, component_id FROM files WHERE path LIKE ? ORDER BY path LIMIT ?")
 		.all(like, MAX_ROWS) as Row[];
 	if (rows.length === 0) return `no files matching "${target}".`;
+	const names = namesById(db);
 	return [
 		`files matching "${target}":`,
-		...rows.map((r) => `  ${row(r.path)} (${row(r.lines)}L${r.component_id ? `, ${short(row(r.component_id))}` : ""})`),
+		...rows.map((r) => `  ${row(r.path)} (${row(r.lines)}L${r.component_id ? `, ${names.get(row(r.component_id)) ?? short(row(r.component_id))}` : ""})`),
 	].join("\n");
 }
 

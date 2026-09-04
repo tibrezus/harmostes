@@ -28,8 +28,10 @@ test:
 
 ## test-extensions: the pi extensions' TypeScript (rig-query) — the query
 ## layer is pure TS over rig.db; its fixture suite runs under node --test
-## with type stripping (node 22+). The fixture is regenerated with the REAL
-## producer (python3 extensions/rig-query/fixtures/generate.py) and committed
+## with type stripping (requires Node ≥ 22.5 — the same runtime the worker
+## image ships). The fixture is regenerated with the REAL producer
+## (python3 extensions/rig-query/fixtures/generate.py) and committed; CI
+## regenerates and fails on drift.
 test-extensions:
 	node --test --experimental-strip-types extensions/rig-query/queries.test.ts
 

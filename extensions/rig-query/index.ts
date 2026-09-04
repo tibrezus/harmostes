@@ -15,17 +15,37 @@
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { statSync } from "node:fs";
 import { openRig, resolveRigDb, rigQuery, type RigParams } from "./queries.ts";
 
 export default function (pi: ExtensionAPI) {
-	const handles = new Map<string, ReturnType<typeof openRig>>();
+	// Handles keyed by path + file identity (ino/mtime): the producer's
+	// write_db unlinks and recreates the file (a NEW inode), so a resume/retry
+	// re-emitting the same path must not keep serving the stale graph (#338 r2).
+	const handles = new Map<string, { db: ReturnType<typeof openRig>; ino: number; mtimeMs: number }>();
+
+	const open = (path: string): ReturnType<typeof openRig> => {
+		const st = statSync(path);
+		const hit = handles.get(path);
+		if (hit && hit.ino === st.ino && hit.mtimeMs === st.mtimeMs) return hit.db;
+		if (hit) {
+			try {
+				hit.db.close();
+			} catch {
+				/* stale handle already gone */
+			}
+		}
+		const db = openRig(path);
+		handles.set(path, { db, ino: st.ino, mtimeMs: st.mtimeMs });
+		return db;
+	};
 
 	// Session-scoped resources are closed via an idempotent session_shutdown
 	// handler (pi extension convention).
 	pi.on("session_shutdown", async () => {
-		for (const close of handles.values()) {
+		for (const { db } of handles.values()) {
 			try {
-				close.close();
+				db.close();
 			} catch {
 				// already closed — idempotent by contract
 			}
@@ -71,22 +91,29 @@ Prefer this over find/grep for ANY "where is X" or "what uses Y" question; drop 
 					details: {},
 				};
 			}
-			let db = handles.get(path);
+			let db: ReturnType<typeof openRig> | undefined = handles.get(path)?.db;
 			if (!db) {
 				try {
-					db = openRig(path);
-					handles.set(path, db);
+					db = open(path);
 				} catch (e) {
 					// Throw, don't return text: a corrupt/version-mismatched graph must
 					// surface as a FAILED tool call in the session and telemetry, not
 					// as a silent no-op indistinguishable from the tool working (#338 r1).
-					throw new Error(`rig.db at ${path} is not readable as a RIG database: ${String(e)}`);
+					// The agent cannot regenerate a graph — prepare owns emission — so
+					// point at the run, not the emitter.
+					throw new Error(`rig.db at ${path} is not readable as a RIG database: ${String(e)} — if this run should have a graph, check the prepare phase logs`);
 				}
 			}
 			try {
-				return { content: [{ type: "text", text: rigQuery(db, p) }], details: { db: path } };
+				const text = rigQuery(db, p);
+				// Structured telemetry: the #336 measurement (13/33 calls were
+				// archaeology) is only provable from session data.
+				return {
+					content: [{ type: "text", text }],
+					details: { db: path, command: p.command, target: p.target ?? "", chars: text.length, truncated: text.length >= 4000 },
+				};
 			} catch (e) {
-				throw new Error(`rig query failed: ${String(e)}`);
+				throw new Error(`rig ${p.command} failed: ${String(e)}`);
 			}
 		},
 	});

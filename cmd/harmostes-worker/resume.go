@@ -71,7 +71,10 @@ func buildHandoffBrief(ctx context.Context, at *v1alpha1.Attempt, deps worker.De
 	}
 	prior := priorRuns(at, runID)
 	if len(prior) == 0 {
-		return ""
+		// First run of the attempt: nothing to hand off BUT the clock — the
+		// pacing contract must reach every run, not only re-runs (#336:
+		// run-1 deaths with the review unwritten).
+		return runClockLine(at)
 	}
 	// Wake action: env first, then the Workflow annotation the controller
 	// stamps at schedule time (the envelope env path skips TRIGGER_ACTION —
@@ -116,13 +119,7 @@ func buildHandoffBrief(ctx context.Context, at *v1alpha1.Attempt, deps worker.De
 		}
 	}
 
-	// Run clock (#336): the agent paces itself against the bound instead of
-	// discovering it at kill time. Unlimited runs get the soft target.
-	if bound := at.Spec.RunBound; bound != "" {
-		b.WriteString(fmt.Sprintf("\nRun clock: hard bound %s from dispatch — the review MUST be written before it expires.\n", bound))
-	} else {
-		b.WriteString("\nRun clock: no hard bound, but the review is expected within ~10 minutes — write it while the findings are fresh.\n")
-	}
+	b.WriteString(runClockLine(at))
 
 	// Transcript orientation from the most recent predecessor's session
 	// (best-effort: missing/corrupt session degrades to the facts above).
@@ -158,6 +155,19 @@ func classifyHandoff(at *v1alpha1.Attempt, wakeAction string, prior []v1alpha1.R
 		return "summary"
 	}
 	return "continue"
+}
+
+// runClockLine paces the agent against the bound (#336): hard bound when one
+// is set, the ~10-minute soft target otherwise. Emitted on EVERY run — first
+// runs included.
+func runClockLine(at *v1alpha1.Attempt) string {
+	if at == nil {
+		return ""
+	}
+	if b := at.Spec.RunBound; b != "" {
+		return fmt.Sprintf("\nRun clock: hard bound %s from dispatch — the review MUST be written before it expires.\n", b)
+	}
+	return "\nRun clock: no hard bound (2h wedged-run reaper), but the review is expected within ~10 minutes — write it while the findings are fresh.\n"
 }
 
 // priorRuns returns the attempt's run records excluding the current run, in

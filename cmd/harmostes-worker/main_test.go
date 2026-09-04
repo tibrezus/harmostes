@@ -221,11 +221,16 @@ func TestBuildHandoffBriefModes(t *testing.T) {
 		t.Errorf("consumed claim must produce SUMMARY framing, got:\n%s", brief)
 	}
 
-	// No prior runs ⇒ no brief at all.
+	// No prior runs ⇒ no handoff, but the clock STILL reaches the agent —
+	// first-run deaths with the review unwritten are the failure being fixed.
 	at2 := &v1alpha1.Attempt{Status: v1alpha1.AttemptStatus{
 		Runs: []v1alpha1.RunRecord{{Name: "run-3", Phase: "running"}},
 	}}
-	if got := buildHandoffBrief(context.Background(), at2, worker.Deps{}, nil, "pr-review", "run-3"); got != "" {
-		t.Errorf("no prior runs must produce no brief, got:\n%s", got)
+	got := buildHandoffBrief(context.Background(), at2, worker.Deps{}, nil, "pr-review", "run-3")
+	if !strings.Contains(got, "Run clock") {
+		t.Errorf("first run must still receive the run clock, got:\n%s", got)
+	}
+	if strings.Contains(got, "Handoff") {
+		t.Errorf("first run must not receive handoff framing, got:\n%s", got)
 	}
 }

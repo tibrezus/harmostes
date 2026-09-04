@@ -193,6 +193,11 @@ func Task(ctx context.Context, sess PiSession, gate Gate, task string, maxFixes 
 		Usage:    turnUsage,
 	}
 	session.Turns = append(session.Turns, currentTurn)
+	// Persist after EVERY turn, not only at gate boundaries (#336): a gate-less
+	// agent (pr-review) is one turn for the whole session — without this, a
+	// SIGKILL at the wall erases the entire transcript and the post-mortem is
+	// blind. The writer upserts by key, so this is incremental, not append-only.
+	writeSession()
 	attempts := 0
 	for attempt := 1; attempt <= maxFixes; attempt++ {
 		attempts = attempt

@@ -184,10 +184,13 @@ def main():
     workdir = os.path.abspath(args.workdir)
     os.makedirs(workdir, exist_ok=True)
 
+    tools = args.tools.split(",") if args.tools else []
+    if "rig" not in tools:
+        tools.append("rig")  # mirror PiArgs: the allowlist replaces the set — keep the graph tool
     pi_args = [
         "--skill", args.skill,
         "--model", args.model,
-        "--tools", args.tools,
+        "--tools", ",".join(tools),
         "-e", "/extensions/litellm-provider",
         "-e", "/extensions/rig-query",
     ]

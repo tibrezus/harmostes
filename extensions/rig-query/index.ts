@@ -16,8 +16,8 @@
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox"; // pi aliases typebox for extensions — NO npm dep at runtime
-import { readFileSync, statSync } from "node:fs";
-import { openRig, resolveRigDb, rigQuery, type RigParams } from "./queries.ts";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { openRig, resolveRigDbCandidates, rigQuery, type RigParams } from "./queries.ts";
 
 export default function (pi: ExtensionAPI) {
 	// Handles keyed by path + file identity (ino/mtime): the producer's
@@ -86,7 +86,9 @@ Prefer this over find/grep for ANY "where is X" or "what uses Y" question; drop 
 			// target means moving this list — two halves of one invariant.
 			// NOTE: details below are a telemetry INTERFACE — session analysis
 			// (#336) joins on these keys; do not rename casually.
-			const path = resolveRigDb(undefined, ctx.cwd, ["/workspace/rig.db", "/workspace/repo/rig.db"]);
+			// The full walk is reported in details.probed — greppable telemetry.
+			const candidates = resolveRigDbCandidates(undefined, ctx.cwd, ["/workspace/rig.db", "/workspace/repo/rig.db"]);
+			const path = candidates.find((c) => existsSync(c)) ?? null;
 			if (!path) {
 				return {
 					content: [
@@ -98,7 +100,7 @@ Prefer this over find/grep for ANY "where is X" or "what uses Y" question; drop 
 					// Uniform telemetry shape on absence (#338 r9): same keys as success,
 					// so a session join never gets a missing column — plus graph:false
 					// and the probed candidates for greppability.
-					details: { db: null, command: p.command, target: p.target ?? null, chars: 0, truncated: false, graph: false, probed: ["/workspace/rig.db", "/workspace/repo/rig.db", "$RIG_DB", "<cwd>/rig.db"] },
+					details: { db: null, command: p.command, target: p.target ?? null, chars: 0, truncated: false, graph: false, probed: candidates },
 				};
 			}
 			// Provenance (#338 r6 B2): prepare stamps <graph>.sha with the reviewed

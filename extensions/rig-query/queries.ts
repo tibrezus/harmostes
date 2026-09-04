@@ -25,21 +25,32 @@ type Row = Record<string, unknown>;
  * RUNTIME contract and live in index.ts (#338 r3: a reusable module must not
  * bake in a mount layout whose graph may be from another revision).
  */
-export function resolveRigDb(explicit?: string, cwd?: string, extra: string[] = []): string | null {
-	const candidates = [
+export function resolveRigDbCandidates(explicit?: string, cwd?: string, extra: string[] = []): string[] {
+	return [
 		explicit,
 		process.env.RIG_DB,
-		cwd ? resolve(cwd, "rig.db") : undefined,
 		...extra,
+		cwd ? resolve(cwd, "rig.db") : undefined,
 		"rig.db",
 	].filter((p): p is string => Boolean(p));
-	for (const p of candidates) {
+}
+
+/**
+ * Resolve the graph to answer from. ORDER IS THE FRESHNESS RULE (#338 r11
+ * C1): prepare's SHA-exact emit (the extras) must outrank any cwd-relative
+ * or bare "rig.db" — a stray graph in the workdir must never shadow the
+ * reviewed checkout's emit. Callers report the full walk in details.probed.
+ */
+export function resolveRigDb(explicit?: string, cwd?: string, extra: string[] = []): string | null {
+	for (const p of resolveRigDbCandidates(explicit, cwd, extra)) {
 		if (existsSync(p)) return p;
 	}
 	return null;
 }
 
-const MAX_RESULT_CHARS = 6000; // ~1.5k tokens — sized for the grouped overview (a 23-component repo renders ~2.2k chars; r6's edge grouping grew it)
+const MAX_RESULT_CHARS = 6000;
+/** Overview renders the WHOLE graph on a mid-size repo (~2.7k chars at 23 components) before any row cap applies. */
+const OVERVIEW_ROWS = 64; // ~1.5k tokens — sized for the grouped overview (a 23-component repo renders ~2.2k chars; r6's edge grouping grew it)
 
 // Truncation is COUNTED, not sniffed: builders register elided rows/edges in
 // a shared stats object and render the marker from the same number — `truncated`
@@ -187,8 +198,8 @@ function overview(db: DatabaseSync, stats: { more: number }): string {
 			bySrc.set(s, [...(bySrc.get(s) ?? []), nameOf(names, row(e.dst))]);
 		}
 		const rendered = [...bySrc.entries()].map(([s, dsts]) => `${names.get(s) ?? short(s)} → ${dsts.join(", ")}`);
-		lines.push(`deps (${edges.length} edges):\n  ${rendered.slice(0, MAX_ROWS).join("\n  ")}`);
-		const shownEdgeCount = shownEdges(bySrc, MAX_ROWS);
+		lines.push(`deps (${edges.length} edges):\n  ${rendered.slice(0, OVERVIEW_ROWS).join("\n  ")}`);
+		const shownEdgeCount = shownEdges(bySrc, OVERVIEW_ROWS);
 		if (edges.length > shownEdgeCount) {
 			// The marker carries the UNIT (edges) and says so once — "…+51 more
 			// edges", not "more more" (#338 r9/r10).
@@ -329,7 +340,6 @@ function search(db: DatabaseSync, target: string | undefined, stats: { more: num
 		.prepare("SELECT file, line, kind, name, signature, doc FROM symbols WHERE name LIKE ? || '%' ESCAPE '\\' ORDER BY seq LIMIT ?")
 		.all(likeTerm, SEARCH_LIMIT) as Row[];
 	for (const r of pre) hits.set(`${row(r.file)}:${row(r.line)}:${row(r.name)}`, r);
-	let ftsFilled = false;
 	// 2. FTS (rank over name/signature/doc) fills the rest.
 	if (hits.size < SEARCH_LIMIT) {
 		try {
@@ -344,13 +354,11 @@ function search(db: DatabaseSync, target: string | undefined, stats: { more: num
 				if (hits.size >= SEARCH_LIMIT) break;
 				hits.set(`${row(r.file)}:${row(r.line)}:${row(r.name)}`, r);
 			}
-			ftsFilled = rows.length >= SEARCH_LIMIT;
 		} catch {
 			// FTS unavailable — the sweep below still answers.
 		}
 	}
 	// 3. Broad substring sweep fills what is left (doc/signature matches).
-	let sweptBeyondLimit = false;
 	if (hits.size < SEARCH_LIMIT) {
 		const like = `%${likeTerm}%`;
 		const likeRows = db
@@ -360,10 +368,7 @@ function search(db: DatabaseSync, target: string | undefined, stats: { more: num
 			)
 			.all(like, like, like, SEARCH_LIMIT + 1) as Row[];
 		for (const r of likeRows) {
-			if (hits.size >= SEARCH_LIMIT) {
-				sweptBeyondLimit = true;
-				break;
-			}
+			if (hits.size >= SEARCH_LIMIT) break;
 			hits.set(`${row(r.file)}:${row(r.line)}:${row(r.name)}`, r);
 		}
 	}

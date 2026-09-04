@@ -168,18 +168,23 @@ test("openRig rejects a non-rig.db file with a readable error", () => {
 	assert.throws(() => openRig(fileURLToPath(new URL("./queries.ts", import.meta.url))), /not a rig\.db/);
 });
 
-test("resolveRigDb precedence: explicit > env > cwd > extras (#338 r5 B3)", async () => {
+test("resolveRigDb precedence: explicit > env > prepare extras > cwd-relative (#338 r11 C1)", async () => {
 	const fs = await import("node:fs");
-	const a = `${tmpdir()}/rig-a.db`, b = `${tmpdir()}/rig-b.db`, c = `${tmpdir()}/rig-c.db`;
-	for (const f of [a, b, c]) fs.writeFileSync(f, "x");
+	const dir = `${tmpdir()}/rig-prec-${process.pid}`;
+	fs.mkdirSync(dir, { recursive: true });
+	const a = `${dir}/rig-a.db`, b = `${dir}/rig-b.db`, c = `${dir}/rig-extra.db`, cwdRig = `${dir}/rig.db`;
+	for (const f of [a, b, c, cwdRig]) fs.writeFileSync(f, "x");
 	try {
 		process.env.RIG_DB = b;
-		assert.equal(resolveRigDb(a, undefined, [c]), a, "explicit wins");
-		assert.equal(resolveRigDb(undefined, undefined, [c]), b, "env beats extras");
+		assert.equal(resolveRigDb(a, dir, [c ?? ""]), a, "explicit wins");
+		assert.equal(resolveRigDb(undefined, dir, [c ?? ""]), b, "env beats extras");
 		delete process.env.RIG_DB;
-		assert.equal(resolveRigDb(undefined, undefined, [c]), c, "extras beat cwd-relative ./rig.db");
+		// THE freshness ordering: prepare's SHA-exact emit outranks a stray
+		// rig.db in the agent's cwd (#338 r11 C1).
+		assert.equal(resolveRigDb(undefined, dir, [c ?? ""]), c, "prepare extras beat cwd-relative");
 	} finally {
-		for (const f of [a, b, c]) rmSync(f, { force: true });
+		for (const f of [a, b, c, cwdRig]) rmSync(f, { force: true });
+		rmSync(dir, { recursive: true, force: true });
 		delete process.env.RIG_DB;
 	}
 });

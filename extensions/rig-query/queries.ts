@@ -322,42 +322,41 @@ function search(db: DatabaseSync, target: string | undefined, stats: { more: num
 	}
 	// The documented syntax carries a trailing *; LIKE arms must not inherit it
 	// ("executor*" → "executor*%" matches nothing) — strip it here, keep it for
-	// the FTS phrase (#338 r2 4.1). The emptiness check runs AFTER the strip:
-	// a bare '*' is a degenerate term, not "match everything" (#338 r8 F7).
+	// the FTS phrase (#338 r2 4.1). Emptiness is checked AFTER the strip: a
+	// bare '*' is a degenerate term, not "match everything" (#338 r8 F7).
 	const term = target.trim().replace(/"/g, "").replace(/\*+$/, "");
 	if (!term) {
 		return "search: a bare '*' matches everything — give a symbol stem (e.g. 'executor').";
 	}
-	// Unquoted FTS tokens prefix-match; quoted phrases do NOT — quote only when
-	// the term spans words (else the documented prefix syntax never reaches FTS).
-	const ftsTerm = term.includes(" ") ? `"${term}"` : `${term}*`;
+	const likeTerm = term.replace(/\\/g, "\\\\").replace(/[%_]/g, "\\$&"); // $& = the matched char ($0 does not exist in JS and injected a literal "$0", hiding every _-bearing symbol — #338 r7 B1)
+
+	// Components FIRST and OUTSIDE the symbol budget (r18 F1): overview prints
+	// tails ("cmd/worker"), so search must resolve THAT handle — suffix
+	// semantics, shared with resolveComponent. Displacement is impossible by
+	// construction: components never consume the symbol budget.
+	const comps = db
+		.prepare(
+			"SELECT id, name, type FROM components WHERE name LIKE '%' || ? ESCAPE '\\' ORDER BY seq LIMIT 3",
+		)
+		.all(likeTerm) as Row[];
+	let compLines: string[] = [];
+	if (comps.length > 0) {
+		compLines = [`components matching "${term}":`];
+		for (const c of comps) {
+			compLines.push(`  [component] ${short(row(c.name) || row(c.id))} (${row(c.type) || "component"}) — rig component '${short(row(c.name))}'`);
+		}
+	}
+
+	const lines: string[] = [];
+
+	// Symbols: name-prefix arm first (camelCase-honest), then FTS, then the
+	// sweep — each bounded by the REMAINING budget (r18 F3).
 	const hits = new Map<string, Row>();
 	let sweepExhausted = false;
-	// 1. Name-prefix first: the agent's term is almost always a name stem
-	// ("executor", "envelope"). LIKE gives camelCase-honest matching that FTS
-	// tokenization cannot ("envelope" must find NodeResultEnvelope).
-	// Backslash first (a trailing \ leaves a dangling ESCAPE and hard-errors),
-	// then the LIKE metacharacters. ONE owner of the rule (#338 r9 DRY).
-	const likeTerm = term.replace(/\\/g, "\\\\").replace(/[%_]/g, "\\$&"); // $& = the matched char ($0 does not exist in JS — it injected a literal "$0", hiding every _-bearing symbol, #338 r7 B1)
 	const pre = db
 		.prepare("SELECT file, line, kind, name, signature, doc FROM symbols WHERE name LIKE ? || '%' ESCAPE '\\' ORDER BY seq LIMIT ?")
 		.all(likeTerm, SEARCH_LIMIT) as Row[];
 	for (const r of pre) hits.set(`sym:${row(r.file)}:${row(r.line)}:${row(r.name)}`, r);
-	// Component names are searchable too — an agent asking for "harmostes-worker"
-	// is navigating, and components never appear in symbols (#338 r16 F9).
-	for (const c of db
-		.prepare("SELECT id, name, type FROM components WHERE name LIKE ? || '%' ESCAPE '\\' ORDER BY seq LIMIT 3")
-		.all(likeTerm) as Row[]) {
-		hits.set(`comp:${row(c.id)}`, {
-			file: `[component] ${row(c.name)}`,
-			line: null,
-			kind: "component",
-			name: row(c.name),
-			signature: row(c.type),
-			doc: "",
-		});
-	}
-	// 2. FTS (rank over name/signature/doc) fills the rest.
 	if (hits.size < SEARCH_LIMIT) {
 		try {
 			const rows = db
@@ -366,7 +365,7 @@ function search(db: DatabaseSync, target: string | undefined, stats: { more: num
 					 FROM symbols_fts f JOIN symbols s ON s.seq = f.rowid
 					 WHERE symbols_fts MATCH ? ORDER BY rank LIMIT ?`,
 				)
-				.all(ftsTerm, SEARCH_LIMIT) as Row[]; // ftsTerm owns its own quoting (#338 r7 B2)
+				.all(term.includes(" ") ? `"${term}"` : `${term}*`, SEARCH_LIMIT - hits.size) as Row[];
 			for (const r of rows) {
 				if (hits.size >= SEARCH_LIMIT) break;
 				hits.set(`sym:${row(r.file)}:${row(r.line)}:${row(r.name)}`, r);
@@ -375,7 +374,6 @@ function search(db: DatabaseSync, target: string | undefined, stats: { more: num
 			// FTS unavailable — the sweep below still answers.
 		}
 	}
-	// 3. Broad substring sweep fills what is left (doc/signature matches).
 	if (hits.size < SEARCH_LIMIT) {
 		const like = `%${likeTerm}%`;
 		const likeRows = db
@@ -383,29 +381,20 @@ function search(db: DatabaseSync, target: string | undefined, stats: { more: num
 				`SELECT file, line, kind, name, signature, doc FROM symbols
 				 WHERE name LIKE ? ESCAPE '\\' OR signature LIKE ? ESCAPE '\\' OR doc LIKE ? ESCAPE '\\' ORDER BY seq LIMIT ?`,
 			)
-			.all(like, like, like, SEARCH_LIMIT + 1) as Row[];
-		// A short sweep proves the corpus is exhausted — skip the recount.
-		sweepExhausted = likeRows.length < SEARCH_LIMIT + 1;
+			.all(like, like, like, SEARCH_LIMIT - hits.size + 1) as Row[];
+		sweepExhausted = likeRows.length <= SEARCH_LIMIT - hits.size;
 		for (const r of likeRows) {
 			if (hits.size >= SEARCH_LIMIT) break;
 			hits.set(`sym:${row(r.file)}:${row(r.line)}:${row(r.name)}`, r);
 		}
 	}
-	if (hits.size === 0) return `no symbols matching "${term}" — try a shorter stem with * (rig search 'handler*').`;
-	// Honest truncation: when the pool filled, count the real total — a partial
-	// answer presented as complete is how review findings get lost (#338 r1).
+
+	// Honest completeness: a full symbol pool + a short sweep proves the corpus
+	// is exhausted; otherwise one existence probe decides the marker. Component
+	// rows never participate (#338 r18 F3).
 	let more = "";
 	if (hits.size >= SEARCH_LIMIT && !sweepExhausted) {
-		// The escaped recount is the single source of the marker decision —
-		// running it whenever the pool is full (not gated on which arm filled)
-		// means a partial answer can never present as complete (#338 r9).
 		const like = `%${likeTerm}%`;
-		// One COUNT(*) — the marker decision's single source; the scans are the
-		// documented cost of camelCase-honest search until the producer grows
-		// symbols(name)/trigram indexes (see the TODO in rig/db.py).
-		// Existence probe past what we show — LIMIT-capped, no full-table COUNT
-		// on the success path (#338 r15 P6). The durable fix is the producer's
-		// symbols(name)/trigram indexes (TODO in rig/db.py).
 		const probe = db
 			.prepare(
 				`SELECT 1 FROM symbols WHERE name LIKE ? ESCAPE '\\' OR signature LIKE ? ESCAPE '\\' OR doc LIKE ? ESCAPE '\\' LIMIT ?`,
@@ -416,22 +405,21 @@ function search(db: DatabaseSync, target: string | undefined, stats: { more: num
 			stats.more += probe.length - hits.size;
 		}
 	}
-	return [
-		`search "${term}" — ${hits.size} hit(s):${more}`,
-		...[...hits.values()].map((r) => symLine(r.file, r.line, r.kind, r.name, r.signature, r.doc)),
-	].join("\n");
+	if (hits.size === 0 && comps.length === 0) {
+		return `no symbols or components matching "${term}" — try a shorter stem with * (rig search 'handler*').`;
+	}
+	const symbolLines = [...hits.values()].map((r) => symLine(r.file, r.line, r.kind, r.name, r.signature, r.doc));
+	return cap([...compLines, `symbols matching "${term}" (${hits.size}):`, ...symbolLines, ...(more ? [more] : [])].join("\n"));
 }
 
 function files(db: DatabaseSync, target: string | undefined, stats: { more: number }): string {
 	if (!target) return "files: give a path glob — * or % = any run, ? = one char (e.g. 'internal/graph/*', '*dispatch*').";
-	// Glob dialect: * = any run, ? = any single char. Order matters (r13):
-	// escape literal %/_/\ in the RAW target FIRST, then translate the glob
-	// operators — and decide the bare-prefix wrap from the TRANSLATED string
-	// (r13 HIGH: the guard read the translated string, so any literal _
-	// skipped the wrap and existing files answered "no files matching").
-	const glob = target.replace(/%/g, "*"); // % is accepted as an alias of * (the storage dialect some agents copy)
-	const esc = glob.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_");
-	let like = esc.replace(/\*/g, "%").replace(/\?/g, "_");
+	// Glob dialect (r18 F4): * = any run, ? = one char; % _ and \ are LITERAL.
+	// Order is load-bearing: escape the raw literals FIRST, then translate
+	// ? → _ (single char), then * → % (any run) — translating ? before * made
+	// ? collapse into the any-run wildcard (#338 r18 F4).
+	const esc = target.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_");
+	let like = esc.replace(/\?/g, "_").replace(/\*/g, "%");
 	if (!like.includes("%")) like = `%${like}%`;
 	const total = Number(db.prepare("SELECT COUNT(*) n FROM files WHERE path LIKE ? ESCAPE '\\'").get(like)?.n ?? 0);
 	const rows = db

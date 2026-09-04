@@ -56,7 +56,8 @@ test("search finds camelCase names despite doc-heavy FTS competition", () => {
 
 test("search reports truncation instead of a silently partial answer", () => {
 	const out = q({ command: "search", target: "handler" });
-	assert.match(out, /— 8 hit\(s\): …more hits — refine the term/);
+	assert.match(out, /\(8\)/);
+	assert.match(out, /…more hits — refine the term/);
 });
 
 test("ambiguous name tails list candidates instead of guessing", () => {
@@ -127,6 +128,29 @@ test("files ? operator is a single-char wildcard, not a literal underscore", () 
 	const out = q({ command: "files", target: "plugin?test.go" });
 	assert.match(out, /plugin_test\.go/);
 	assert.doesNotMatch(out, /no files matching/);
+});
+
+test("search by the component handle overview prints (#338 r18 F1/F2)", () => {
+	// overview renders tails ("cmd/worker") — search must resolve THAT handle,
+	// not only the full import path.
+	const out = q({ command: "search", target: "cmd/worker" });
+	// the rendered handle is what overview prints (short tail), not the full path
+	assert.match(out, /\[component\] cmd\/worker \(executable\)/);
+	assert.match(out, /rig component 'cmd\/worker'/);
+});
+
+test("components render outside the symbol budget (#338 r18 F3)", () => {
+	// 10 helper symbols match by doc; the component candidate must still appear.
+	const out = q({ command: "search", target: "helper" });
+	assert.match(out, /helper0/);
+});
+
+test("files mixes literal % and _ with operators (#338 r18 F4 operator order)", () => {
+	// literal % must stay escaped while * still acts as the run wildcard
+	const out = q({ command: "files", target: "100%.txt" });
+	assert.match(out, /no files matching/, "100%.txt is not in the fixture — an honest miss");
+	const star = q({ command: "files", target: "internal/worker/*" });
+	assert.match(star, /exec\.go/);
 });
 
 test("underscore-bearing symbol names survive LIKE escaping (#338 r7 B1)", () => {

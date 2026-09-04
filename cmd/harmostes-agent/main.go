@@ -20,9 +20,12 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"github.com/tibrezus/harmostes/api/v1alpha1"
+	"github.com/tibrezus/harmostes/internal/worker"
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/tibrezus/harmostes/internal/agent"
@@ -101,9 +104,13 @@ func main() {
 		obsShutdown = sh
 	}
 
+	// worker.PiArgs is the single source of the pi invocation shape: it loads
+	// every in-image extension (-e) and appends extension tools to the
+	// --tools allowlist — keeping this binary identical to the worker's agent
+	// path (#338 r16 F1).
 	hlog("starting pi --mode rpc (model=%s tools=%s workdir=%s)", *model, *tools, *workdir)
 	rpc, err := agent.NewRPC(ctx, agent.RPCOptions{
-		Args:    []string{"--skill", *skill, "--model", *model, "--tools", *tools},
+		Args:    worker.PiArgs(v1alpha1.AgentSpec{Skill: *skill, Model: *model, Tools: splitTools(*tools)}),
 		Workdir: *workdir,
 		Env:     os.Environ(),
 		Log:     logger,
@@ -157,4 +164,11 @@ func abs(p string) string {
 		return p
 	}
 	return out
+}
+
+func splitTools(s string) []string {
+	if s == "" {
+		return nil
+	}
+	return strings.Split(s, ",")
 }

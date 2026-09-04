@@ -340,7 +340,21 @@ function search(db: DatabaseSync, target: string | undefined, stats: { more: num
 	const pre = db
 		.prepare("SELECT file, line, kind, name, signature, doc FROM symbols WHERE name LIKE ? || '%' ESCAPE '\\' ORDER BY seq LIMIT ?")
 		.all(likeTerm, SEARCH_LIMIT) as Row[];
-	for (const r of pre) hits.set(`${row(r.file)}:${row(r.line)}:${row(r.name)}`, r);
+	for (const r of pre) hits.set(`sym:${row(r.file)}:${row(r.line)}:${row(r.name)}`, r);
+	// Component names are searchable too — an agent asking for "harmostes-worker"
+	// is navigating, and components never appear in symbols (#338 r16 F9).
+	for (const c of db
+		.prepare("SELECT id, name, type FROM components WHERE name LIKE ? || '%' ORDER BY seq LIMIT 3")
+		.all(likeTerm) as Row[]) {
+		hits.set(`comp:${row(c.id)}`, {
+			file: `[component] ${row(c.name)}`,
+			line: null,
+			kind: "component",
+			name: row(c.name),
+			signature: row(c.type),
+			doc: "",
+		});
+	}
 	// 2. FTS (rank over name/signature/doc) fills the rest.
 	if (hits.size < SEARCH_LIMIT) {
 		try {
@@ -353,7 +367,7 @@ function search(db: DatabaseSync, target: string | undefined, stats: { more: num
 				.all(ftsTerm, SEARCH_LIMIT) as Row[]; // ftsTerm owns its own quoting (#338 r7 B2)
 			for (const r of rows) {
 				if (hits.size >= SEARCH_LIMIT) break;
-				hits.set(`${row(r.file)}:${row(r.line)}:${row(r.name)}`, r);
+				hits.set(`sym:${row(r.file)}:${row(r.line)}:${row(r.name)}`, r);
 			}
 		} catch {
 			// FTS unavailable — the sweep below still answers.
@@ -372,7 +386,7 @@ function search(db: DatabaseSync, target: string | undefined, stats: { more: num
 		sweepExhausted = likeRows.length < SEARCH_LIMIT + 1;
 		for (const r of likeRows) {
 			if (hits.size >= SEARCH_LIMIT) break;
-			hits.set(`${row(r.file)}:${row(r.line)}:${row(r.name)}`, r);
+			hits.set(`sym:${row(r.file)}:${row(r.line)}:${row(r.name)}`, r);
 		}
 	}
 	if (hits.size === 0) return `no symbols matching "${term}" — try a shorter stem with * (rig search 'handler*').`;

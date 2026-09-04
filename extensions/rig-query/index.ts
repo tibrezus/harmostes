@@ -90,11 +90,17 @@ Prefer this over find/grep for ANY "where is X" or "what uses Y" question; drop 
 			// (#336) joins on these keys; do not rename casually.
 			// The full walk is reported in details.probed — greppable telemetry.
 			// ONE constant feeds resolution, telemetry and the absence message
-			// (#338 r13/r15) — they cannot disagree.
-			const CONTAINER_RIG_DB = ["/workspace/rig.db", "/workspace/repo/rig.db"];
-			const candidates = resolveRigDbCandidates(undefined, ctx.cwd, CONTAINER_RIG_DB);
+			// (#338 r13/r15) — they cannot disagree. RIG_DB_TEST_CANDIDATES is a
+			// TEST-ONLY override of the fallback list (empty = no fallback): the
+			// container paths are deliberately outranked only by env/explicit, so
+			// absence-branch tests must suppress this walk to be hermetic inside a
+			// worker pod where /workspace/rig.db genuinely exists (#338 r16 C1).
+			const containerCandidates = process.env.RIG_DB_TEST_CANDIDATES !== undefined
+				? process.env.RIG_DB_TEST_CANDIDATES.split(",").filter(Boolean)
+				: ["/workspace/rig.db", "/workspace/repo/rig.db"];
+			const candidates = resolveRigDbCandidates(undefined, ctx.cwd, containerCandidates);
 			// The library owns the walk (one implementation); candidates are telemetry.
-			const path = resolveRigDb(undefined, ctx.cwd, CONTAINER_RIG_DB);
+			const path = resolveRigDb(undefined, ctx.cwd, containerCandidates);
 			if (!path) {
 				return {
 					content: [

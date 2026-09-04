@@ -35,7 +35,7 @@ test("openRig asserts the producer schema version", () => {
 	badDb.prepare("INSERT INTO meta VALUES ('db_schema_version', '9')").run();
 	badDb.close();
 	try {
-		assert.throws(() => openRig(bad), /speaks v1/);
+		assert.throws(() => openRig(bad), /speaks schema v1/);
 	} finally {
 		unlinkSync(bad);
 	}
@@ -113,6 +113,22 @@ test("files lists bare prefixes and names components (#338 r2 4.5)", () => {
 	const out = q({ command: "files", target: "internal/worker" });
 	assert.match(out, /internal\/worker\/exec\.go/);
 	assert.match(out, /internal\/worker/); // component name, not comp-N
+});
+
+test("underscore-bearing symbol names survive LIKE escaping (#338 r7 B1)", () => {
+	const exact = q({ command: "search", target: "canonical_hash" });
+	assert.match(exact, /canonical_hash/, "exact snake_case name must be found");
+	assert.match(exact, /internal\/model\/db\.py:439/);
+	const stem = q({ command: "search", target: "write_db" });
+	assert.match(stem, /write_db/, "underscore stem must be found");
+	assert.doesNotMatch(stem, /no symbols matching/);
+});
+
+test("doc-only FTS path is exercised when the name-prefix arm has nothing (#338 r7 pillar 8)", () => {
+	// "carrying" appears only in NodeResultEnvelope's doc — the prefix arm
+	// cannot find it; the sweep must.
+	const out = q({ command: "search", target: "carrying" });
+	assert.match(out, /NodeResultEnvelope/);
 });
 
 test("deps blast radius says …+N more instead of silently truncating (#338 r3 4.2)", () => {

@@ -39,7 +39,7 @@ export function resolveRigDb(explicit?: string, cwd?: string, extra: string[] = 
 	return null;
 }
 
-const MAX_RESULT_CHARS = 4000; // ~1k tokens — sized for a full one-screen overview (a 23-component repo renders ~1.7k chars)
+const MAX_RESULT_CHARS = 6000; // ~1.5k tokens — sized for the grouped overview (a 23-component repo renders ~2.2k chars; r6's edge grouping grew it)
 
 // Truncation markers, single-sourced: builders render them, rigQuery detects
 // them for the `truncated` telemetry flag. Rewording one must reword both —
@@ -106,7 +106,7 @@ export function openRig(path: string): DatabaseSync {
 		}
 		if (version !== "1") {
 			failed = true;
-			throw new Error(`rig.db v${version || "?"} at ${path} — this extension speaks v1; regenerate the graph (emit-rig.py)`);
+			throw new Error(`rig.db v${version || "?"} at ${path} — this build speaks schema v1; if this run should have a usable graph, check the prepare phase logs / update the worker image`);
 		}
 	} finally {
 		// BOTH failure branches close the handle — a wrong path must not leak an
@@ -127,6 +127,8 @@ export function rigQuery(db: DatabaseSync, p: RigParams): { text: string; trunca
 		const text = cap(fn());
 		return { text, truncated: rowTruncated(text) || text.length >= MAX_RESULT_CHARS };
 	};
+	// Not exposed (deliberate, revisit on demand): calls/packages/artifacts/
+	// tests tables are populated by the producer but no subcommand reads them.
 	switch (p.command) {
 		case "overview":
 			return run(() => overview(db));
@@ -282,7 +284,7 @@ function search(db: DatabaseSync, target: string | undefined): string {
 	// 1. Name-prefix first: the agent's term is almost always a name stem
 	// ("executor", "envelope"). LIKE gives camelCase-honest matching that FTS
 	// tokenization cannot ("envelope" must find NodeResultEnvelope).
-	const likeTerm = term.replace(/[%_]/g, "\\$0"); // literal %/_ in a target must not widen the match
+	const likeTerm = term.replace(/[%_]/g, "\\$&"); // $& = the matched char ($0 does not exist in JS and injected a literal "$0", hiding every _-bearing symbol — #338 r7 B1)
 	const pre = db
 		.prepare("SELECT file, line, kind, name, signature, doc FROM symbols WHERE name LIKE ? || '%' ESCAPE '\\' ORDER BY seq LIMIT ?")
 		.all(likeTerm, SEARCH_LIMIT) as Row[];
@@ -297,7 +299,7 @@ function search(db: DatabaseSync, target: string | undefined): string {
 					 FROM symbols_fts f JOIN symbols s ON s.seq = f.rowid
 					 WHERE symbols_fts MATCH ? ORDER BY rank LIMIT ?`,
 				)
-				.all(`"${ftsTerm}"`, SEARCH_LIMIT) as Row[];
+				.all(ftsTerm, SEARCH_LIMIT) as Row[]; // ftsTerm owns its own quoting (#338 r7 B2)
 			for (const r of rows) {
 				if (hits.size >= SEARCH_LIMIT) break;
 				hits.set(`${row(r.file)}:${row(r.line)}:${row(r.name)}`, r);
@@ -333,7 +335,7 @@ function search(db: DatabaseSync, target: string | undefined): string {
 		const like = `%${likeTerm}%`; // escaped — must agree with the arms that produced the hits
 		const total = Number(
 			db
-				.prepare("SELECT COUNT(*) n FROM symbols WHERE name LIKE ? OR signature LIKE ? OR doc LIKE ?")
+				.prepare("SELECT COUNT(*) n FROM symbols WHERE name LIKE ? ESCAPE '\\' OR signature LIKE ? ESCAPE '\\' OR doc LIKE ? ESCAPE '\\'")
 				.get(like, like, like)?.n ?? 0,
 		);
 		if (total > hits.size) more = " …more hits — refine the term";

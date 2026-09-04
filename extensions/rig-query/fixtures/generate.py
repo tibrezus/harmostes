@@ -88,6 +88,12 @@ symbols = [
     # starve the name hit (the #338 r1 search bug).
     *[{"file": f"internal/worker/h{i}.go", "name": f"helper{i}", "kind": "func", "line": 10 + i,
        "signature": f"func helper{i}()", "doc": f"handler for case {i}"} for i in range(10)],
+    # The underscore class (#338 r7 B1): snake_case names must survive the
+    # LIKE escaping (a bad $0-style replacement hid every _-bearing symbol).
+    {"file": "internal/model/db.py", "name": "canonical_hash", "kind": "func", "line": 439,
+     "signature": "def canonical_hash(db_path)", "doc": "deterministic content hash"},
+    {"file": "internal/model/db.py", "name": "write_db", "kind": "func", "line": 195,
+     "signature": "def write_db(rig, db_path)", "doc": ""},
     # Name-prefix material.
     {"file": "internal/worker/exec.go", "name": "Executor", "kind": "type", "line": 3,
      "signature": "type Executor struct", "doc": ""},

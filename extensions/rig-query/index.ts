@@ -67,13 +67,8 @@ Prefer this over find/grep for ANY "where is X" or "what uses Y" question; drop 
 			"Use rig (command=\"search\") to locate symbols and rig (command=\"overview\") to understand component structure before grepping or listing directories.",
 		],
 		parameters: Type.Object({
-			command: Type.Union([
-				Type.Literal("overview"),
-				Type.Literal("component"),
-				Type.Literal("search"),
-				Type.Literal("files"),
-				Type.Literal("deps"),
-			]),
+			// Type.Enum per pi's own extension docs (union-of-literals is the anti-pattern there).
+			command: Type.Enum(["overview", "component", "search", "files", "deps"] as const),
 			target: Type.Optional(Type.String({ description: "component id/name, search term, or path glob" })),
 			reverse: Type.Optional(Type.Boolean({ description: "deps only: incoming edges (blast radius)" })),
 			db: Type.Optional(Type.String({ description: "explicit rig.db path (default: auto-discover)" })),
@@ -92,7 +87,7 @@ Prefer this over find/grep for ANY "where is X" or "what uses Y" question; drop 
 					content: [
 						{
 							type: "text",
-							text: "no rig.db in this workspace (looked at $RIG_DB, ./rig.db, /workspace/rig.db) — the graph was not generated for this run; navigate with bash.",
+							text: "no rig.db in this workspace (looked at the db param, $RIG_DB, ./rig.db, /workspace/rig.db) — the graph was not generated for this run; navigate with bash.",
 						},
 					],
 					details: { graph: false }, // structured: telemetry branches on presence without parsing text

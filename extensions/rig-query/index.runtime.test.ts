@@ -41,6 +41,7 @@ test("wrapper: execute answers from the graph and reports provenance + identity"
 	const dir = tmpdir();
 	const dbPath = `${dir}/rig-runtime-${process.pid}.db`;
 	copyFileSync(FIXTURE, dbPath);
+	process.env.RIG_DB = dbPath; // the documented discovery env — resolution is env-first
 	try {
 		const { execute } = await makeHarness(dir);
 		const first = await execute({ command: "overview" });
@@ -58,6 +59,7 @@ test("wrapper: execute answers from the graph and reports provenance + identity"
 		assert.match(second.content[0].text, /fixture-repo/, "post-re-emit query still answers");
 		assert.equal(second.details.db, dbPath);
 	} finally {
+		delete process.env.RIG_DB;
 		rmSync(dbPath, { force: true });
 	}
 });
@@ -66,6 +68,7 @@ test("wrapper: session_shutdown closes every handle (idempotent)", async () => {
 	const dir = tmpdir();
 	const dbPath = `${dir}/rig-shutdown-${process.pid}.db`;
 	copyFileSync(FIXTURE, dbPath);
+	process.env.RIG_DB = dbPath;
 	try {
 		const { execute, shutdown } = await makeHarness(dir);
 		await execute({ command: "overview" });
@@ -75,6 +78,7 @@ test("wrapper: session_shutdown closes every handle (idempotent)", async () => {
 		const again = await execute({ command: "overview" });
 		assert.match(again.content[0].text, /fixture-repo/);
 	} finally {
+		delete process.env.RIG_DB;
 		rmSync(dbPath, { force: true });
 	}
 });

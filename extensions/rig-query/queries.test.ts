@@ -206,22 +206,25 @@ test("openRig rejects a non-rig.db file with a readable error", () => {
 	assert.throws(() => openRig(fileURLToPath(new URL("./queries.ts", import.meta.url))), /not a rig\.db/);
 });
 
-test("resolveRigDb precedence: explicit > env > prepare extras > cwd-relative (#338 r11 C1)", async () => {
+test("resolveRigDb precedence: explicit > env > prepare extras; NO cwd-relative or bare candidates (#338 r20 S1)", async () => {
 	const fs = await import("node:fs");
 	const dir = `${tmpdir()}/rig-prec-${process.pid}`;
 	fs.mkdirSync(dir, { recursive: true });
-	const a = `${dir}/rig-a.db`, b = `${dir}/rig-b.db`, c = `${dir}/rig-extra.db`, cwdRig = `${dir}/rig.db`;
-	for (const f of [a, b, c, cwdRig]) fs.writeFileSync(f, "x");
+	const a = `${dir}/rig-a.db`, b = `${dir}/rig-b.db`, c = `${dir}/rig-extra.db`;
+	// A stray rig.db in the agent's cwd — the exact shadow the walk must ignore.
+	const stray = `${dir}/cwd-rig.db`;
+	fs.writeFileSync(stray, "stray");
+	for (const f of [a, b, c]) fs.writeFileSync(f, "x");
 	try {
 		process.env.RIG_DB = b;
-		assert.equal(resolveRigDb(a, dir, [c ?? ""]), a, "explicit wins");
-		assert.equal(resolveRigDb(undefined, dir, [c ?? ""]), b, "env beats extras");
+		assert.equal(resolveRigDb(a, [c]), a, "explicit wins");
+		assert.equal(resolveRigDb(undefined, [c]), b, "env beats extras");
 		delete process.env.RIG_DB;
-		// THE freshness ordering: prepare's SHA-exact emit outranks a stray
-		// rig.db in the agent's cwd (#338 r11 C1).
-		assert.equal(resolveRigDb(undefined, dir, [c ?? ""]), c, "prepare extras beat cwd-relative");
+		// THE freshness ordering: prepare's SHA-exact emit outranks anything in
+		// the working tree — the cwd is never consulted.
+		assert.equal(resolveRigDb(undefined, [c]), c, "prepare extras win");
 	} finally {
-		for (const f of [a, b, c, cwdRig]) rmSync(f, { force: true });
+		for (const f of [a, b, c, stray]) rmSync(f, { force: true });
 		rmSync(dir, { recursive: true, force: true });
 		delete process.env.RIG_DB;
 	}

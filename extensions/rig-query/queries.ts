@@ -25,13 +25,14 @@ type Row = Record<string, unknown>;
  * RUNTIME contract and live in index.ts (#338 r3: a reusable module must not
  * bake in a mount layout whose graph may be from another revision).
  */
-export function resolveRigDbCandidates(explicit?: string, cwd?: string, extra: string[] = []): string[] {
+export function resolveRigDbCandidates(explicit?: string, extra: string[] = []): string[] {
+	// NO cwd-relative or bare candidates: a graph resolved out of the working
+	// tree is PR content answering as authoritative architecture (#338 r20
+	// S1). The walk is explicit → RIG_DB → the caller's sanctioned extras.
 	return [
 		explicit,
 		process.env.RIG_DB,
 		...extra,
-		cwd ? resolve(cwd, "rig.db") : undefined,
-		"rig.db",
 	].filter((p): p is string => Boolean(p));
 }
 
@@ -41,8 +42,8 @@ export function resolveRigDbCandidates(explicit?: string, cwd?: string, extra: s
  * or bare "rig.db" — a stray graph in the workdir must never shadow the
  * reviewed checkout's emit. Callers report the full walk in details.probed.
  */
-export function resolveRigDb(explicit?: string, cwd?: string, extra: string[] = []): string | null {
-	for (const p of resolveRigDbCandidates(explicit, cwd, extra)) {
+export function resolveRigDb(explicit?: string, extra: string[] = []): string | null {
+	for (const p of resolveRigDbCandidates(explicit, extra)) {
 		if (existsSync(p)) return p;
 	}
 	return null;
@@ -409,7 +410,7 @@ function search(db: DatabaseSync, target: string | undefined, stats: { more: num
 		return `no symbols or components matching "${term}" — try a shorter stem with * (rig search 'handler*').`;
 	}
 	const symbolLines = [...hits.values()].map((r) => symLine(r.file, r.line, r.kind, r.name, r.signature, r.doc));
-	return cap([...compLines, `symbols matching "${term}" (${hits.size}):`, ...symbolLines, ...(more ? [more] : [])].join("\n"));
+	return cap([...compLines, `symbols matching "${term}" (${hits.size}):`, ...symbolLines, ...(more ? [more] : [])].join("\n"), stats);
 }
 
 function files(db: DatabaseSync, target: string | undefined, stats: { more: number }): string {

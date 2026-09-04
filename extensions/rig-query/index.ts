@@ -96,17 +96,18 @@ Prefer this over find/grep for ANY "where is X" or "what uses Y" question; drop 
 			// (#336) joins on these keys; do not rename casually.
 			// The full walk is reported in details.probed — greppable telemetry.
 			// ONE constant feeds resolution, telemetry and the absence message
-			// (#338 r13/r15) — they cannot disagree. RIG_DB_TEST_CANDIDATES is a
-			// TEST-ONLY override of the fallback list (empty = no fallback): the
-			// container paths are deliberately outranked only by env/explicit, so
-			// absence-branch tests must suppress this walk to be hermetic inside a
-			// worker pod where /workspace/rig.db genuinely exists (#338 r16 C1).
-			const containerCandidates = process.env.RIG_DB_TEST_CANDIDATES !== undefined
-				? process.env.RIG_DB_TEST_CANDIDATES.split(",").filter(Boolean)
+			// (#338 r13/r15) — they cannot disagree. RIG_DB_CANDIDATES is a
+			// ONE constant feeds resolution, telemetry and the absence message
+			// (#338 r13/r15). RIG_DB_CANDIDATES is a supported override (comma-
+			// separated); default = the container paths prepare emits to. NO cwd-
+			// relative or bare candidates: a graph resolved out of the working tree
+			// is PR content answering as authoritative architecture (#338 r20 S1).
+			const containerCandidates = process.env.RIG_DB_CANDIDATES !== undefined
+				? process.env.RIG_DB_CANDIDATES.split(",").filter(Boolean)
 				: ["/workspace/rig.db", "/workspace/repo/rig.db"];
-			const candidates = resolveRigDbCandidates(undefined, ctx.cwd, containerCandidates);
+			const candidates = resolveRigDbCandidates(undefined, containerCandidates);
 			// The library owns the walk (one implementation); candidates are telemetry.
-			const path = resolveRigDb(undefined, ctx.cwd, containerCandidates);
+			const path = resolveRigDb(undefined, containerCandidates);
 			if (!path) {
 				return {
 					content: [

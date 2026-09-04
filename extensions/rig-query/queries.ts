@@ -188,11 +188,12 @@ function overview(db: DatabaseSync, stats: { more: number }): string {
 		}
 		const rendered = [...bySrc.entries()].map(([s, dsts]) => `${names.get(s) ?? short(s)} → ${dsts.join(", ")}`);
 		lines.push(`deps (${edges.length} edges):\n  ${rendered.slice(0, MAX_ROWS).join("\n  ")}`);
-		if (rendered.length > MAX_ROWS) {
-			stats.more += rendered.length - MAX_ROWS;
-			// The marker carries the UNIT (edges, not sources) — "…+6 more" on an
-			// elision of 51 edges read as almost-nothing (#338 r9).
-			lines.push(`${MORE_ROWS(edges.length - shownEdges(bySrc, MAX_ROWS))} more edges — rig deps <component> for one in full`);
+		const shownEdgeCount = shownEdges(bySrc, MAX_ROWS);
+		if (edges.length > shownEdgeCount) {
+			// The marker carries the UNIT (edges) and says so once — "…+51 more
+			// edges", not "more more" (#338 r9/r10).
+			stats.more += edges.length - shownEdgeCount;
+			lines.push(`  …+${edges.length - shownEdgeCount} more edges — rig deps <component> for one in full`);
 		}
 	}
 	// The footer renders BEFORE any truncation tail: a cap-cut must never drop
@@ -375,14 +376,17 @@ function search(db: DatabaseSync, target: string | undefined, stats: { more: num
 		// running it whenever the pool is full (not gated on which arm filled)
 		// means a partial answer can never present as complete (#338 r9).
 		const like = `%${likeTerm}%`;
-		const total = Number(
-			db
-				.prepare("SELECT COUNT(*) n FROM symbols WHERE name LIKE ? ESCAPE '\\' OR signature LIKE ? ESCAPE '\\' OR doc LIKE ? ESCAPE '\\'")
-				.get(like, like, like)?.n ?? 0,
-		);
-		if (total > hits.size) {
+		// Bounded probe: "does at least one MORE row exist past what we show?"
+		// — three LIKE scans capped at hits.size+1 rows instead of a full-table
+		// COUNT on every full result set (#338 r10 P6).
+		const probe = db
+			.prepare(
+				`SELECT 1 FROM symbols WHERE name LIKE ? ESCAPE '\\' OR signature LIKE ? ESCAPE '\\' OR doc LIKE ? ESCAPE '\\' LIMIT ?`,
+			)
+			.all(like, like, like, hits.size + 1) as Row[];
+		if (probe.length > hits.size) {
 			more = MORE_HITS;
-			stats.more += total - hits.size;
+			stats.more += probe.length - hits.size;
 		}
 	}
 	return [

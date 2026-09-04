@@ -289,6 +289,12 @@ func runOneShot() {
 	} else {
 		piSessions = ""
 	}
+	// ADR-0009 freshness: prepare stamps /workspace/rig.db.sha with the
+	// reviewed SHA; the rig-query extension compares it against this env and
+	// warns on mismatch. Same value, two halves of one invariant.
+	if sha := os.Getenv("HARMOSTES_TRIGGER_SHA"); sha != "" {
+		os.Setenv("RIG_EXPECTED_SHA", sha)
+	}
 	deps.Agent = worker.RPCAgentRunner{
 		Opts: agent.RPCOptions{
 			Args:        worker.PiArgs(wf.Spec.Agent),

@@ -70,6 +70,9 @@ CREATE TABLE component_files(
   seq INTEGER NOT NULL,
   PRIMARY KEY (component_id, path)
 );
+-- TODO(consumer-scale): symbols(name), deps(dst) and
+-- component_files(component_id) indexes when graphs outgrow ~1k symbols —
+-- rig-query's search/list arms are leading-LIKE scans today (#338 r9).
 CREATE TABLE symbols(
   seq INTEGER PRIMARY KEY,
   file TEXT NOT NULL,

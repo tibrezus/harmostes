@@ -15,10 +15,7 @@
  * load-bearing for unsupported languages or missing graphs.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-// StringEnum, not Type.Union/Type.Enum: it emits {type:"string", enum:[...]} —
-// the shape strict providers validate (docs/extensions.md "Custom Tools").
-import { StringEnum } from "@earendil-works/pi-ai";
-import { Type } from "typebox";
+import { Type } from "typebox"; // pi aliases typebox for extensions — NO npm dep at runtime
 import { readFileSync, statSync } from "node:fs";
 import { openRig, resolveRigDb, rigQuery, type RigParams } from "./queries.ts";
 
@@ -70,7 +67,10 @@ Prefer this over find/grep for ANY "where is X" or "what uses Y" question; drop 
 			"Use rig (command=\"search\") to locate symbols and rig (command=\"overview\") to understand component structure before grepping or listing directories.",
 		],
 		parameters: Type.Object({
-			command: StringEnum(["overview", "component", "search", "files", "deps"] as const),
+			// StringEnum shape (type + enum) without the @earendil-works/pi-ai
+			// runtime import — a bare-specifier dep that does not resolve on the
+			// plain-node load path (#338 r10 P4).
+			command: Type.Unsafe<{ type: "string"; enum: string[] }>({ type: "string", enum: ["overview", "component", "search", "files", "deps"] }),
 			target: Type.Optional(Type.String({ description: "component id/name, search term, or path glob" })),
 			reverse: Type.Optional(Type.Boolean({ description: "deps only: incoming edges (blast radius)" })),
 			// NO agent-supplied db path: it was an arbitrary-file-read oracle
@@ -92,7 +92,7 @@ Prefer this over find/grep for ANY "where is X" or "what uses Y" question; drop 
 					content: [
 						{
 							type: "text",
-							text: "no rig.db found (looked at $RIG_DB, <cwd>/rig.db, /workspace/rig.db, /workspace/repo/rig.db) — this run emitted no graph; navigate with bash.",
+							text: "no rig.db found (probed $RIG_DB, <cwd>/rig.db, /workspace/rig.db, /workspace/repo/rig.db — see details.probed) — this run emitted no graph; navigate with bash.",
 						},
 					],
 					// Uniform telemetry shape on absence (#338 r9): same keys as success,

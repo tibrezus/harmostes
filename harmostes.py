@@ -189,6 +189,7 @@ def main():
         "--model", args.model,
         "--tools", args.tools,
         "-e", "/extensions/litellm-provider",
+        "-e", "/extensions/rig-query",
     ]
     log(f"starting pi --mode rpc (model={args.model}, tools={args.tools}, workdir={workdir})")
 

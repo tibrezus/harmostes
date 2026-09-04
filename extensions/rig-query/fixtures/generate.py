@@ -88,6 +88,10 @@ symbols = [
     # starve the name hit (the #338 r1 search bug).
     *[{"file": f"internal/worker/h{i}.go", "name": f"helper{i}", "kind": "func", "line": 10 + i,
        "signature": f"func helper{i}()", "doc": f"handler for case {i}"} for i in range(10)],
+    # The false-positive truncated case (#338 r9): a doc containing "…+3 more"
+    # must NOT flip the structured truncated flag (prose is never sniffed).
+    {"file": "internal/model/report.go", "name": "renderReport", "kind": "func", "line": 500,
+     "signature": "func renderReport()", "doc": "renders …+3 more sections when wide"},
     # The underscore class (#338 r7 B1): snake_case names must survive the
     # LIKE escaping (a bad $0-style replacement hid every _-bearing symbol).
     {"file": "internal/model/db.py", "name": "canonical_hash", "kind": "func", "line": 439,

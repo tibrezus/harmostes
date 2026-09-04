@@ -131,6 +131,17 @@ test("doc-only FTS path is exercised when the name-prefix arm has nothing (#338 
 	assert.match(out, /NodeResultEnvelope/);
 });
 
+test("a doc containing the marker text does not flip structured truncated (#338 r9)", () => {
+	const db = openRig(FIXTURE);
+	try {
+		const r = rigQuery(db, { command: "search", target: "renderReport" });
+		assert.match(r.text, /renderReport/);
+		assert.equal(r.truncated, false, "prose must never be sniffed for truncation");
+	} finally {
+		db.close();
+	}
+});
+
 test("deps blast radius says …+N more instead of silently truncating (#338 r3 4.2)", () => {
 	const out = q({ command: "deps", target: "internal/worker" });
 	assert.match(out, /…\+\d+ more/);

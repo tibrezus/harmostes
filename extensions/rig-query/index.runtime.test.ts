@@ -6,7 +6,7 @@
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { copyFileSync, readFileSync, rmSync, statSync, unlinkSync } from "node:fs";
+import { copyFileSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
@@ -88,4 +88,58 @@ test("wrapper: the container fallback list contains prepare's emit target (#338 
 	// workspace.sh writes $WORKDIR/rig.db and the worker WORKDIR is /workspace.
 	const src = readFileSync(fileURLToPath(new URL("./index.ts", import.meta.url)), "utf8");
 	assert.match(src, /"\/workspace\/rig\.db"/, "index.ts fallback must include prepare's /workspace/rig.db emit target");
+});
+
+test("sha provenance: stamped / mismatch / malformed / absent (#338 r9 B2)", async () => {
+	const dir = tmpdir();
+	const dbPath = `${dir}/rig-sha-${process.pid}.db`;
+	copyFileSync(FIXTURE, dbPath);
+	process.env.RIG_DB = dbPath;
+	const shaPath = `${dbPath}.sha`;
+	try {
+		const { execute } = await makeHarness(dir);
+		// absent
+		let r = await execute({ command: "overview" });
+		assert.equal(r.details.rig_sha, "absent");
+		// stamped
+		writeFileSync(shaPath, "0123abcd");
+		r = await execute({ command: "overview" });
+		assert.equal(r.details.rig_sha, "0123abcd");
+		assert.equal(r.details.sha_state, "stamped");
+		// mismatch
+		process.env.RIG_EXPECTED_SHA = "ffffffff";
+		r = await execute({ command: "overview" });
+		assert.equal(r.details.sha_state, "mismatch");
+		assert.match(r.content[0].text, /does not match the reviewed SHA/);
+		delete process.env.RIG_EXPECTED_SHA;
+		// malformed (content never echoed — the F11 oracle class)
+		writeFileSync(shaPath, "root:x:0:0:secrets");
+		r = await execute({ command: "overview" });
+		assert.equal(r.details.rig_sha, "malformed");
+		assert.doesNotMatch(r.content[0].text, /secrets/);
+	} finally {
+		delete process.env.RIG_EXPECTED_SHA;
+		rmSync(shaPath, { force: true });
+		rmSync(dbPath, { force: true });
+	}
+});
+
+test("details key-set is an interface — uniform on success and absence (#338 r9)", async () => {
+	const dir = tmpdir();
+	process.env.RIG_DB = `${dir}/rig-missing-${process.pid}.db`;
+	try {
+		const mod = await import("./index.ts");
+		const tools: Array<{ execute: (id: string, params: unknown, s: unknown, u: unknown, ctx: { cwd: string }) => Promise<{ details: Record<string, unknown> }> }> = [];
+		const handlers: Record<string, Array<() => void>> = {};
+		mod.default({
+			on: (event: string, fn: () => void) => (handlers[event] ??= []).push(fn),
+			registerTool: (t: never) => tools.push(t),
+		});
+		const absent = await tools[0].execute("t", { command: "overview" }, undefined, undefined, { cwd: dir });
+		assert.equal(absent.details.graph, false);
+		assert.equal(absent.details.command, "overview", "absence keeps the telemetry shape");
+		assert.equal(absent.details.truncated, false);
+	} finally {
+		delete process.env.RIG_DB;
+	}
 });

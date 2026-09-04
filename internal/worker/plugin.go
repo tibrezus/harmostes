@@ -355,7 +355,10 @@ func SavePiSession(ctx context.Context, dc dapr.Client, store, workflow, run str
 // tool available, rig merely among them — nothing is forced onto the allow-
 // list). The tool itself degrades harmlessly when no graph was emitted.
 func PiArgs(a v1alpha1.AgentSpec) []string {
-	args := []string{"-e", "/extensions/litellm-provider", "-e", "/extensions/rig-query", "--skill", a.Skill, "--model", a.Model}
+	args := []string{"--skill", a.Skill, "--model", a.Model}
+	for _, ext := range Extensions {
+		args = append(args, "-e", ext)
+	}
 	if len(a.Tools) > 0 {
 		tools := a.Tools
 		if !slices.Contains(tools, "rig") {

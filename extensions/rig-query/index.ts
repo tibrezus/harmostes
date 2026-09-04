@@ -92,23 +92,40 @@ Prefer this over find/grep for ANY "where is X" or "what uses Y" question; drop 
 					content: [
 						{
 							type: "text",
-							text: "no rig.db in this workspace (looked at the db param, $RIG_DB, ./rig.db, /workspace/rig.db) — the graph was not generated for this run; navigate with bash.",
+							text: "no rig.db found (looked at $RIG_DB, <cwd>/rig.db, /workspace/rig.db, /workspace/repo/rig.db) — this run emitted no graph; navigate with bash.",
 						},
 					],
-					details: { graph: false }, // structured: telemetry branches on presence without parsing text
+					// Uniform telemetry shape on absence (#338 r9): same keys as success,
+					// so a session join never gets a missing column — plus graph:false
+					// and the probed candidates for greppability.
+					details: { db: null, command: p.command, target: p.target ?? null, chars: 0, truncated: false, graph: false, probed: ["/workspace/rig.db", "/workspace/repo/rig.db", "$RIG_DB", "<cwd>/rig.db"] },
 				};
 			}
 			// Provenance (#338 r6 B2): prepare stamps <graph>.sha with the reviewed
 			// checkout's SHA. Surfaced in details so a stale-graph review is
 			// observable per session, not in hindsight.
+			// Provenance states: stamped (hex) / mismatch (≠ RIG_EXPECTED_SHA) /
+			// malformed / absent — a stale-graph review must be OBSERVABLE, and
+			// when the controller injects RIG_EXPECTED_SHA, REFUSABLE (#338 r6 B2).
 			let rigSha: string;
+			let shaState: string;
 			try {
-				// Charset-bounded: a .sha sidecar contributes only hex to the session
-				// (the r8 F11 oracle class — sidecar content is never echoed verbatim).
 				const raw = readFileSync(`${path}.sha`, "utf8").trim();
-				rigSha = /^[0-9a-f]{7,40}$/i.test(raw) ? raw : "malformed";
+				if (!/^[0-9a-f]{7,40}$/i.test(raw)) {
+					rigSha = "malformed";
+					shaState = "malformed";
+				} else {
+					rigSha = raw;
+					const expected = process.env.RIG_EXPECTED_SHA;
+					if (expected && !raw.startsWith(expected.slice(0, 7))) {
+						shaState = "mismatch";
+					} else {
+						shaState = "stamped";
+					}
+				}
 			} catch {
-				rigSha = "absent"; // distinct from a stamped-but-wrong graph
+				rigSha = "absent";
+				shaState = "absent"; // distinct from stamped-but-wrong
 			}
 			let db: ReturnType<typeof openRig>;
 			try {
@@ -126,9 +143,10 @@ Prefer this over find/grep for ANY "where is X" or "what uses Y" question; drop 
 				// Structured telemetry: the #336 measurement (13/33 calls were
 				// archaeology) is only provable from session data. `truncated`
 				// covers BOTH the char cap and row-level "…+N more" paths.
+				const text2 = shaState === "mismatch" ? `WARNING: graph SHA ${rigSha} does not match the reviewed SHA — this graph may be stale.\n${text}` : `graph sha: ${rigSha}\n${text}`;
 				return {
-					content: [{ type: "text", text: `graph sha: ${rigSha}\n${text}` }],
-					details: { db: path, command: p.command, target: p.target ?? null, chars: text.length, truncated, rig_sha: rigSha },
+					content: [{ type: "text", text: text2 }],
+					details: { db: path, command: p.command, target: p.target ?? null, chars: text.length, truncated, rig_sha: rigSha, sha_state: shaState },
 				};
 			} catch (e) {
 				throw new Error(`rig ${p.command} failed: ${String(e)}`);

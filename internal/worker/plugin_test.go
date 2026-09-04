@@ -1,7 +1,7 @@
 package worker
 
 import (
-	"reflect"
+	"os"
 	"strings"
 	"testing"
 
@@ -26,9 +26,18 @@ func TestPiArgsLoadBuiltinExtensions(t *testing.T) {
 			t.Errorf("-e must be followed by an extension path, got %q", args[i+1])
 		}
 	}
-	want := []string{"--skill", "pr-review", "--model", "litellm/test-model"}
-	if got := args[len(args)-len(want):]; !reflect.DeepEqual(got, want) {
-		t.Errorf("skill/model args lost: tail = %v, want %v", got, want)
+	// skill/model pair must survive (position: after the extension flags).
+	s, m := -1, -1
+	for i, a := range args {
+		if a == "--skill" {
+			s = i
+		}
+		if a == "--model" {
+			m = i
+		}
+	}
+	if s < 0 || m != s+2 || args[s+1] != "pr-review" || args[m+1] != "litellm/test-model" {
+		t.Errorf("skill/model args lost or malformed: %v", args)
 	}
 }
 
@@ -47,4 +56,39 @@ func TestPiArgsToolsAllowlistKeepsRig(t *testing.T) {
 	if !strings.Contains(joined, "--tools bash,rig") || strings.Contains(joined, "rig,rig") {
 		t.Errorf("declared rig must not be duplicated, got: %s", joined)
 	}
+}
+
+// The extension list is load-bearing in FOUR places: PiArgs (-e), both worker
+// Dockerfiles (COPY), and harmostes.py (the standalone primitive). Drift in
+// any of them is fleet-wide — a missing COPY kills every agent at pi startup,
+// a missing -e silently drops the tool (#338 r9). This test pins them all.
+func TestExtensionsSingleSource(t *testing.T) {
+	for _, ext := range Extensions {
+		dockerfile := string(mustRead(t, "../../Dockerfile.worker"))
+		release := string(mustRead(t, "../../.github/Dockerfile.worker.release"))
+		// The Dockerfile line is `COPY extensions/<name> <ext>` — the DESTINATION
+		// (with a leading space) is what must exist in both images.
+		if !strings.Contains(dockerfile, " "+ext) {
+			t.Errorf("Dockerfile.worker does not COPY %s — agents would die at pi startup", ext)
+		}
+		if !strings.Contains(release, " "+ext) {
+			t.Errorf(".github/Dockerfile.worker.release (the published image) does not COPY %s", ext)
+		}
+		if !strings.Contains(string(mustRead(t, "../../harmostes.py")), "\""+ext+"\"") {
+			t.Errorf("harmostes.py does not load %s — the standalone primitive drifts from the worker", ext)
+		}
+		args := PiArgs(v1alpha1.AgentSpec{Skill: "s", Model: "m"})
+		if !strings.Contains(strings.Join(args, " "), ext) {
+			t.Errorf("PiArgs does not load %s", ext)
+		}
+	}
+}
+
+func mustRead(t *testing.T, path string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return b
 }

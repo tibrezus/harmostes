@@ -41,22 +41,21 @@ export function resolveRigDb(explicit?: string, cwd?: string, extra: string[] = 
 
 const MAX_RESULT_CHARS = 6000; // ~1.5k tokens — sized for the grouped overview (a 23-component repo renders ~2.2k chars; r6's edge grouping grew it)
 
-// Truncation markers, single-sourced: builders render them, rigQuery detects
-// them for the `truncated` telemetry flag. Rewording one must reword both —
-// a regex over prose was how the partial-answer signal could silently die
-// (#338 r3 pillar 7).
+// Truncation is COUNTED, not sniffed: builders register elided rows/edges in
+// a shared stats object and render the marker from the same number — `truncated`
+// can never disagree with the text (a doc containing "…+" used to flip it).
 const MORE_ROWS = (n: number): string => `  …+${n} more`;
 const MORE_HITS = " …more hits — refine the term";
-const rowTruncated = (text: string): boolean => text.includes("…+") || text.includes(MORE_HITS);
 const MAX_ROWS = 12;
 /** Search returns exactly this many hits; say so when the pool was bigger. */
 const SEARCH_LIMIT = 8;
 
-function cap(text: string): string {
+function cap(text: string, stats: { more: number }): string {
 	if (text.length <= MAX_RESULT_CHARS) return text;
+	stats.more += 1; // char-cut is truncation too
 	return (
 		text.slice(0, MAX_RESULT_CHARS) +
-		`\n… [truncated — refine the query; full answer exceeds ${MAX_RESULT_CHARS} chars]`
+		`\n… [output exceeded the ${MAX_RESULT_CHARS}-char budget and was cut — drill down (component/search/deps) instead of repeating this query]`
 	);
 }
 
@@ -123,23 +122,24 @@ export function openRig(path: string): DatabaseSync {
  * only in prose (#338 r3 pillar 7).
  */
 export function rigQuery(db: DatabaseSync, p: RigParams): { text: string; truncated: boolean } {
-	const run = (fn: () => string): { text: string; truncated: boolean } => {
-		const text = cap(fn());
-		return { text, truncated: rowTruncated(text) || text.length >= MAX_RESULT_CHARS };
+	const stats = { more: 0 };
+	const run = (fn: (stats: { more: number }) => string): { text: string; truncated: boolean } => {
+		const text = cap(fn(stats), stats);
+		return { text, truncated: stats.more > 0 || text.length > MAX_RESULT_CHARS };
 	};
 	// Not exposed (deliberate, revisit on demand): calls/packages/artifacts/
 	// tests tables are populated by the producer but no subcommand reads them.
 	switch (p.command) {
 		case "overview":
-			return run(() => overview(db));
+			return run((s) => overview(db, s));
 		case "component":
-			return run(() => component(db, p.target));
+			return run((s) => component(db, p.target, s));
 		case "search":
-			return run(() => search(db, p.target));
+			return run((s) => search(db, p.target, s));
 		case "files":
-			return run(() => files(db, p.target));
+			return run((s) => files(db, p.target, s));
 		case "deps":
-			return run(() => deps(db, p.target, p.reverse === true));
+			return run((s) => deps(db, p.target, p.reverse === true, s));
 		default:
 			throw new Error(`unknown rig command ${JSON.stringify((p as { command?: string }).command)}`);
 	}
@@ -153,7 +153,7 @@ function meta(db: DatabaseSync, key: string): string {
 	}
 }
 
-function overview(db: DatabaseSync): string {
+function overview(db: DatabaseSync, stats: { more: number }): string {
 	const comps = db.prepare("SELECT id, name, type, language, entrypoint FROM components ORDER BY seq").all() as Row[];
 	if (comps.length === 0) return "rig.db has no components — graph empty.";
 	const fileCounts = new Map<string, number>();
@@ -164,12 +164,16 @@ function overview(db: DatabaseSync): string {
 	const lines: string[] = [];
 	const proj = meta(db, "repo_name") || meta(db, "project");
 	lines.push(`graph: ${proj || "project"} — ${comps.length} components, ${row(symCount?.n)} symbols`);
-	for (const c of comps) {
+	for (const c of comps.slice(0, MAX_ROWS)) {
 		const flags: string[] = [];
 		if (Number(c.entrypoint) === 1) flags.push("entry");
 		lines.push(
 			`- ${short(row(c.name) || row(c.id))} — ${row(c.type) || "component"}${flags.length ? ` [${flags.join(",")}]` : ""} (${fileCounts.get(row(c.id)) ?? 0} files)`,
 		);
+	}
+	if (comps.length > MAX_ROWS) {
+		stats.more += comps.length - MAX_ROWS;
+		lines.push(MORE_ROWS(comps.length - MAX_ROWS));
 	}
 	const edges = db.prepare("SELECT src, dst FROM deps ORDER BY src, dst").all() as Row[];
 	if (edges.length) {
@@ -183,10 +187,30 @@ function overview(db: DatabaseSync): string {
 			bySrc.set(s, [...(bySrc.get(s) ?? []), nameOf(names, row(e.dst))]);
 		}
 		const rendered = [...bySrc.entries()].map(([s, dsts]) => `${names.get(s) ?? short(s)} → ${dsts.join(", ")}`);
-		lines.push(`deps (${edges.length} edges):\n  ${rendered.slice(0, MAX_ROWS).join("\n  ")}${rendered.length > MAX_ROWS ? MORE_ROWS(rendered.length - MAX_ROWS) : ""}`);
+		lines.push(`deps (${edges.length} edges):\n  ${rendered.slice(0, MAX_ROWS).join("\n  ")}`);
+		if (rendered.length > MAX_ROWS) {
+			stats.more += rendered.length - MAX_ROWS;
+			// The marker carries the UNIT (edges, not sources) — "…+6 more" on an
+			// elision of 51 edges read as almost-nothing (#338 r9).
+			lines.push(`${MORE_ROWS(edges.length - shownEdges(bySrc, MAX_ROWS))} more edges — rig deps <component> for one in full`);
+		}
 	}
-	lines.push('drill down: rig component <name-tail> | rig search \'<term>\' (symbol FTS) | rig deps <name-tail>');
+	// The footer renders BEFORE any truncation tail: a cap-cut must never drop
+	// the pointer to the next command (#338 r9 B1).
+	lines.push('drill down: rig component <name-tail> | rig search \'<term>\' | rig deps <name-tail>');
 	return lines.join("\n");
+}
+
+/** Edges covered by the first `limit` grouped sources (for honest elision counts). */
+function shownEdges(bySrc: Map<string, string[]>, limit: number): number {
+	let shown = 0;
+	let i = 0;
+	for (const dsts of bySrc.values()) {
+		if (i >= limit) break;
+		shown += dsts.length;
+		i += 1;
+	}
+	return shown;
 }
 
 function nameOf(names: Map<string, string>, id: string): string {
@@ -220,9 +244,12 @@ function resolveComponent(db: DatabaseSync, target: string | undefined): Array<{
 	// radius for the wrong component (#338 r1).
 	// LIMIT 3: two matches are "2 match"; a third means the honest answer is
 	// "at least 3" — never print a count derived from a capped list (#338 r2 4.3).
+	const esc = target.replace(/\\/g, "\\\\").replace(/[%_]/g, "\\$&");
 	return db
-		.prepare("SELECT id, name, type FROM components WHERE id LIKE ? OR name LIKE ? ORDER BY seq LIMIT 3")
-		.all(`%${target}`, `%${target}`) as Array<{ id: string; name: string; type: unknown }>;
+		.prepare(
+			"SELECT id, name, type FROM components WHERE id LIKE ? ESCAPE '\\' OR name LIKE ? ESCAPE '\\' ORDER BY seq LIMIT 3",
+		)
+		.all(`%${esc}`, `%${esc}`) as Array<{ id: string; name: string; type: unknown }>;
 }
 
 /** Shared ambiguity renderer — a confident answer for the wrong component is worse than an error. */
@@ -235,7 +262,7 @@ function ambiguous(matches: Array<{ id: string; name: string; type: unknown }>):
 	);
 }
 
-function component(db: DatabaseSync, target: string | undefined): string {
+function component(db: DatabaseSync, target: string | undefined, stats: { more: number }): string {
 	const matches = resolveComponent(db, target);
 	if (matches.length === 0) return `no component matching ${JSON.stringify(target ?? "")} — use rig overview for names.`;
 	const amb = ambiguous(matches);
@@ -252,17 +279,22 @@ function component(db: DatabaseSync, target: string | undefined): string {
 		.all(c.id, MAX_ROWS) as Row[]) {
 		lines.push(`  ${row(f.path)} (${row(f.lines)}L)`);
 	}
-	if (fileTotal > MAX_ROWS) lines.push(`${MORE_ROWS(fileTotal - MAX_ROWS)} files — narrow with rig files '<glob>'`);
+	if (fileTotal > MAX_ROWS) {
+		stats.more += fileTotal - MAX_ROWS;
+		lines.push(`${MORE_ROWS(fileTotal - MAX_ROWS)} files — narrow with rig files '<glob>'`);
+	}
 	const edgeTotal = (d: string): number =>
 		Number(db.prepare(`SELECT COUNT(*) n FROM deps WHERE ${d} = ?`).get(c.id)?.n ?? 0);
-	const out = db.prepare("SELECT dst FROM deps WHERE src = ? LIMIT ?").all(c.id, MAX_ROWS) as Row[];
+	const out = db.prepare("SELECT dst FROM deps WHERE src = ? ORDER BY dst LIMIT ?").all(c.id, MAX_ROWS) as Row[];
 	if (out.length) {
 		const total = edgeTotal("src");
+		if (total > MAX_ROWS) stats.more += total - MAX_ROWS;
 		lines.push(`deps out: ${out.map((e) => label(e.dst)).join(", ")}${total > MAX_ROWS ? MORE_ROWS(total - MAX_ROWS) : ""}`);
 	}
-	const inc = db.prepare("SELECT src FROM deps WHERE dst = ? LIMIT ?").all(c.id, MAX_ROWS) as Row[];
+	const inc = db.prepare("SELECT src FROM deps WHERE dst = ? ORDER BY src LIMIT ?").all(c.id, MAX_ROWS) as Row[];
 	if (inc.length) {
 		const total = edgeTotal("dst");
+		if (total > MAX_ROWS) stats.more += total - MAX_ROWS;
 		lines.push(
 			`deps in (reverse blast radius): ${inc.map((e) => label(e.src)).join(", ")}${total > MAX_ROWS ? MORE_ROWS(total - MAX_ROWS) : ""}`,
 		);
@@ -270,7 +302,7 @@ function component(db: DatabaseSync, target: string | undefined): string {
 	return lines.join("\n");
 }
 
-function search(db: DatabaseSync, target: string | undefined): string {
+function search(db: DatabaseSync, target: string | undefined, stats: { more: number }): string {
 	if (!target || !target.trim()) {
 		return "search: give a symbol term (prefix match supported: 'handler*') — a bare '*' has no answer.";
 	}
@@ -289,7 +321,9 @@ function search(db: DatabaseSync, target: string | undefined): string {
 	// 1. Name-prefix first: the agent's term is almost always a name stem
 	// ("executor", "envelope"). LIKE gives camelCase-honest matching that FTS
 	// tokenization cannot ("envelope" must find NodeResultEnvelope).
-	const likeTerm = term.replace(/[%_]/g, "\\$&"); // $& = the matched char ($0 does not exist in JS and injected a literal "$0", hiding every _-bearing symbol — #338 r7 B1)
+	// Backslash first (a trailing \ leaves a dangling ESCAPE and hard-errors),
+	// then the LIKE metacharacters. ONE owner of the rule (#338 r9 DRY).
+	const likeTerm = term.replace(/\\/g, "\\\\").replace(/[%_]/g, "\\$&"); // $& = the matched char ($0 does not exist in JS — it injected a literal "$0", hiding every _-bearing symbol, #338 r7 B1)
 	const pre = db
 		.prepare("SELECT file, line, kind, name, signature, doc FROM symbols WHERE name LIKE ? || '%' ESCAPE '\\' ORDER BY seq LIMIT ?")
 		.all(likeTerm, SEARCH_LIMIT) as Row[];
@@ -336,14 +370,20 @@ function search(db: DatabaseSync, target: string | undefined): string {
 	// Honest truncation: when the pool filled, count the real total — a partial
 	// answer presented as complete is how review findings get lost (#338 r1).
 	let more = "";
-	if (hits.size >= SEARCH_LIMIT && (pre.length >= SEARCH_LIMIT || ftsFilled || sweptBeyondLimit)) {
-		const like = `%${likeTerm}%`; // escaped — must agree with the arms that produced the hits
+	if (hits.size >= SEARCH_LIMIT) {
+		// The escaped recount is the single source of the marker decision —
+		// running it whenever the pool is full (not gated on which arm filled)
+		// means a partial answer can never present as complete (#338 r9).
+		const like = `%${likeTerm}%`;
 		const total = Number(
 			db
 				.prepare("SELECT COUNT(*) n FROM symbols WHERE name LIKE ? ESCAPE '\\' OR signature LIKE ? ESCAPE '\\' OR doc LIKE ? ESCAPE '\\'")
 				.get(like, like, like)?.n ?? 0,
 		);
-		if (total > hits.size) more = " …more hits — refine the term";
+		if (total > hits.size) {
+			more = MORE_HITS;
+			stats.more += total - hits.size;
+		}
 	}
 	return [
 		`search "${term}" — ${hits.size} hit(s):${more}`,
@@ -351,7 +391,7 @@ function search(db: DatabaseSync, target: string | undefined): string {
 	].join("\n");
 }
 
-function files(db: DatabaseSync, target: string | undefined): string {
+function files(db: DatabaseSync, target: string | undefined, stats: { more: number }): string {
 	if (!target) return "files: give a path glob, e.g. 'internal/graph/%' or '%executor%'.";
 	let like = target.replace(/\*/g, "%").replace(/\?/g, "_"); // glob dialect: * = any run, ? = any single char (same string feeds rows and count — over-matches honestly)
 	if (!like.includes("%") && !like.includes("_")) like = `%${like}%`; // bare prefix — don't answer nothing for it
@@ -360,6 +400,7 @@ function files(db: DatabaseSync, target: string | undefined): string {
 		.prepare("SELECT path, lines, language, component_id FROM files WHERE path LIKE ? ORDER BY path LIMIT ?")
 		.all(like, MAX_ROWS) as Row[];
 	if (rows.length === 0) return `no files matching "${target}".`;
+	if (total > MAX_ROWS) stats.more += total - MAX_ROWS;
 	const names = namesById(db);
 	return [
 		`files matching "${target}":`,
@@ -368,7 +409,7 @@ function files(db: DatabaseSync, target: string | undefined): string {
 	].join("\n");
 }
 
-function deps(db: DatabaseSync, target: string | undefined, reverse: boolean): string {
+function deps(db: DatabaseSync, target: string | undefined, reverse: boolean, stats: { more: number }): string {
 	const matches = resolveComponent(db, target);
 	if (matches.length === 0) return `no component matching ${JSON.stringify(target ?? "")} — use rig overview for names.`;
 	const amb = ambiguous(matches);
@@ -384,6 +425,7 @@ function deps(db: DatabaseSync, target: string | undefined, reverse: boolean): s
 		.all(c.id, MAX_ROWS) as Row[];
 	const arrow = reverse ? "←" : "→";
 	if (rows.length === 0) return `${label(c.id)} — no ${reverse ? "incoming (reverse)" : "outgoing"} dependencies.`;
+	if (total > MAX_ROWS) stats.more += total - MAX_ROWS;
 	return [
 		`${label(c.id)} ${arrow}`,
 		...rows.map((r) => `  ${arrow} ${label(r.peer)}`),

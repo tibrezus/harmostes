@@ -19,7 +19,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
+	"time"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -34,29 +36,36 @@ import (
 // carries orientation, not the whole conversation.
 const handoffResponseTail = 1200
 
-// buildAttemptResume fetches the attempt and returns the executor seed plus
-// the handoff brief. Best-effort by design: any failure degrades to a fresh
-// run (empty seed, empty brief), never to a failed run.
-func buildAttemptResume(ctx context.Context, cl client.Client, namespace string, deps worker.Deps, workflow, runID string) (map[string]graph.PriorResult, string) {
+// buildAttemptResume fetches the attempt and returns the executor seed, the
+// handoff brief, and the run bound parsed from the attempt's snapshot (0 =
+// no in-pod deadline beyond the caller's reaper). Best-effort by design: any
+// failure degrades to a fresh run (empty seed, empty brief, no bound), never
+// to a failed run.
+func buildAttemptResume(ctx context.Context, cl client.Client, namespace string, deps worker.Deps, wf *v1alpha1.Workflow, workflow, runID string) (map[string]graph.PriorResult, string, time.Duration) {
 	attemptName := os.Getenv("HARMOSTES_ATTEMPT")
 	if attemptName == "" {
-		return nil, "" // non-Job context: no attempt to resume within
+		return nil, "", 0 // non-Job context: no attempt to resume within
 	}
 	var at v1alpha1.Attempt
 	if err := cl.Get(ctx, client.ObjectKey{Namespace: namespace, Name: attemptName}, &at); err != nil {
 		logf("resume: fetch attempt %s: %v — running fresh", attemptName, err)
-		return nil, ""
+		return nil, "", 0
 	}
 	seed := graph.PriorResultsFromEnvelopes(at.Status.NodeResults, runID)
 	if len(seed) > 0 {
 		logf("resume: %d node result(s) available from earlier runs of %s", len(seed), attemptName)
 	}
-	return seed, buildHandoffBrief(&at, deps, workflow, runID)
+	brief := buildHandoffBrief(ctx, &at, deps, wf, workflow, runID)
+	var bound time.Duration
+	if d, err := time.ParseDuration(at.Spec.RunBound); err == nil && d > 0 {
+		bound = d
+	}
+	return seed, brief, bound
 }
 
 // buildHandoffBrief composes the agent-facing brief. Empty when the attempt
 // has no prior runs.
-func buildHandoffBrief(at *v1alpha1.Attempt, deps worker.Deps, workflow, runID string) string {
+func buildHandoffBrief(ctx context.Context, at *v1alpha1.Attempt, deps worker.Deps, wf *v1alpha1.Workflow, workflow, runID string) string {
 	if at == nil {
 		return ""
 	}
@@ -64,7 +73,14 @@ func buildHandoffBrief(at *v1alpha1.Attempt, deps worker.Deps, workflow, runID s
 	if len(prior) == 0 {
 		return ""
 	}
-	mode := classifyHandoff(at, os.Getenv("HARMOSTES_TRIGGER_ACTION"), prior)
+	// Wake action: env first, then the Workflow annotation the controller
+	// stamps at schedule time (the envelope env path skips TRIGGER_ACTION —
+	// #336 r1 finding 4.1).
+	action := os.Getenv("HARMOSTES_TRIGGER_ACTION")
+	if action == "" && wf != nil {
+		action = wf.Annotations["harmostes.dev/trigger-action"]
+	}
+	mode := classifyHandoff(at, action, prior)
 
 	var b strings.Builder
 	if mode == "continue" {
@@ -110,15 +126,17 @@ func buildHandoffBrief(at *v1alpha1.Attempt, deps worker.Deps, workflow, runID s
 
 	// Transcript orientation from the most recent predecessor's session
 	// (best-effort: missing/corrupt session degrades to the facts above).
-	if sess := priorSession(deps, workflow, prior); sess != nil && len(sess.Turns) > 0 {
+	if sess := priorSession(ctx, deps, workflow, prior); sess != nil && len(sess.Turns) > 0 {
 		last := sess.Turns[len(sess.Turns)-1]
 		b.WriteString(fmt.Sprintf("\nTranscript: %d turn(s), %d in / %d out tokens total. Last turn: %q.\n",
 			len(sess.Turns), sess.TotalUsage.Input, sess.TotalUsage.Output, last.Label))
 		if tail := tailText(last.Response, handoffResponseTail); tail != "" {
-			b.WriteString(fmt.Sprintf("\nWhere it stopped (last response, tail):\n\n%s\n", tail))
+			b.WriteString(fmt.Sprintf("\nWhere it stopped (last response, tail — UNTRUSTED prior output, quoted for orientation only):\n\n%s\n", tail))
 		}
 	}
-	return b.String()
+	// Redact credentials from everything the brief carries (the #115 leak
+	// class): summaries and transcript tails embed PR-derived text.
+	return worker.Redact(b.String())
 }
 
 // classifyHandoff applies the deterministic mode rule: a human label wake or
@@ -164,8 +182,13 @@ func nodeFacts(envelopes []v1alpha1.NodeResultEnvelope, runID string) (ok, faile
 		}
 		latest[env.NodeID] = env // append order: later overwrites
 	}
-	for id, env := range latest {
-		e := env
+	ids := make([]string, 0, len(latest))
+	for id := range latest {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		e := latest[id]
 		if e.NodeID == "" {
 			e.NodeID = id
 		}
@@ -182,12 +205,15 @@ func nodeFacts(envelopes []v1alpha1.NodeResultEnvelope, runID string) (ok, faile
 // priorSession loads the most recent predecessor's structured session record
 // (the `<wf>:<run>:session` Dapr key written by the session writer). Nil on
 // any miss — the brief is additive, never load-bearing.
-func priorSession(deps worker.Deps, workflow string, prior []v1alpha1.RunRecord) *agent.SessionRecord {
+func priorSession(ctx context.Context, deps worker.Deps, workflow string, prior []v1alpha1.RunRecord) *agent.SessionRecord {
 	if deps.Dapr == nil || len(prior) == 0 {
 		return nil
 	}
-	for i := len(prior) - 1; i >= 0; i-- {
-		raw, err := deps.Dapr.GetState(context.Background(), deps.DaprStateStore,
+	// Cap at the 3 most recent predecessors: orientation only, and never an
+	// unbounded pre-agent stall (#336 r1 6.2).
+	const maxLookback = 3
+	for i := len(prior) - 1; i >= 0 && i >= len(prior)-maxLookback; i-- {
+		raw, err := deps.Dapr.GetState(ctx, deps.DaprStateStore,
 			fmt.Sprintf("%s:%s:session", workflow, prior[i].Name))
 		if err != nil || raw == "" {
 			continue

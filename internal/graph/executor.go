@@ -471,8 +471,10 @@ func (e *GraphExecutor) Execute(ctx context.Context, graph v1alpha1.GraphSpec, p
 		// recorded under THIS run — stamped with resumed/resumedFrom outputs so
 		// the ledger and downstream nodes see reuse, not invisibility. Applies
 		// at every visit: a loop edge re-entering a resumed node reuses too
-		// (the node is deterministic by the same argument).
-		if node.Resume == "green" {
+		// (the node is deterministic by the same argument). Never applies to
+		// gate nodes: a validator's verdict is only trustworthy fresh (#336
+		// r1 4.2 — ADR-0004 promotion).
+		if node.Resume == v1alpha1.NodeResumeGreen && node.Type != "gate" {
 			if prior, ok := e.prior[nodeID]; ok && prior.Result.Status == StatusGreen {
 				reused := prior.Result
 				if reused.Outputs == nil {
@@ -494,6 +496,7 @@ func (e *GraphExecutor) Execute(ctx context.Context, graph v1alpha1.GraphSpec, p
 					NodeType:   node.Type,
 					Status:     string(StatusGreen),
 					DurationMs: 0,
+					Feedback:   "resumed from run " + prior.RunID,
 					Envelope:   &reusedEnv,
 				})
 				e.log("node %s: resumed green result from run %s", nodeID, prior.RunID)

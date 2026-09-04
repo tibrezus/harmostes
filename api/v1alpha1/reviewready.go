@@ -4,6 +4,17 @@ import (
 	"time"
 )
 
+// NodeResumeGreen is the resume policy that lets a node reuse a green result
+// recorded by an earlier run of the SAME attempt (ADR-0008). Exported so the
+// kernel and the CRD schema cannot drift on the token.
+const NodeResumeGreen = "green"
+
+// DefaultRunBound is the wall-clock ceiling applied when a Workflow sets no
+// runBound (ADR-0008 decision 2: runs complete; this is the wedged-run
+// reaper, not a death sentence — real reviews finish in minutes, and a run
+// this old is hung, not working).
+const DefaultRunBound = 2 * time.Hour
+
 // OneShotRunBound was the hard wall-clock ceiling every workflow run was
 // killed at (30m). ADR-0008 retired the default death: runs complete or fail
 // on their own; a finite bound is opt-in per workflow (spec.runBound, riding

@@ -203,7 +203,7 @@ func TestBuildHandoffBriefModes(t *testing.T) {
 			{NodeID: "prepare", RunID: "run-1", Status: "ok", Summary: "workspace ready"},
 		},
 	}}
-	brief := buildHandoffBrief(at, worker.Deps{}, "pr-review", "run-3")
+	brief := buildHandoffBrief(context.Background(), at, worker.Deps{}, nil, "pr-review", "run-3")
 	if !strings.Contains(brief, "CONTINUE interrupted work") {
 		t.Errorf("interrupted predecessors must produce CONTINUE framing, got:\n%s", brief)
 	}
@@ -216,7 +216,7 @@ func TestBuildHandoffBriefModes(t *testing.T) {
 
 	// Deliberate restart framing.
 	at.Status.Review = &v1alpha1.ReviewClaimStatus{Released: true, ReleaseReason: "consumed"}
-	brief = buildHandoffBrief(at, worker.Deps{}, "pr-review", "run-3")
+	brief = buildHandoffBrief(context.Background(), at, worker.Deps{}, nil, "pr-review", "run-3")
 	if !strings.Contains(brief, "deliberate restart") {
 		t.Errorf("consumed claim must produce SUMMARY framing, got:\n%s", brief)
 	}
@@ -225,7 +225,7 @@ func TestBuildHandoffBriefModes(t *testing.T) {
 	at2 := &v1alpha1.Attempt{Status: v1alpha1.AttemptStatus{
 		Runs: []v1alpha1.RunRecord{{Name: "run-3", Phase: "running"}},
 	}}
-	if got := buildHandoffBrief(at2, worker.Deps{}, "pr-review", "run-3"); got != "" {
+	if got := buildHandoffBrief(context.Background(), at2, worker.Deps{}, nil, "pr-review", "run-3"); got != "" {
 		t.Errorf("no prior runs must produce no brief, got:\n%s", got)
 	}
 }

@@ -115,8 +115,7 @@ spec:
                 cache:                                     # ADR-0008/#336: snapshot of the Workflow's toolchain-cache config
                   type: object
                   properties:
-                    pvc: { type: string }                  # shared cache PVC (mounted at /toolchain-cache)
-                    git: { type: boolean }
+                    pvc: { type: string }                  # shared cache PVC (mounted at /toolchain-cache, subPath per namespace/workflow)
                     go:  { type: boolean }                 # GOCACHE/GOMODCACHE → PVC subpaths
                     npm: { type: boolean }                 # npm_config_cache → PVC subpath
 

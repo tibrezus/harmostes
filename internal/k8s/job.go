@@ -82,12 +82,22 @@ type ConfigMapMount struct {
 // their pods self-clean.
 func BuildJob(p AttemptJobParams) *batchv1.Job {
 	attemptName := p.Attempt.Name
-	// Wall-clock bound: the attempt's snapshotted runBound (ADR-0008). Empty
-	// (platform default) = unlimited — no deadline, runs complete or fail on
-	// their own.
+	// Wall-clock bound (ADR-0008): a finite runBound on the attempt is
+	// honored verbatim. Empty (the platform default) sets the 2h wedged-run
+	// reaper — runs complete in minutes; a run this old is hung, not
+	// working, and would hold its claim slot forever. Malformed values
+	// degrade to the reaper, never to unlimited.
+	bound := v1alpha1.DefaultRunBound
+	if d, err := time.ParseDuration(p.Attempt.Spec.RunBound); err == nil {
+		if d == 0 {
+			bound = 0 // explicit "0" = truly unlimited (documented escape hatch)
+		} else if d > 0 {
+			bound = d
+		}
+	}
 	var deadline *int64
-	if d, err := time.ParseDuration(p.Attempt.Spec.RunBound); err == nil && d > 0 {
-		deadline = ptr.To(int64(d / time.Second))
+	if bound > 0 {
+		deadline = ptr.To(int64(bound / time.Second))
 	}
 	labels := map[string]string{
 		"app.kubernetes.io/name":      "harmostes",
@@ -129,7 +139,12 @@ func BuildJob(p AttemptJobParams) *batchv1.Job {
 			Name:         "toolchain-cache",
 			VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: c.PVC}},
 		})
-		mounts = append(mounts, corev1.VolumeMount{Name: "toolchain-cache", MountPath: "/toolchain-cache"})
+		// SubPath per namespace/workflow: the module cache's extraction path
+		// does not tolerate cross-pod writers on one shared volume.
+		mounts = append(mounts, corev1.VolumeMount{
+			Name: "toolchain-cache", MountPath: "/toolchain-cache",
+			SubPath: p.Namespace + "/" + p.WorkflowName,
+		})
 		if c.Go {
 			env = append(env,
 				corev1.EnvVar{Name: "GOCACHE", Value: "/toolchain-cache/go-build"},

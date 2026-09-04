@@ -218,7 +218,6 @@ type EventsSpec struct {
 // CacheSpec declares which caches the worker should mount.
 type CacheSpec struct {
 	PVC string `json:"pvc,omitempty"`
-	Git bool   `json:"git,omitempty"`
 	Go  bool   `json:"go,omitempty"`
 	NPM bool   `json:"npm,omitempty"`
 }

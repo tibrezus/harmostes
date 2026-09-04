@@ -208,14 +208,14 @@ func TestBuildJobExtraConfigMapMounts(t *testing.T) {
 	}
 }
 
-// ADR-0008: runs don't die by default. Empty runBound (the platform
-// default) sets NO activeDeadlineSeconds — a run completes or fails on its
-// own. A finite bound opts back into the deadline.
+// ADR-0008 decision 2: runs don't die by default. Empty runBound sets the
+// 2h wedged-run reaper (a real review finishes in minutes; a 2h-old run is
+// hung). A finite bound is honored verbatim; "0" is truly unlimited.
 func TestBuildJobRunBound(t *testing.T) {
-	// Default: unlimited — no deadline at all.
+	// Default: the 2h wedged-run reaper.
 	job := BuildJob(AttemptJobParams{Attempt: jobTestAttempt(), WorkflowName: "w", Namespace: "harmostes", Image: "img"})
-	if job.Spec.ActiveDeadlineSeconds != nil {
-		t.Errorf("empty runBound must set no deadline, got %ds", *job.Spec.ActiveDeadlineSeconds)
+	if job.Spec.ActiveDeadlineSeconds == nil || *job.Spec.ActiveDeadlineSeconds != int64((v1alpha1.DefaultRunBound).Seconds()) {
+		t.Errorf("empty runBound → 2h reaper, got %v", job.Spec.ActiveDeadlineSeconds)
 	}
 
 	// Finite bound: honored.
@@ -226,11 +226,18 @@ func TestBuildJobRunBound(t *testing.T) {
 		t.Errorf("runBound 90m → activeDeadlineSeconds 5400, got %v", job.Spec.ActiveDeadlineSeconds)
 	}
 
-	// Malformed bound: degrade to unlimited (never a surprise kill).
-	at.Spec.RunBound = "not-a-duration"
+	// Explicit "0": truly unlimited.
+	at.Spec.RunBound = "0"
 	job = BuildJob(AttemptJobParams{Attempt: at, WorkflowName: "w", Namespace: "harmostes", Image: "img"})
 	if job.Spec.ActiveDeadlineSeconds != nil {
-		t.Errorf("malformed runBound must degrade to no deadline, got %ds", *job.Spec.ActiveDeadlineSeconds)
+		t.Errorf("runBound \"0\" must set no deadline, got %ds", *job.Spec.ActiveDeadlineSeconds)
+	}
+
+	// Malformed bound: degrade to the reaper (never unlimited by surprise).
+	at.Spec.RunBound = "not-a-duration"
+	job = BuildJob(AttemptJobParams{Attempt: at, WorkflowName: "w", Namespace: "harmostes", Image: "img"})
+	if job.Spec.ActiveDeadlineSeconds == nil || *job.Spec.ActiveDeadlineSeconds != int64((v1alpha1.DefaultRunBound).Seconds()) {
+		t.Errorf("malformed runBound must degrade to the 2h reaper, got %v", job.Spec.ActiveDeadlineSeconds)
 	}
 }
 

@@ -341,8 +341,16 @@ func runOneShot() {
 	}
 
 	graphCtx := observability.ContextWithTraceparent(ctx, os.Getenv(observability.TraceparentCarrierKey))
-	graphCtx, graphCancel := context.WithTimeout(graphCtx, runTimeout(wf))
-	defer graphCancel()
+	// ADR-0008: the run bound comes from the attempt's snapshotted runBound —
+	// the same value the Job's activeDeadlineSeconds uses. Empty (platform
+	// default) = the 2h wedged-run reaper; the 30-minute agent timeout this
+	// replaces is retired.
+	resumeSeed, handoffBrief, runBound := buildAttemptResume(ctx, cl, namespace, deps, wf, workflow, runID)
+	if runBound > 0 {
+		var cancel context.CancelFunc
+		graphCtx, cancel = context.WithTimeout(graphCtx, runBound)
+		defer cancel()
+	}
 
 	// record the run as started BEFORE executing: without this the Attempt's
 	// run list only ever shows terminal records, so the UI cannot show a live
@@ -351,12 +359,6 @@ func runOneShot() {
 	// and runName() here equals the name the outcome upserts, so a crash that
 	// never reaches the outcome path leaves an honest 'running' record.
 	recordAttemptStarted(ctx, cl)
-
-	// Attempt-scoped resumption (ADR-0008): seed the executor with green
-	// results earlier runs of this attempt recorded, and hand the agent a
-	// brief (CONTINUE vs SUMMARY) describing what they accomplished.
-	// Best-effort — any failure degrades to a fresh run, never a failed one.
-	resumeSeed, handoffBrief := buildAttemptResume(ctx, cl, namespace, deps, workflow, runID)
 
 	graphDeps := graph.Dependencies{
 		PluginResolver: deps.Plugins,
@@ -539,14 +541,6 @@ func envelopesFor(m map[string]v1alpha1.NodeResultEnvelope) []v1alpha1.NodeResul
 		out = append(out, env)
 	}
 	return out
-}
-
-func runTimeout(wf *v1alpha1.Workflow) time.Duration {
-	secs := wf.Spec.Agent.Timeout
-	if secs <= 0 {
-		secs = 1800
-	}
-	return time.Duration(secs) * time.Second
 }
 
 // builtinPlugins maps plugin names to executable paths shipped in the worker

@@ -365,6 +365,14 @@ func dispatchEnv(req RunRequest, at *v1alpha1.Attempt, env *review.Envelope) []s
 		vars = append(vars, "HARMOSTES_TRACEPARENT="+req.Traceparent)
 	}
 	if env != nil {
+		// The envelope path still carries the wake action (#336 r1 4.1): the
+		// handoff classification reads TRIGGER_ACTION to tell a human
+		// re-label (deliberate ⇒ SUMMARY) from an automatic re-arm
+		// (interrupted ⇒ CONTINUE). Without this, pr-review — the only class
+		// that reaches the gate — never sees the action.
+		if req.Action != "" {
+			vars = append(vars, "HARMOSTES_TRIGGER_ACTION="+req.Action)
+		}
 		return append(vars, EnvelopeEnv(env)...)
 	}
 	if req.Pr != "" {

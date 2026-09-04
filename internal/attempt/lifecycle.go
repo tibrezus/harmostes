@@ -147,6 +147,9 @@ const (
 // surface (claim.HasValidated), so their weight is paid here instead.
 func envelopeBytes(env *v1alpha1.NodeResultEnvelope) int {
 	n := len(env.NodeID) + len(env.RunID) + len(env.Status) + len(env.Summary) + len(env.Payload) + 64
+	for k, v := range env.Outputs {
+		n += len(k) + len(v) + 16
+	}
 	for _, c := range env.Claims {
 		n += len(c.Type) + len(c.Binding) + len(c.ExternalID) + len(c.URL) + 32
 	}
@@ -214,6 +217,17 @@ func boundEnvelope(env *v1alpha1.NodeResultEnvelope) {
 	}
 	if len(env.Summary) > MaxStatusSummaryBytes {
 		env.Summary = env.Summary[:MaxStatusSummaryBytes]
+	}
+	// Outputs (ADR-0008) are bounded per value and by count: one fat output
+	// must not poison the whole Attempt status write (#336 r1 5.1).
+	if len(env.Outputs) > 32 {
+		env.Outputs = nil
+	} else {
+		for k, v := range env.Outputs {
+			if len(k) > 256 || len(v) > 4<<10 {
+				delete(env.Outputs, k)
+			}
+		}
 	}
 }
 

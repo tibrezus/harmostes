@@ -271,12 +271,17 @@ function component(db: DatabaseSync, target: string | undefined): string {
 }
 
 function search(db: DatabaseSync, target: string | undefined): string {
-	if (!target || !target.trim()) return "search: give a symbol term (prefix match supported: 'executor*').";
+	if (!target || !target.trim()) {
+		return "search: give a symbol term (prefix match supported: 'handler*') — a bare '*' has no answer.";
+	}
 	// The documented syntax carries a trailing *; LIKE arms must not inherit it
 	// ("executor*" → "executor*%" matches nothing) — strip it here, keep it for
-	// the FTS phrase (#338 r2 4.1: the documented syntax worked only when FTS
-	// was available, i.e. graceful degradation failed on its own syntax).
+	// the FTS phrase (#338 r2 4.1). The emptiness check runs AFTER the strip:
+	// a bare '*' is a degenerate term, not "match everything" (#338 r8 F7).
 	const term = target.trim().replace(/"/g, "").replace(/\*+$/, "");
+	if (!term) {
+		return "search: a bare '*' matches everything — give a symbol stem (e.g. 'executor').";
+	}
 	// Unquoted FTS tokens prefix-match; quoted phrases do NOT — quote only when
 	// the term spans words (else the documented prefix syntax never reaches FTS).
 	const ftsTerm = term.includes(" ") ? `"${term}"` : `${term}*`;
@@ -348,7 +353,7 @@ function search(db: DatabaseSync, target: string | undefined): string {
 
 function files(db: DatabaseSync, target: string | undefined): string {
 	if (!target) return "files: give a path glob, e.g. 'internal/graph/%' or '%executor%'.";
-	let like = target.replace(/\*/g, "%").replace(/\?/g, "_");
+	let like = target.replace(/\*/g, "%").replace(/\?/g, "_"); // glob dialect: * = any run, ? = any single char (same string feeds rows and count — over-matches honestly)
 	if (!like.includes("%") && !like.includes("_")) like = `%${like}%`; // bare prefix — don't answer nothing for it
 	const total = Number(db.prepare("SELECT COUNT(*) n FROM files WHERE path LIKE ?").get(like)?.n ?? 0);
 	const rows = db

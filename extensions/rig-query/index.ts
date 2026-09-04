@@ -15,6 +15,9 @@
  * load-bearing for unsupported languages or missing graphs.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+// StringEnum, not Type.Union/Type.Enum: it emits {type:"string", enum:[...]} —
+// the shape strict providers validate (docs/extensions.md "Custom Tools").
+import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { readFileSync, statSync } from "node:fs";
 import { openRig, resolveRigDb, rigQuery, type RigParams } from "./queries.ts";
@@ -67,21 +70,23 @@ Prefer this over find/grep for ANY "where is X" or "what uses Y" question; drop 
 			"Use rig (command=\"search\") to locate symbols and rig (command=\"overview\") to understand component structure before grepping or listing directories.",
 		],
 		parameters: Type.Object({
-			// Type.Enum per pi's own extension docs (union-of-literals is the anti-pattern there).
-			command: Type.Enum(["overview", "component", "search", "files", "deps"] as const),
+			command: StringEnum(["overview", "component", "search", "files", "deps"] as const),
 			target: Type.Optional(Type.String({ description: "component id/name, search term, or path glob" })),
 			reverse: Type.Optional(Type.Boolean({ description: "deps only: incoming edges (blast radius)" })),
-			db: Type.Optional(Type.String({ description: "explicit rig.db path (default: auto-discover)" })),
+			// NO agent-supplied db path: it was an arbitrary-file-read oracle
+			// (<path>.sha content echoed into the session — #338 r8 F11). The
+			// graph location is the runtime contract (RIG_DB + the fallbacks).
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const p = params as RigParams & { db?: string };
 			// Container paths are the runtime contract (worker image layout) — they
 			// live HERE, not in the library (#338 r3 pillar 1). The FALLBACK PATH
 			// CONTRACT: pr-review prepare (ops workspace.sh) writes $WORKDIR/rig.db
-			// = /workspace/rig.db, matching the first fallback below. Moving the
-			// emit target means moving this list — they are two halves of one
-			// invariant (ADR-0009 freshness).
-			const path = resolveRigDb(p.db, ctx.cwd, ["/workspace/rig.db", "/workspace/repo/rig.db"]);
+			// = /workspace/rig.db, matching the extras below. Moving the emit
+			// target means moving this list — two halves of one invariant.
+			// NOTE: details below are a telemetry INTERFACE — session analysis
+			// (#336) joins on these keys; do not rename casually.
+			const path = resolveRigDb(undefined, ctx.cwd, ["/workspace/rig.db", "/workspace/repo/rig.db"]);
 			if (!path) {
 				return {
 					content: [
@@ -96,11 +101,14 @@ Prefer this over find/grep for ANY "where is X" or "what uses Y" question; drop 
 			// Provenance (#338 r6 B2): prepare stamps <graph>.sha with the reviewed
 			// checkout's SHA. Surfaced in details so a stale-graph review is
 			// observable per session, not in hindsight.
-			let rigSha: string | null = null;
+			let rigSha: string;
 			try {
-				rigSha = readFileSync(`${path}.sha`, "utf8").trim() || null;
+				// Charset-bounded: a .sha sidecar contributes only hex to the session
+				// (the r8 F11 oracle class — sidecar content is never echoed verbatim).
+				const raw = readFileSync(`${path}.sha`, "utf8").trim();
+				rigSha = /^[0-9a-f]{7,40}$/i.test(raw) ? raw : "malformed";
 			} catch {
-				/* no provenance stamp — prepare predates the convention */
+				rigSha = "absent"; // distinct from a stamped-but-wrong graph
 			}
 			let db: ReturnType<typeof openRig>;
 			try {
@@ -119,8 +127,8 @@ Prefer this over find/grep for ANY "where is X" or "what uses Y" question; drop 
 				// archaeology) is only provable from session data. `truncated`
 				// covers BOTH the char cap and row-level "…+N more" paths.
 				return {
-					content: [{ type: "text", text: rigSha ? `graph sha: ${rigSha}\n${text}` : text }],
-					details: { db: path, command: p.command, target: p.target ?? "", chars: text.length, truncated, rig_sha: rigSha ?? undefined },
+					content: [{ type: "text", text: `graph sha: ${rigSha}\n${text}` }],
+					details: { db: path, command: p.command, target: p.target ?? null, chars: text.length, truncated, rig_sha: rigSha },
 				};
 			} catch (e) {
 				throw new Error(`rig ${p.command} failed: ${String(e)}`);

@@ -36,7 +36,8 @@ test-extensions:
 	@test -d extensions/rig-query/node_modules || npm install --prefix extensions/rig-query --no-audit --no-fund --no-save --silent
 	node --test --experimental-strip-types \
 		extensions/rig-query/queries.test.ts \
-		extensions/rig-query/index.parse.test.ts
+		extensions/rig-query/index.parse.test.ts \
+		extensions/rig-query/index.runtime.test.ts
 
 ## test-integration: integration tier — the attempt ledger + review-claim
 ## lifecycles against a REAL API server (envtest) with the chart CRDs

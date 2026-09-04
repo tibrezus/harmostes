@@ -175,14 +175,20 @@ test("resolveRigDb precedence: explicit > env > cwd > extras (#338 r5 B3)", asyn
 
 test("the wrapper registers the rig tool + shutdown handler (#338 r5 B2)", { skip: !(await import("node:fs")).existsSync(new URL("./node_modules/typebox/package.json", import.meta.url).pathname) ? "typebox not installed (npm install --prefix extensions/rig-query)" : false }, async () => {
 	const mod = await import("./index.ts");
-	const tools: Array<{ name: string; description: string }> = [];
+	const tools: Array<{ name: string; description: string; parameters: Record<string, unknown> }> = [];
 	const events: string[] = [];
 	mod.default({
 		on: (event: string) => events.push(event),
-		registerTool: (t: { name: string; description: string }) => tools.push(t),
+		registerTool: (t: { name: string; description: string; parameters: Record<string, unknown> }) => tools.push(t),
 	} as never);
 	assert.equal(tools.length, 1, "exactly one tool registered");
 	assert.equal(tools[0].name, "rig");
 	assert.match(tools[0].description, /overview/);
 	assert.ok(events.includes("session_shutdown"), "session_shutdown must be registered (handle cleanup)");
+	// The parameter schema must be provider-valid: {type:"string", enum:[…]} —
+	// Type.Enum alone emits {"enum":[…]} with no type and fails strict
+	// validation on the models the fleet mandates this tool for (#338 r8 F3).
+	const command = (tools[0].parameters.properties as Record<string, { type?: string; enum?: string[] }>).command;
+	assert.equal(command.type, "string", "command schema must carry type:string (StringEnum, not Type.Enum)");
+	assert.deepEqual([...(command.enum ?? [])].sort(), ["component", "deps", "files", "overview", "search"]);
 });

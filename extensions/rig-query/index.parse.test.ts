@@ -15,6 +15,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 test("index.ts parses + loads — the fleet-wide load must never be dead code", async () => {
+	// typebox is a devDependency and `make test-extensions` installs it when
+	// missing, so resolution failure here is itself a harness bug (#338 r8
+	// F15: a resolution "pass" executes zero lines of index.ts).
 	let outcome: "loaded" | "resolution" | "syntax";
 	try {
 		await import("./index.ts");
@@ -22,5 +25,5 @@ test("index.ts parses + loads — the fleet-wide load must never be dead code", 
 	} catch (e) {
 		outcome = e instanceof SyntaxError ? "syntax" : "resolution";
 	}
-	assert.notEqual(outcome, "syntax", "index.ts does not parse — every agent in the fleet would fail to start");
+	assert.equal(outcome, "loaded", `index.ts ${outcome === "syntax" ? "does not parse — every agent in the fleet would fail to start" : "could not load (harness missing typebox? run make test-extensions)"}`);
 });

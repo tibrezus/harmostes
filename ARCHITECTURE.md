@@ -12,7 +12,10 @@ as a conventional pointer for readers who look for an `ARCHITECTURE.md`.
 ## Agent navigation subsystem (ADR-0009)
 
 `extensions/rig-query` — a pi extension exposing the project graph (`rig.db`,
-generated SHA-exact by prepare via `plugins/rig-emit`) as one structured tool
+generated SHA-exact at review time by the ops repo's `workspace.sh` prepare
+(using the vendored `plugins/rig-emit` emitter); the in-repo `rig-emit.sh`
+plugin writes the *wiki's* synced copy — a different artifact reviews must
+not consume) as one structured tool
 (`overview | component | search | files | deps`) to every workflow agent.
 Owns the "no grep expeditions" contract; truncation markers and query
 telemetry (`details.{command,target,chars,truncated,rig_sha}`) are the

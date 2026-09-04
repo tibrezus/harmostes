@@ -65,9 +65,11 @@ jobs:
         run: go test -race -cover ./...
 
       - name: extensions (node --test · rig-query)
-        # make test-extensions installs typebox itself when missing (the one
-        # runtime import of the wrapper — peerDependencies, injected by pi).
-        run: make test-extensions
+        # npm ci is reproducible: the lockfile pins typebox to pi's shipped
+        # version so tests validate the same schema shape production loads.
+        run: |
+          npm ci --prefix extensions/rig-query --no-audit --no-fund --silent
+          make test-extensions
 
       # Compares the COMMITTED fixture's canonical hash against a fresh build
       # in a tempdir — it must NOT regenerate the committed file first, or the

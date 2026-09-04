@@ -101,15 +101,20 @@ test("sha provenance: stamped / mismatch / malformed / absent (#338 r9 B2)", asy
 		// absent
 		let r = await execute({ command: "overview" });
 		assert.equal(r.details.rig_sha, "absent");
-		// stamped
+		// stamped, nothing to verify against
 		writeFileSync(shaPath, "0123abcd");
 		r = await execute({ command: "overview" });
 		assert.equal(r.details.rig_sha, "0123abcd");
-		assert.equal(r.details.sha_state, "stamped");
+		assert.equal(r.details.sha_state, "unchecked");
+		// stamped + verified against the expected SHA
+		process.env.RIG_EXPECTED_SHA = "0123abcd";
+		r = await execute({ command: "overview" });
+		assert.equal(r.details.sha_state, "verified");
 		// mismatch
 		process.env.RIG_EXPECTED_SHA = "ffffffff";
 		r = await execute({ command: "overview" });
 		assert.equal(r.details.sha_state, "mismatch");
+		assert.match(r.content[0].text, /does not match the reviewed SHA/);
 		assert.match(r.content[0].text, /does not match the reviewed SHA/);
 		delete process.env.RIG_EXPECTED_SHA;
 		// malformed (content never echoed — the F11 oracle class)

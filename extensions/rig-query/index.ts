@@ -17,7 +17,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox"; // pi aliases typebox for extensions — NO npm dep at runtime
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { openRig, resolveRigDbCandidates, rigQuery, type RigParams } from "./queries.ts";
+import { openRig, resolveRigDb, resolveRigDbCandidates, rigQuery, type RigParams } from "./queries.ts";
 
 export default function (pi: ExtensionAPI) {
 	// Handles keyed by path + file identity (ino/mtime): the producer's
@@ -88,7 +88,8 @@ Prefer this over find/grep for ANY "where is X" or "what uses Y" question; drop 
 			// (#336) joins on these keys; do not rename casually.
 			// The full walk is reported in details.probed — greppable telemetry.
 			const candidates = resolveRigDbCandidates(undefined, ctx.cwd, ["/workspace/rig.db", "/workspace/repo/rig.db"]);
-			const path = candidates.find((c) => existsSync(c)) ?? null;
+			// The library owns the walk (one implementation); candidates are for telemetry.
+			const path = resolveRigDb(undefined, ctx.cwd, ["/workspace/rig.db", "/workspace/repo/rig.db"]);
 			if (!path) {
 				return {
 					content: [
@@ -121,8 +122,10 @@ Prefer this over find/grep for ANY "where is X" or "what uses Y" question; drop 
 					const expected = process.env.RIG_EXPECTED_SHA;
 					if (expected && !raw.startsWith(expected.slice(0, 7))) {
 						shaState = "mismatch";
+					} else if (expected) {
+						shaState = "verified";
 					} else {
-						shaState = "stamped";
+						shaState = "unchecked"; // stamped, but nothing to verify against
 					}
 				}
 			} catch {

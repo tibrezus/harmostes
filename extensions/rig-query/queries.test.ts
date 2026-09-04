@@ -189,7 +189,7 @@ test("resolveRigDb precedence: explicit > env > prepare extras > cwd-relative (#
 	}
 });
 
-test("the wrapper registers the rig tool + shutdown handler (#338 r5 B2)", { skip: !(await import("node:fs")).existsSync(new URL("./node_modules/typebox/package.json", import.meta.url).pathname) ? "typebox not installed (npm install --prefix extensions/rig-query)" : false }, async () => {
+test("the wrapper registers the rig tool + shutdown handler (#338 r5 B2)", async () => {
 	const mod = await import("./index.ts");
 	const tools: Array<{ name: string; description: string; parameters: Record<string, unknown> }> = [];
 	const events: string[] = [];

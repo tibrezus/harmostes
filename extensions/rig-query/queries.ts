@@ -175,16 +175,16 @@ function overview(db: DatabaseSync, stats: { more: number }): string {
 	const lines: string[] = [];
 	const proj = meta(db, "repo_name") || meta(db, "project");
 	lines.push(`graph: ${proj || "project"} — ${comps.length} components, ${row(symCount?.n)} symbols`);
-	for (const c of comps.slice(0, MAX_ROWS)) {
+	for (const c of comps.slice(0, OVERVIEW_ROWS)) {
 		const flags: string[] = [];
 		if (Number(c.entrypoint) === 1) flags.push("entry");
 		lines.push(
 			`- ${short(row(c.name) || row(c.id))} — ${row(c.type) || "component"}${flags.length ? ` [${flags.join(",")}]` : ""} (${fileCounts.get(row(c.id)) ?? 0} files)`,
 		);
 	}
-	if (comps.length > MAX_ROWS) {
-		stats.more += comps.length - MAX_ROWS;
-		lines.push(MORE_ROWS(comps.length - MAX_ROWS));
+	if (comps.length > OVERVIEW_ROWS) {
+		stats.more += comps.length - OVERVIEW_ROWS;
+		lines.push(MORE_ROWS(comps.length - OVERVIEW_ROWS));
 	}
 	const edges = db.prepare("SELECT src, dst FROM deps ORDER BY src, dst").all() as Row[];
 	if (edges.length) {
@@ -381,17 +381,17 @@ function search(db: DatabaseSync, target: string | undefined, stats: { more: num
 		// running it whenever the pool is full (not gated on which arm filled)
 		// means a partial answer can never present as complete (#338 r9).
 		const like = `%${likeTerm}%`;
-		// Bounded probe: "does at least one MORE row exist past what we show?"
-		// — three LIKE scans capped at hits.size+1 rows instead of a full-table
-		// COUNT on every full result set (#338 r10 P6).
-		const probe = db
-			.prepare(
-				`SELECT 1 FROM symbols WHERE name LIKE ? ESCAPE '\\' OR signature LIKE ? ESCAPE '\\' OR doc LIKE ? ESCAPE '\\' LIMIT ?`,
-			)
-			.all(like, like, like, hits.size + 1) as Row[];
-		if (probe.length > hits.size) {
+		// One COUNT(*) — the marker decision's single source; the scans are the
+		// documented cost of camelCase-honest search until the producer grows
+		// symbols(name)/trigram indexes (see the TODO in rig/db.py).
+		const total = Number(
+			db
+				.prepare("SELECT COUNT(*) n FROM symbols WHERE name LIKE ? ESCAPE '\\' OR signature LIKE ? ESCAPE '\\' OR doc LIKE ? ESCAPE '\\'")
+				.get(like, like, like)?.n ?? 0,
+		);
+		if (total > hits.size) {
 			more = MORE_HITS;
-			stats.more += probe.length - hits.size;
+			stats.more += total - hits.size;
 		}
 	}
 	return [

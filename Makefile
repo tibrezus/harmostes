@@ -12,7 +12,7 @@ TAG           ?= dev
 BIN_DIR       := bin
 GO            := go
 
-.PHONY: all build test test-ui vet tidy generate manifests controller-worker docker docker-push docker-ui clean
+.PHONY: all build test test-ui vet tidy generate manifests controller-worker docker docker-push docker-ui test-extensions test-integration clean
 
 all: test build
 
@@ -33,6 +33,7 @@ test:
 ## (python3 extensions/rig-query/fixtures/generate.py) and committed; CI
 ## regenerates and fails on drift.
 test-extensions:
+	@test -d extensions/rig-query/node_modules || npm install --prefix extensions/rig-query --no-audit --no-fund --silent
 	node --test --experimental-strip-types \
 		extensions/rig-query/queries.test.ts \
 		extensions/rig-query/index.parse.test.ts

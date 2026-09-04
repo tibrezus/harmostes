@@ -95,15 +95,24 @@ export interface RigParams {
 export function openRig(path: string): DatabaseSync {
 	const db = new DatabaseSync(path, { readOnly: true });
 	let version = "";
+	let failed = false;
 	try {
-		const r = db.prepare("SELECT value FROM meta WHERE key = 'db_schema_version'").get() as { value?: unknown } | undefined;
-		version = r && r.value != null ? String(r.value) : "";
-	} catch (e) {
-		throw new Error(`${path} is not a rig.db (meta unreadable: ${String(e)})`);
-	}
-	if (version !== "1") {
-		db.close();
-		throw new Error(`rig.db v${version || "?"} at ${path} — this extension speaks v1; regenerate the graph (emit-rig.py)`);
+		try {
+			const r = db.prepare("SELECT value FROM meta WHERE key = 'db_schema_version'").get() as { value?: unknown } | undefined;
+			version = r && r.value != null ? String(r.value) : "";
+		} catch (e) {
+			failed = true;
+			throw new Error(`${path} is not a rig.db (meta unreadable: ${String(e)})`);
+		}
+		if (version !== "1") {
+			failed = true;
+			throw new Error(`rig.db v${version || "?"} at ${path} — this extension speaks v1; regenerate the graph (emit-rig.py)`);
+		}
+	} finally {
+		// BOTH failure branches close the handle — a wrong path must not leak an
+		// fd per attempt in a long-lived RPC session (#338 r6 M1, measured:
+		// 5 failed opens took /proc/self/fd 18 → 23).
+		if (failed) db.close();
 	}
 	return db;
 }
@@ -162,11 +171,17 @@ function overview(db: DatabaseSync): string {
 	}
 	const edges = db.prepare("SELECT src, dst FROM deps ORDER BY src, dst").all() as Row[];
 	if (edges.length) {
+		// Grouped by source — one line per component instead of raw pairs (a
+		// 23-component repo has 63 edges; flat rendering elided 51 of them and
+		// pushed agents back to grep — #338 r6 M3).
 		const names = namesById(db);
-		const rendered = edges.map((e) => `${nameOf(names, row(e.src))} → ${nameOf(names, row(e.dst))}`);
-		lines.push(
-			`deps (${edges.length}): ${rendered.slice(0, MAX_ROWS).join(", ")}${edges.length > MAX_ROWS ? MORE_ROWS(edges.length - MAX_ROWS) : ""}`,
-		);
+		const bySrc = new Map<string, string[]>();
+		for (const e of edges) {
+			const s = row(e.src);
+			bySrc.set(s, [...(bySrc.get(s) ?? []), nameOf(names, row(e.dst))]);
+		}
+		const rendered = [...bySrc.entries()].map(([s, dsts]) => `${names.get(s) ?? short(s)} → ${dsts.join(", ")}`);
+		lines.push(`deps (${edges.length} edges):\n  ${rendered.slice(0, MAX_ROWS).join("\n  ")}${rendered.length > MAX_ROWS ? MORE_ROWS(rendered.length - MAX_ROWS) : ""}`);
 	}
 	lines.push('drill down: rig component <name-tail> | rig search \'<term>\' (symbol FTS) | rig deps <name-tail>');
 	return lines.join("\n");
@@ -260,7 +275,9 @@ function search(db: DatabaseSync, target: string | undefined): string {
 	// the FTS phrase (#338 r2 4.1: the documented syntax worked only when FTS
 	// was available, i.e. graceful degradation failed on its own syntax).
 	const term = target.trim().replace(/"/g, "").replace(/\*+$/, "");
-	const ftsTerm = `${term}*`;
+	// Unquoted FTS tokens prefix-match; quoted phrases do NOT — quote only when
+	// the term spans words (else the documented prefix syntax never reaches FTS).
+	const ftsTerm = term.includes(" ") ? `"${term}"` : `${term}*`;
 	const hits = new Map<string, Row>();
 	// 1. Name-prefix first: the agent's term is almost always a name stem
 	// ("executor", "envelope"). LIKE gives camelCase-honest matching that FTS
@@ -313,7 +330,7 @@ function search(db: DatabaseSync, target: string | undefined): string {
 	// answer presented as complete is how review findings get lost (#338 r1).
 	let more = "";
 	if (hits.size >= SEARCH_LIMIT && (pre.length >= SEARCH_LIMIT || ftsFilled || sweptBeyondLimit)) {
-		const like = `%${term}%`;
+		const like = `%${likeTerm}%`; // escaped — must agree with the arms that produced the hits
 		const total = Number(
 			db
 				.prepare("SELECT COUNT(*) n FROM symbols WHERE name LIKE ? OR signature LIKE ? OR doc LIKE ?")

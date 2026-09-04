@@ -16,7 +16,7 @@
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { statSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { openRig, resolveRigDb, rigQuery, type RigParams } from "./queries.ts";
 
 export default function (pi: ExtensionAPI) {
@@ -98,6 +98,15 @@ Prefer this over find/grep for ANY "where is X" or "what uses Y" question; drop 
 					details: { graph: false }, // structured: telemetry branches on presence without parsing text
 				};
 			}
+			// Provenance (#338 r6 B2): prepare stamps <graph>.sha with the reviewed
+			// checkout's SHA. Surfaced in details so a stale-graph review is
+			// observable per session, not in hindsight.
+			let rigSha: string | null = null;
+			try {
+				rigSha = readFileSync(`${path}.sha`, "utf8").trim() || null;
+			} catch {
+				/* no provenance stamp — prepare predates the convention */
+			}
 			let db: ReturnType<typeof openRig>;
 			try {
 				db = open(path); // get-or-open; the (ino, mtime) identity check lives HERE only
@@ -115,8 +124,8 @@ Prefer this over find/grep for ANY "where is X" or "what uses Y" question; drop 
 				// archaeology) is only provable from session data. `truncated`
 				// covers BOTH the char cap and row-level "…+N more" paths.
 				return {
-					content: [{ type: "text", text }],
-					details: { db: path, command: p.command, target: p.target ?? "", chars: text.length, truncated },
+					content: [{ type: "text", text: rigSha ? `graph sha: ${rigSha}\n${text}` : text }],
+					details: { db: path, command: p.command, target: p.target ?? "", chars: text.length, truncated, rig_sha: rigSha ?? undefined },
 				};
 			} catch (e) {
 				throw new Error(`rig ${p.command} failed: ${String(e)}`);

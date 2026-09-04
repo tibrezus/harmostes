@@ -15,5 +15,8 @@
   },
   "devDependencies": {
     "typebox": "^1.0.0"
+  },
+  "peerDependencies": {
+    "typebox": "*"
   }
 }

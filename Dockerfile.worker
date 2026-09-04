@@ -112,6 +112,13 @@ RUN git config --global user.name 'harmostes-bot' && \
 #   best-practice/CVE lookup). Auto-discovered via settings.json packages.
 COPY extensions/litellm-provider /extensions/litellm-provider
 COPY extensions/rig-query        /extensions/rig-query
+# Load gate: pi swallows extension load errors and continues — a dead
+# rig-query would mean NO agent has the rig tool while task contracts
+# mandate it. This build fails instead (#338 r6 B1).
+RUN pi -e /extensions/rig-query -p "load-check" >/tmp/pi-load.log 2>&1; \
+    if grep -qi "Failed to load extension" /tmp/pi-load.log; then \
+      echo "::rig-query failed to load in pi::"; cat /tmp/pi-load.log; exit 1; \
+    fi
 RUN pi install npm:pi-searxng
 # pi settings: auto-load the searxng extension on every pi invocation
 RUN mkdir -p /root/.pi/agent && \

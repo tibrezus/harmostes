@@ -6,8 +6,15 @@ package worker
 // TestExtensionsSingleSource test fails any drift between them — an
 // extension named here but missing from an image takes down every agent
 // that loads it, and one missing from PiArgs is silently unavailable
-// while task contracts mandate it (#338 r9).
+// while task contracts mandate it (#338 r9/r14).
 var Extensions = []string{
 	"/extensions/litellm-provider",
 	"/extensions/rig-query",
+}
+
+// extensionTools maps an extension to the TOOL it registers (pi --tools
+// allowlists are over tool names, not extension paths). Extensions that
+// only register providers have no entry.
+var extensionTools = map[string]string{
+	"/extensions/rig-query": "rig",
 }

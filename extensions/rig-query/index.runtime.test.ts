@@ -110,12 +110,10 @@ test("sha provenance: stamped / mismatch / malformed / absent (#338 r9 B2)", asy
 		process.env.RIG_EXPECTED_SHA = "0123abcd";
 		r = await execute({ command: "overview" });
 		assert.equal(r.details.sha_state, "verified");
-		// mismatch
+		// mismatch — REFUSED (r14 R1): answering from another revision's graph
+		// is the failure the freshness rule exists to prevent.
 		process.env.RIG_EXPECTED_SHA = "ffffffff";
-		r = await execute({ command: "overview" });
-		assert.equal(r.details.sha_state, "mismatch");
-		assert.match(r.content[0].text, /does not match the reviewed SHA/);
-		assert.match(r.content[0].text, /does not match the reviewed SHA/);
+		await assert.rejects(execute({ command: "overview" }), /refusing to navigate a stale graph/);
 		delete process.env.RIG_EXPECTED_SHA;
 		// malformed (content never echoed — the F11 oracle class)
 		writeFileSync(shaPath, "root:x:0:0:secrets");

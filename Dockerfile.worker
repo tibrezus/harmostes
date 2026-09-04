@@ -37,7 +37,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # pi.dev harness (the only non-Go runtime — Node, the agent's tool host)
-RUN npm install -g @earendil-works/pi-coding-agent
+ARG PI_VERSION=0.84.4
+RUN npm install -g @earendil-works/pi-coding-agent@${PI_VERSION}
 
 # Lint tools — the wiki-lint gate runs the wiki's full ci-lint.sh (markdownlint,
 # mdlint, remark, mermaid render via Chromium, likec4, health, RIG compliance).

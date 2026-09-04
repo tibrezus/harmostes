@@ -13,7 +13,7 @@ import (
 // navigation, ADR-0009). rig-query degrades gracefully when prepare emitted
 // no graph, so unconditional loading is safe for every workflow.
 func TestPiArgsLoadBuiltinExtensions(t *testing.T) {
-	args := PiArgs(v1alpha1.AgentSpec{Skill: "pr-review", Model: "litellm/test-model"})
+	args := buildPiArgs(v1alpha1.AgentSpec{Skill: "pr-review", Model: "litellm/test-model"}, Extensions, alwaysPresent)
 	joined := strings.Join(args, " ")
 	for _, ext := range []string{"/extensions/litellm-provider", "/extensions/rig-query"} {
 		if !strings.Contains(joined, ext) {
@@ -45,16 +45,40 @@ func TestPiArgsLoadBuiltinExtensions(t *testing.T) {
 // tools included. A workflow declaring spec.agent.tools would silently lose
 // rig while the task contract still mandates it — PiArgs appends it.
 func TestPiArgsToolsAllowlistKeepsRig(t *testing.T) {
-	args := PiArgs(v1alpha1.AgentSpec{Skill: "s", Model: "m", Tools: []string{"bash", "read"}})
+	args := buildPiArgs(v1alpha1.AgentSpec{Skill: "s", Model: "m", Tools: []string{"bash", "read"}}, Extensions, alwaysPresent)
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, "--tools bash,read,rig") {
 		t.Errorf("tools allowlist must gain rig, got: %s", joined)
 	}
 	// Already declared → not duplicated.
-	args = PiArgs(v1alpha1.AgentSpec{Skill: "s", Model: "m", Tools: []string{"bash", "rig"}})
+	args = buildPiArgs(v1alpha1.AgentSpec{Skill: "s", Model: "m", Tools: []string{"bash", "rig"}}, Extensions, alwaysPresent)
 	joined = strings.Join(args, " ")
 	if !strings.Contains(joined, "--tools bash,rig") || strings.Contains(joined, "rig,rig") {
 		t.Errorf("declared rig must not be duplicated, got: %s", joined)
+	}
+}
+
+func alwaysPresent(string) (os.FileInfo, error) { return nil, nil }
+
+// An image without an extension directory must drop it from the args (and
+// from the --tools allowlist) instead of killing pi at startup (#338 r14 B1).
+func TestPiArgsDropsMissingExtension(t *testing.T) {
+	args := buildPiArgs(
+		v1alpha1.AgentSpec{Skill: "s", Model: "m", Tools: []string{"bash"}},
+		[]string{"/extensions/litellm-provider", "/extensions/rig-query"},
+		func(p string) (os.FileInfo, error) {
+			if strings.Contains(p, "rig-query") {
+				return nil, os.ErrNotExist
+			}
+			return nil, nil
+		},
+	)
+	joined := strings.Join(args, " ")
+	if strings.Contains(joined, "rig-query") || strings.Contains(joined, "rig") {
+		t.Errorf("missing extension must be dropped from -e AND --tools, got: %s", joined)
+	}
+	if !strings.Contains(joined, "--tools bash") || strings.Contains(joined, "rig") {
+		t.Errorf("missing extension must vanish from -e and --tools, got: %s", joined)
 	}
 }
 
@@ -77,7 +101,7 @@ func TestExtensionsSingleSource(t *testing.T) {
 		if !strings.Contains(string(mustRead(t, "../../harmostes.py")), "\""+ext+"\"") {
 			t.Errorf("harmostes.py does not load %s — the standalone primitive drifts from the worker", ext)
 		}
-		args := PiArgs(v1alpha1.AgentSpec{Skill: "s", Model: "m"})
+		args := buildPiArgs(v1alpha1.AgentSpec{Skill: "s", Model: "m"}, Extensions, alwaysPresent)
 		if !strings.Contains(strings.Join(args, " "), ext) {
 			t.Errorf("PiArgs does not load %s", ext)
 		}

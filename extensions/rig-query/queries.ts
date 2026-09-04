@@ -330,6 +330,7 @@ function search(db: DatabaseSync, target: string | undefined, stats: { more: num
 	// the term spans words (else the documented prefix syntax never reaches FTS).
 	const ftsTerm = term.includes(" ") ? `"${term}"` : `${term}*`;
 	const hits = new Map<string, Row>();
+	let sweepExhausted = false;
 	// 1. Name-prefix first: the agent's term is almost always a name stem
 	// ("executor", "envelope"). LIKE gives camelCase-honest matching that FTS
 	// tokenization cannot ("envelope" must find NodeResultEnvelope).
@@ -367,6 +368,8 @@ function search(db: DatabaseSync, target: string | undefined, stats: { more: num
 				 WHERE name LIKE ? ESCAPE '\\' OR signature LIKE ? ESCAPE '\\' OR doc LIKE ? ESCAPE '\\' ORDER BY seq LIMIT ?`,
 			)
 			.all(like, like, like, SEARCH_LIMIT + 1) as Row[];
+		// A short sweep proves the corpus is exhausted — skip the recount.
+		sweepExhausted = likeRows.length < SEARCH_LIMIT + 1;
 		for (const r of likeRows) {
 			if (hits.size >= SEARCH_LIMIT) break;
 			hits.set(`${row(r.file)}:${row(r.line)}:${row(r.name)}`, r);
@@ -376,7 +379,7 @@ function search(db: DatabaseSync, target: string | undefined, stats: { more: num
 	// Honest truncation: when the pool filled, count the real total — a partial
 	// answer presented as complete is how review findings get lost (#338 r1).
 	let more = "";
-	if (hits.size >= SEARCH_LIMIT) {
+	if (hits.size >= SEARCH_LIMIT && !sweepExhausted) {
 		// The escaped recount is the single source of the marker decision —
 		// running it whenever the pool is full (not gated on which arm filled)
 		// means a partial answer can never present as complete (#338 r9).

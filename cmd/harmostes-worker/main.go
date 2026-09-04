@@ -290,16 +290,18 @@ func runOneShot() {
 		piSessions = ""
 	}
 	// ADR-0009 freshness: prepare stamps /workspace/rig.db.sha with the
-	// reviewed SHA; the rig-query extension compares it against this env and
-	// warns on mismatch. Same value, two halves of one invariant.
+	// reviewed SHA; the rig-query extension compares it against RIG_EXPECTED_SHA
+	// and REFUSES on mismatch. Scoped to the pi child's env — not process-global
+	// (deploy/gate plugins must not inherit a one-consumer variable, #338 r15).
+	piEnv := os.Environ()
 	if sha := os.Getenv("HARMOSTES_TRIGGER_SHA"); sha != "" {
-		os.Setenv("RIG_EXPECTED_SHA", sha)
+		piEnv = append(piEnv, "RIG_EXPECTED_SHA="+sha)
 	}
 	deps.Agent = worker.RPCAgentRunner{
 		Opts: agent.RPCOptions{
 			Args:        worker.PiArgs(wf.Spec.Agent),
 			Workdir:     workdir,
-			Env:         os.Environ(),
+			Env:         piEnv,
 			SessionRoot: piSessions,
 			Log: func(ev agent.Event) {
 				logfFn("agent: %s %s", ev.Type, ev.ToolName)

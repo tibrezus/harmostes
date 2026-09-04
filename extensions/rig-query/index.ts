@@ -162,7 +162,13 @@ Prefer this over find/grep for ANY "where is X" or "what uses Y" question; drop 
 				// Structured telemetry: the #336 measurement (13/33 calls were
 				// archaeology) is only provable from session data. `truncated`
 				// covers BOTH the char cap and row-level "…+N more" paths.
-				const text2 = shaState === "mismatch" ? `WARNING: graph SHA ${rigSha} does not match the reviewed SHA — this graph may be stale.\n${text}` : `graph sha: ${rigSha}\n${text}`;
+				// Provenance is agent-visible and CANNOT read as satisfied: absent and
+				// malformed are named as states, never rendered like a hex SHA
+				// (#338 r15 nit 2). mismatch never reaches here — it is refused above.
+				const provenance = rigSha === "absent" || rigSha === "malformed"
+					? `graph provenance: ${rigSha} — this run emitted no verified graph; treat every answer as unverified.\n`
+					: `graph sha: ${rigSha} (state: ${shaState})\n`;
+				const text2 = `${provenance}${text}`;
 				const probed = probedEmitted ? null : candidates;
 				probedEmitted = true;
 				return {

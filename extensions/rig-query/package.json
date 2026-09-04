@@ -14,8 +14,7 @@
     ]
   },
   "devDependencies": {
-    "typebox": "1.3.7",
-    "@earendil-works/pi-ai": "*"
+    "typebox": "1.3.7"
   },
   "peerDependencies": {
     "typebox": "*"

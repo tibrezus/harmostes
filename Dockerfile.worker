@@ -106,9 +106,12 @@ RUN git config --global user.name 'harmostes-bot' && \
 # pi extensions:
 # - litellm-provider: registers the litellm/* model prefix from LITELLM_URL +
 #   LITELLM_API_KEY env vars injected by the controller
+# - rig-query: architecture-graph navigation tool over rig.db (ADR-0009,
+#   #337) — degrades gracefully when prepare emitted no graph
 # - pi-searxng: web search + content fetch (for pr-review's selective
 #   best-practice/CVE lookup). Auto-discovered via settings.json packages.
 COPY extensions/litellm-provider /extensions/litellm-provider
+COPY extensions/rig-query        /extensions/rig-query
 RUN pi install npm:pi-searxng
 # pi settings: auto-load the searxng extension on every pi invocation
 RUN mkdir -p /root/.pi/agent && \

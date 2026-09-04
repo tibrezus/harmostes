@@ -344,9 +344,11 @@ func SavePiSession(ctx context.Context, dc dapr.Client, store, workflow, run str
 // PiArgs builds the pi --mode rpc extra args from a Workflow's agent spec.
 // The litellm-provider extension is always loaded so the litellm/* model prefix
 // resolves (the extension registers the provider at startup from LITELLM_URL +
-// LITELLM_API_KEY env vars injected by the controller).
+// LITELLM_API_KEY env vars injected by the controller). The rig-query extension
+// exposes the architecture graph (rig.db, emitted by prepare when present —
+// ADR-0009) as a structured tool; it degrades gracefully when no graph exists.
 func PiArgs(a v1alpha1.AgentSpec) []string {
-	args := []string{"-e", "/extensions/litellm-provider", "--skill", a.Skill, "--model", a.Model}
+	args := []string{"-e", "/extensions/litellm-provider", "-e", "/extensions/rig-query", "--skill", a.Skill, "--model", a.Model}
 	if len(a.Tools) > 0 {
 		args = append(args, "--tools", strings.Join(a.Tools, ","))
 	}

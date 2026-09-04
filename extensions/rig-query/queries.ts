@@ -402,11 +402,17 @@ function search(db: DatabaseSync, target: string | undefined, stats: { more: num
 
 function files(db: DatabaseSync, target: string | undefined, stats: { more: number }): string {
 	if (!target) return "files: give a path glob, e.g. 'internal/graph/%' or '%executor%'.";
-	let like = target.replace(/\*/g, "%").replace(/\?/g, "_"); // glob dialect: * = any run, ? = any single char (same string feeds rows and count — over-matches honestly)
-	if (!like.includes("%") && !like.includes("_")) like = `%${like}%`; // bare prefix — don't answer nothing for it
-	const total = Number(db.prepare("SELECT COUNT(*) n FROM files WHERE path LIKE ?").get(like)?.n ?? 0);
+	// Glob dialect: * = any run, ? = any single char. Order matters (r13):
+	// escape literal %/_/\ in the RAW target FIRST, then translate the glob
+	// operators — and decide the bare-prefix wrap from the TRANSLATED string
+	// (r13 HIGH: the guard read the translated string, so any literal _
+	// skipped the wrap and existing files answered "no files matching").
+	const esc = target.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_");
+	let like = esc.replace(/\*/g, "%").replace(/\?/g, "_");
+	if (!like.includes("%")) like = `%${like}%`;
+	const total = Number(db.prepare("SELECT COUNT(*) n FROM files WHERE path LIKE ? ESCAPE '\\'").get(like)?.n ?? 0);
 	const rows = db
-		.prepare("SELECT path, lines, language, component_id FROM files WHERE path LIKE ? ORDER BY path LIMIT ?")
+		.prepare("SELECT path, lines, language, component_id FROM files WHERE path LIKE ? ESCAPE '\\' ORDER BY path LIMIT ?")
 		.all(like, MAX_ROWS) as Row[];
 	if (rows.length === 0) return `no files matching "${target}".`;
 	if (total > MAX_ROWS) stats.more += total - MAX_ROWS;

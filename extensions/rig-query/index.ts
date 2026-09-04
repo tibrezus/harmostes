@@ -59,7 +59,7 @@ export default function (pi: ExtensionAPI) {
 		label: "RIG",
 		description: `Query the project's architecture graph (rig.db): components as build targets, dependency edges, every file and symbol with file:line precision — a targeted question costs a few hundred tokens, not a filesystem grep.
 
-Workflow: start with command="overview" (the whole graph in one screen — roughly 400 tokens on a mid-size repo), then locate code with command="search" (symbol names/signatures/docs; trailing * is prefix syntax: "executor*"), then read the exact file:line ranges the hits give you. drill into a single component with command="component" (its files + dependency edges) or command="deps" (reverse = blast radius). command="files" lists files by path glob ('%' wildcards).
+Workflow: start with command="overview" (the whole graph in one screen — ~700 tokens on a mid-size repo), then locate code with command="search" (symbol names/signatures/docs; trailing * is prefix syntax: "executor*"), then read the exact file:line ranges the hits give you. drill into a single component with command="component" (its files + dependency edges) or command="deps" (reverse = blast radius). command="files" lists files by glob (* = any run, ? = one char).
 
 Prefer this over find/grep for ANY "where is X" or "what uses Y" question; drop to bash only for reading the specific ranges search points at.`,
 		promptSnippet: "Query the project architecture graph (rig.db): components, deps, symbol search with file:line precision",
@@ -101,7 +101,7 @@ Prefer this over find/grep for ANY "where is X" or "what uses Y" question; drop 
 					// Uniform telemetry shape on absence (#338 r9): same keys as success,
 					// so a session join never gets a missing column — plus graph:false
 					// and the probed candidates for greppability.
-					details: { db: null, command: p.command, target: p.target ?? null, chars: 0, truncated: false, graph: false, probed: candidates },
+					details: { db: null, command: p.command, target: p.target ?? null, chars: 0, truncated: false, graph: false, probed: candidates, rig_sha: null, sha_state: null },
 				};
 			}
 			// Provenance (#338 r6 B2): prepare stamps <graph>.sha with the reviewed
@@ -151,7 +151,7 @@ Prefer this over find/grep for ANY "where is X" or "what uses Y" question; drop 
 				const text2 = shaState === "mismatch" ? `WARNING: graph SHA ${rigSha} does not match the reviewed SHA — this graph may be stale.\n${text}` : `graph sha: ${rigSha}\n${text}`;
 				return {
 					content: [{ type: "text", text: text2 }],
-					details: { db: path, command: p.command, target: p.target ?? null, chars: text.length, truncated, rig_sha: rigSha, sha_state: shaState },
+					details: { db: path, command: p.command, target: p.target ?? null, chars: text2.length, truncated, graph: true, probed: candidates, rig_sha: rigSha, sha_state: shaState },
 				};
 			} catch (e) {
 				throw new Error(`rig ${p.command} failed: ${String(e)}`);

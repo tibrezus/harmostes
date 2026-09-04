@@ -115,6 +115,20 @@ test("files lists bare prefixes and names components (#338 r2 4.5)", () => {
 	assert.match(out, /internal\/worker/); // component name, not comp-N
 });
 
+test("files finds underscore-bearing paths — the r13 HIGH bug", () => {
+	// The bare-substring guard used to inspect the TRANSLATED string, so any
+	// literal _ skipped the % wrap → "no files matching" for existing files.
+	assert.match(q({ command: "files", target: "attempt_types" }), /attempt_types\.go/);
+	assert.match(q({ command: "files", target: "attempt_types.go" }), /attempt_types\.go/);
+	assert.match(q({ command: "files", target: "plugin_test.go" }), /plugin_test\.go/);
+});
+
+test("files ? operator is a single-char wildcard, not a literal underscore", () => {
+	const out = q({ command: "files", target: "plugin?test.go" });
+	assert.match(out, /plugin_test\.go/);
+	assert.doesNotMatch(out, /no files matching/);
+});
+
 test("underscore-bearing symbol names survive LIKE escaping (#338 r7 B1)", () => {
 	const exact = q({ command: "search", target: "canonical_hash" });
 	assert.match(exact, /canonical_hash/, "exact snake_case name must be found");

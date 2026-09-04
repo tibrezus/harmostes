@@ -108,6 +108,8 @@ symbols = [
 files = [
     {"path": "cmd/worker/main.go", "component_id": "comp-1", "language": "go", "bytes": 100, "lines": 9, "doc": ""},
     {"path": "internal/worker/exec.go", "component_id": "comp-2", "language": "go", "bytes": 80, "lines": 6, "doc": ""},
+    {"path": "api/v1alpha1/attempt_types.go", "component_id": "comp-1", "language": "go", "bytes": 60, "lines": 30, "doc": ""},
+    {"path": "plugins/plugin_test.go", "component_id": "comp-2", "language": "go", "bytes": 40, "lines": 20, "doc": ""},
     {"path": "internal/model/types.go", "component_id": "comp-3", "language": "go", "bytes": 120, "lines": 50, "doc": ""},
     # 13 files in comp-2 — the silent-truncation case: a component listing must
     # say "…+N more files" when MAX_ROWS caps it (#338 r2 4.2).

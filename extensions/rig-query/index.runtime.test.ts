@@ -46,7 +46,7 @@ test("wrapper: execute answers from the graph and reports provenance + identity"
 		const { execute } = await makeHarness(dir);
 		const first = await execute({ command: "overview" });
 		assert.match(first.content[0].text, /fixture-repo/);
-		assert.equal(first.details.graph, undefined, "present graph is not flagged graph:false");
+		assert.equal(first.details.graph, true, "present graph flagged");
 
 		// Producer-style re-emit: unlink + write = a NEW inode at the same path.
 		// The (ino, mtime) identity check must reopen, not serve the stale handle.

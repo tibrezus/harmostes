@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,7 +11,6 @@ import (
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -18,6 +18,7 @@ import (
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
 	"github.com/tibrezus/harmostes/internal/attempt"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
 // gateEnv: a fake k8s client (claim storage) + fake status (aggregates) +
@@ -846,7 +847,10 @@ func noVerdictServer(t *testing.T) *httptest.Server {
 
 // #331: the dispatch-timeout bound presumes death, but if the attempt's Job
 // is observably still alive, the fact wins — no count, no release, the claim
-// stays live for the job-death pass to classify from fact.
+// stays live for the job-death pass to classify from fact. The negative
+// control (a live Job belonging to a DIFFERENT attempt) pins the label
+// matcher: an implementation that treats any live Job as proof of life must
+// fail.
 func TestSweepDispatchTimeoutWithAliveJobNotCounted(t *testing.T) {
 	clearTriggerEnv(t)
 	srv := noVerdictServer(t)
@@ -864,10 +868,9 @@ func TestSweepDispatchTimeoutWithAliveJobNotCounted(t *testing.T) {
 			Labels: map[string]string{
 				"app.kubernetes.io/name": "harmostes",
 				"harmostes.dev/workflow": wf.Name,
-				"harmostes.dev/attempt":  claim.Name,
+				v1alpha1.AttemptLabel:    claim.Name,
 			},
 		},
-		Spec: batchv1.JobSpec{Template: *(&corev1.PodTemplateSpec{}).DeepCopy()},
 	}
 	deps, ctx := gateEnv(t, wf, st, claim, job)
 
@@ -887,5 +890,100 @@ func TestSweepDispatchTimeoutWithAliveJobNotCounted(t *testing.T) {
 	}
 	if got.Status.Phase == v1alpha1.AttemptPhaseFailed {
 		t.Fatal("ledger finalized a failed phase while the run is still alive")
+	}
+	// Positive control on the mechanism: the hold is durable evidence, not a
+	// silent pass — the sweep's aggregates record the standdown evaluation
+	// with the hold.
+	if st.last.ReviewReady == nil || st.last.ReviewReady.LastDecision != "standdown" || !strings.Contains(st.last.ReviewReady.LastReason, "held") {
+		t.Fatalf("aggregates must record the held standdown, got %+v", st.last.ReviewReady)
+	}
+}
+
+// Negative control: a live Job belonging to a DIFFERENT attempt is not
+// proof of life for this claim — the label matcher is what saves the run,
+// so with only a foreign live Job present, the dispatch-timeout death is
+// counted.
+func TestSweepDispatchTimeoutForeignLiveJobStillCounts(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := noVerdictServer(t)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	st := &fakeStatus{}
+	now := time.Now()
+	disp := now.Add(-46 * time.Minute)
+	claim := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#102", "deadbeef432", now.Add(-46*time.Minute), &disp)
+	claim.Status.Phase = v1alpha1.AttemptPhaseReconciling
+	foreign := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "attempt-job-foreign", Namespace: wf.Namespace,
+			Labels: map[string]string{
+				"app.kubernetes.io/name": "harmostes",
+				"harmostes.dev/workflow": wf.Name,
+				v1alpha1.AttemptLabel:    "attempt-some-other-claim",
+			},
+		},
+	}
+	deps, ctx := gateEnv(t, wf, st, claim, foreign)
+
+	if _, err := RunReviewGateSweep(ctx, deps, wf); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+
+	var got v1alpha1.Attempt
+	if err := deps.Client.Get(ctx, client.ObjectKey{Namespace: wf.Namespace, Name: claim.Name}, &got); err != nil {
+		t.Fatalf("get claim: %v", err)
+	}
+	if !got.Status.Review.Released || got.Status.Review.DeadDispatches != 1 {
+		t.Fatalf("a foreign live Job is not proof of life: released=%v dead=%d, want released=true dead=1", got.Status.Review.Released, got.Status.Review.DeadDispatches)
+	}
+}
+
+// Fail-closed: a ListActiveJobs failure latches for the whole sweep, so the
+// timer pass cannot consult the fact — release is destructive, unknown is
+// treated as dead (the pre-#328-class behavior must not silently skip).
+func TestSweepDispatchTimeoutJobListFailureCountsDead(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := noVerdictServer(t)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	st := &fakeStatus{}
+	now := time.Now()
+	disp := now.Add(-46 * time.Minute)
+	claim := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#103", "deadbeef543", now.Add(-46*time.Minute), &disp)
+	claim.Status.Phase = v1alpha1.AttemptPhaseReconciling
+
+	scheme := runtime.NewScheme()
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("AddToScheme: %v", err)
+	}
+	if err := batchv1.AddToScheme(scheme); err != nil {
+		t.Fatalf("batchv1: %v", err)
+	}
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&v1alpha1.Attempt{}).
+		WithRuntimeObjects(claim).
+		WithInterceptorFuncs(interceptor.Funcs{List: func(ctx context.Context, cl client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			if _, ok := list.(*batchv1.JobList); ok {
+				return fmt.Errorf("api blip")
+			}
+			return cl.List(ctx, list, opts...)
+		}}).
+		Build()
+	deps := GateDeps{Status: st, Client: cl, Scheme: scheme, FleetMaxConcurrent: 3, Log: t.Logf}
+	ctx := context.Background()
+
+	if _, err := RunReviewGateSweep(ctx, deps, wf); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+
+	var got v1alpha1.Attempt
+	if err := deps.Client.Get(ctx, client.ObjectKey{Namespace: wf.Namespace, Name: claim.Name}, &got); err != nil {
+		t.Fatalf("get claim: %v", err)
+	}
+	if !got.Status.Review.Released || got.Status.Review.DeadDispatches != 1 || got.Status.Review.ReleaseReason != "dispatch-timeout" {
+		t.Fatalf("unknown liveness must fail closed: released=%v dead=%d reason=%q", got.Status.Review.Released, got.Status.Review.DeadDispatches, got.Status.Review.ReleaseReason)
 	}
 }

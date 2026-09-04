@@ -113,14 +113,18 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 	if st, err := deps.Status.GetStatus(ctx, wf.Name); err == nil && st.ReviewReady != nil {
 		liveAgg = st.ReviewReady
 	}
+	lastDecision, lastReason := "waiting", "nothing to evaluate this cycle"
 
 	claims, err := attempt.LiveReviewClaims(ctx, deps.Client, wf.Namespace, wf.Name)
 	if err != nil {
 		return nil, fmt.Errorf("list claims: %w", err)
 	}
 
-	// One lazily-fetched active-Job snapshot per sweep, shared by the timer
-	// pass (dispatch-timeout) and the job-death pass: a run that is
+	// One lazily-fetched active-Job snapshot per sweep — fetched once,
+	// error and all: a failed list latches for the whole sweep so the
+	// fact pass is skipped too. Release is destructive (breaker strike +
+	// ledger finalization), so unknown must fail closed. Shared by the
+	// timer pass (dispatch-timeout) and the job-death pass: a run that is
 	// observably alive is never counted dead (#331).
 	var (
 		jobSnapshot []batchv1.Job
@@ -139,7 +143,7 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 	}
 	jobAlive := func(attemptName string) bool {
 		for _, j := range activeJobs() {
-			if j.Labels["harmostes.dev/attempt"] == attemptName {
+			if j.Labels[v1alpha1.AttemptLabel] == attemptName {
 				return true
 			}
 		}
@@ -173,15 +177,26 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 		p.DispatchedAt = r.DispatchedAt.Time
 		res := review.Evaluate(ctx, api, p)
 		if res.Decision == review.DecisionStanddown {
-			if reason := classifyRelease(res.Reason); reason == "dispatch-timeout" && jobAlive(c.Name) {
-				// The bound presumes death, but the Job is observably still
-				// alive (slow deadline enforcement, clock skew): the fact wins.
-				// Leave the claim live — the job-death pass or the next sweep
-				// classifies once the Job is terminal (#331).
+			reason := classifyRelease(res.Reason)
+			if reason == "dispatch-timeout" && jobAlive(c.Name) {
+				// The bound presumes death; the Job is observably still
+				// alive (slow deadline enforcement, clock skew). The fact
+				// wins: keep the claim live — it holds its slot — and let
+				// the job-death pass or the next sweep classify from fact
+				// once the Job is terminal. The disagreement is recorded
+				// (aggregates + timeline, transition-deduped) so a held
+				// slot is visible in the durable history (#331).
 				log("review-ready: claim %s (%s) past DispatchTimeout but its Job is still alive — not counting a death", c.Name, r.PR)
+				heldReason := res.Reason + " (held: Job still alive)"
+				if lastDecision != string(res.Decision) {
+					lastDecision, lastReason = string(res.Decision), heldReason
+				}
+				if deps.TL != nil && (liveAgg == nil || liveAgg.LastReason != heldReason) {
+					_ = deps.TL.Emit(ctx, timeline.KindGateStanddown, "", map[string]any{"reason": heldReason, "pr": pr, "repo": repo, "jobAlive": true})
+				}
 				continue
 			}
-			if reason := classifyRelease(res.Reason); reason == "dispatch-timeout" {
+			if reason == "dispatch-timeout" {
 				// A dispatched review presumed dead without a verdict IS a
 				// dead dispatch: the breaker counts it and the ledger
 				// finalizes the run (#328).
@@ -287,7 +302,6 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 
 	// ── C. Evaluate + drain-to-capacity. ──────────────────────────────────
 	var out []GateDispatch
-	lastDecision, lastReason := "waiting", "nothing to evaluate this cycle"
 	for _, cand := range cands {
 		claimed := liveOn[cand.pointer]
 		if claimed {

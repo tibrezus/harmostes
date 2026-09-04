@@ -24,6 +24,14 @@ build:
 test:
 	git submodule update --init --recursive
 	$(GO) test ./...
+	$(MAKE) test-extensions
+
+## test-extensions: the pi extensions' TypeScript (rig-query) — the query
+## layer is pure TS over rig.db; its fixture suite runs under node --test
+## with type stripping (node 22+). The fixture is regenerated with the REAL
+## producer (python3 extensions/rig-query/fixtures/generate.py) and committed
+test-extensions:
+	node --test --experimental-strip-types extensions/rig-query/queries.test.ts
 
 ## test-integration: integration tier — the attempt ledger + review-claim
 ## lifecycles against a REAL API server (envtest) with the chart CRDs

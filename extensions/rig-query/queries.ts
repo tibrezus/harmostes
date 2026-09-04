@@ -37,6 +37,8 @@ export function resolveRigDb(explicit?: string, cwd?: string): string | null {
 
 const MAX_RESULT_CHARS = 1600;
 const MAX_ROWS = 12;
+/** Search returns exactly this many hits; say so when the pool was bigger. */
+const SEARCH_LIMIT = 8;
 
 function cap(text: string): string {
 	if (text.length <= MAX_RESULT_CHARS) return text;
@@ -47,7 +49,12 @@ function cap(text: string): string {
 }
 
 function row(v: unknown): string {
-	return v === null || v === undefined ? "" : String(v);
+	if (v === null || v === undefined) return "";
+	if (typeof v === "object") {
+		// node:sqlite rows are null-prototype objects — String() would throw.
+		return Object.values(v as Record<string, unknown>).map((x) => (x == null ? "" : String(x))).join(":");
+	}
+	return String(v);
 }
 
 /** One-line summary of a symbol row. */
@@ -66,9 +73,27 @@ export interface RigParams {
 	reverse?: boolean;
 }
 
-/** Open a rig.db read-only. Throws a readable error if the file is not a rig.db. */
+/**
+ * Open a rig.db read-only. Asserts the producer's schema version — a silent
+ * mismatch would surface as "no such column" errors indistinguishable from a
+ * missing graph (#338 r1). Read-only opens also require non-WAL journals;
+ * this holds because write_db sets journal_mode=DELETE — if the emitter ever
+ * switches to WAL, read-only opens fail with SQLITE_READONLY_RECOVERY.
+ */
 export function openRig(path: string): DatabaseSync {
-	return new DatabaseSync(path, { readOnly: true });
+	const db = new DatabaseSync(path, { readOnly: true });
+	let version = "";
+	try {
+		const r = db.prepare("SELECT value FROM meta WHERE key = 'db_schema_version'").get() as { value?: unknown } | undefined;
+		version = r && r.value != null ? String(r.value) : "";
+	} catch (e) {
+		throw new Error(`${path} is not a rig.db (meta unreadable: ${String(e)})`);
+	}
+	if (version !== "1") {
+		db.close();
+		throw new Error(`rig.db v${version || "?"} at ${path} — this extension speaks v1; regenerate the graph (emit-rig.py)`);
+	}
+	return db;
 }
 
 /** Dispatch one rig query. Returns the agent-facing text (token-capped). */
@@ -106,7 +131,7 @@ function overview(db: DatabaseSync): string {
 	}
 	const symCount = db.prepare("SELECT COUNT(*) n FROM symbols").get();
 	const lines: string[] = [];
-	const proj = meta(db, "project") || meta(db, "name");
+	const proj = meta(db, "repo_name") || meta(db, "project");
 	lines.push(`graph: ${proj || "project"} — ${comps.length} components, ${row(symCount?.n)} symbols`);
 	for (const c of comps) {
 		const flags: string[] = [];
@@ -117,9 +142,7 @@ function overview(db: DatabaseSync): string {
 	}
 	const edges = db.prepare("SELECT src, dst FROM deps ORDER BY src, dst").all() as Row[];
 	if (edges.length) {
-		// Edge endpoints are ids; resolve to names (fall back to raw id) for readability.
-		const names = new Map<string, string>();
-		for (const c of comps) names.set(row(c.id), short(row(c.name) || row(c.id)));
+		const names = namesById(db);
 		const rendered = edges.map((e) => `${nameOf(names, row(e.src))} → ${nameOf(names, row(e.dst))}`);
 		lines.push(`deps (${edges.length}): ${rendered.slice(0, MAX_ROWS).join(", ")}${rendered.length > MAX_ROWS ? " …" : ""}`);
 	}
@@ -131,31 +154,58 @@ function nameOf(names: Map<string, string>, id: string): string {
 	return names.get(id) ?? short(id);
 }
 
+/** id → display name map for edge endpoints (ids are opaque comp-N). */
+function namesById(db: DatabaseSync): Map<string, string> {
+	const names = new Map<string, string>();
+	for (const r of db.prepare("SELECT id, name FROM components").all() as Row[]) {
+		names.set(row(r.id), short(row(r.name) || row(r.id)));
+	}
+	return names;
+}
+
 /** Component ids are usually long paths (e.g. example.com/repo/cmd/foo) — shorten to the tail. */
 function short(id: string): string {
 	const parts = id.split("/").filter(Boolean);
 	return parts.length > 2 ? parts.slice(-2).join("/") : id;
 }
 
-function resolveComponent(db: DatabaseSync, target: string | undefined): { id: string; name: string; type: unknown } | null {
-	if (!target) return null;
-	const byId = db.prepare("SELECT id, name, type FROM components WHERE id = ?").get(target);
-	if (byId) return byId as { id: string; name: string; type: unknown };
-	const byName = db.prepare("SELECT id, name, type FROM components WHERE name = ?").get(target);
-	if (byName) return byName as { id: string; name: string; type: unknown };
+function resolveComponent(db: DatabaseSync, target: string | undefined): Array<{ id: string; name: string; type: unknown }> {
+	if (!target) return [];
+	const byId = db.prepare("SELECT id, name, type FROM components WHERE id = ?").all(target) as Row[];
+	if (byId.length === 1) return [byId[0] as { id: string; name: string; type: unknown }];
+	const byName = db.prepare("SELECT id, name, type FROM components WHERE name = ?").all(target) as Row[];
+	if (byName.length === 1) return [byName[0] as { id: string; name: string; type: unknown }];
 	// Agents address components by tail ("internal/agent", "harmostes-worker") —
-	// component ids are opaque (comp-N), names are import paths.
-	const byTail = db
-		.prepare("SELECT id, name, type FROM components WHERE id LIKE ? OR name LIKE ? ORDER BY seq LIMIT 1")
-		.get(`%${target}`, `%${target}`);
-	if (byTail) return byTail as { id: string; name: string; type: unknown };
-	return null;
+	// component ids are opaque (comp-N), names are import paths. Ambiguity is an
+	// answer, not a coin flip: a review tool must never print a confident blast
+	// radius for the wrong component (#338 r1).
+	return db
+		.prepare("SELECT id, name, type FROM components WHERE id LIKE ? OR name LIKE ? ORDER BY seq LIMIT 2")
+		.all(`%${target}`, `%${target}`) as Array<{ id: string; name: string; type: unknown }>;
+}
+
+/** Shared ambiguity renderer — a confident answer for the wrong component is worse than an error. */
+function ambiguous(matches: Array<{ id: string; name: string; type: unknown }>): string | null {
+	if (matches.length <= 1) return null;
+	return (
+		`ambiguous — ${matches.length} components match, be more specific:\n` +
+		matches.map((c) => `  ${short(row(c.name) || c.id)} (${row(c.type) || "component"})`).join("\n")
+	);
 }
 
 function component(db: DatabaseSync, target: string | undefined): string {
-	const c = resolveComponent(db, target);
-	if (!c) return `no component matching ${JSON.stringify(target ?? "")} — use rig overview for names.`;
+	const matches = resolveComponent(db, target);
+	if (matches.length === 0) return `no component matching ${JSON.stringify(target ?? "")} — use rig overview for names.`;
+	if (matches.length > 1) {
+		return (
+			`"${target}" is ambiguous — ${matches.length}+ components match. Be more specific:\n` +
+			matches.map((c) => `  ${short(row(c.name) || c.id)} (${row(c.type) || "component"})`).join("\n")
+		);
+	}
+	const c = matches[0];
 	const lines: string[] = [`component ${short(row(c.name) || c.id)} (${row(c.type) || "component"}, id ${c.id})`];
+	const names = namesById(db);
+	const label = (id: unknown): string => names.get(row(id)) ?? short(row(id));
 	for (const f of db
 		.prepare(
 			"SELECT f.path, f.lines FROM component_files cf JOIN files f ON f.path = cf.path WHERE cf.component_id = ? ORDER BY cf.seq LIMIT ?",
@@ -164,49 +214,76 @@ function component(db: DatabaseSync, target: string | undefined): string {
 		lines.push(`  ${row(f.path)} (${row(f.lines)}L)`);
 	}
 	const out = db.prepare("SELECT dst FROM deps WHERE src = ? LIMIT ?").all(c.id, MAX_ROWS) as Row[];
-	if (out.length) {
-		const names = new Map<string, string>();
-		for (const r of db.prepare("SELECT id, name FROM components").all() as Row[]) names.set(row(r.id), short(row(r.name) || row(r.id)));
-		lines.push(`deps out: ${out.map((e) => names.get(row(e.dst)) ?? short(row(e.dst))).join(", ")}`);
-	}
+	if (out.length) lines.push(`deps out: ${out.map((e) => label(e.dst)).join(", ")}`);
 	const inc = db.prepare("SELECT src FROM deps WHERE dst = ? LIMIT ?").all(c.id, MAX_ROWS) as Row[];
-	if (inc.length) lines.push(`deps in (reverse blast radius): ${inc.map((e) => short(row(e.src))).join(", ")}`);
+	if (inc.length) lines.push(`deps in (reverse blast radius): ${inc.map((e) => label(e.src)).join(", ")}`);
 	return lines.join("\n");
 }
 
 function search(db: DatabaseSync, target: string | undefined): string {
-	if (!target || !target.trim()) return "search: give a symbol term (FTS5 prefix match supported: 'executor*').";
+	if (!target || !target.trim()) return "search: give a symbol term (prefix match supported: 'executor*').";
 	const term = target.trim().replace(/"/g, "");
-	const hits = new Map<string, Record<string, unknown>>();
-	try {
-		const rows = db
-			.prepare(
-				`SELECT s.file, s.line, s.kind, s.name, s.signature, s.doc
-				 FROM symbols_fts f JOIN symbols s ON s.seq = f.rowid
-				 WHERE symbols_fts MATCH ? ORDER BY rank LIMIT ?`,
-			)
-			.all(`"${term}"*`, 8) as Array<Record<string, unknown>>;
-		for (const r of rows) hits.set(`${row(r.file)}:${row(r.line)}:${row(r.name)}`, r);
-	} catch {
-		// FTS unavailable — the LIKE sweep below still answers.
+	const hits = new Map<string, Row>();
+	// 1. Name-prefix first: the agent's term is almost always a name stem
+	// ("executor", "envelope"). LIKE gives camelCase-honest matching that FTS
+	// tokenization cannot ("envelope" must find NodeResultEnvelope).
+	const pre = db
+		.prepare("SELECT file, line, kind, name, signature, doc FROM symbols WHERE name LIKE ? || '%' ORDER BY seq LIMIT ?")
+		.all(term, SEARCH_LIMIT) as Row[];
+	for (const r of pre) hits.set(`${row(r.file)}:${row(r.line)}:${row(r.name)}`, r);
+	let ftsFilled = false;
+	// 2. FTS (rank over name/signature/doc) fills the rest.
+	if (hits.size < SEARCH_LIMIT) {
+		try {
+			const rows = db
+				.prepare(
+					`SELECT s.file, s.line, s.kind, s.name, s.signature, s.doc
+					 FROM symbols_fts f JOIN symbols s ON s.seq = f.rowid
+					 WHERE symbols_fts MATCH ? ORDER BY rank LIMIT ?`,
+				)
+				.all(`"${term}"*`, SEARCH_LIMIT) as Row[];
+			for (const r of rows) {
+				if (hits.size >= SEARCH_LIMIT) break;
+				hits.set(`${row(r.file)}:${row(r.line)}:${row(r.name)}`, r);
+			}
+			ftsFilled = rows.length >= SEARCH_LIMIT;
+		} catch {
+			// FTS unavailable — the sweep below still answers.
+		}
 	}
-	// Always merge a substring sweep: FTS tokenizes on non-alphanumerics only, so
-	// "envelope" misses camelCase names like NodeResultEnvelope — exactly the
-	// case that matters when navigating unfamiliar code.
-	const like = `%${term}%`;
-	const likeRows = db
-		.prepare(
-			`SELECT file, line, kind, name, signature, doc FROM symbols
-			 WHERE name LIKE ? OR signature LIKE ? OR doc LIKE ? ORDER BY seq LIMIT ?`,
-		)
-		.all(like, like, like, 16) as Array<Record<string, unknown>>;
-	for (const r of likeRows) {
-		if (hits.size >= 8) break;
-		hits.set(`${row(r.file)}:${row(r.line)}:${row(r.name)}`, r);
+	// 3. Broad substring sweep fills what is left (doc/signature matches).
+	let sweptBeyondLimit = false;
+	if (hits.size < SEARCH_LIMIT) {
+		const like = `%${term}%`;
+		const likeRows = db
+			.prepare(
+				`SELECT file, line, kind, name, signature, doc FROM symbols
+				 WHERE name LIKE ? OR signature LIKE ? OR doc LIKE ? ORDER BY seq LIMIT ?`,
+			)
+			.all(like, like, like, SEARCH_LIMIT + 1) as Row[];
+		for (const r of likeRows) {
+			if (hits.size >= SEARCH_LIMIT) {
+				sweptBeyondLimit = true;
+				break;
+			}
+			hits.set(`${row(r.file)}:${row(r.line)}:${row(r.name)}`, r);
+		}
 	}
 	if (hits.size === 0) return `no symbols matching "${term}" — try a shorter stem with * (rig search 'resume*').`;
+	// Honest truncation: when the pool filled, count the real total — a partial
+	// answer presented as complete is how review findings get lost (#338 r1).
+	let more = "";
+	if (hits.size >= SEARCH_LIMIT && (pre.length >= SEARCH_LIMIT || ftsFilled || sweptBeyondLimit)) {
+		const like = `%${term}%`;
+		const total = Number(
+			db
+				.prepare("SELECT COUNT(*) n FROM symbols WHERE name LIKE ? OR signature LIKE ? OR doc LIKE ?")
+				.get(like, like, like)?.n ?? 0,
+		);
+		if (total > hits.size) more = " …more hits — refine the term";
+	}
 	return [
-		`search "${term}" — ${hits.size} hit(s):`,
+		`search "${term}" — ${hits.size} hit(s):${more}`,
 		...[...hits.values()].map((r) => symLine(r.file, r.line, r.kind, r.name, r.signature, r.doc)),
 	].join("\n");
 }
@@ -225,10 +302,12 @@ function files(db: DatabaseSync, target: string | undefined): string {
 }
 
 function deps(db: DatabaseSync, target: string | undefined, reverse: boolean): string {
-	const c = resolveComponent(db, target);
-	if (!c) return `no component matching ${JSON.stringify(target ?? "")} — use rig overview for names.`;
-	const names = new Map<string, string>();
-	for (const r of db.prepare("SELECT id, name FROM components").all() as Row[]) names.set(row(r.id), short(row(r.name) || row(r.id)));
+	const matches = resolveComponent(db, target);
+	if (matches.length === 0) return `no component matching ${JSON.stringify(target ?? "")} — use rig overview for names.`;
+	const amb = ambiguous(matches);
+	if (amb) return amb;
+	const c = matches[0];
+	const names = namesById(db);
 	const label = (id: unknown): string => names.get(row(id)) ?? short(row(id));
 	const rows = reverse
 		? (db.prepare("SELECT src FROM deps WHERE dst = ? ORDER BY src LIMIT ?").all(c.id, MAX_ROWS) as Row[])

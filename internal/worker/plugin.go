@@ -347,10 +347,25 @@ func SavePiSession(ctx context.Context, dc dapr.Client, store, workflow, run str
 // LITELLM_API_KEY env vars injected by the controller). The rig-query extension
 // exposes the architecture graph (rig.db, emitted by prepare when present —
 // ADR-0009) as a structured tool; it degrades gracefully when no graph exists.
+// --tools is an ALLOWLIST in pi (it replaces the whole set, extension tools
+// included), so a workflow declaring spec.agent.tools would silently lose rig
+// while the task contract still mandates it — append "rig" unless already
+// present (the tool itself degrades harmlessly when no graph was emitted).
 func PiArgs(a v1alpha1.AgentSpec) []string {
 	args := []string{"-e", "/extensions/litellm-provider", "-e", "/extensions/rig-query", "--skill", a.Skill, "--model", a.Model}
 	if len(a.Tools) > 0 {
-		args = append(args, "--tools", strings.Join(a.Tools, ","))
+		tools := a.Tools
+		hasRig := false
+		for _, t := range tools {
+			if t == "rig" {
+				hasRig = true
+				break
+			}
+		}
+		if !hasRig {
+			tools = append(append([]string{}, tools...), "rig")
+		}
+		args = append(args, "--tools", strings.Join(tools, ","))
 	}
 	return args
 }

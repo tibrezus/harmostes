@@ -31,3 +31,20 @@ func TestPiArgsLoadBuiltinExtensions(t *testing.T) {
 		t.Errorf("skill/model args lost: tail = %v, want %v", got, want)
 	}
 }
+
+// --tools is an ALLOWLIST in pi: it replaces the whole tool set, extension
+// tools included. A workflow declaring spec.agent.tools would silently lose
+// rig while the task contract still mandates it — PiArgs appends it.
+func TestPiArgsToolsAllowlistKeepsRig(t *testing.T) {
+	args := PiArgs(v1alpha1.AgentSpec{Skill: "s", Model: "m", Tools: []string{"bash", "read"}})
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "--tools bash,read,rig") {
+		t.Errorf("tools allowlist must gain rig, got: %s", joined)
+	}
+	// Already declared → not duplicated.
+	args = PiArgs(v1alpha1.AgentSpec{Skill: "s", Model: "m", Tools: []string{"bash", "rig"}})
+	joined = strings.Join(args, " ")
+	if !strings.Contains(joined, "--tools bash,rig") || strings.Contains(joined, "rig,rig") {
+		t.Errorf("declared rig must not be duplicated, got: %s", joined)
+	}
+}

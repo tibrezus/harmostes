@@ -20,6 +20,19 @@ import { openRig, resolveRigDb, rigQuery, type RigParams } from "./queries.ts";
 export default function (pi: ExtensionAPI) {
 	const handles = new Map<string, ReturnType<typeof openRig>>();
 
+	// Session-scoped resources are closed via an idempotent session_shutdown
+	// handler (pi extension convention).
+	pi.on("session_shutdown", async () => {
+		for (const close of handles.values()) {
+			try {
+				close.close();
+			} catch {
+				// already closed — idempotent by contract
+			}
+		}
+		handles.clear();
+	});
+
 	pi.registerTool({
 		name: "rig",
 		label: "RIG",
@@ -64,16 +77,16 @@ Prefer this over find/grep for ANY "where is X" or "what uses Y" question; drop 
 					db = openRig(path);
 					handles.set(path, db);
 				} catch (e) {
-					return {
-						content: [{ type: "text", text: `rig.db at ${path} is not readable as a RIG database: ${String(e)}` }],
-						details: {},
-					};
+					// Throw, don't return text: a corrupt/version-mismatched graph must
+					// surface as a FAILED tool call in the session and telemetry, not
+					// as a silent no-op indistinguishable from the tool working (#338 r1).
+					throw new Error(`rig.db at ${path} is not readable as a RIG database: ${String(e)}`);
 				}
 			}
 			try {
 				return { content: [{ type: "text", text: rigQuery(db, p) }], details: { db: path } };
 			} catch (e) {
-				return { content: [{ type: "text", text: `rig query failed: ${String(e)}` }], details: {} };
+				throw new Error(`rig query failed: ${String(e)}`);
 			}
 		},
 	});

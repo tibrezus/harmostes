@@ -59,6 +59,9 @@ jobs:
       - name: go test (race + coverage)
         run: go test -race -cover ./...
 
+      - name: extensions (node --test · rig-query)
+        run: make test-extensions
+
       # Fails if go.mod/go.sum drift from `go mod tidy` — catches dependency
       # checked in half-way or a missing go.sum entry.
       - name: go mod tidy (must be a no-op)

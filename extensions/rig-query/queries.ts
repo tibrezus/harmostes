@@ -19,14 +19,18 @@ import { resolve } from "node:path";
 
 type Row = Record<string, unknown>;
 
-/** Candidate locations for rig.db, in priority order. */
-export function resolveRigDb(explicit?: string, cwd?: string): string | null {
+/**
+ * Candidate locations for rig.db, in priority order. The library knows
+ * explicit + env + cwd-relative candidates only — container paths are the
+ * RUNTIME contract and live in index.ts (#338 r3: a reusable module must not
+ * bake in a mount layout whose graph may be from another revision).
+ */
+export function resolveRigDb(explicit?: string, cwd?: string, extra: string[] = []): string | null {
 	const candidates = [
 		explicit,
 		process.env.RIG_DB,
 		cwd ? resolve(cwd, "rig.db") : undefined,
-		"/workspace/rig.db",
-		"/workspace/repo/rig.db",
+		...extra,
 		"rig.db",
 	].filter((p): p is string => Boolean(p));
 	for (const p of candidates) {
@@ -96,19 +100,30 @@ export function openRig(path: string): DatabaseSync {
 	return db;
 }
 
-/** Dispatch one rig query. Returns the agent-facing text (token-capped). */
-export function rigQuery(db: DatabaseSync, p: RigParams): string {
+/**
+ * Dispatch one rig query. Returns the agent-facing text plus a `truncated`
+ * flag — row-level truncation (…+N more) must be visible in telemetry, not
+ * only in prose (#338 r3 pillar 7).
+ */
+export function rigQuery(db: DatabaseSync, p: RigParams): { text: string; truncated: boolean } {
+	const run = (fn: () => string): { text: string; truncated: boolean } => {
+		const text = cap(fn());
+		// Row-level truncation ("…+N more" / "…more hits") counts too — a session
+		// that got a partial answer must not look complete in telemetry (#338 r3).
+		const rowTruncated = /…\+\d+ more|…more hits/.test(text);
+		return { text, truncated: rowTruncated || text.length >= MAX_RESULT_CHARS };
+	};
 	switch (p.command) {
 		case "overview":
-			return cap(overview(db));
+			return run(() => overview(db));
 		case "component":
-			return cap(component(db, p.target));
+			return run(() => component(db, p.target));
 		case "search":
-			return cap(search(db, p.target));
+			return run(() => search(db, p.target));
 		case "files":
-			return cap(files(db, p.target));
+			return run(() => files(db, p.target));
 		case "deps":
-			return cap(deps(db, p.target, p.reverse === true));
+			return run(() => deps(db, p.target, p.reverse === true));
 		default:
 			throw new Error(`unknown rig command ${JSON.stringify((p as { command?: string }).command)}`);
 	}
@@ -310,6 +325,7 @@ function files(db: DatabaseSync, target: string | undefined): string {
 	if (!target) return "files: give a path glob, e.g. 'internal/graph/%' or '%executor%'.";
 	let like = target.replace(/\*/g, "%").replace(/\?/g, "_");
 	if (!like.includes("%") && !like.includes("_")) like = `%${like}%`; // bare prefix — don't answer nothing for it
+	const total = Number(db.prepare("SELECT COUNT(*) n FROM files WHERE path LIKE ?").get(like)?.n ?? 0);
 	const rows = db
 		.prepare("SELECT path, lines, language, component_id FROM files WHERE path LIKE ? ORDER BY path LIMIT ?")
 		.all(like, MAX_ROWS) as Row[];
@@ -318,6 +334,7 @@ function files(db: DatabaseSync, target: string | undefined): string {
 	return [
 		`files matching "${target}":`,
 		...rows.map((r) => `  ${row(r.path)} (${row(r.lines)}L${r.component_id ? `, ${names.get(row(r.component_id)) ?? short(row(r.component_id))}` : ""})`),
+		...(total > MAX_ROWS ? [`  …+${total - MAX_ROWS} more`] : []),
 	].join("\n");
 }
 
@@ -329,13 +346,17 @@ function deps(db: DatabaseSync, target: string | undefined, reverse: boolean): s
 	const c = matches[0];
 	const names = namesById(db);
 	const label = (id: unknown): string => names.get(row(id)) ?? short(row(id));
-	const rows = reverse
-		? (db.prepare("SELECT src FROM deps WHERE dst = ? ORDER BY src LIMIT ?").all(c.id, MAX_ROWS) as Row[])
-		: (db.prepare("SELECT dst FROM deps WHERE src = ? ORDER BY dst LIMIT ?").all(c.id, MAX_ROWS) as Row[]);
+	const peerCol = reverse ? "src" : "dst"; // the column to DISPLAY
+	const filterCol = reverse ? "dst" : "src"; // the column to MATCH c.id on
+	const total = Number(db.prepare(`SELECT COUNT(*) n FROM deps WHERE ${filterCol} = ?`).get(c.id)?.n ?? 0);
+	const rows = db
+		.prepare(`SELECT ${peerCol} AS peer FROM deps WHERE ${filterCol} = ? ORDER BY ${peerCol} LIMIT ?`)
+		.all(c.id, MAX_ROWS) as Row[];
 	const arrow = reverse ? "←" : "→";
 	if (rows.length === 0) return `${label(c.id)} has no ${reverse ? "reverse" : ""} dependencies.`;
 	return [
 		`${label(c.id)} ${arrow}`,
-		...rows.map((r) => `  ${arrow} ${label(reverse ? r.src : r.dst)}`),
+		...rows.map((r) => `  ${arrow} ${label(r.peer)}`),
+		...(total > MAX_ROWS ? [`  …+${total - MAX_ROWS} more`] : []),
 	].join("\n");
 }

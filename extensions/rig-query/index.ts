@@ -1,6 +1,7 @@
 /**
  * rig-query — pi extension exposing the project's architecture graph
- * (rig.db) as a first-class tool (ADR-0009, #337).
+ * (rig.db) as a first-class tool (ADR-0009 in the harmostes.wiki repo,
+ * commit 72767fb; #337).
  *
  * rig.db is generated deterministically by rig-emit in the workflow's
  * prepare phase, SHA-exact for the checked-out revision. This extension is
@@ -79,7 +80,10 @@ Prefer this over find/grep for ANY "where is X" or "what uses Y" question; drop 
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const p = params as RigParams & { db?: string };
-			const path = resolveRigDb(p.db, ctx?.cwd);
+			// Container paths are the runtime contract (worker image layout) — they
+			// live HERE, not in the library (#338 r3 pillar 1). prepare sets RIG_DB
+			// when it emits the graph; the workspace defaults catch unconfigured runs.
+			const path = resolveRigDb(p.db, ctx.cwd, ["/workspace/rig.db", "/workspace/repo/rig.db"]);
 			if (!path) {
 				return {
 					content: [
@@ -91,11 +95,10 @@ Prefer this over find/grep for ANY "where is X" or "what uses Y" question; drop 
 					details: {},
 				};
 			}
-			let db: ReturnType<typeof openRig> | undefined = handles.get(path)?.db;
-			if (!db) {
-				try {
-					db = open(path);
-				} catch (e) {
+			let db: ReturnType<typeof openRig>;
+			try {
+				db = open(path); // get-or-open; the (ino, mtime) identity check lives HERE only
+			} catch (e) {
 					// Throw, don't return text: a corrupt/version-mismatched graph must
 					// surface as a FAILED tool call in the session and telemetry, not
 					// as a silent no-op indistinguishable from the tool working (#338 r1).
@@ -105,12 +108,13 @@ Prefer this over find/grep for ANY "where is X" or "what uses Y" question; drop 
 				}
 			}
 			try {
-				const text = rigQuery(db, p);
+				const { text, truncated } = rigQuery(db, p);
 				// Structured telemetry: the #336 measurement (13/33 calls were
-				// archaeology) is only provable from session data.
+				// archaeology) is only provable from session data. `truncated`
+				// covers BOTH the char cap and row-level "…+N more" paths.
 				return {
 					content: [{ type: "text", text }],
-					details: { db: path, command: p.command, target: p.target ?? "", chars: text.length, truncated: text.length >= 4000 },
+					details: { db: path, command: p.command, target: p.target ?? "", chars: text.length, truncated },
 				};
 			} catch (e) {
 				throw new Error(`rig ${p.command} failed: ${String(e)}`);

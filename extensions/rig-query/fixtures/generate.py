@@ -33,6 +33,18 @@ rig = {
     "test_definitions": [],
     "external_packages": [],
     "components": [
+        # 13 leaf components — comp-2 depends on all of them, so the deps
+        # listing (MAX_ROWS=12) exercises the …+N more marker (#338 r3 4.2).
+        *[{
+            "id": f"comp-{4 + i}",
+            "name": f"example.com/fixture/internal/leaf{i:02d}",
+            "type": "package_library",
+            "programming_language": "go",
+            "depends_on_ids": [],
+            "external_packages_ids": [],
+            "evidence_ids": [],
+            "artifacts": [],
+        } for i in range(13)],
         {
             "id": "comp-1",
             "name": "example.com/fixture/cmd/worker",
@@ -48,7 +60,7 @@ rig = {
             "name": "example.com/fixture/internal/worker",
             "type": "package_library",
             "programming_language": "go",
-            "depends_on_ids": ["comp-3"],
+            "depends_on_ids": ["comp-3"] + [f"comp-{4 + i}" for i in range(13)],
             "external_packages_ids": [],
             "evidence_ids": [],
             "artifacts": [],

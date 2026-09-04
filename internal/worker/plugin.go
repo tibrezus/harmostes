@@ -350,7 +350,9 @@ func SavePiSession(ctx context.Context, dc dapr.Client, store, workflow, run str
 // --tools is an ALLOWLIST in pi (it replaces the whole set, extension tools
 // included), so a workflow declaring spec.agent.tools would silently lose rig
 // while the task contract still mandates it — append "rig" unless already
-// present (the tool itself degrades harmlessly when no graph was emitted).
+// present. Workflows declaring NO tools get no --tools flag at all (every
+// tool available, rig merely among them — nothing is forced onto the allow-
+// list). The tool itself degrades harmlessly when no graph was emitted.
 func PiArgs(a v1alpha1.AgentSpec) []string {
 	args := []string{"-e", "/extensions/litellm-provider", "-e", "/extensions/rig-query", "--skill", a.Skill, "--model", a.Model}
 	if len(a.Tools) > 0 {

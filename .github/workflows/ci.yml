@@ -56,12 +56,18 @@ jobs:
       - name: go build (all packages)
         run: go build ./...
 
+      - name: go test (race + coverage)
+        run: go test -race -cover ./...
+
       - name: extensions (node --test · rig-query)
         run: make test-extensions
 
+      # Compares the COMMITTED fixture's canonical hash against a fresh build
+      # in a tempdir — it must NOT regenerate the committed file first, or the
+      # gate could only ever catch producer/library skew, never committed
+      # drift (#338 r3).
       - name: rig fixture freshness (canonical hash, build-independent)
         run: |
-          python3 extensions/rig-query/fixtures/generate.py
           python3 extensions/rig-query/fixtures/freshness.py \
             || { echo "::error::fixtures/rig.db is stale — run extensions/rig-query/fixtures/generate.py and commit"; exit 1; }
 

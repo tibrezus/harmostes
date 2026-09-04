@@ -20,7 +20,7 @@ const FIXTURE = fileURLToPath(new URL("./fixtures/rig.db", import.meta.url));
 function q(params: RigParams): string {
 	const db = openRig(FIXTURE);
 	try {
-		return rigQuery(db, params);
+		return rigQuery(db, params).text;
 	} finally {
 		db.close(); // these tests are the example the next extension copies
 	}
@@ -45,7 +45,7 @@ test("overview names the project from repo_name meta", () => {
 	const out = q({ command: "overview" });
 	assert.match(out, /fixture-repo/);
 	assert.match(out, /cmd\/worker/);
-	assert.match(out, /3 components/);
+	assert.match(out, /16 components/);
 });
 
 test("search finds camelCase names despite doc-heavy FTS competition", () => {
@@ -95,9 +95,9 @@ test("search degrades gracefully when FTS5 is absent (#338 r2 4.1)", () => {
 		const db = new DatabaseSync(noFts);
 		db.exec("DROP TABLE IF EXISTS symbols_fts"); // what _fts5_available() false produces
 		db.close();
-		const out = rigQuery(openRig(noFts), { command: "search", target: "Executor" });
-		assert.match(out, /Executor/);
-		assert.match(out, /internal\/worker\/exec\.go/);
+		const { text } = rigQuery(openRig(noFts), { command: "search", target: "Executor" });
+		assert.match(text, /Executor/);
+		assert.match(text, /internal\/worker\/exec\.go/);
 	} finally {
 		rmSync(noFts, { force: true });
 	}
@@ -113,6 +113,28 @@ test("files lists bare prefixes and names components (#338 r2 4.5)", () => {
 	const out = q({ command: "files", target: "internal/worker" });
 	assert.match(out, /internal\/worker\/exec\.go/);
 	assert.match(out, /internal\/worker/); // component name, not comp-N
+});
+
+test("deps blast radius says …+N more instead of silently truncating (#338 r3 4.2)", () => {
+	const out = q({ command: "deps", target: "internal/worker" });
+	assert.match(out, /…\+\d+ more/);
+});
+
+test("files listing says …+N more when over the row cap (#338 r3 4.2)", () => {
+	const out = q({ command: "files", target: "internal/worker" });
+	assert.match(out, /…\+\d+ more/);
+});
+
+test("rigQuery reports row-level truncation in its structured result (#338 r3 pillar 7)", () => {
+	const db = openRig(FIXTURE);
+	try {
+		const r = rigQuery(db, { command: "deps", target: "internal/worker" });
+		assert.equal(r.truncated, true);
+		const complete = rigQuery(db, { command: "deps", target: "internal/model" });
+		assert.equal(complete.truncated, false);
+	} finally {
+		db.close();
+	}
 });
 
 test("openRig rejects a non-rig.db file with a readable error", () => {

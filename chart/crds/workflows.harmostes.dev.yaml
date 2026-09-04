@@ -234,6 +234,7 @@ spec:
                         properties:
                           name: { type: string }
                           key:  { type: string }
+                runBound: { type: string }                  # ADR-0008: max wall-clock duration for one run. Empty (default) = unlimited — runs complete or fail on their own; the kernel does not kill them. A Go duration ("90m") opts back in.
 
                 # Graph-native mode: explicit directed graph of nodes + edges.
                 # If present, the worker uses the graph executor and ignores

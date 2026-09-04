@@ -110,6 +110,9 @@ spec:
                         properties:
                           name: { type: string }
                           key:  { type: string }
+
+                runBound:  { type: string }            # ADR-0008: snapshot of the Workflow's run bound — empty = unlimited (runs complete or fail on their own)
+
             status:
               type: object
               properties:

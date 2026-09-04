@@ -4,11 +4,12 @@ import (
 	"time"
 )
 
-// OneShotRunBound is the hard wall-clock ceiling the worker's one-shot
-// consumer wraps every workflow run in (consumer.go's context.WithTimeout).
-// It is the premise of DispatchTimeout's exactly-once construction: no
-// live run can outlive it, so a dispatch older than DispatchTimeout
-// without a verdict is provably dead. Keep in sync with the consumer.
+// OneShotRunBound was the hard wall-clock ceiling every workflow run was
+// killed at (30m). ADR-0008 retired the default death: runs complete or fail
+// on their own; a finite bound is opt-in per workflow (spec.runBound, riding
+// the Attempt snapshot). The constant survives only as the reference point
+// for DispatchTimeout's legacy floor (below) — it is no longer applied to
+// jobs.
 const OneShotRunBound = 30 * time.Minute
 
 // MaxDeadDispatchesPerHead is the dead-dispatch circuit breaker (#328): a
@@ -22,10 +23,13 @@ const OneShotRunBound = 30 * time.Minute
 const MaxDeadDispatchesPerHead = 3
 
 // MinDispatchMargin is the minimum delivery/queue margin a configured
-// DispatchTimeout must leave over OneShotRunBound. Enforced (not merely
-// documented) so no configurable value can re-dispatch while a run may
-// still be alive — the exactly-once invariant holds for every config
-// (#255).
+// DispatchTimeout must leave over OneShotRunBound (the legacy finite bound).
+// Enforced (not merely documented) so no configurable value could
+// re-dispatch while a run might still be alive under a finite bound.
+// Under the ADR-0008 default (unlimited runs) DispatchTimeout is a pure
+// backstop: deaths are fact-based — the sweep counts a death only when the
+// attempt's Job is observably gone (#331/#332) — so a long live run is
+// never presumed dead.
 const MinDispatchMargin = 5 * time.Minute
 
 // ReviewReadySpec configures the event-armed Review-Ready Gate (ADR-0006):

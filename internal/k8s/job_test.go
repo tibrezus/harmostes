@@ -207,3 +207,29 @@ func TestBuildJobExtraConfigMapMounts(t *testing.T) {
 		t.Errorf("fork-defs mode = %o, want 644 (must match the pool's mount)", modes["extra-cm-fork-defs"])
 	}
 }
+
+// ADR-0008: runs don't die by default. Empty runBound (the platform
+// default) sets NO activeDeadlineSeconds — a run completes or fails on its
+// own. A finite bound opts back into the deadline.
+func TestBuildJobRunBound(t *testing.T) {
+	// Default: unlimited — no deadline at all.
+	job := BuildJob(AttemptJobParams{Attempt: jobTestAttempt(), WorkflowName: "w", Namespace: "harmostes", Image: "img"})
+	if job.Spec.ActiveDeadlineSeconds != nil {
+		t.Errorf("empty runBound must set no deadline, got %ds", *job.Spec.ActiveDeadlineSeconds)
+	}
+
+	// Finite bound: honored.
+	at := jobTestAttempt()
+	at.Spec.RunBound = "90m"
+	job = BuildJob(AttemptJobParams{Attempt: at, WorkflowName: "w", Namespace: "harmostes", Image: "img"})
+	if job.Spec.ActiveDeadlineSeconds == nil || *job.Spec.ActiveDeadlineSeconds != 5400 {
+		t.Errorf("runBound 90m → activeDeadlineSeconds 5400, got %v", job.Spec.ActiveDeadlineSeconds)
+	}
+
+	// Malformed bound: degrade to unlimited (never a surprise kill).
+	at.Spec.RunBound = "not-a-duration"
+	job = BuildJob(AttemptJobParams{Attempt: at, WorkflowName: "w", Namespace: "harmostes", Image: "img"})
+	if job.Spec.ActiveDeadlineSeconds != nil {
+		t.Errorf("malformed runBound must degrade to no deadline, got %ds", *job.Spec.ActiveDeadlineSeconds)
+	}
+}

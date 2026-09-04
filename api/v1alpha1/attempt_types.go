@@ -91,6 +91,14 @@ type AttemptSpec struct {
 	// +optional
 	Bindings []ExternalSystemBinding `json:"bindings,omitempty"`
 
+	// RunBound is the snapshot of the Workflow's run bound (ADR-0008): the
+	// maximum wall-clock duration for ONE run of this attempt. Empty =
+	// unlimited — a run completes or fails on its own; the kernel does not
+	// kill it. Copied at attempt creation like Bindings: the boundary is
+	// fixed per attempt.
+	// +optional
+	RunBound string `json:"runBound,omitempty"`
+
 	// Owner is the user this attempt belongs to (mirrors Workflow
 	// harmostes.dev/owner label; drives UI isolation).
 	// +optional

@@ -82,6 +82,13 @@ type ConfigMapMount struct {
 // their pods self-clean.
 func BuildJob(p AttemptJobParams) *batchv1.Job {
 	attemptName := p.Attempt.Name
+	// Wall-clock bound: the attempt's snapshotted runBound (ADR-0008). Empty
+	// (platform default) = unlimited — no deadline, runs complete or fail on
+	// their own.
+	var deadline *int64
+	if d, err := time.ParseDuration(p.Attempt.Spec.RunBound); err == nil && d > 0 {
+		deadline = ptr.To(int64(d / time.Second))
+	}
 	labels := map[string]string{
 		"app.kubernetes.io/name":      "harmostes",
 		"app.kubernetes.io/component": "attempt-runner",
@@ -154,9 +161,12 @@ func BuildJob(p AttemptJobParams) *batchv1.Job {
 		},
 		Spec: batchv1.JobSpec{
 			BackoffLimit: new(int32), // 0: retries are the dispatcher's re-arm
-			// The wall-clock bound follows the run out of the pool pod
-			// (was the consumer's run context; OneShotRunBound unchanged).
-			ActiveDeadlineSeconds:   ptr.To(int64(v1alpha1.OneShotRunBound / time.Second)),
+			// Wall-clock bound (ADR-0008): OPT-IN. A finite runBound on the
+			// attempt sets activeDeadlineSeconds; empty (the platform default)
+			// sets none — a run completes or fails on its own, the kernel does
+			// not kill it. The review-ready breaker bounds zombie claims, and
+			// attempt-scoped resumption covers real crashes (OOM, node loss).
+			ActiveDeadlineSeconds:   deadline,
 			TTLSecondsAfterFinished: p.TTLSecondsAfterFinished,
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: labels, Annotations: annotations},

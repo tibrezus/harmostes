@@ -19,6 +19,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -357,14 +358,8 @@ func PiArgs(a v1alpha1.AgentSpec) []string {
 	args := []string{"-e", "/extensions/litellm-provider", "-e", "/extensions/rig-query", "--skill", a.Skill, "--model", a.Model}
 	if len(a.Tools) > 0 {
 		tools := a.Tools
-		hasRig := false
-		for _, t := range tools {
-			if t == "rig" {
-				hasRig = true
-				break
-			}
-		}
-		if !hasRig {
+		if !slices.Contains(tools, "rig") {
+			// Copy before append: a.Tools must never be aliased/mutated.
 			tools = append(append([]string{}, tools...), "rig")
 		}
 		args = append(args, "--tools", strings.Join(tools, ","))

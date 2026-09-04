@@ -12,5 +12,8 @@
     "extensions": [
       "./index.ts"
     ]
+  },
+  "devDependencies": {
+    "typebox": "^1.0.0"
   }
 }

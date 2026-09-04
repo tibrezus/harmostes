@@ -140,3 +140,33 @@ test("rigQuery reports row-level truncation in its structured result (#338 r3 pi
 test("openRig rejects a non-rig.db file with a readable error", () => {
 	assert.throws(() => openRig(fileURLToPath(new URL("./queries.ts", import.meta.url))), /not a rig\.db/);
 });
+
+test("resolveRigDb precedence: explicit > env > cwd > extras (#338 r5 B3)", async () => {
+	const fs = await import("node:fs");
+	const a = `${tmpdir()}/rig-a.db`, b = `${tmpdir()}/rig-b.db`, c = `${tmpdir()}/rig-c.db`;
+	for (const f of [a, b, c]) fs.writeFileSync(f, "x");
+	try {
+		process.env.RIG_DB = b;
+		assert.equal(resolveRigDb(a, undefined, [c]), a, "explicit wins");
+		assert.equal(resolveRigDb(undefined, undefined, [c]), b, "env beats extras");
+		delete process.env.RIG_DB;
+		assert.equal(resolveRigDb(undefined, undefined, [c]), c, "extras beat cwd-relative ./rig.db");
+	} finally {
+		for (const f of [a, b, c]) rmSync(f, { force: true });
+		delete process.env.RIG_DB;
+	}
+});
+
+test("the wrapper registers the rig tool + shutdown handler (#338 r5 B2)", async () => {
+	const mod = await import("./index.ts");
+	const tools: Array<{ name: string; description: string }> = [];
+	const events: string[] = [];
+	mod.default({
+		on: (event: string) => events.push(event),
+		registerTool: (t: { name: string; description: string }) => tools.push(t),
+	} as never);
+	assert.equal(tools.length, 1, "exactly one tool registered");
+	assert.equal(tools[0].name, "rig");
+	assert.match(tools[0].description, /overview/);
+	assert.ok(events.includes("session_shutdown"), "session_shutdown must be registered (handle cleanup)");
+});

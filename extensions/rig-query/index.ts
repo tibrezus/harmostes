@@ -81,8 +81,11 @@ Prefer this over find/grep for ANY "where is X" or "what uses Y" question; drop 
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const p = params as RigParams & { db?: string };
 			// Container paths are the runtime contract (worker image layout) — they
-			// live HERE, not in the library (#338 r3 pillar 1). prepare sets RIG_DB
-			// when it emits the graph; the workspace defaults catch unconfigured runs.
+			// live HERE, not in the library (#338 r3 pillar 1). The FALLBACK PATH
+			// CONTRACT: pr-review prepare (ops workspace.sh) writes $WORKDIR/rig.db
+			// = /workspace/rig.db, matching the first fallback below. Moving the
+			// emit target means moving this list — they are two halves of one
+			// invariant (ADR-0009 freshness).
 			const path = resolveRigDb(p.db, ctx.cwd, ["/workspace/rig.db", "/workspace/repo/rig.db"]);
 			if (!path) {
 				return {

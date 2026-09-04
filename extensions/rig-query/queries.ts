@@ -308,7 +308,7 @@ function search(db: DatabaseSync, target: string | undefined): string {
 			hits.set(`${row(r.file)}:${row(r.line)}:${row(r.name)}`, r);
 		}
 	}
-	if (hits.size === 0) return `no symbols matching "${term}" — try a shorter stem with * (rig search 'resume*').`;
+	if (hits.size === 0) return `no symbols matching "${term}" — try a shorter stem with * (rig search 'handler*').`;
 	// Honest truncation: when the pool filled, count the real total — a partial
 	// answer presented as complete is how review findings get lost (#338 r1).
 	let more = "";
@@ -340,7 +340,7 @@ function files(db: DatabaseSync, target: string | undefined): string {
 	return [
 		`files matching "${target}":`,
 		...rows.map((r) => `  ${row(r.path)} (${row(r.lines)}L${r.component_id ? `, ${names.get(row(r.component_id)) ?? short(row(r.component_id))}` : ""})`),
-		...(total > MAX_ROWS ? [`  …+${total - MAX_ROWS} more`] : []),
+		...(total > MAX_ROWS ? [MORE_ROWS(total - MAX_ROWS)] : []),
 	].join("\n");
 }
 
@@ -363,6 +363,6 @@ function deps(db: DatabaseSync, target: string | undefined, reverse: boolean): s
 	return [
 		`${label(c.id)} ${arrow}`,
 		...rows.map((r) => `  ${arrow} ${label(r.peer)}`),
-		...(total > MAX_ROWS ? [`  …+${total - MAX_ROWS} more`] : []),
+		...(total > MAX_ROWS ? [MORE_ROWS(total - MAX_ROWS)] : []),
 	].join("\n");
 }

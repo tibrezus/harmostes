@@ -184,16 +184,28 @@ def main():
     workdir = os.path.abspath(args.workdir)
     os.makedirs(workdir, exist_ok=True)
 
+    # Mirror PiArgs INCLUDING its pre-flight: pi exits at startup when a -e
+    # path does not exist, so a missing extension drops out of -e AND from the
+    # tools allowlist instead of killing the run (#338 r15 P1). The source of
+    # truth for this list is internal/worker/extensions.go in the harmostes repo.
+    import os
+    extensions = []
+    extension_tools = {"/extensions/rig-query": "rig"}
+    for ext in ("/extensions/litellm-provider", "/extensions/rig-query"):
+        if os.path.isdir(ext):
+            extensions.append(ext)
     tools = args.tools.split(",") if args.tools else []
-    if "rig" not in tools:
-        tools.append("rig")  # mirror PiArgs: the allowlist replaces the set — keep the graph tool
+    for ext in extensions:
+        tool = extension_tools.get(ext)
+        if tool and tool not in tools:
+            tools.append(tool)
     pi_args = [
         "--skill", args.skill,
         "--model", args.model,
         "--tools", ",".join(tools),
-        "-e", "/extensions/litellm-provider",
-        "-e", "/extensions/rig-query",
     ]
+    for ext in extensions:
+        pi_args += ["-e", ext]
     log(f"starting pi --mode rpc (model={args.model}, tools={args.tools}, workdir={workdir})")
 
     rpc = PiRpc(pi_args, cwd=workdir, env=env, log_path=args.log)

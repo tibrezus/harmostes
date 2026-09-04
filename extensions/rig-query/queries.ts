@@ -293,7 +293,7 @@ function component(db: DatabaseSync, target: string | undefined, stats: { more: 
 	}
 	if (fileTotal > MAX_ROWS) {
 		stats.more += fileTotal - MAX_ROWS;
-		lines.push(`${MORE_ROWS(fileTotal - MAX_ROWS)} files — narrow with rig files '<glob>'`);
+		lines.push(`${MORE_ROWS(fileTotal - MAX_ROWS)} files — narrow with rig files '<glob>' (* / ? wildcards)`);
 	}
 	const edgeTotal = (d: string): number =>
 		Number(db.prepare(`SELECT COUNT(*) n FROM deps WHERE ${d} = ?`).get(c.id)?.n ?? 0);
@@ -387,14 +387,17 @@ function search(db: DatabaseSync, target: string | undefined, stats: { more: num
 		// One COUNT(*) — the marker decision's single source; the scans are the
 		// documented cost of camelCase-honest search until the producer grows
 		// symbols(name)/trigram indexes (see the TODO in rig/db.py).
-		const total = Number(
-			db
-				.prepare("SELECT COUNT(*) n FROM symbols WHERE name LIKE ? ESCAPE '\\' OR signature LIKE ? ESCAPE '\\' OR doc LIKE ? ESCAPE '\\'")
-				.get(like, like, like)?.n ?? 0,
-		);
-		if (total > hits.size) {
+		// Existence probe past what we show — LIMIT-capped, no full-table COUNT
+		// on the success path (#338 r15 P6). The durable fix is the producer's
+		// symbols(name)/trigram indexes (TODO in rig/db.py).
+		const probe = db
+			.prepare(
+				`SELECT 1 FROM symbols WHERE name LIKE ? ESCAPE '\\' OR signature LIKE ? ESCAPE '\\' OR doc LIKE ? ESCAPE '\\' LIMIT ?`,
+			)
+			.all(like, like, like, hits.size + 1) as Row[];
+		if (probe.length > hits.size) {
 			more = MORE_HITS;
-			stats.more += total - hits.size;
+			stats.more += probe.length - hits.size;
 		}
 	}
 	return [
@@ -404,13 +407,14 @@ function search(db: DatabaseSync, target: string | undefined, stats: { more: num
 }
 
 function files(db: DatabaseSync, target: string | undefined, stats: { more: number }): string {
-	if (!target) return "files: give a path glob, e.g. 'internal/graph/%' or '%executor%'.";
+	if (!target) return "files: give a path glob — * or % = any run, ? = one char (e.g. 'internal/graph/*', '*dispatch*').";
 	// Glob dialect: * = any run, ? = any single char. Order matters (r13):
 	// escape literal %/_/\ in the RAW target FIRST, then translate the glob
 	// operators — and decide the bare-prefix wrap from the TRANSLATED string
 	// (r13 HIGH: the guard read the translated string, so any literal _
 	// skipped the wrap and existing files answered "no files matching").
-	const esc = target.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_");
+	const glob = target.replace(/%/g, "*"); // % is accepted as an alias of * (the storage dialect some agents copy)
+	const esc = glob.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_");
 	let like = esc.replace(/\*/g, "%").replace(/\?/g, "_");
 	if (!like.includes("%")) like = `%${like}%`;
 	const total = Number(db.prepare("SELECT COUNT(*) n FROM files WHERE path LIKE ? ESCAPE '\\'").get(like)?.n ?? 0);

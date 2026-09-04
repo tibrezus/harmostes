@@ -19,16 +19,18 @@ import { Type } from "typebox"; // pi aliases typebox for extensions — NO npm 
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { openRig, resolveRigDb, resolveRigDbCandidates, rigQuery, type RigParams } from "./queries.ts";
 
+let probedEmitted = false;
+
 export default function (pi: ExtensionAPI) {
 	// Handles keyed by path + file identity (ino/mtime): the producer's
 	// write_db unlinks and recreates the file (a NEW inode), so a resume/retry
 	// re-emitting the same path must not keep serving the stale graph (#338 r2).
-	const handles = new Map<string, { db: ReturnType<typeof openRig>; ino: number; mtimeMs: number }>();
+	const handles = new Map<string, { db: ReturnType<typeof openRig>; ino: number; mtimeMs: number; size: number }>();
 
 	const open = (path: string): ReturnType<typeof openRig> => {
 		const st = statSync(path);
 		const hit = handles.get(path);
-		if (hit && hit.ino === st.ino && hit.mtimeMs === st.mtimeMs) return hit.db;
+		if (hit && hit.ino === st.ino && hit.mtimeMs === st.mtimeMs && hit.size === st.size) return hit.db;
 		if (hit) {
 			try {
 				hit.db.close();
@@ -37,7 +39,7 @@ export default function (pi: ExtensionAPI) {
 			}
 		}
 		const db = openRig(path);
-		handles.set(path, { db, ino: st.ino, mtimeMs: st.mtimeMs });
+		handles.set(path, { db, ino: st.ino, mtimeMs: st.mtimeMs, size: st.size });
 		return db;
 	};
 
@@ -87,9 +89,12 @@ Prefer this over find/grep for ANY "where is X" or "what uses Y" question; drop 
 			// NOTE: details below are a telemetry INTERFACE — session analysis
 			// (#336) joins on these keys; do not rename casually.
 			// The full walk is reported in details.probed — greppable telemetry.
-			const candidates = resolveRigDbCandidates(undefined, ctx.cwd, ["/workspace/rig.db", "/workspace/repo/rig.db"]);
-			// The library owns the walk (one implementation); candidates are for telemetry.
-			const path = resolveRigDb(undefined, ctx.cwd, ["/workspace/rig.db", "/workspace/repo/rig.db"]);
+			// ONE constant feeds resolution, telemetry and the absence message
+			// (#338 r13/r15) — they cannot disagree.
+			const CONTAINER_RIG_DB = ["/workspace/rig.db", "/workspace/repo/rig.db"];
+			const candidates = resolveRigDbCandidates(undefined, ctx.cwd, CONTAINER_RIG_DB);
+			// The library owns the walk (one implementation); candidates are telemetry.
+			const path = resolveRigDb(undefined, ctx.cwd, CONTAINER_RIG_DB);
 			if (!path) {
 				return {
 					content: [
@@ -134,9 +139,12 @@ Prefer this over find/grep for ANY "where is X" or "what uses Y" question; drop 
 				shaState = "absent"; // distinct from stamped-but-wrong
 			}
 			if (shaState === "mismatch") {
-				// R1: refusal, not a warning — answering from another revision's
-				// graph is the failure ADR-0009's freshness rule exists to prevent.
-				throw new Error(`graph SHA ${rigSha} does not match the reviewed SHA — refusing to navigate a stale graph`);
+				// R1: REFUSAL with telemetry — the event the freshness rule most
+				// needs counted survives as a structured row, not free-text (r15).
+				return {
+					content: [{ type: "text", text: `graph sha: ${rigSha}\nREFUSED: this graph does not match the reviewed SHA — navigating it would answer from another revision. Navigate with bash, or fix prepare's emission.` }],
+					details: { db: path, command: p.command, target: p.target ?? null, chars: 0, truncated: false, graph: true, probed: candidates, rig_sha: rigSha, sha_state: "mismatch" },
+				};
 			}
 			let db: ReturnType<typeof openRig>;
 			try {
@@ -155,9 +163,11 @@ Prefer this over find/grep for ANY "where is X" or "what uses Y" question; drop 
 				// archaeology) is only provable from session data. `truncated`
 				// covers BOTH the char cap and row-level "…+N more" paths.
 				const text2 = shaState === "mismatch" ? `WARNING: graph SHA ${rigSha} does not match the reviewed SHA — this graph may be stale.\n${text}` : `graph sha: ${rigSha}\n${text}`;
+				const probed = probedEmitted ? null : candidates;
+				probedEmitted = true;
 				return {
 					content: [{ type: "text", text: text2 }],
-					details: { db: path, command: p.command, target: p.target ?? null, chars: text2.length, truncated, graph: true, probed: candidates, rig_sha: rigSha, sha_state: shaState },
+					details: { db: path, command: p.command, target: p.target ?? null, chars: text2.length, truncated, graph: true, probed, rig_sha: rigSha, sha_state: shaState },
 				};
 			} catch (e) {
 				throw new Error(`rig ${p.command} failed: ${String(e)}`);

@@ -3,3 +3,4 @@
 **/node_modules
 **/*.test.ts
 extensions/rig-query/fixtures/
+**/__pycache__

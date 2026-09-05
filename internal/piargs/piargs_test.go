@@ -1,4 +1,4 @@
-package worker
+package piargs
 
 import (
 	"os"
@@ -9,10 +9,6 @@ import (
 	"github.com/tibrezus/harmostes/api/v1alpha1"
 )
 
-// The agent's pi invocation always loads both in-image extensions: the
-// litellm provider (model resolution) and rig-query (architecture-graph
-// navigation, ADR-0009). rig-query degrades gracefully when prepare emitted
-// no graph, so unconditional loading is safe for every workflow.
 func TestPiArgsLoadBuiltinExtensions(t *testing.T) {
 	args := buildPiArgs(v1alpha1.AgentSpec{Skill: "pr-review", Model: "litellm/test-model"}, Extensions, alwaysPresent)
 	joined := strings.Join(args, " ")
@@ -174,26 +170,25 @@ func mustArg(t *testing.T, dockerfile string) string {
 	return ""
 }
 
-// TestWorkerAgentImportStaysOneWay guards the load-bearing import edge
-// cmd/harmostes-agent → internal/worker → internal/agent (#338 r24 D2).
-// The reverse edge (internal/agent importing internal/worker) would close a
-// cycle and break `make build`, `go test ./...`, and every goreleaser binary
-// at once. One `go list -deps` per run pins the direction; no cycle exists
-// today (verified on the head graph), and this keeps it that way.
-func TestWorkerAgentImportStaysOneWay(t *testing.T) {
+// TestPiargsIsLeaf keeps this package a leaf (#338 r26 ARCH-1): its whole
+// reason to exist is that the smallest binary can assemble the pi shape
+// without the pipeline's closure. A dependency on any internal/* sibling
+// (worker, agent, dapr, k8s) re-couples them — go list -deps per run.
+func TestPiargsIsLeaf(t *testing.T) {
 	if testing.Short() {
 		t.Skip("go list exec — skipped in -short")
 	}
 	root := "../.."
-	cmd := exec.Command("go", "list", "-deps", "./internal/agent")
+	cmd := exec.Command("go", "list", "-deps", "./internal/piargs")
 	cmd.Dir = root // the test binary's CWD is the package dir — resolve from repo root
 	out, err := cmd.Output()
 	if err != nil {
-		t.Fatalf("go list -deps ./internal/agent: %v", err)
+		t.Fatalf("go list -deps ./internal/piargs: %v", err)
 	}
+	self := "github.com/tibrezus/harmostes/internal/piargs"
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		if line == "github.com/tibrezus/harmostes/internal/worker" {
-			t.Fatal("internal/agent imports internal/worker — the one-way edge internal/worker → internal/agent is closed into a cycle; move the shared shape (PiArgs) to a leaf package instead")
+		if line != self && strings.HasPrefix(line, "github.com/tibrezus/harmostes/internal/") {
+			t.Fatalf("internal/piargs depends on %s — it must stay a leaf (api/* types are fine); move the shared shape to a new leaf instead", line)
 		}
 	}
 }

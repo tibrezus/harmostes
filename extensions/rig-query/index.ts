@@ -125,7 +125,7 @@ Prefer this over find/grep for ANY "where is X" or "what uses Y" question; drop 
 			let rigSha: string;
 			let shaState: string;
 			try {
-				const provenance = verifyProvenance(`${path}.sha`, process.env.RIG_EXPECTED_SHA);
+				const provenance = verifyProvenance(`${path}.sha`, process.env.RIG_EXPECTED_SHA, undefined, process.env.RIG_REQUIRE_SHA === "1");
 				rigSha = provenance.rigSha;
 				shaState = provenance.state;
 			} catch {
@@ -152,9 +152,13 @@ Prefer this over find/grep for ANY "where is X" or "what uses Y" question; drop 
 					details: { db: path, command: p.command, target: p.target ?? null, chars: 0, truncated: false, resolved: false, graph: true, probed: candidates, rig_sha: rigSha, sha_state: "unchecked" },
 				};
 			}
-			if (shaState === "absent-refusal") {
+			if (shaState === "absent-refusal" && process.env.RIG_REQUIRE_SHA === "1") {
 				// Same refusal+telemetry shape as mismatch (r20 driver 2): "prepare
 				// did not stamp" is a countable freshness event, not a free-text throw.
+				// STRICT-ONLY (r26 ARCH-2): without RIG_REQUIRE_SHA the worker has
+				// already determined the graph is unstamped and chose degradation —
+				// the caveat-prefixed answer below keeps the tool's value instead of
+				// refusing every command over a producer this repo does not own.
 				return {
 					content: [{ type: "text", text: `graph provenance: absent [rig sha_state=absent-refusal]\nREFUSED: prepare did not stamp this graph — navigating an unverifiable graph is refused. Navigate with bash, or report the emission failure in the review body.` }],
 					details: { db: path, command: p.command, target: p.target ?? null, chars: 0, truncated: false, resolved: false, graph: true, probed: candidates, rig_sha: null, sha_state: "absent-refusal" },
@@ -188,7 +192,7 @@ Prefer this over find/grep for ANY "where is X" or "what uses Y" question; drop 
 				// malformed are named as states, never rendered like a hex SHA
 				// (#338 r15 nit 2). mismatch never reaches here — it is refused above.
 				const provenance = rigSha === "absent" || rigSha === "malformed"
-					? `graph provenance: ${rigSha} — this run emitted no verified graph; treat every answer as unverified.\n`
+					? `graph provenance: ${rigSha}${shaState === "absent-refusal" ? " [rig sha_state=absent-refusal]" : ""} — this run emitted no verified graph; treat every answer as unverified.\n`
 					: `graph sha: ${rigSha} (state: ${shaState})\n`;
 				const text2 = `${provenance}${text}`;
 				const probed = probedEmitted ? null : candidates;

@@ -27,8 +27,12 @@ half of the review-time graph lives in the ops repo (`workspace.sh`).
 
 Freshness contract (both halves required for the rule to hold): the only
 sanctioned graph location is `/workspace/rig.db`, produced by the ops
-prepare (`workspace.sh`) together with its provenance stamp
-`/workspace/rig.db.sha` (the reviewed HEAD SHA). On the one-shot dispatch
+prepare (`operations/k8s-config/platform/harmostes/scripts/workspace.sh` —
+the contractual pair of `piargs.RigGraphPath`; a rename there is a
+fleet-wide `graph: absent` here) together with its provenance stamp
+`/workspace/rig.db.sha` (the reviewed HEAD SHA, written as an atomic pair
+with the graph — the wrapper checks the graph's inode identity while the
+stamp is read beside it). On the one-shot dispatch
 path the worker injects `RIG_EXPECTED_SHA` + `RIG_REQUIRE_SHA=1` into the
 pi child's env; under that contract `mismatch`, `absent`, `malformed` and
 `unchecked` graphs are all REFUSED — strictness is a per-run decision, and

@@ -236,6 +236,7 @@ func (r *RPC) Prompt(ctx context.Context, message, label string) (Event, int, Us
 					success := !isErr
 					capture.Tools[idx].Result = result
 					capture.Tools[idx].Success = &success
+					capture.Tools[idx].Details = toolEndDetails(ev.Raw)
 					if toolSpan != nil {
 						toolSpan.SetAttributes(attribute.Bool("harmostes.success", success))
 					}

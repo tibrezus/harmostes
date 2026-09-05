@@ -81,6 +81,7 @@ export function verifyProvenance(
 			return null;
 		}
 	},
+	strict = false,
 ): { rigSha: string; state: ProvenanceState } {
 	const raw = readStamp(stampPath);
 	if (raw === null) {
@@ -88,6 +89,13 @@ export function verifyProvenance(
 	}
 	if (!/^[0-9a-f]{7,40}$/i.test(raw)) return { rigSha: "malformed", state: "malformed" };
 	const rigSha = raw.toLowerCase();
+	// SEC-1 (r26): the stamp is the artifact that vouches for "you are looking
+	// at the reviewed revision", and its producer is another repo's shell with
+	// no format enforcement. Prefix-matching a 7-char stamp is ~28 bits of
+	// collision headroom — fine for a dev convenience, not for a rule. Under
+	// strictness a short stamp is UNVERIFIABLE (unchecked — callers refuse),
+	// and only a full-length match verifies.
+	if (strict && rigSha.length < 40) return { rigSha, state: "unchecked" };
 	if (!expectedSha) return { rigSha, state: "unchecked" };
 	const exp = expectedSha.toLowerCase();
 	const match = rigSha.length === exp.length ? rigSha === exp : exp.startsWith(rigSha) || rigSha.startsWith(exp);

@@ -19,7 +19,6 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
-	"slices"
 	"strings"
 	"time"
 
@@ -340,55 +339,6 @@ func SavePiSession(ctx context.Context, dc dapr.Client, store, workflow, run str
 		return err // blob already stored; a missing metadata key just hides the button
 	}
 	return nil
-}
-
-// PiArgs builds the pi --mode rpc extra args from a Workflow's agent spec.
-// The litellm-provider extension is always loaded so the litellm/* model prefix
-// resolves (the extension registers the provider at startup from LITELLM_URL +
-// LITELLM_API_KEY env vars injected by the controller). The rig-query extension
-// exposes the architecture graph (rig.db, emitted by prepare when present —
-// ADR-0009) as a structured tool; it degrades gracefully when no graph exists.
-// --tools is an ALLOWLIST in pi (it replaces the whole set, extension tools
-// included), so a workflow declaring spec.agent.tools would silently lose rig
-// while the task contract still mandates it — append "rig" unless already
-// present. Workflows declaring NO tools get no --tools flag at all (every
-// tool available, rig merely among them — nothing is forced onto the allow-
-// list). The tool itself degrades harmlessly when no graph was emitted.
-func PiArgs(a v1alpha1.AgentSpec) []string {
-	return buildPiArgs(a, Extensions, os.Stat)
-}
-
-// buildPiArgs is PiArgs' injectable core: stat lets tests simulate images
-// where an extension directory is absent (older images, rollout lag) —
-// pi EXITS at startup on a missing -e path, so a missing extension must
-// drop out of the args (and take its --tools entry with it) rather than
-// kill every workflow that declares tools (#338 r14 B1).
-func buildPiArgs(a v1alpha1.AgentSpec, extensions []string, stat func(string) (os.FileInfo, error)) []string {
-	args := []string{"--skill", a.Skill, "--model", a.Model}
-	for _, ext := range extensions {
-		if _, err := stat(ext); err != nil {
-			continue // not on this image — degrade quietly
-		}
-		args = append(args, "-e", ext)
-	}
-	if len(a.Tools) > 0 {
-		tools := a.Tools
-		// Keep the allowlist in sync with the -e set actually emitted: only
-		// tools from extensions that survived the stat pre-flight are appended.
-		for _, ext := range extensions {
-			if _, err := stat(ext); err != nil {
-				continue
-			}
-			tool, ok := extensionTools[ext]
-			if !ok || slices.Contains(tools, tool) {
-				continue
-			}
-			// Copy before append: a.Tools must never be aliased/mutated.
-			tools = append(append([]string{}, tools...), tool)
-		}
-		args = append(args, "--tools", strings.Join(tools, ","))
-	}
-	return args
 }
 
 // TaskResolver yields the agent's task text from its TaskTemplate (e.g. a

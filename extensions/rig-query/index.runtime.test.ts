@@ -146,15 +146,36 @@ test("sha provenance: stamped / mismatch / malformed / absent (#338 r9 B2)", asy
 		assert.equal(r.details.resolved, false);
 		assert.match(r.content[0].text, /REFUSED: this graph does not match the reviewed SHA/);
 		assert.doesNotMatch(r.content[0].text, /fixture-repo/);
-		// absent-refusal: expectation set but prepare never stamped → REFUSED
-		// (r23 P4: the branch must be REACHABLE — an unstamped graph under a
-		// demanded SHA is unverifiable, not "unverified but served").
+		// SEC-1 (r26): under strictness a SHORT stamp is unverifiable — the
+		// stamp is the artifact that vouches for the revision, and ~28 bits of
+		// collision headroom is not a rule. "0123abcd" (8 chars) + REQUIRE →
+		// unchecked → REFUSED, never prefix-verified.
+		process.env.RIG_REQUIRE_SHA = "1";
+		r = await execute({ command: "overview" });
+		assert.equal(r.details.sha_state, "unchecked");
+		assert.equal(r.details.resolved, false);
+		assert.match(r.content[0].text, /REFUSED: this run demands a verified graph/);
+		delete process.env.RIG_REQUIRE_SHA;
+		// absent-refusal, strict: expectation + REQUIRE set but prepare never
+		// stamped → REFUSED (r23 P4: the branch must be REACHABLE).
 		rmSync(shaPath, { force: true });
+		process.env.RIG_REQUIRE_SHA = "1";
 		r = await execute({ command: "overview" });
 		assert.equal(r.details.sha_state, "absent-refusal");
 		assert.equal(r.details.resolved, false);
 		assert.match(r.content[0].text, /REFUSED: prepare did not stamp this graph/);
 		assert.doesNotMatch(r.content[0].text, /fixture-repo/);
+		delete process.env.RIG_REQUIRE_SHA;
+		// absent-refusal, NON-strict (r26 ARCH-2): the worker arms REQUIRE only
+		// when the graph is stamped; an unstamped graph under an armed
+		// expectation DEGRADES to answered-with-caveat — the producer of the
+		// stamp is the ops repo, and a fleet-wide refusal over its emission
+		// failure would make the tool strictly negative-value.
+		r = await execute({ command: "overview" });
+		assert.equal(r.details.sha_state, "absent-refusal");
+		assert.equal(r.details.resolved, true);
+		assert.match(r.content[0].text, /graph provenance: absent \[rig sha_state=absent-refusal\] — this run emitted no verified graph/);
+		assert.match(r.content[0].text, /fixture-repo/);
 		delete process.env.RIG_EXPECTED_SHA;
 		delete process.env.RIG_DB_CANDIDATES;
 		// malformed (content never echoed — the F11 oracle class) — now REFUSED,

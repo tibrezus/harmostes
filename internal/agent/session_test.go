@@ -309,3 +309,38 @@ func TestSessionRecordJSONRoundTrip(t *testing.T) {
 }
 
 func boolPtr(b bool) *bool { return &b }
+
+// TestToolEndDetails pins the structured-telemetry persistence (#338 r26
+// OBS-1): rig-query results carry {content, details}; the details object is
+// the #336 join interface — without this capture it existed only in the
+// pretty-printed result text.
+func TestToolEndDetails(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want map[string]any
+	}{
+		{
+			"rig-shaped result",
+			`{"type":"tool_execution_end","result":{"content":[{"type":"text","text":"overview…"}],"details":{"command":"overview","chars":2689,"truncated":false,"resolved":true,"graph":true,"sha_state":"verified"}}}`,
+			map[string]any{"command": "overview", "chars": 2689.0, "truncated": false, "resolved": true, "graph": true, "sha_state": "verified"},
+		},
+		{"plain string result", `{"result":"just text"}`, nil},
+		{"no details key", `{"result":{"content":[]}}`, nil},
+		{"empty result", `{"result":null}`, nil},
+		{"garbage", `not json`, nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := toolEndDetails(json.RawMessage(c.raw))
+			if len(got) != len(c.want) {
+				t.Fatalf("toolEndDetails() = %#v, want %#v", got, c.want)
+			}
+			for k, v := range c.want {
+				if got[k] != v {
+					t.Fatalf("toolEndDetails()[%q] = %#v, want %#v", k, got[k], v)
+				}
+			}
+		})
+	}
+}

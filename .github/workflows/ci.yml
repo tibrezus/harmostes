@@ -71,6 +71,15 @@ jobs:
         # extension's typebox resolves through pi's alias injection at runtime;
         # this tier validates the schema shape, the Dockerfile load gate
         # validates that the runtime resolves it.
+        # WHO BUILDS THE IMAGES (r26 TEST-1, stated so nobody re-derives it):
+        # neither worker Dockerfile is built by this PR pipeline. The
+        # published image (.github/Dockerfile.worker.release + its
+        # `pi -e /extensions/rig-query` load probe) is built by the release
+        # workflow (release.yml → goreleaser snapshot + release) — the probe
+        # fails the build on a dead extension. The dev image
+        # (Dockerfile.worker) is built by `make docker` / `make controller-
+        # worker` on demand; its COPY + probe drift is pinned textually by
+        # TestPinnedVersionsAgree + TestExtensionsSingleSource (piargs).
         run: make test-extensions
 
       # Compares the COMMITTED fixture's canonical hash against a fresh build

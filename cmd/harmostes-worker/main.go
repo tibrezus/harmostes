@@ -47,6 +47,7 @@ import (
 	"github.com/tibrezus/harmostes/internal/graph"
 	"github.com/tibrezus/harmostes/internal/k8s"
 	"github.com/tibrezus/harmostes/internal/observability"
+	"github.com/tibrezus/harmostes/internal/piargs"
 	"github.com/tibrezus/harmostes/internal/timeline"
 	"github.com/tibrezus/harmostes/internal/worker"
 	"github.com/tibrezus/harmostes/version"
@@ -309,22 +310,29 @@ func runOneShot() {
 	piEnv := os.Environ()
 	if sha := os.Getenv("HARMOSTES_TRIGGER_SHA"); sha != "" {
 		piEnv = append(piEnv, "RIG_EXPECTED_SHA="+sha)
-		// Strictness is a deliberate per-run contract (#338 r24 D1): with an
-		// expectation injected, unchecked/malformed graphs must refuse too —
-		// the freshness rule is a rule, not best-effort.
-		piEnv = append(piEnv, "RIG_REQUIRE_SHA=1")
 		// Run-level degradation signal (#338 r24 D5): when the expectation is
 		// armed but prepare emitted no graph (or no stamp), say so at startup —
 		// "graph missing" must be countable from pod logs alone, without a
 		// session join, or the archaeology cost this feature exists to kill
 		// returns invisibly.
-		if line, ok := graphPresenceLine(worker.RigGraphPath); ok {
+		line, degraded := graphPresenceLine(piargs.RigGraphPath)
+		if degraded {
 			logf("%s", line)
+		}
+		// Strictness is armed ONLY when the run's graph is actually stamped
+		// (r26 ARCH-2): the stamp's producer is the ops repo's workspace.sh —
+		// outside this repo's enforcement. An unstamped graph under an armed
+		// expectation degrades to answered-with-caveat (the tool's prose +
+		// sha_state telemetry stay countable) instead of a fleet-wide refusal
+		// this repo cannot see or fix. A STAMPED graph gets the full rule:
+		// mismatch, malformed and unchecked all refuse.
+		if !degraded {
+			piEnv = append(piEnv, "RIG_REQUIRE_SHA=1")
 		}
 	}
 	deps.Agent = worker.RPCAgentRunner{
 		Opts: agent.RPCOptions{
-			Args:        worker.PiArgs(wf.Spec.Agent),
+			Args:        piargs.PiArgs(wf.Spec.Agent),
 			Workdir:     workdir,
 			Env:         piEnv,
 			SessionRoot: piSessions,

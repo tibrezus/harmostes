@@ -111,31 +111,39 @@ def _check_circular_deps(rig: dict) -> list[str]:
             graph[nid] = node.get("depends_on_ids", [])
     WHITE, GRAY, BLACK = 0, 1, 2
     color = {n: WHITE for n in graph}
-    stack: list[str] = []
     found: list[list[str]] = []
 
-    def _dfs(node):
-        color[node] = GRAY
-        stack.append(node)
-        for nb in graph.get(node, []):
-            if nb not in color:
-                continue
-            if color[nb] == GRAY:
-                # slice from nb's position: the actual cycle members, in order
-                found.append(stack[stack.index(nb):] + [nb])
-                return
-            if color[nb] == WHITE:
-                _dfs(nb)
-                if found:
-                    return
-        stack.pop()
-        color[node] = BLACK
-
-    for n in graph:
-        if color[n] == WHITE:
-            _dfs(n)
+    # Iterative DFS (r3 P4): recursion is one frame per component in the
+    # longest chain and runs BEFORE anything is written — a RecursionError
+    # on a deep monorepo would fail prepare outright. Explicit stack; the
+    # path list doubles as the cycle-member source.
+    for root in graph:
+        if color[root] != WHITE:
+            continue
+        path: list[str] = []
+        stack = [(root, iter([nb for nb in graph.get(root, []) if nb in color]))]
+        color[root] = GRAY
+        path.append(root)
+        while stack and not found:
+            node, it = stack[-1]
+            advanced = False
+            for nb in it:
+                if color.get(nb) == GRAY:
+                    idx = path.index(nb)
+                    found.append(path[idx:] + [nb])
+                    break
+                if color.get(nb) == WHITE:
+                    color[nb] = GRAY
+                    path.append(nb)
+                    stack.append((nb, iter([x for x in graph.get(nb, []) if x in color])))
+                    advanced = True
+                    break
             if found:
                 break
+            if not advanced:
+                stack.pop()
+                path.pop()
+                color[node] = BLACK
     if not found:
         return []
     cyc = " → ".join(found[0])

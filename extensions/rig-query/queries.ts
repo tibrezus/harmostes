@@ -258,6 +258,16 @@ function overview(db: DatabaseSync, stats: { more: number }): string {
 	lines.push(
 		`graph: ${proj || "(unnamed graph — no repo_name meta)"} — ${comps.length} components, ${row(symCount?.n)} symbols`,
 	);
+	// Generation warnings travel in meta (#346 r3 P7): a cyclic repo's
+	// graph must SAY so where the agent reads first — the overview.
+	const genWarn = meta(db, "warnings");
+	if (genWarn) {
+		try {
+			for (const w of JSON.parse(genWarn) as string[]) lines.push(`⚠ ${w}`);
+		} catch {
+			lines.push(`⚠ generation warnings: ${genWarn}`);
+		}
+	}
 	for (const c of comps.slice(0, OVERVIEW_ROWS)) {
 		const flags: string[] = [];
 		if (Number(c.entrypoint) === 1) flags.push("entry");

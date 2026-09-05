@@ -110,6 +110,14 @@ def main() -> int:
         if not (tdp / "rig.db").exists():
             print("FAIL: emit must write rig.db for a cyclic repo")
             return 8
+        # The artifact must DECLARE its cycle (r3 P8): meta.warnings row.
+        import sqlite3 as _sq
+        con = _sq.connect(str(tdp / "rig.db"))
+        row = con.execute("SELECT value FROM meta WHERE key='warnings'").fetchone()
+        con.close()
+        if not row or "Circular" not in row[0]:
+            print(f"FAIL: rig.db meta.warnings must record the cycle, got {row[0][:120] if row else None}")
+            return 8
         warns = [l for l in r.stderr.splitlines() if "Circular" in l]
         if not warns:
             print(f"FAIL: emitter stderr must carry the cycle warning, got {r.stderr[-200:]}")

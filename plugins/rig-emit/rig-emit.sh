@@ -52,7 +52,14 @@ git clone --depth 100 --branch "$SRC_BRANCH" "$SRC_URL" "$SRC_DIR" 2>&1 | tail -
 }
 
 log "generating RIG (language=${SRC_LANG:-auto})…"
-( cd "$SRC_DIR" && bash "$EMITTER_DIR/emit-rig.sh" "$RIG_FILE" "$SRC_LANG" ) 2>&1 | tail -3
+# Full emit log to a side file (diagnostics survive), WARN lines surfaced
+# on the pipeline log — tail -3 alone dropped them (r5 P7: a cyclic graph
+# emitted with no operator-visible signal).
+EMIT_LOG="$RIG_FILE.emit.log"
+if ( cd "$SRC_DIR" && bash "$EMITTER_DIR/emit-rig.sh" "$RIG_FILE" "$SRC_LANG" ) 2>&1 | tee "$EMIT_LOG" | tail -3; then
+  grep -E "^  WARN:" "$EMIT_LOG" >&2 || true
+  rm -f "$EMIT_LOG"
+fi
 
 COMPONENTS=$(python3 -c "import json;print(len(json.load(open('$RIG_FILE'))['components']))" 2>/dev/null || echo 0)
 log "RIG: $COMPONENTS components"

@@ -3,10 +3,12 @@
 Mirrors Spade's rig_validator (github.com/Greenfuze/spade) adapted to run
 against the RIGBuilder's output (or a loaded JSON dict).
 
-Key difference from the wiki-side validate-rig.py: this runs **in the
-project repo** where source files exist, so it can enforce the paper's
-source-file existence invariant.  Completeness (every repo source file
-in a component) is an ERROR here, not a warning.
+Severity (r5, #345): dangling refs, duplicate IDs and missing evidence are
+ERRORS; circular dependencies and completeness (uncovered source files)
+are WARNINGS. `check_source_existence=False` skips the completeness walk
+(which reads the CWD filesystem) — the unit pin relies on that hermeticity.
+The wiki-side validate-rig.py keeps its own severities; drift between the
+copies is a tracked llm-wiki concern.
 """
 
 from __future__ import annotations
@@ -34,7 +36,8 @@ def validate_rig(rig: dict, *, check_source_existence: bool = True) -> tuple[lis
     warnings.extend(_check_circular_deps(rig))
     errors.extend(_check_duplicate_ids(rig))
     errors.extend(_check_evidence(rig))
-    warnings.extend(_check_completeness(rig))
+    if check_source_existence:
+        warnings.extend(_check_completeness(rig))
 
     return errors, warnings
 
@@ -108,31 +111,36 @@ def _check_circular_deps(rig: dict) -> list[str]:
             graph[nid] = node.get("depends_on_ids", [])
     WHITE, GRAY, BLACK = 0, 1, 2
     color = {n: WHITE for n in graph}
-    found = [False]
+    stack: list[str] = []
+    found: list[list[str]] = []
 
     def _dfs(node):
         color[node] = GRAY
+        stack.append(node)
         for nb in graph.get(node, []):
             if nb not in color:
                 continue
             if color[nb] == GRAY:
-                found[0] = True
+                # slice from nb's position: the actual cycle members, in order
+                found.append(stack[stack.index(nb):] + [nb])
                 return
             if color[nb] == WHITE:
                 _dfs(nb)
-                if found[0]:
+                if found:
                     return
+        stack.pop()
         color[node] = BLACK
 
     for n in graph:
         if color[n] == WHITE:
             _dfs(n)
-            if found[0]:
+            if found:
                 break
-    if not found[0]:
+    if not found:
         return []
-    return ["Circular dependency detected (emitted as-is; see warnings — "
-            "the deps table represents the cycle, navigation is unaffected)"]
+    cyc = " → ".join(found[0])
+    return [f"Circular dependency detected: {cyc} (emitted as-is — the "
+            "deps table represents the cycle; navigation is unaffected)"]
 
 
 def _check_duplicate_ids(rig: dict) -> list[str]:

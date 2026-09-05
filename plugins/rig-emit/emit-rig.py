@@ -94,7 +94,8 @@ def main():
     # Build the RIG JSON
     rig = builder.build(extractor_names)
 
-    # Validate (references, cycles, evidence = errors; completeness = warning)
+    # Validate (dangling refs, duplicate IDs, evidence = errors; cycles and
+    # completeness = warnings — a cycle is a code fact the graph represents)
     if not args.no_validate:
         errors, warnings = validate_rig(rig)
         if warnings:

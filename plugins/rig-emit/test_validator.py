@@ -8,12 +8,20 @@ degraded to grep archaeology.
 Run: python3 plugins/rig-emit/test_validator.py  (stdlib only; exit ≠ 0 fails)
 CI: wired as `make test-rig-emit` (ci.yml test job).
 """
+import json
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
 from rig.validator import validate_rig  # noqa: E402
+
+
+def comp(cid, deps=None):
+    return {"id": cid, "name": cid.upper(), "depends_on_ids": deps or [],
+            "external_packages_ids": [], "evidence_ids": ["e1"], "source_files": []}
 
 
 def rig_with(components):
@@ -37,8 +45,12 @@ def main() -> int:
     if errors:
         print(f"FAIL: cycle must not error, got {errors}")
         return 1
-    if not any("Circular" in w for w in warnings):
-        print(f"FAIL: cycle must warn, got warnings={warnings}")
+    named = [w for w in warnings if "Circular dependency detected:" in w]
+    if not named:
+        print(f"FAIL: cycle warning must NAME the members, got {warnings}")
+        return 2
+    if "a → b → a" not in named[0]:
+        print(f"FAIL: cycle warning must name members in order, got {named[0]}")
         return 2
 
     # 2. Dangling refs stay errors.
@@ -79,7 +91,31 @@ def main() -> int:
         print(f"FAIL: clean rig must validate cleanly, got {errors} / {warnings}")
         return 6
 
-    print("rig-emit validator severity: OK (cycles warn; dangling/duplicate/evidence error)")
+    # Producer wiring (r5 gate 6): the thing that actually broke was
+    # "errors ⇒ rig.db written". Run the REAL emitter on a cyclic fixture
+    # in a tempdir and require the DB — unremovable without a red CI.
+    with tempfile.TemporaryDirectory() as td:
+        tdp = Path(td)
+        (tdp / "go.mod").write_text("module fixture.example/cyc\n\ngo 1.22\n")
+        (tdp / "a").mkdir(); (tdp / "b").mkdir()
+        (tdp / "a" / "a.go").write_text("package a\n\nimport _ \"fixture.example/cyc/b\"\n")
+        (tdp / "b" / "b.go").write_text("package b\n\nimport _ \"fixture.example/cyc/a\"\n")
+        out = tdp / "rig.json"
+        r = subprocess.run(
+            [sys.executable, str(Path(__file__).parent / "emit-rig.py"), str(out)],
+            cwd=tdp, capture_output=True, text=True)
+        if r.returncode != 0:
+            print(f"FAIL: emit of a cyclic repo must succeed, rc={r.returncode}\n{r.stderr[-400:]}")
+            return 7
+        if not (tdp / "rig.db").exists():
+            print("FAIL: emit must write rig.db for a cyclic repo")
+            return 8
+        warns = [l for l in r.stderr.splitlines() if "Circular" in l]
+        if not warns:
+            print(f"FAIL: emitter stderr must carry the cycle warning, got {r.stderr[-200:]}")
+            return 9
+
+    print("rig-emit validator severity: OK (cycles warn NAMED; dangling/duplicate/evidence error; producer writes the db)")
     return 0
 
 

@@ -12,7 +12,8 @@ TAG           ?= dev
 BIN_DIR       := bin
 GO            := go
 
-.PHONY: all build test test-go test-ui vet tidy generate manifests controller-worker docker docker-push docker-ui test-extensions test-integration clean
+.PHONY: all build test test-go test-ui vet tidy generate manifests controller-worker docker docker-push docker-ui test-extensions test-integration clean test-rig-emit
+
 
 all: test build
 
@@ -24,13 +25,20 @@ build:
 ## only the Go toolchain; test-extensions adds Node ≥ 22.5 + npm + python3
 ## (the fixture producer). CI runs them as separate steps, so a host without
 ## Node still gets a meaningful `make test-go`.
-test: test-go test-extensions
+test: test-go test-extensions test-rig-emit
+
 
 ## test-go: the Go tier alone.
 test-go:
 	git submodule update --init --recursive
 	$(GO) test ./...
 
+## test-extensions: the pi extensions' TypeScript (rig-query) — the query
+## layer is pure TS over rig.db; its fixture suite runs under node --test
+## with type stripping (requires Node ≥ 22.5 — the same runtime the worker
+## image ships). The fixture is regenerated with the REAL producer
+## (python3 extensions/rig-query/fixtures/generate.py) and committed; CI
+## regenerates and fails on drift.
 test-extensions:
 	npm ci --prefix extensions/rig-query --no-audit --no-fund --silent
 	node --test --experimental-strip-types \

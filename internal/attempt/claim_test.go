@@ -255,3 +255,99 @@ func TestReleaseClaimDead_NeverDispatchedDoesNotCount(t *testing.T) {
 		t.Errorf("never-dispatched deaths must not count, got %d", a.Status.Review.DeadDispatches)
 	}
 }
+
+// TestArmClaim_ReusesSameHeadEra (#343 fix 1): arming the same (pr, head)
+// again must REFUSE to create a fresh era — the live claim is reused with
+// its ArmedSince intact (the horizon and verdict window stay anchored), and
+// a dispatch-lost-released claim is revived into the same era rather than
+// replaced. The observed churn: every sweep supersede-recreated the claim,
+// resetting ArmedSince, so neither the verdict window nor the horizon could
+// ever fire.
+func TestArmClaim_ReusesSameHeadEra(t *testing.T) {
+	ctx := context.Background()
+	c := newFakeClient(t)
+	wf := wikiWorkflow()
+	const pr = "git.rezus.cloud/tibrez/rhesadox#1864"
+	const sha = "5472b055cafe0001"
+
+	name1, err := armFor(t, ctx, c, wf, pr, sha, "needs-review", false)
+	if err != nil {
+		t.Fatalf("first arm: %v", err)
+	}
+	a1, err := resolveForTest(t, ctx, c, wf, sha)
+	if err != nil {
+		t.Fatalf("resolve 1: %v", err)
+	}
+	if a1.Name != name1 {
+		t.Fatalf("identity drift: %s != %s", a1.Name, name1)
+	}
+	firstArm := a1.Status.Review.ArmedSince.Time
+
+	// Sweep 2: same (pr, head) → the SAME attempt, ArmedSince NOT reset.
+	name2, err := armFor(t, ctx, c, wf, pr, sha, "needs-review", false)
+	if err != nil {
+		t.Fatalf("second arm: %v", err)
+	}
+	if name2 != name1 {
+		t.Fatalf("churn: second arm created %s instead of reusing %s", name2, name1)
+	}
+	a2, _ := resolveForTest(t, ctx, c, wf, sha)
+	if !a2.Status.Review.ArmedSince.Time.Equal(firstArm) {
+		t.Fatalf("ArmedSince slid: %v → %v (the horizon/verdict window must stay anchored)", firstArm, a2.Status.Review.ArmedSince.Time)
+	}
+
+	// The never-dispatched release (reDispatchGrace) must NOT start a new
+	// era either: reviving the released claim keeps the original clock.
+	if err := ReleaseClaim(ctx, c, "harmostes", name1, "dispatch-lost"); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	name3, err := armFor(t, ctx, c, wf, pr, sha, "needs-review", false)
+	if err != nil {
+		t.Fatalf("arm after dispatch-lost release: %v", err)
+	}
+	if name3 != name1 {
+		t.Fatalf("churn: arm after dispatch-lost created %s instead of reviving %s", name3, name1)
+	}
+	a3, _ := resolveForTest(t, ctx, c, wf, sha)
+	if a3.Status.Review.Released {
+		t.Fatal("revived claim must be live")
+	}
+	if !a3.Status.Review.ArmedSince.Time.Equal(firstArm) {
+		t.Fatalf("ArmedSince slid across release: %v → %v", firstArm, a3.Status.Review.ArmedSince.Time)
+	}
+}
+
+// TestArmClaim_HorizonDismissalChurnGuard (#343 fix 3): after the horizon
+// dismisses a head's era, automatic re-arm of the SAME head is refused; a
+// human request overrides; a new head is a new era and proceeds.
+func TestArmClaim_HorizonDismissalChurnGuard(t *testing.T) {
+	ctx := context.Background()
+	c := newFakeClient(t)
+	wf := wikiWorkflow()
+	const pr = "git.rezus.cloud/tibrez/rhesadox#1864"
+	const sha = "5472b055cafe0002"
+
+	name, err := armFor(t, ctx, c, wf, pr, sha, "needs-review", false)
+	if err != nil {
+		t.Fatalf("first arm: %v", err)
+	}
+	if err := ReleaseClaim(ctx, c, "harmostes", name, "horizon"); err != nil {
+		t.Fatalf("horizon release: %v", err)
+	}
+
+	_, err = armFor(t, ctx, c, wf, pr, sha, "needs-review", false)
+	if !errors.Is(err, ErrRecentlyDismissed) {
+		t.Fatalf("want ErrRecentlyDismissed, got %v", err)
+	}
+
+	// Human request overrides.
+	if _, err := armFor(t, ctx, c, wf, pr, sha, "needs-review", true); err != nil {
+		t.Fatalf("human re-request must override the guard: %v", err)
+	}
+
+	// A different head is a new era — no guard.
+	const newHead = "aaaaaaaaface0003"
+	if _, err := armFor(t, ctx, c, wf, pr, newHead, "needs-review", false); err != nil {
+		t.Fatalf("new head must arm past the guard: %v", err)
+	}
+}

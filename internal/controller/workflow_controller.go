@@ -8,6 +8,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -72,6 +73,26 @@ func (r *WorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{RequeueAfter: requeueAfter}, nil
 	}
 
+	// Trigger slot (#343 fix 2): claim BEFORE publishing. Two racing
+	// reconciles both pass isDue; only the one that wins the LastRunAt
+	// compare-and-set publishes — the loser requeues. The armed-gate
+	// carve-out above has NO time cooldown of its own, so without this slot
+	// every reconcile of an armed workflow (attempt events, status patches)
+	// scheduled another sweep — the claim churn loop's engine. Webhook wakes
+	// keep a short window so a genuine human re-request is never swallowed:
+	// the loser's annotation survives and wins the next reconcile.
+	minInterval := r.PollInterval
+	if wf.Annotations["harmostes.dev/trigger-revision"] != "" {
+		minInterval = webhookMinTriggerInterval
+	}
+	won, err := r.claimTriggerSlot(ctx, &wf, minInterval)
+	if err != nil {
+		logger.Error(err, "claim trigger slot")
+		return ctrl.Result{RequeueAfter: r.PollInterval}, nil
+	}
+	if !won {
+		return ctrl.Result{RequeueAfter: requeueAfter}, nil
+	}
 	logger.Info("scheduling worker", "workflow", wf.Name, "reason", dueReason(&wf))
 	// Canonical Orchestration History (ADR-0005): resolve or create the Attempt
 	// this run belongs to, so its history is recorded. Best-effort — an empty
@@ -142,6 +163,47 @@ func (r *WorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 // isDue decides whether a run should start now. Due if the spec generation
 // changed since last observed, the poll interval elapsed since the last run,
 // or a webhook trigger annotation is present.
+// webhookMinTriggerInterval bounds how close two webhook wakes may fire —
+// the CAS race dedup needs a nonzero window, and a genuine re-request
+// delayed by this much is re-evaluated by the armed poll anyway (#343).
+const webhookMinTriggerInterval = 10 * time.Second
+
+// errTriggerCooldown: the slot was claimed within the cooldown — the caller
+// must not publish (another reconcile already did, or the poll just ran).
+var errTriggerCooldown = errors.New("trigger slot on cooldown")
+
+// claimTriggerSlot atomically advances LastRunAt when it is at least
+// minInterval old, reporting whether THIS reconcile won the right to publish
+// a trigger. Stamp-before-publish closes the concurrent-reconcile race:
+// the loser observes the fresh stamp on its retry and stands down (#343).
+func (r *WorkflowReconciler) claimTriggerSlot(ctx context.Context, wf *v1alpha1.Workflow, minInterval time.Duration) (bool, error) {
+	won := false
+	err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		var fresh v1alpha1.Workflow
+		if err := r.Get(ctx, client.ObjectKeyFromObject(wf), &fresh); err != nil {
+			return err
+		}
+		if !fresh.Status.LastRunAt.IsZero() && time.Since(fresh.Status.LastRunAt.Time) < minInterval {
+			return errTriggerCooldown
+		}
+		base := fresh.DeepCopy()
+		fresh.Status.LastRunAt = metav1.Now()
+		patch := client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})
+		if err := r.Status().Patch(ctx, &fresh, patch); err != nil {
+			return err
+		}
+		won = true
+		return nil
+	})
+	if errors.Is(err, errTriggerCooldown) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return won, nil
+}
+
 func (r *WorkflowReconciler) isDue(wf *v1alpha1.Workflow) (bool, time.Duration) {
 	// Webhook trigger: check for trigger-revision annotation
 	if triggerRev := wf.Annotations["harmostes.dev/trigger-revision"]; triggerRev != "" {

@@ -251,3 +251,59 @@ func TestObserveGenerationRetriesOnConflict(t *testing.T) {
 		t.Fatalf("concurrent reviewReady write must survive the retry: %+v", got.Status.ReviewReady)
 	}
 }
+
+// TestClaimTriggerSlot_DedupsRacingReconciles (#343 fix 2): the FIRST caller
+// wins the slot and publishes; an immediate second caller (a racing
+// reconcile — the armed-gate carve-out makes every reconcile of an armed
+// workflow "due") must LOSE until the cooldown elapses. This is the engine
+// of the claim-churn loop: without the slot, every reconcile scheduled
+// another sweep.
+func TestClaimTriggerSlot_DedupsRacingReconciles(t *testing.T) {
+	wf := &v1alpha1.Workflow{}
+	wf.Name = "pr-review-churn"
+	wf.Namespace = "harmostes"
+
+	cl := fake.NewClientBuilder().
+		WithScheme(k8s.Scheme()).
+		WithStatusSubresource(&v1alpha1.Workflow{}).
+		WithObjects(wf).
+		Build()
+	r := &WorkflowReconciler{Client: cl, Scheme: k8s.Scheme(), PollInterval: 5 * time.Minute}
+	ctx := context.Background()
+
+	won, err := r.claimTriggerSlot(ctx, wf, r.PollInterval)
+	if err != nil || !won {
+		t.Fatalf("first claim: won=%v err=%v — a fresh workflow must win", won, err)
+	}
+	won, err = r.claimTriggerSlot(ctx, wf, r.PollInterval)
+	if err != nil || won {
+		t.Fatalf("second claim within cooldown: won=%v err=%v — must lose", won, err)
+	}
+	// The webhook window is shorter, but not zero: two racing reconciles
+	// must not BOTH publish (the second observe the first's stamp).
+	won, err = r.claimTriggerSlot(ctx, wf, webhookMinTriggerInterval)
+	if err != nil || won {
+		t.Fatalf("webhook-window claim inside the race window: won=%v err=%v — the CAS must dedup", won, err)
+	}
+
+	// After the cooldown the slot frees.
+	wf2 := &v1alpha1.Workflow{}
+	wf2.Name = "pr-review-churn-2"
+	wf2.Namespace = "harmostes"
+	_ = cl.Create(ctx, wf2)
+	if _, err := r.claimTriggerSlot(ctx, wf2, 0); err != nil {
+		t.Fatalf("zero-cooldown claim: %v", err)
+	}
+	var fresh v1alpha1.Workflow
+	if err := cl.Get(ctx, client.ObjectKeyFromObject(wf2), &fresh); err != nil {
+		t.Fatal(err)
+	}
+	fresh.Status.LastRunAt = metav1.NewTime(metav1.Now().Add(-2 * r.PollInterval))
+	if err := cl.Status().Update(ctx, &fresh); err != nil {
+		t.Fatal(err)
+	}
+	won, err = r.claimTriggerSlot(ctx, wf2, r.PollInterval)
+	if err != nil || !won {
+		t.Fatalf("claim after cooldown: won=%v err=%v — must win", won, err)
+	}
+}

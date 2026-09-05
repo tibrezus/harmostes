@@ -349,9 +349,10 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 			sha := res.Envelope.HeadSHA
 			at, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf, cand.pointer, sha, label, cand.labeled)
 			if err != nil {
-				if errors.Is(err, attempt.ErrDeadDispatchBreaker) {
-					// Surface the breaker as the decision, not a failure:
-					// the system stopped ON PURPOSE and says why (#328).
+				if errors.Is(err, attempt.ErrDeadDispatchBreaker) || errors.Is(err, attempt.ErrRecentlyDismissed) {
+					// Surface the breaker / churn guard as the decision, not
+					// a failure: the system stopped ON PURPOSE and says why
+					// (#328, #343).
 					log("review-ready: %s: %v", cand.pointer, err)
 					lastDecision, lastReason = "standdown", err.Error()
 					continue
@@ -370,6 +371,12 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 				sha = candSha(cand)
 			}
 			if _, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf, cand.pointer, sha, label, cand.labeled); err != nil {
+				if errors.Is(err, attempt.ErrRecentlyDismissed) {
+					// Churn guard: this pointer's era was horizon-dismissed —
+					// no re-arm without a human request (#343).
+					lastDecision, lastReason = "standdown", err.Error()
+					continue
+				}
 				log("review-ready: arm claim %s failed: %v", cand.pointer, err)
 			}
 			lastDecision, lastReason = string(res.Decision), res.Reason

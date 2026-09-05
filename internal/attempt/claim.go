@@ -28,6 +28,12 @@ import (
 // match with errors.Is.
 var ErrDeadDispatchBreaker = errors.New("dead-dispatch breaker open")
 
+// ErrRecentlyDismissed is returned by ArmClaim when the SAME head's latest
+// claim was dismissed by the horizon: automatic re-arm would restart the
+// identical ambiguity with no new information (#343). A human request
+// (label re-apply, or a push followed by one) overrides.
+var ErrRecentlyDismissed = errors.New("recently dismissed by horizon")
+
 // ArmClaim arms (or refreshes) this workflow's claim on the PR: resolving
 // the deterministic Attempt for (workflow, head SHA) and stamping its review
 // state. Any OTHER live claim on the same PR releases as superseded — one
@@ -38,15 +44,56 @@ var ErrDeadDispatchBreaker = errors.New("dead-dispatch breaker open")
 // now" resets the dead-dispatch count and re-arms. Automatic sweeps pass
 // false and are refused once the breaker is open.
 func ArmClaim(ctx context.Context, c client.Client, scheme *runtime.Scheme, wf *v1alpha1.Workflow, pr, headSHA, label string, humanRequest bool) (*v1alpha1.Attempt, error) {
-	obj := DeriveObjective(wf, TriggerContext{Revision: headSHA, Source: "webhook"})
-	at, _, err := ResolveOrCreate(ctx, c, obj, ResolveOptions{
-		Namespace:   wf.Namespace,
-		WorkflowRef: wf.Namespace + "/" + wf.Name,
-		Owner:       wf,
-		Scheme:      scheme,
-	})
+	// Era stickiness + churn guard (#343): inspect every claim this workflow
+	// holds for the PR — live and released — BEFORE resolving a new object.
+	claims, err := AllReviewClaims(ctx, c, wf.Namespace, wf.Name)
 	if err != nil {
-		return nil, fmt.Errorf("resolve claim attempt: %w", err)
+		return nil, err
+	}
+	var reuse, latestSameHead *v1alpha1.Attempt
+	for i := range claims {
+		a := &claims[i]
+		if a.Status.Review.PR != pr || a.Status.Review.HeadSHA != headSHA {
+			continue
+		}
+		// Reusable era: a live claim, or one released without ever
+		// dispatching (the sweep died before its Job landed) — the SAME
+		// armed era. Reusing it keeps ArmedSince anchored, so the verdict
+		// window still reaches verdicts posted before a supersede cycle and
+		// the horizon clock actually expires instead of resetting per sweep.
+		r := a.Status.Review
+		if !r.Released || r.ReleaseReason == "dispatch-lost" {
+			if reuse == nil || armedSinceAfter(a, reuse) {
+				reuse = a
+			}
+		}
+		if latestSameHead == nil || armedSinceAfter(a, latestSameHead) {
+			latestSameHead = a
+		}
+	}
+	// Churn guard: the head's latest era was dismissed by the horizon —
+	// automatic re-arm would restart the identical ambiguity. Human request
+	// overrides (re-apply the label / push + label).
+	if !humanRequest && latestSameHead != nil && latestSameHead.Status.Review.Released &&
+		latestSameHead.Status.Review.ReleaseReason == "horizon" {
+		return nil, fmt.Errorf("%w: %s — automatic re-arm refused; re-apply the label to request a fresh review",
+			ErrRecentlyDismissed, shortSHA(headSHA))
+	}
+
+	var at *v1alpha1.Attempt
+	if reuse != nil {
+		at = reuse
+	} else {
+		obj := DeriveObjective(wf, TriggerContext{Revision: headSHA, Source: "webhook"})
+		at, _, err = ResolveOrCreate(ctx, c, obj, ResolveOptions{
+			Namespace:   wf.Namespace,
+			WorkflowRef: wf.Namespace + "/" + wf.Name,
+			Owner:       wf,
+			Scheme:      scheme,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("resolve claim attempt: %w", err)
+		}
 	}
 
 	// Supersede other live claims on this PR (head moved, or an older arm).
@@ -189,6 +236,40 @@ func ReleaseClaimDead(ctx context.Context, c client.Client, namespace, attemptNa
 		}
 	})
 	return recorded, deadDispatches, err
+}
+
+// armedSinceAfter reports a's ArmedSince strictly after b's (nil = zero).
+func armedSinceAfter(a, b *v1alpha1.Attempt) bool {
+	var at, bt metav1.Time
+	if a != nil && a.Status.Review.ArmedSince != nil {
+		at = *a.Status.Review.ArmedSince
+	}
+	if b != nil && b.Status.Review.ArmedSince != nil {
+		bt = *b.Status.Review.ArmedSince
+	}
+	return at.After(bt.Time)
+}
+
+// AllReviewClaims returns every review claim for the workflow — live AND
+// released (#343). The arm path must SEE the released era: reuse keeps the
+// armed clock honest across the never-dispatched release cycle, and the
+// churn guard reads the latest dismissal per head.
+func AllReviewClaims(ctx context.Context, c client.Client, namespace, workflowName string) ([]v1alpha1.Attempt, error) {
+	var list v1alpha1.AttemptList
+	if err := c.List(ctx, &list, client.InNamespace(namespace)); err != nil {
+		return nil, fmt.Errorf("list attempts: %w", err)
+	}
+	var out []v1alpha1.Attempt
+	for _, a := range list.Items {
+		if a.Status.Review == nil {
+			continue
+		}
+		if a.Spec.WorkflowRef != namespace+"/"+workflowName {
+			continue
+		}
+		out = append(out, a)
+	}
+	return out, nil
 }
 
 // LiveReviewClaims returns the workflow's unreleased review claims, oldest

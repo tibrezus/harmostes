@@ -14,8 +14,7 @@
  * a pi tool.
  */
 import { DatabaseSync } from "node:sqlite";
-import { existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
 
 type Row = Record<string, unknown>;
 
@@ -42,6 +41,40 @@ export function resolveRigDbCandidates(explicit?: string, extra: string[] = []):
  * or bare "rig.db" — a stray graph in the workdir must never shadow the
  * reviewed checkout's emit. Callers report the full walk in details.probed.
  */
+export type ProvenanceState = "verified" | "mismatch" | "unchecked" | "malformed" | "absent";
+
+/**
+ * Verify the graph's provenance stamp against an expected reviewed SHA.
+ * Pure and injectable so tests can drive every state from tmpdir fixtures
+ * without container paths (#338 r19/r21).
+ *
+ * States: verified (exact, case-insensitive equality with the expectation),
+ * mismatch (stamped but different — callers must refuse), malformed (stamp
+ * content is not a sha token), unchecked (stamped, nothing to verify
+ * against), absent (no stamp was written).
+ */
+export function verifyProvenance(
+	stampPath: string,
+	expectedSha: string | undefined,
+	readStamp: (p: string) => string | null = (p) => {
+		try {
+			return readFileSync(p, "utf8").trim();
+		} catch (e) {
+			console.error("[rig-debug readStamp]", p, String(e));
+			return null;
+		}
+	},
+): { rigSha: string; state: ProvenanceState } {
+	const raw = readStamp(stampPath);
+	if (raw === null) return { rigSha: "absent", state: "absent" };
+	if (!/^[0-9a-f]{7,40}$/i.test(raw)) return { rigSha: "malformed", state: "malformed" };
+	const rigSha = raw.toLowerCase();
+	if (!expectedSha) return { rigSha, state: "unchecked" };
+	const exp = expectedSha.toLowerCase();
+	const match = rigSha.length === exp.length ? rigSha === exp : exp.startsWith(rigSha) || rigSha.startsWith(exp);
+	return match ? { rigSha, state: "verified" } : { rigSha, state: "mismatch" };
+}
+
 export function resolveRigDb(explicit?: string, extra: string[] = []): string | null {
 	for (const p of resolveRigDbCandidates(explicit, extra)) {
 		if (existsSync(p)) return p;

@@ -16,8 +16,8 @@
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox"; // pi aliases typebox for extensions — NO npm dep at runtime
-import { existsSync, readFileSync, statSync } from "node:fs";
-import { openRig, resolveRigDb, resolveRigDbCandidates, rigQuery, type RigParams } from "./queries.ts";
+import { existsSync, statSync } from "node:fs";
+import { openRig, resolveRigDb, resolveRigDbCandidates, verifyProvenance, rigQuery, type RigParams } from "./queries.ts";
 
 export default function (pi: ExtensionAPI) {
 	// Handles keyed by path + file identity (ino/mtime): the producer's
@@ -92,31 +92,24 @@ Prefer this over find/grep for ANY "where is X" or "what uses Y" question; drop 
 			// CONTRACT: pr-review prepare (ops workspace.sh) writes $WORKDIR/rig.db
 			// = /workspace/rig.db, matching the extras below. Moving the emit
 			// target means moving this list — two halves of one invariant.
-			// NOTE: details below are a telemetry INTERFACE — session analysis
-			// (#336) joins on these keys; do not rename casually.
-			// The full walk is reported in details.probed — greppable telemetry.
-			// ONE constant feeds resolution, telemetry and the absence message
-			// (#338 r13/r15) — they cannot disagree. RIG_DB_CANDIDATES is a
-			// ONE constant feeds resolution, telemetry and the absence message
-			// (#338 r13/r15). RIG_DB_CANDIDATES is a supported override (comma-
-			// separated); default = the container paths prepare emits to. NO cwd-
-			// relative or bare candidates: a graph resolved out of the working tree
-			// is PR content answering as authoritative architecture (#338 r20 S1).
-			// Freshness enforcement (r21 Finding 3): when the reviewed SHA is
-			// known, resolution is CONFINED to the sanctioned container emit
-			// targets — RIG_DB (pod env, may point at the wiki's synced copy)
-			// is ignored, because "verified" must never describe a graph the
-			// checkout itself carried.
+			// NOTE: `details` below are a telemetry INTERFACE — session analysis
+			// (#336) joins on these keys; do not rename casually. The walk itself
+			// is ONE array feeding both resolution and telemetry (r22: the r21
+			// confinement fork passed different candidates to each, turning the
+			// tool off in production).
 			const containerCandidates = ["/workspace/rig.db", "/workspace/repo/rig.db"];
-			const candidates = process.env.RIG_EXPECTED_SHA
-				? resolveRigDbCandidates(undefined, containerCandidates)
-				: resolveRigDbCandidates(undefined, process.env.RIG_DB_CANDIDATES !== undefined
-					? process.env.RIG_DB_CANDIDATES.split(",").filter(Boolean)
-					: containerCandidates);
-			// The library owns the walk (one implementation); candidates are telemetry.
-			const path = resolveRigDb(undefined, process.env.RIG_EXPECTED_SHA ? undefined : process.env.RIG_DB_CANDIDATES !== undefined
+			const override = process.env.RIG_DB_CANDIDATES !== undefined
 				? process.env.RIG_DB_CANDIDATES.split(",").filter(Boolean)
-				: containerCandidates);
+				: null;
+			// Freshness confinement (r21 F3): when the reviewed SHA is known,
+			// pod-supplied RIG_DB is dropped — it may point at the wiki's synced
+			// copy, the artifact reviews must not consume. ONE array feeds both
+			// resolution and telemetry (r22 fix of the r21 confinement fork).
+			// Without confinement the documented RIG_DB env stays first in the walk.
+			const candidates = process.env.RIG_EXPECTED_SHA !== undefined
+				? containerCandidates
+				: [...(process.env.RIG_DB ? [process.env.RIG_DB] : []), ...containerCandidates];
+			const path = candidates.find((c) => existsSync(c)) ?? null;
 			if (!path) {
 				return {
 					content: [
@@ -140,31 +133,11 @@ Prefer this over find/grep for ANY "where is X" or "what uses Y" question; drop 
 			let rigSha: string;
 			let shaState: string;
 			try {
-				const raw = readFileSync(`${path}.sha`, "utf8").trim();
-				if (!/^[0-9a-f]{7,40}$/i.test(raw)) {
-					rigSha = "malformed";
-					shaState = "malformed";
-				} else {
-					rigSha = raw;
-					const expected = process.env.RIG_EXPECTED_SHA;
-					if (expected && !raw.startsWith(expected.slice(0, 7))) {
-						rigSha = raw;
-						shaState = "mismatch";
-					} else if (expected) {
-						shaState = "verified";
-					} else {
-						shaState = "unchecked"; // stamped, but nothing to verify against
-					}
-				}
-			} catch {
-				if (process.env.RIG_EXPECTED_SHA) {
-					// Expected SHA + no stamp = refusal row (r21 Finding 3), not a
-					// silent "unchecked" answer.
-					return {
-						content: [{ type: "text", text: "graph provenance: absent — prepare did not stamp this run's graph (expected " + process.env.RIG_EXPECTED_SHA.slice(0, 7) + "); refusing to navigate an unverifiable graph. Navigate with bash, or report the emission failure in the review body." }],
-						details: { db: null, command: p.command, target: p.target ?? null, chars: 0, truncated: false, graph: false, probed: [], rig_sha: null, sha_state: "absent" },
-					};
-				}
+				const provenance = verifyProvenance(`${path}.sha`, process.env.RIG_EXPECTED_SHA);
+				rigSha = provenance.rigSha;
+				shaState = provenance.state;
+			} catch (e) {
+				console.error("[rig-debug] provenance read failed:", String(e));
 				rigSha = "absent";
 				shaState = "absent";
 			}

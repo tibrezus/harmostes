@@ -188,7 +188,6 @@ def main():
     # path does not exist, so a missing extension drops out of -e AND from the
     # tools allowlist instead of killing the run (#338 r15 P1). The source of
     # truth for this list is internal/worker/extensions.go in the harmostes repo.
-    import os
     extensions = []
     extension_tools = {"/extensions/rig-query": "rig"}
     for ext in ("/extensions/litellm-provider", "/extensions/rig-query"):

@@ -19,16 +19,19 @@ from .builder import all_source_paths, BUILD_CONFIG_FILES
 def validate_rig(rig: dict, *, check_source_existence: bool = True) -> tuple[list[str], list[str]]:
     """Validate a RIG dict. Returns (errors, warnings) — both empty = valid.
 
-    Hard errors (dangling refs, cycles, duplicate IDs, missing evidence) fail
-    the build.  Completeness (uncovered source files) is a WARNING — repos with
-    multiple languages or tooling scripts may legitimately have files outside
-    any build target.
+    Hard errors (dangling refs, duplicate IDs, missing evidence) fail the
+    build.  Completeness (uncovered source files) and CIRCULAR DEPENDENCIES
+    are WARNINGs: a cycle is a fact about the codebase the graph must
+    represent, not an emission failure — refusing to emit because the code
+    has a cycle left reviews graph-LESS (observed live: rhesadox#1864, where
+    the emit failure degraded ADR-0009 navigation to grep archaeology). The
+    deps table is navigable with cycles; consumers surface the warning.
     """
     errors: list[str] = []
     warnings: list[str] = []
 
     errors.extend(_check_dangling_refs(rig))
-    errors.extend(_check_circular_deps(rig))
+    warnings.extend(_check_circular_deps(rig))
     errors.extend(_check_duplicate_ids(rig))
     errors.extend(_check_evidence(rig))
     warnings.extend(_check_completeness(rig))
@@ -126,7 +129,10 @@ def _check_circular_deps(rig: dict) -> list[str]:
             _dfs(n)
             if found[0]:
                 break
-    return ["Circular dependency detected"] if found[0] else []
+    if not found[0]:
+        return []
+    return ["Circular dependency detected (emitted as-is; see warnings — "
+            "the deps table represents the cycle, navigation is unaffected)"]
 
 
 def _check_duplicate_ids(rig: dict) -> list[str]:

@@ -333,6 +333,14 @@ func TestToolEndDetails(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			got := toolEndDetails(json.RawMessage(c.raw))
+			if c.want == nil {
+				// r27 P8: assert nil EXPLICITLY — a length comparison alone
+				// reads as vacuous for the empty-want cases.
+				if got != nil {
+					t.Fatalf("toolEndDetails() = %#v, want nil", got)
+				}
+				return
+			}
 			if len(got) != len(c.want) {
 				t.Fatalf("toolEndDetails() = %#v, want %#v", got, c.want)
 			}

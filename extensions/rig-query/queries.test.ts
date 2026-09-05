@@ -64,6 +64,24 @@ test("search reports truncation instead of a silently partial answer", () => {
 	assert.match(out, /…more hits — refine the term/);
 });
 
+test("every command respects the char budget (r27 P8/F4)", () => {
+	// The ceiling is enforced by run()'s ONE cap; pin it end-to-end so a
+	// builder regressing past MAX_RESULT_CHARS fails here, not in production
+	// token budgets.
+	for (const command of ["overview", "component", "files", "deps"] as const) {
+		const out = q({ command, target: command === "overview" ? undefined : "internal/*" });
+		assert.ok(out.length <= 6000 + 200, `${command}: ${out.length} chars exceeds the budget+marker allowance`);
+	}
+});
+
+test("search accepts a leading * for parity with component tails (r27 F5)", () => {
+	// Agents reasonably try '*envelope'; only the trailing * was stripped, so
+	// the leading form reached FTS as a syntax error and the sweep as a
+	// literal — a real hit silently became "not in the corpus".
+	const out = q({ command: "search", target: "*envelope" });
+	assert.match(out, /NodeResultEnvelope/);
+});
+
 test("search mixed case: sweep pages past prefix duplicates, marker survives (r25 F10)", () => {
 	// 'mixed-case': the hyphen makes FTS reject the term, so the sweep is the
 	// filler. 2 prefix hits + 7 doc-only = 9 distinct rows against a budget of

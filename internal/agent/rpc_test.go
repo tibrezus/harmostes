@@ -148,24 +148,31 @@ func TestRPCEndToEnd(t *testing.T) {
 	}
 }
 
-// TestRigRefusalState pins the freshness-incident extractor (#338 r25 F11):
-// every rig refusal text carries [rig sha_state=…]; the worker's event
-// stream greps it so a stale-graph run is countable without a session join.
-func TestRigRefusalState(t *testing.T) {
+// TestRigRefused pins the freshness-incident trigger (#338 r27 F2): the
+// STRUCTURED refused flag decides, never text — a served-with-caveat answer
+// (unstamped graph under an armed expectation, the ARCH-2 steady state) is
+// not an incident, so its details carry refused:false and no event fires.
+func TestRigRefused(t *testing.T) {
 	cases := []struct {
-		name, in, want string
+		name    string
+		details map[string]any
+		state   string
+		refused bool
 	}{
-		{"mismatch", "graph sha: deadbeef [rig sha_state=mismatch]\nREFUSED: this graph does not match the reviewed SHA — …", "mismatch"},
-		{"absent-refusal", "graph provenance: absent [rig sha_state=absent-refusal]\nREFUSED: prepare did not stamp this graph — …", "absent-refusal"},
-		{"malformed", "graph provenance: malformed stamp [rig sha_state=malformed]\nREFUSED: …", "malformed"},
-		{"unchecked-require", "graph sha: 0123abcd (state: unchecked) [rig sha_state=unchecked]\nREFUSED: …", "unchecked"},
-		{"not-a-refusal", "overview: 23 components, 456 symbols", ""},
-		{"empty", "", ""},
+		{"mismatch refusal", map[string]any{"refused": true, "sha_state": "mismatch"}, "mismatch", true},
+		{"absent-refusal refusal", map[string]any{"refused": true, "sha_state": "absent-refusal"}, "absent-refusal", true},
+		{"malformed refusal", map[string]any{"refused": true, "sha_state": "malformed", "rig_sha": "malformed"}, "malformed", true},
+		{"unchecked strict refusal", map[string]any{"refused": true, "sha_state": "unchecked"}, "unchecked", true},
+		{"served with caveat (ARCH-2 steady state)", map[string]any{"refused": false, "sha_state": "absent-refusal", "resolved": true}, "", false},
+		{"plain answer", map[string]any{"refused": false, "sha_state": "verified", "resolved": true}, "", false},
+		{"no details", nil, "", false},
+		{"missing flag", map[string]any{"sha_state": "mismatch"}, "", false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := rigRefusalState(c.in); got != c.want {
-				t.Fatalf("rigRefusalState(%q) = %q, want %q", c.in, got, c.want)
+			gotState, gotRefused := rigRefused(c.details)
+			if gotState != c.state || gotRefused != c.refused {
+				t.Fatalf("rigRefused(%v) = (%q, %v), want (%q, %v)", c.details, gotState, gotRefused, c.state, c.refused)
 			}
 		})
 	}

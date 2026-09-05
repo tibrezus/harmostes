@@ -95,7 +95,11 @@ Prefer this over find/grep for ANY "where is X" or "what uses Y" question; drop 
 			// by a reviewed repo is PR content, and must not answer as
 			// authoritative architecture (#338 r20 S1 / r23 P5).
 			// NOTE: `details` below are a telemetry INTERFACE — session analysis
-			// (#336) joins on these keys; do not rename casually. The walk is the
+			// (#336) joins on these keys; do not rename casually. `refused`
+			// (r27 F2) is the INCIDENT flag the worker's rig_refused event keys
+			// off — true only on refusal rows, never on served-with-caveat
+			// answers (an unstamped graph under an armed expectation is the
+			// deliberate ARCH-2 steady state, not an incident). The walk is the
 			// LIBRARY's resolveRigDbCandidates — ONE array (override hatch →
 			// confinement → explicit/RIG_DB/extras) feeding BOTH resolution and
 			// telemetry; the wrapper never forks its own candidate list (r23 P1:
@@ -113,7 +117,7 @@ Prefer this over find/grep for ANY "where is X" or "what uses Y" question; drop 
 					// Uniform telemetry shape on absence (#338 r9): same keys as success,
 					// so a session join never gets a missing column — plus graph:false
 					// and the probed candidates for greppability.
-					details: { db: null, command: p.command, target: p.target ?? null, chars: 0, truncated: false, resolved: false, graph: false, probed: candidates, rig_sha: null, sha_state: null },
+					details: { db: null, command: p.command, target: p.target ?? null, chars: 0, truncated: false, resolved: false, graph: false, probed: candidates, rig_sha: null, sha_state: null, refused: false },
 				};
 			}
 			// Provenance (#338 r6 B2): prepare stamps <graph>.sha with the reviewed
@@ -138,7 +142,7 @@ Prefer this over find/grep for ANY "where is X" or "what uses Y" question; drop 
 			if (shaState === "malformed") {
 				return {
 					content: [{ type: "text", text: `graph provenance: malformed stamp at ${path}.sha [rig sha_state=malformed]\nREFUSED: the graph's stamp is unreadable — provenance cannot be established. Navigate with bash, or fix prepare's emission.` }],
-					details: { db: path, command: p.command, target: p.target ?? null, chars: 0, truncated: false, resolved: false, graph: true, probed: candidates, rig_sha: "malformed", sha_state: "malformed" },
+					details: { db: path, command: p.command, target: p.target ?? null, chars: 0, truncated: false, resolved: false, graph: true, probed: candidates, rig_sha: "malformed", sha_state: "malformed", refused: true },
 				};
 			}
 			// RIG_REQUIRE_SHA=1 (r24 D1): the run DEMANDS a verified graph — the
@@ -149,7 +153,7 @@ Prefer this over find/grep for ANY "where is X" or "what uses Y" question; drop 
 			if (shaState === "unchecked" && process.env.RIG_REQUIRE_SHA === "1") {
 				return {
 					content: [{ type: "text", text: `graph sha: ${rigSha} (state: unchecked — no reviewed SHA was injected) [rig sha_state=unchecked]\nREFUSED: this run demands a verified graph (RIG_REQUIRE_SHA=1) but no RIG_EXPECTED_SHA reached the session. Navigate with bash, or fix the dispatch env wiring.` }],
-					details: { db: path, command: p.command, target: p.target ?? null, chars: 0, truncated: false, resolved: false, graph: true, probed: candidates, rig_sha: rigSha, sha_state: "unchecked" },
+					details: { db: path, command: p.command, target: p.target ?? null, chars: 0, truncated: false, resolved: false, graph: true, probed: candidates, rig_sha: rigSha, sha_state: "unchecked", refused: true },
 				};
 			}
 			if (shaState === "absent-refusal" && process.env.RIG_REQUIRE_SHA === "1") {
@@ -161,7 +165,7 @@ Prefer this over find/grep for ANY "where is X" or "what uses Y" question; drop 
 				// refusing every command over a producer this repo does not own.
 				return {
 					content: [{ type: "text", text: `graph provenance: absent [rig sha_state=absent-refusal]\nREFUSED: prepare did not stamp this graph — navigating an unverifiable graph is refused. Navigate with bash, or report the emission failure in the review body.` }],
-					details: { db: path, command: p.command, target: p.target ?? null, chars: 0, truncated: false, resolved: false, graph: true, probed: candidates, rig_sha: null, sha_state: "absent-refusal" },
+					details: { db: path, command: p.command, target: p.target ?? null, chars: 0, truncated: false, resolved: false, graph: true, probed: candidates, rig_sha: null, sha_state: "absent-refusal", refused: true },
 				};
 			}
 			if (shaState === "mismatch") {
@@ -169,7 +173,7 @@ Prefer this over find/grep for ANY "where is X" or "what uses Y" question; drop 
 				// needs counted survives as a structured row, not free-text (r15).
 				return {
 					content: [{ type: "text", text: `graph sha: ${rigSha} [rig sha_state=mismatch]\nREFUSED: this graph does not match the reviewed SHA — navigating it would answer from another revision. Navigate with bash, or fix prepare's emission.` }],
-					details: { db: path, command: p.command, target: p.target ?? null, chars: 0, truncated: false, resolved: false, graph: true, probed: candidates, rig_sha: rigSha, sha_state: "mismatch" },
+					details: { db: path, command: p.command, target: p.target ?? null, chars: 0, truncated: false, resolved: false, graph: true, probed: candidates, rig_sha: rigSha, sha_state: "mismatch", refused: true },
 				};
 			}
 			let db: ReturnType<typeof openRig>;
@@ -192,14 +196,14 @@ Prefer this over find/grep for ANY "where is X" or "what uses Y" question; drop 
 				// malformed are named as states, never rendered like a hex SHA
 				// (#338 r15 nit 2). mismatch never reaches here — it is refused above.
 				const provenance = rigSha === "absent" || rigSha === "malformed"
-					? `graph provenance: ${rigSha}${shaState === "absent-refusal" ? " [rig sha_state=absent-refusal]" : ""} — this run emitted no verified graph; treat every answer as unverified.\n`
+					? `graph provenance: ${rigSha} — this run emitted no verified graph; treat every answer as unverified.\n`
 					: `graph sha: ${rigSha} (state: ${shaState})\n`;
 				const text2 = `${provenance}${text}`;
 				const probed = probedEmitted ? null : candidates;
 				probedEmitted = true;
 				return {
 					content: [{ type: "text", text: text2 }],
-					details: { db: path, command: p.command, target: p.target ?? null, chars: text2.length, truncated, resolved, graph: true, probed, rig_sha: rigSha, sha_state: shaState },
+					details: { db: path, command: p.command, target: p.target ?? null, chars: text2.length, truncated, resolved, refused: false, graph: true, probed, rig_sha: rigSha, sha_state: shaState },
 				};
 			} catch (e) {
 				throw new Error(`rig ${p.command} failed: ${String(e)}`);

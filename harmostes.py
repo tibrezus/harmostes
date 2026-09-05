@@ -187,7 +187,9 @@ def main():
     # Mirror PiArgs INCLUDING its pre-flight: pi exits at startup when a -e
     # path does not exist, so a missing extension drops out of -e AND from the
     # tools allowlist instead of killing the run (#338 r15 P1). The source of
-    # truth for this list is internal/worker/extensions.go in the harmostes repo.
+    # truth for this list is internal/piargs (Extensions + extensionTools) in
+    # the harmostes repo — a LEAF package so this primitive's mirror and the
+    # worker both point at one source without coupling (#338 r26 ARCH-1).
     extensions = []
     extension_tools = {"/extensions/rig-query": "rig"}
     for ext in ("/extensions/litellm-provider", "/extensions/rig-query"):

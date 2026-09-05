@@ -13,7 +13,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -236,17 +235,16 @@ func (r *RPC) Prompt(ctx context.Context, message, label string) (Event, int, Us
 					success := !isErr
 					capture.Tools[idx].Result = result
 					capture.Tools[idx].Success = &success
-					capture.Tools[idx].Details = toolEndDetails(ev.Raw)
-					if toolSpan != nil {
-						toolSpan.SetAttributes(attribute.Bool("harmostes.success", success))
-					}
+					details := toolEndDetails(ev.Raw)
+					capture.Tools[idx].Details = details
 					// Freshness incidents must be countable WITHOUT a session
-					// join (#338 r25 F11): a rig refusal carries a machine-
-					// greppable [rig sha_state=…] token in its text; one event
-					// line here makes a stale-graph run visible in the pod's
-					// event stream — the class the ADR-0009 rule exists for.
+					// join (#338 r25 F11). The trigger is the STRUCTURED
+					// refused flag (r27 F2), never text matching: a
+					// served-with-caveat answer under an armed expectation is
+					// the deliberate ARCH-2 steady state, not an incident —
+					// keying off the text token counted every ordinary answer.
 					if capture.Tools[idx].Name == "rig" {
-						if state := rigRefusalState(result); state != "" {
+						if state, refused := rigRefused(details); refused {
 							logf(r.log, Event{Type: "rig_refused", Message: "graph refused, sha_state=" + state})
 						}
 					}
@@ -261,18 +259,15 @@ func (r *RPC) Prompt(ctx context.Context, message, label string) (Event, int, Us
 	}
 }
 
-// rigRefusalRe matches the machine-greppable token every rig-query refusal
-// text carries ([rig sha_state=mismatch] and friends). Non-refusal answers
-// never contain it, so a match IS the incident.
-var rigRefusalRe = regexp.MustCompile(`\[rig sha_state=([a-z-]+)\]`)
-
-// rigRefusalState extracts the refusal's sha_state from a rig tool result,
-// or "" when the result is not a refusal (#338 r25 F11).
-func rigRefusalState(result string) string {
-	if m := rigRefusalRe.FindStringSubmatch(result); m != nil {
-		return m[1]
+// rigRefused reads a rig tool result's structured refusal: the refused flag
+// is set by the extension's refusal rows only (#338 r27 F2) — served-with-
+// caveat answers (unstamped graph, armed expectation) are NOT incidents.
+func rigRefused(details map[string]any) (state string, refused bool) {
+	if b, ok := details["refused"].(bool); !ok || !b {
+		return "", false
 	}
-	return ""
+	s, _ := details["sha_state"].(string)
+	return s, true
 }
 
 // Abort sends an abort, closes stdin, and waits for pi to exit.

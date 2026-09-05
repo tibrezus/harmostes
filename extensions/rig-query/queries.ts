@@ -211,8 +211,12 @@ export function rigQuery(db: DatabaseSync, p: RigParams): { text: string; trunca
 	// the text says.
 	const stats = { more: 0, resolved: false };
 	const run = (fn: (s: { more: number; resolved: boolean }) => string): { text: string; truncated: boolean; resolved: boolean } => {
+		// The ONE cap (r27 F4): builders return uncapped text; capping here
+		// only means the budget sentence can never render twice and stats.more
+		// counts each elision exactly once. The old `text.length > MAX` disjunct
+		// was dead — cap() has already cut to exactly that bound.
 		const text = cap(fn(stats), stats);
-		return { text, truncated: stats.more > 0 || text.length > MAX_RESULT_CHARS, resolved: stats.resolved };
+		return { text, truncated: stats.more > 0, resolved: stats.resolved };
 	};
 	// Not exposed (deliberate, revisit on demand): calls/packages/artifacts/
 	// tests tables are populated by the producer but no subcommand reads them.
@@ -408,7 +412,12 @@ function search(db: DatabaseSync, target: string | undefined, stats: { more: num
 	// ("executor*" → "executor*%" matches nothing) — strip it here, keep it for
 	// the FTS phrase (#338 r2 4.1). Emptiness is checked AFTER the strip: a
 	// bare '*' is a degenerate term, not "match everything" (#338 r8 F7).
-	const term = target.trim().replace(/"/g, "").replace(/\*+$/, "");
+	// Leading AND trailing * stripped (r27 F5): resolveComponent accepts the
+	// leading form and agents reasonably try it — a surviving leading * reached
+	// FTS as a syntax error and the sweep as a literal, silently defeating a
+	// real hit (verified: search '*envelope' returned nothing while
+	// 'envelope' hits). The sweep is substring-anywhere either way.
+	const term = target.trim().replace(/"/g, "").replace(/^\*+/, "").replace(/\*+$/, "");
 	if (!term) {
 		return "search: a bare '*' matches everything — give a symbol stem (e.g. 'executor').";
 	}
@@ -509,7 +518,9 @@ function search(db: DatabaseSync, target: string | undefined, stats: { more: num
 		return `no symbols or components matching "${term}" — the graph indexes exported package-level symbols of compiled sources only. For an unexported symbol, a method, a test, or a non-Go file, grep now: grep -rn "${term}" --include="*.go" (do NOT retry search stems).`;
 	}
 	const symbolLines = [...hits.values()].map((r) => symLine(r.file, r.line, r.kind, r.name, r.signature, r.doc));
-	return cap([...compLines, `symbols matching "${term}" (${hits.size}):`, ...symbolLines, ...(more ? [more] : [])].join("\n"), stats);
+	// Uncapped by design (r27 F4): run() applies the ONE cap — capping here
+	// too stacked the budget sentence twice and double-counted stats.more.
+	return [...compLines, `symbols matching "${term}" (${hits.size}):`, ...symbolLines, ...(more ? [more] : [])].join("\n");
 }
 
 function files(db: DatabaseSync, target: string | undefined, stats: { more: number }): string {

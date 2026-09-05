@@ -18,9 +18,11 @@ plugin writes the *wiki's* synced copy — a different artifact reviews must
 not consume) as one structured tool
 (`overview | component | search | files | deps`) to every workflow agent.
 Owns the "no grep expeditions" contract; the agent's pi invocation shape
-(`-e` extensions, `--tools` allowlist) lives in `internal/worker` and is
-consumed by both the worker and `harmostes.py` — pinned by
-`TestExtensionsSingleSource`. Truncation markers and query
+(`-e` extensions, `--tools` allowlist) lives in `internal/piargs` — a LEAF
+package, so the stdlib-only `cmd/harmostes-agent` need not sit on the
+worker's Dapr/k8s/otel closure to assemble four flags (r26 ARCH-1;
+`TestPiargsIsLeaf`) — and is consumed by both the worker and
+`harmostes.py`, pinned by `TestExtensionsSingleSource`. Truncation markers and query
 telemetry (`details.{command,target,chars,truncated,rig_sha}`) are the
 measurement surface for review-session efficiency (#336, #337). The emitting
 half of the review-time graph lives in the ops repo (`workspace.sh`).

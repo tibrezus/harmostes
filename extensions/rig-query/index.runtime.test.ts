@@ -51,7 +51,7 @@ test("wrapper: execute answers from the graph and reports provenance + identity"
 		// both branches so a rename is a test failure, not a silent missing
 		// column (#338 r17 M7).
 		assert.deepEqual(Object.keys(first.details).sort(), [
-			"chars", "command", "db", "graph", "probed", "resolved", "rig_sha", "sha_state", "target", "truncated",
+			"chars", "command", "db", "graph", "probed", "refused", "resolved", "rig_sha", "sha_state", "target", "truncated",
 		]);
 
 		// Producer-style re-emit: unlink + write = a NEW inode at the same path.
@@ -174,7 +174,13 @@ test("sha provenance: stamped / mismatch / malformed / absent (#338 r9 B2)", asy
 		r = await execute({ command: "overview" });
 		assert.equal(r.details.sha_state, "absent-refusal");
 		assert.equal(r.details.resolved, true);
-		assert.match(r.content[0].text, /graph provenance: absent \[rig sha_state=absent-refusal\] — this run emitted no verified graph/);
+		assert.equal(r.details.refused, false, "served-with-caveat is NOT an incident (r27 F2)");
+		assert.match(r.content[0].text, /graph provenance: absent — this run emitted no verified graph/);
+		// F2 negative test: served answers must never look like refusals —
+		// the rig_refused event keys off details.refused, and the text must
+		// not carry the machine token either (it did; the incident counter
+		// then fired on every ordinary answer in the degraded steady state).
+		assert.doesNotMatch(r.content[0].text, /\[rig sha_state=/);
 		assert.match(r.content[0].text, /fixture-repo/);
 		delete process.env.RIG_EXPECTED_SHA;
 		delete process.env.RIG_DB_CANDIDATES;
@@ -226,7 +232,7 @@ test("details key-set is an interface — uniform on success and absence (#338 r
 		assert.equal(absent.details.command, "overview", "absence keeps the telemetry shape");
 		assert.equal(absent.details.truncated, false);
 		assert.deepEqual(Object.keys(absent.details).sort(), [
-			"chars", "command", "db", "graph", "probed", "resolved", "rig_sha", "sha_state", "target", "truncated",
+			"chars", "command", "db", "graph", "probed", "refused", "resolved", "rig_sha", "sha_state", "target", "truncated",
 		], "absence and success must expose the SAME key set");
 	} finally {
 		delete process.env.RIG_DB;

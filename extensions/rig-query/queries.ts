@@ -122,7 +122,7 @@ const OVERVIEW_ROWS = 64; // sized for the grouped overview — a 23-component r
 // a shared stats object and render the marker from the same number — `truncated`
 // can never disagree with the text (a doc containing "…+" used to flip it).
 const MORE_ROWS = (n: number): string => `  …+${n} more`;
-const MORE_HITS = " …more hits — refine the term";
+const MORE_HITS = (n: number): string => ` …more hits (${n} beyond the pool) — refine the term`;
 const MAX_ROWS = 12;
 /** Search returns exactly this many hits; say so when the pool was bigger. */
 const SEARCH_LIMIT = 8;
@@ -488,25 +488,25 @@ function search(db: DatabaseSync, target: string | undefined, stats: { more: num
 		}
 	}
 
-	// Honest completeness (r25 F10): the probe is the GROUND TRUTH and always
-	// runs at a full pool — a "did the sweep exhaust the corpus?" shortcut
-	// under-counted, because the sweep's WHERE does not exclude rows the
-	// name-prefix arm already collected, so a budget refill was misread as
-	// exhaustion and the "…more hits" marker was dropped while more rows
-	// existed. The probe is LIMIT-bounded (pool size + 1) and cannot
-	// over-count: it only answers "does at least one more row match?".
-	// Component rows never participate (#338 r18 F3).
+	// Honest completeness (r25 F10 / r28): when the pool is full, one COUNT(*)
+	// on the SAME predicate yields the exact overflow. The r25 form derived
+	// the count from a LIMIT-bounded probe — correct for "does one more row
+	// exist?", wrong as a magnitude: on this repo's own graph, 415 matching
+	// rows reported more:1. COUNT runs only on the already-full path (the
+	// expensive arm), and every other renderer in this module reports
+	// total - limit — this one now does too. Component rows never participate
+	// (#338 r18 F3).
 	let more = "";
 	if (hits.size >= SEARCH_LIMIT) {
 		const like = `%${likeTerm}%`;
-		const probe = db
+		const n = Number(db
 			.prepare(
-				`SELECT 1 FROM symbols WHERE name LIKE ? ESCAPE '\\' OR signature LIKE ? ESCAPE '\\' OR doc LIKE ? ESCAPE '\\' LIMIT ?`,
+				`SELECT COUNT(*) n FROM symbols WHERE name LIKE ? ESCAPE '\\' OR signature LIKE ? ESCAPE '\\' OR doc LIKE ? ESCAPE '\\'`,
 			)
-			.all(like, like, like, hits.size + 1) as Row[];
-		if (probe.length > hits.size) {
-			more = MORE_HITS;
-			stats.more += probe.length - hits.size;
+			.get(like, like, like)?.n ?? 0);
+		if (n > hits.size) {
+			more = MORE_HITS(n - hits.size);
+			stats.more += n - hits.size;
 		}
 	}
 	if (hits.size === 0 && comps.length === 0) {

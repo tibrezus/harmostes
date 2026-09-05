@@ -58,10 +58,14 @@ test("search finds camelCase names despite doc-heavy FTS competition", () => {
 	assert.match(out, /internal\/model\/types\.go:44/);
 });
 
-test("search reports truncation instead of a silently partial answer", () => {
+test("search reports truncation with the honest count (r28)", () => {
 	const out = q({ command: "search", target: "handler" });
 	assert.match(out, /\(8\)/);
-	assert.match(out, /…more hits — refine the term/);
+	// The fixture has 10 doc-matching rows against a pool of 8: the marker
+	// must carry 2, not the probe-bounded "1" the r25 form reported (the
+	// probe answered "does one more exist?", never a magnitude — on the real
+	// graph 415 matching rows reported more:1).
+	assert.match(out, /…more hits \(2 beyond the pool\) — refine the term/);
 });
 
 test("every command respects the char budget (r27 P8/F4)", () => {
@@ -90,7 +94,7 @@ test("search mixed case: sweep pages past prefix duplicates, marker survives (r2
 	// sweep must reach the full pool and the probe must set the marker.
 	const out = q({ command: "search", target: "mixed-case" });
 	assert.match(out, /\(8\)/, "the pool must fill to the budget");
-	assert.match(out, /…more hits — refine the term/, "one more row exists — the marker must be present");
+	assert.match(out, /…more hits \(1 beyond the pool\) — refine the term/, "9 distinct rows, 8 shown — the marker must count");
 	assert.match(out, /mixed-case0/, "the prefix-arm hits survive");
 });
 

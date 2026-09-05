@@ -66,7 +66,11 @@ func graphPresenceLine(graphPath string) (string, bool) {
 		return "graph: absent — prepare emitted no rig.db; the rig tool will degrade to grep (archaeology cost returns)", true
 	}
 	if _, err := os.Stat(graphPath + ".sha"); err != nil {
-		return "graph: unstamped — prepare emitted rig.db but no .sha; the rig tool will refuse it (RIG_EXPECTED_SHA is armed)", true
+		// r28: say what will ACTUALLY happen — strictness is armed only for a
+		// stamped graph (below), so an unstamped one is served with a caveat,
+		// not refused. A run-level line that announces an incident that
+		// structurally cannot occur trains readers to ignore the class.
+		return "graph: unstamped — prepare emitted rig.db but no .sha; the rig tool will serve it with an unverified-graph caveat (sha_state=absent-refusal)", true
 	}
 	return "", false
 }
@@ -332,7 +336,7 @@ func runOneShot() {
 	}
 	deps.Agent = worker.RPCAgentRunner{
 		Opts: agent.RPCOptions{
-			Args:        piargs.PiArgs(wf.Spec.Agent),
+			Args:        piargs.PiArgs(wf.Spec.Agent.Skill, wf.Spec.Agent.Model, wf.Spec.Agent.Tools),
 			Workdir:     workdir,
 			Env:         piEnv,
 			SessionRoot: piSessions,

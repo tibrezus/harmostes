@@ -213,6 +213,31 @@ test("sha provenance: stamped / mismatch / malformed / absent (#338 r9 B2)", asy
 	}
 });
 
+test("a suppressed walk under an armed expectation is an unreachable refusal (r28)", async () => {
+	// RIG_DB_CANDIDATES="" used to return plain absence (refused:false,
+	// sha_state:null) even under strictness — a test seam shipping enabled in
+	// the worker image could silently disarm the freshness rule. Now: no
+	// resolved path + RIG_EXPECTED_SHA armed => refused, countable,
+	// distinct from plain absence.
+	const dir = tmpdir();
+	process.env.RIG_DB_CANDIDATES = "";
+	process.env.RIG_EXPECTED_SHA = "0123abcd";
+	process.env.RIG_REQUIRE_SHA = "1";
+	try {
+		const { execute } = await makeHarness(dir);
+		const r = await execute({ command: "overview" });
+		assert.equal(r.details.sha_state, "unreachable");
+		assert.equal(r.details.refused, true);
+		assert.equal(r.details.resolved, false);
+		assert.match(r.content[0].text, /REFUSED: the reviewed graph is unreachable/);
+		assert.match(r.content[0].text, /nothing — the walk was suppressed/);
+	} finally {
+		delete process.env.RIG_DB_CANDIDATES;
+		delete process.env.RIG_EXPECTED_SHA;
+		delete process.env.RIG_REQUIRE_SHA;
+	}
+});
+
 test("details key-set is an interface — uniform on success and absence (#338 r9)", async () => {
 	const dir = tmpdir();
 	process.env.RIG_DB = `${dir}/rig-missing-${process.pid}.db`;

@@ -34,9 +34,17 @@ the contractual pair of `piargs.RigGraphPath`; a rename there is a
 fleet-wide `graph: absent` here) together with its provenance stamp
 `/workspace/rig.db.sha` (the reviewed HEAD SHA, written as an atomic pair
 with the graph — the wrapper checks the graph's inode identity while the
-stamp is read beside it). On the one-shot dispatch
-path the worker injects `RIG_EXPECTED_SHA` + `RIG_REQUIRE_SHA=1` into the
-pi child's env; under that contract `mismatch`, `absent`, `malformed` and
-`unchecked` graphs are all REFUSED — strictness is a per-run decision, and
-run-level absence (`graph: absent` / `graph: unstamped`) is logged at worker
-startup so degraded runs stay countable from pod logs alone.
+stamp is read beside it). Strictness as implemented (r28 restatement):
+
+- expectation armed + **stamped** graph → the worker injects
+  `RIG_EXPECTED_SHA` + `RIG_REQUIRE_SHA=1`; `mismatch`, `malformed` and
+  `unchecked` (incl. short stamps) are REFUSED;
+- expectation armed + **unstamped** graph → served with an
+  unverified-graph caveat (`sha_state=absent-refusal`, still countable
+  telemetry) — the stamp's producer is the ops repo, and a fleet-wide
+  refusal over its emission failure would make the tool strictly
+  negative-value;
+- expectation armed + **unreachable** graph (nothing resolves, e.g. a
+  suppressed walk or mis-mounted path) → REFUSED (`sha_state=unreachable`);
+- run-level degradation (`graph: absent` / `graph: unstamped`) is logged at
+  worker startup so degraded runs stay countable from pod logs alone.

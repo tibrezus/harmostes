@@ -20,7 +20,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"github.com/tibrezus/harmostes/api/v1alpha1"
 	"github.com/tibrezus/harmostes/internal/piargs"
 	"log"
 	"os"
@@ -111,7 +110,7 @@ func main() {
 	// keeping this binary identical to the worker's agent path (#338 r16 F1).
 	hlog("starting pi --mode rpc (model=%s tools=%s workdir=%s)", *model, *tools, *workdir)
 	rpc, err := agent.NewRPC(ctx, agent.RPCOptions{
-		Args:    piargs.PiArgs(v1alpha1.AgentSpec{Skill: *skill, Model: *model, Tools: splitTools(*tools)}),
+		Args:    piargs.PiArgs(*skill, *model, splitTools(*tools)),
 		Workdir: *workdir,
 		Env:     os.Environ(),
 		Log:     logger,

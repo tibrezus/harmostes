@@ -99,7 +99,9 @@ Prefer this over find/grep for ANY "where is X" or "what uses Y" question; drop 
 			// (r27 F2) is the INCIDENT flag the worker's rig_refused event keys
 			// off — true only on refusal rows, never on served-with-caveat
 			// answers (an unstamped graph under an armed expectation is the
-			// deliberate ARCH-2 steady state, not an incident). The walk is the
+			// deliberate ARCH-2 steady state, not an incident). sha_state's
+			// refusal vocabulary: mismatch | malformed | absent-refusal |
+			// unchecked | unreachable (r28). The walk is the
 			// LIBRARY's resolveRigDbCandidates — ONE array (override hatch →
 			// confinement → explicit/RIG_DB/extras) feeding BOTH resolution and
 			// telemetry; the wrapper never forks its own candidate list (r23 P1:
@@ -107,6 +109,18 @@ Prefer this over find/grep for ANY "where is X" or "what uses Y" question; drop 
 			const candidates = resolveRigDbCandidates(undefined, ["/workspace/rig.db"]);
 			const path = candidates.find((c) => existsSync(c)) ?? null;
 			if (!path) {
+				// Unreachable under an armed expectation (r28): a run that
+				// DEMANDS a graph resolving nothing is an incident — the emission
+				// landed where the walk cannot see it (mis-mounted RIG_DB, a
+				// suppressed RIG_DB_CANDIDATES walk, a renamed emit target).
+				// Indistinguishable-from-missing is not good enough: refused,
+				// countable, distinct from plain absence.
+				if (process.env.RIG_EXPECTED_SHA !== undefined) {
+					return {
+						content: [{ type: "text", text: `no rig.db found (walked ${candidates.join(", ") || "nothing — the walk was suppressed"}) — this run demands a graph (RIG_EXPECTED_SHA is armed) but none is reachable.\nREFUSED: the reviewed graph is unreachable — navigating without it would answer from nothing. Navigate with bash, or report the emission/mount failure in the review body.` }],
+						details: { db: null, command: p.command, target: p.target ?? null, chars: 0, truncated: false, resolved: false, refused: true, graph: false, probed: candidates, rig_sha: null, sha_state: "unreachable" },
+					};
+				}
 				return {
 					content: [
 						{

@@ -5,12 +5,10 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
-
-	"github.com/tibrezus/harmostes/api/v1alpha1"
 )
 
 func TestPiArgsLoadBuiltinExtensions(t *testing.T) {
-	args := buildPiArgs(v1alpha1.AgentSpec{Skill: "pr-review", Model: "litellm/test-model"}, Extensions, alwaysPresent)
+	args := buildPiArgs("pr-review", "litellm/test-model", nil, Extensions, alwaysPresent)
 	joined := strings.Join(args, " ")
 	// r25 F7: iterate the REAL Extensions list — a hard-coded copy here is the
 	// drift hole it exists to catch.
@@ -44,13 +42,13 @@ func TestPiArgsLoadBuiltinExtensions(t *testing.T) {
 // tools included. A workflow declaring spec.agent.tools would silently lose
 // rig while the task contract still mandates it — PiArgs appends it.
 func TestPiArgsToolsAllowlistKeepsRig(t *testing.T) {
-	args := buildPiArgs(v1alpha1.AgentSpec{Skill: "s", Model: "m", Tools: []string{"bash", "read"}}, Extensions, alwaysPresent)
+	args := buildPiArgs("s", "m", []string{"bash", "read"}, Extensions, alwaysPresent)
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, "--tools bash,read,rig") {
 		t.Errorf("tools allowlist must gain rig, got: %s", joined)
 	}
 	// Already declared → not duplicated.
-	args = buildPiArgs(v1alpha1.AgentSpec{Skill: "s", Model: "m", Tools: []string{"bash", "rig"}}, Extensions, alwaysPresent)
+	args = buildPiArgs("s", "m", []string{"bash", "rig"}, Extensions, alwaysPresent)
 	joined = strings.Join(args, " ")
 	if !strings.Contains(joined, "--tools bash,rig") || strings.Contains(joined, "rig,rig") {
 		t.Errorf("declared rig must not be duplicated, got: %s", joined)
@@ -63,7 +61,7 @@ func alwaysPresent(string) (os.FileInfo, error) { return nil, nil }
 // from the --tools allowlist) instead of killing pi at startup (#338 r14 B1).
 func TestPiArgsDropsMissingExtension(t *testing.T) {
 	args := buildPiArgs(
-		v1alpha1.AgentSpec{Skill: "s", Model: "m", Tools: []string{"bash"}},
+		"s", "m", []string{"bash"},
 		[]string{"/extensions/litellm-provider", "/extensions/rig-query"},
 		func(p string) (os.FileInfo, error) {
 			if strings.Contains(p, "rig-query") {
@@ -122,7 +120,7 @@ func TestExtensionsSingleSource(t *testing.T) {
 		// (provider-only extensions legitimately have no entry — see the
 		// extensionTools comment; iterating the REAL map means a tool ADDED
 		// there is checked without this test growing a copy, r25 F7.)
-		args := buildPiArgs(v1alpha1.AgentSpec{Skill: "s", Model: "m"}, Extensions, alwaysPresent)
+		args := buildPiArgs("s", "m", nil, Extensions, alwaysPresent)
 		if !strings.Contains(strings.Join(args, " "), ext) {
 			t.Errorf("PiArgs does not load %s", ext)
 		}
@@ -204,6 +202,26 @@ func TestRigGraphPathSingleSource(t *testing.T) {
 	want := `resolveRigDbCandidates(undefined, ["` + RigGraphPath + `"])`
 	if !strings.Contains(idx, want) {
 		t.Errorf("rig-query index.ts does not probe %s — the extension's container list and the worker pre-flight have drifted apart (want %q in the candidates call)", RigGraphPath, want)
+	}
+}
+
+// TestHarmostesPyHasNoStaleExtensions is the REVERSE containment half
+// (r28 P2 LOW): TestExtensionsSingleSource checks Go ⊆ python; this asserts
+// python ⊆ Go — a stale extra in harmostes.py (extension removed from the
+// image but still mirrored) would otherwise pass every gate while the
+// primitive loads a dead path.
+func TestHarmostesPyHasNoStaleExtensions(t *testing.T) {
+	py := string(mustRead(t, "../../harmostes.py"))
+	allowed := map[string]bool{}
+	for _, ext := range Extensions {
+		allowed[ext] = true
+	}
+	for _, m := range strings.Split(py, "\n") {
+		for _, tok := range strings.Split(m, "\"") {
+			if strings.HasPrefix(tok, "/extensions/") && !allowed[tok] {
+				t.Errorf("harmostes.py references %q which piargs.Extensions does not carry — a stale mirror entry", tok)
+			}
+		}
 	}
 }
 

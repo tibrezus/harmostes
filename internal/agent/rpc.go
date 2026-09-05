@@ -229,6 +229,9 @@ func (r *RPC) Prompt(ctx context.Context, message, label string) (Event, int, Us
 				recordToolCall(ctx, wf, ev.ToolName)
 			case pijsonl.EvToolEnd:
 				// Capture tool result (full content, Option A) for the current tool.
+				// (harmostes.success was accidentally dropped from the span in the
+				// r27 rigRefused refactor — restored r28: per-tool failure rate is
+				// the milestone v0.6.0 business-telemetry join.)
 				if len(capture.Tools) > 0 {
 					idx := len(capture.Tools) - 1
 					result, isErr := toolEndResult(ev.Raw)
@@ -237,6 +240,18 @@ func (r *RPC) Prompt(ctx context.Context, message, label string) (Event, int, Us
 					capture.Tools[idx].Success = &success
 					details := toolEndDetails(ev.Raw)
 					capture.Tools[idx].Details = details
+					if toolSpan != nil {
+						toolSpan.SetAttributes(attribute.Bool("harmostes.success", success))
+					}
+					// Contract-drift alarm (r28 P3): the refused flag is the ONLY
+					// trigger for rig_refused; if a producer refactor renames the
+					// key, incidents silently stop being countable. A rig row with
+					// NO refused key at all is therefore itself an event.
+					if capture.Tools[idx].Name == "rig" {
+						if _, ok := details["refused"]; !ok {
+							logf(r.log, Event{Type: "rig_schema_drift", Message: "rig tool result carries no refused key — incident telemetry is blind until the extension and worker agree again"})
+						}
+					}
 					// Freshness incidents must be countable WITHOUT a session
 					// join (#338 r25 F11). The trigger is the STRUCTURED
 					// refused flag (r27 F2), never text matching: a

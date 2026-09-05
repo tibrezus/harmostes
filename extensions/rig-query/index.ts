@@ -17,7 +17,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox"; // pi aliases typebox for extensions — NO npm dep at runtime
 import { existsSync, statSync } from "node:fs";
-import { openRig, resolveRigDb, resolveRigDbCandidates, verifyProvenance, rigQuery, type RigParams } from "./queries.ts";
+import { openRig, resolveRigDbCandidates, verifyProvenance, rigQuery, type RigParams } from "./queries.ts";
 
 export default function (pi: ExtensionAPI) {
 	// Handles keyed by path + file identity (ino/mtime): the producer's
@@ -90,32 +90,24 @@ Prefer this over find/grep for ANY "where is X" or "what uses Y" question; drop 
 			// Container paths are the runtime contract (worker image layout) — they
 			// live HERE, not in the library (#338 r3 pillar 1). The FALLBACK PATH
 			// CONTRACT: pr-review prepare (ops workspace.sh) writes $WORKDIR/rig.db
-			// = /workspace/rig.db, matching the extras below. Moving the emit
-			// target means moving this list — two halves of one invariant.
+			// = /workspace/rig.db — the ONLY sanctioned location. /workspace/repo
+			// (the PR checkout) is deliberately NOT in the walk: a graph committed
+			// by a reviewed repo is PR content, and must not answer as
+			// authoritative architecture (#338 r20 S1 / r23 P5).
 			// NOTE: `details` below are a telemetry INTERFACE — session analysis
-			// (#336) joins on these keys; do not rename casually. The walk itself
-			// is ONE array feeding both resolution and telemetry (r22: the r21
-			// confinement fork passed different candidates to each, turning the
-			// tool off in production).
-			const containerCandidates = ["/workspace/rig.db", "/workspace/repo/rig.db"];
-			const override = process.env.RIG_DB_CANDIDATES !== undefined
-				? process.env.RIG_DB_CANDIDATES.split(",").filter(Boolean)
-				: null;
-			// Freshness confinement (r21 F3): when the reviewed SHA is known,
-			// pod-supplied RIG_DB is dropped — it may point at the wiki's synced
-			// copy, the artifact reviews must not consume. ONE array feeds both
-			// resolution and telemetry (r22 fix of the r21 confinement fork).
-			// Without confinement the documented RIG_DB env stays first in the walk.
-			const candidates = process.env.RIG_EXPECTED_SHA !== undefined
-				? containerCandidates
-				: [...(process.env.RIG_DB ? [process.env.RIG_DB] : []), ...containerCandidates];
+			// (#336) joins on these keys; do not rename casually. The walk is the
+			// LIBRARY's resolveRigDbCandidates — ONE array (override hatch →
+			// confinement → explicit/RIG_DB/extras) feeding BOTH resolution and
+			// telemetry; the wrapper never forks its own candidate list (r23 P1:
+			// the r22 inline fork left the tested library walk as dead code).
+			const candidates = resolveRigDbCandidates(undefined, ["/workspace/rig.db"]);
 			const path = candidates.find((c) => existsSync(c)) ?? null;
 			if (!path) {
 				return {
 					content: [
 						{
 							type: "text",
-							text: "no rig.db found (probed $RIG_DB, <cwd>/rig.db, /workspace/rig.db, /workspace/repo/rig.db — see details.probed) — this run emitted no graph; navigate with bash.",
+							text: "no rig.db found (walked $RIG_DB then /workspace/rig.db — full list in details.probed) — this run emitted no graph; navigate with bash.",
 						},
 					],
 					// Uniform telemetry shape on absence (#338 r9): same keys as success,
@@ -136,8 +128,7 @@ Prefer this over find/grep for ANY "where is X" or "what uses Y" question; drop 
 				const provenance = verifyProvenance(`${path}.sha`, process.env.RIG_EXPECTED_SHA);
 				rigSha = provenance.rigSha;
 				shaState = provenance.state;
-			} catch (e) {
-				console.error("[rig-debug] provenance read failed:", String(e));
+			} catch {
 				rigSha = "absent";
 				shaState = "absent";
 			}

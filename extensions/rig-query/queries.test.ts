@@ -18,9 +18,13 @@ import { openRig, resolveRigDb, rigQuery, type RigParams } from "./queries.ts";
 const FIXTURE = fileURLToPath(new URL("./fixtures/rig.db", import.meta.url));
 
 function q(params: RigParams): string {
+	return qr(params).text;
+}
+
+function qr(params: RigParams): { text: string; resolved: boolean } {
 	const db = openRig(FIXTURE);
 	try {
-		return rigQuery(db, params).text;
+		return rigQuery(db, params);
 	} finally {
 		db.close(); // these tests are the example the next extension copies
 	}
@@ -261,4 +265,67 @@ test("the wrapper registers the rig tool + shutdown handler (#338 r5 B2)", async
 	const command = (tools[0].parameters.properties as Record<string, { type?: string; enum?: string[] }>).command;
 	assert.equal(command.type, "string", "command schema must carry type:string (StringEnum, not Type.Enum)");
 	assert.deepEqual([...(command.enum ?? [])].sort(), ["component", "deps", "files", "overview", "search"]);
+});
+
+test("resolved is answered-semantics: every command sets it, refusals don't exist here (r23 P7)", () => {
+	// Pinned semantics: `resolved` = "the graph answered this command" — hits,
+	// structured no-match answers, and usage hints alike. It is NOT "target
+	// hit" (the text says that) and not wrapper-level (absence/refusal rows
+	// carry resolved:false from index.ts, covered in index.runtime.test.ts).
+	assert.equal(qr({ command: "search", target: "envelope" }).resolved, true, "search: hit");
+	assert.equal(qr({ command: "search", target: "zzzznomatch" }).resolved, true, "search: structured no-match");
+	assert.equal(qr({ command: "search" }).resolved, true, "search: usage hint");
+	assert.equal(qr({ command: "overview" }).resolved, true, "overview: even an empty graph answered");
+	assert.equal(qr({ command: "component", target: "kernel" }).resolved, true, "component");
+	assert.equal(qr({ command: "files", target: "internal/graph/*" }).resolved, true, "files");
+	assert.equal(qr({ command: "deps", target: "kernel" }).resolved, true, "deps");
+});
+
+test("verifyProvenance: absent-refusal is reachable — an expected SHA with no stamp refuses (r23 P4)", async () => {
+	const { verifyProvenance } = await import("./queries.ts");
+	const dir = tmpdir();
+	const stamp = `${dir}/rig-stamp-${process.pid}.sha`;
+	// no stamp, nothing expected → plain absent
+	assert.deepEqual(verifyProvenance(stamp, undefined), { rigSha: "absent", state: "absent" });
+	const { writeFileSync } = await import("node:fs");
+	// no stamp, SHA demanded → absent-refusal (the wrapper refuses on this)
+	assert.deepEqual(verifyProvenance(stamp, "0123abcd"), { rigSha: "absent", state: "absent-refusal" });
+	// stamp + SHA demanded → verified; different SHA → mismatch
+	writeFileSync(stamp, "0123abcd");
+	assert.equal(verifyProvenance(stamp, "0123abcd").state, "verified");
+	assert.equal(verifyProvenance(stamp, "ffffffff").state, "mismatch");
+	// malformed content is never echoed back
+	assert.deepEqual(verifyProvenance(stamp, "0123abcd", () => "root:x:0:0"), { rigSha: "malformed", state: "malformed" });
+	unlinkSync(stamp);
+});
+
+test("resolveRigDbCandidates: the override hatch is real — exact list, empty = suppression (r23 P8)", async () => {
+	const { resolveRigDbCandidates } = await import("./queries.ts");
+	// suppression: "" resolves to NOTHING, regardless of RIG_DB or extras —
+	// the seam that keeps this tier green inside a worker pod.
+	const prevDb = process.env.RIG_DB;
+	try {
+		process.env.RIG_DB = "/nonexistent/from-env.db";
+		process.env.RIG_DB_CANDIDATES = "";
+		assert.deepEqual(resolveRigDbCandidates(undefined, ["/workspace/rig.db"]), [], "empty override suppresses the whole walk");
+		// exact list: replaces the walk, ignoring RIG_DB and extras
+		process.env.RIG_DB_CANDIDATES = "/exact/one.db,/exact/two.db";
+		assert.deepEqual(resolveRigDbCandidates("/explicit.db", ["/workspace/rig.db"]), ["/exact/one.db", "/exact/two.db"]);
+		// the hatch outranks confinement too — that is what makes
+		// execute-level provenance states testable (index.runtime.test.ts).
+		process.env.RIG_EXPECTED_SHA = "0123abcd";
+		assert.deepEqual(resolveRigDbCandidates(undefined, ["/workspace/rig.db"]), ["/exact/one.db", "/exact/two.db"]);
+		delete process.env.RIG_EXPECTED_SHA;
+		// confinement without the hatch: extras only, RIG_DB dropped
+		process.env.RIG_DB_CANDIDATES = undefined;
+		delete process.env.RIG_DB_CANDIDATES;
+		process.env.RIG_EXPECTED_SHA = "0123abcd";
+		assert.deepEqual(resolveRigDbCandidates(undefined, ["/workspace/rig.db"]), ["/workspace/rig.db"], "confinement drops env candidates");
+		delete process.env.RIG_EXPECTED_SHA;
+	} finally {
+		if (prevDb === undefined) delete process.env.RIG_DB;
+		else process.env.RIG_DB = prevDb;
+		delete process.env.RIG_DB_CANDIDATES;
+		delete process.env.RIG_EXPECTED_SHA;
+	}
 });

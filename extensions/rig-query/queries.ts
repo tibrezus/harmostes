@@ -25,9 +25,21 @@ type Row = Record<string, unknown>;
  * bake in a mount layout whose graph may be from another revision).
  */
 export function resolveRigDbCandidates(explicit?: string, extra: string[] = []): string[] {
+	// Hermeticity hatch (r23 P8): RIG_DB_CANDIDATES replaces the walk with an
+	// exact list ("" = suppression) — the seam tests use to be filesystem-
+	// independent inside a worker pod. It outranks confinement by design:
+	// it is how execute-level provenance states become testable at all.
+	const override = process.env.RIG_DB_CANDIDATES !== undefined
+		? process.env.RIG_DB_CANDIDATES.split(",").filter(Boolean)
+		: null;
+	if (override !== null) return override;
+	// Freshness confinement (r21 F3): with a reviewed SHA the walk is the
+	// caller's sanctioned extras ONLY — pod-supplied RIG_DB may point at the
+	// wiki's synced copy, an artifact reviews must not consume.
+	if (process.env.RIG_EXPECTED_SHA !== undefined) return extra;
 	// NO cwd-relative or bare candidates: a graph resolved out of the working
 	// tree is PR content answering as authoritative architecture (#338 r20
-	// S1). The walk is explicit → RIG_DB → the caller's sanctioned extras.
+	// S1). The default walk is explicit → RIG_DB → the caller's extras.
 	return [
 		explicit,
 		process.env.RIG_DB,
@@ -41,7 +53,7 @@ export function resolveRigDbCandidates(explicit?: string, extra: string[] = []):
  * or bare "rig.db" — a stray graph in the workdir must never shadow the
  * reviewed checkout's emit. Callers report the full walk in details.probed.
  */
-export type ProvenanceState = "verified" | "mismatch" | "unchecked" | "malformed" | "absent";
+export type ProvenanceState = "verified" | "mismatch" | "unchecked" | "malformed" | "absent" | "absent-refusal";
 
 /**
  * Verify the graph's provenance stamp against an expected reviewed SHA.
@@ -51,7 +63,9 @@ export type ProvenanceState = "verified" | "mismatch" | "unchecked" | "malformed
  * States: verified (exact, case-insensitive equality with the expectation),
  * mismatch (stamped but different — callers must refuse), malformed (stamp
  * content is not a sha token), unchecked (stamped, nothing to verify
- * against), absent (no stamp was written).
+ * against), absent (no stamp, nothing expected), absent-refusal (no stamp
+ * but a SHA WAS expected — callers must refuse: prepare died before
+ * stamping, so the graph is unverifiable, r23 P4).
  */
 export function verifyProvenance(
 	stampPath: string,
@@ -59,14 +73,15 @@ export function verifyProvenance(
 	readStamp: (p: string) => string | null = (p) => {
 		try {
 			return readFileSync(p, "utf8").trim();
-		} catch (e) {
-			console.error("[rig-debug readStamp]", p, String(e));
+		} catch {
 			return null;
 		}
 	},
 ): { rigSha: string; state: ProvenanceState } {
 	const raw = readStamp(stampPath);
-	if (raw === null) return { rigSha: "absent", state: "absent" };
+	if (raw === null) {
+		return expectedSha ? { rigSha: "absent", state: "absent-refusal" } : { rigSha: "absent", state: "absent" };
+	}
 	if (!/^[0-9a-f]{7,40}$/i.test(raw)) return { rigSha: "malformed", state: "malformed" };
 	const rigSha = raw.toLowerCase();
 	if (!expectedSha) return { rigSha, state: "unchecked" };
@@ -167,6 +182,11 @@ export function openRig(path: string): DatabaseSync {
  * only in prose (#338 r3 pillar 7).
  */
 export function rigQuery(db: DatabaseSync, p: RigParams): { text: string; truncated: boolean; resolved: boolean } {
+	// `resolved` semantics (pinned r23 P7): "the graph answered this command" —
+	// true for hits, structured no-match answers, and usage hints alike (every
+	// command sets it); the only false rows are wrapper-level absence and
+	// provenance refusals, where no query ran. NOT "target hit" — that is what
+	// the text says.
 	const stats = { more: 0, resolved: false };
 	const run = (fn: (s: { more: number; resolved: boolean }) => string): { text: string; truncated: boolean; resolved: boolean } => {
 		const text = cap(fn(stats), stats);
@@ -358,6 +378,7 @@ function component(db: DatabaseSync, target: string | undefined, stats: { more: 
 }
 
 function search(db: DatabaseSync, target: string | undefined, stats: { more: number }): string {
+	stats.resolved = true; // same semantics as every command: the graph answered
 	if (!target || !target.trim()) {
 		return "search: give a symbol term (prefix match supported: 'handler*') — a bare '*' has no answer.";
 	}

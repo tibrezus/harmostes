@@ -89,20 +89,26 @@ test("wrapper: session_shutdown closes every handle (idempotent)", async () => {
 	}
 });
 
-test("wrapper: the container fallback walk is real and suppressible (#338 r6 B2 / r16 C1)", async () => {
+test("wrapper: the container fallback walk is real and suppressible (#338 r6 B2 / r16 C1 / r23 P8)", async () => {
 	// Behaviour, not source text: with the fallback walk active and no env
 	// override, resolution lands on the container path prepare emits to.
-	// RIG_DB_CANDIDATES (empty) suppresses the walk — the hermeticity
-	// hatch the absence tests rely on inside a worker pod.
+	// RIG_DB_CANDIDATES replaces the walk with an exact list ("" = full
+	// suppression) — the hermeticity hatch that keeps this tier green inside
+	// a worker pod, where /workspace/rig.db actually exists.
 	const { resolveRigDb, resolveRigDbCandidates } = await import("./queries.ts");
-	const candidates = resolveRigDbCandidates(undefined, ["/workspace/rig.db", "/workspace/repo/rig.db"]);
+	const candidates = resolveRigDbCandidates(undefined, ["/workspace/rig.db"]);
 	assert.ok(candidates.includes("/workspace/rig.db"), "the container contract must stay in the walk");
+	assert.ok(!candidates.includes("/workspace/repo/rig.db"), "the PR checkout is repo content — never a graph source (r20 S1 / r23 P5)");
 	process.env.RIG_DB_CANDIDATES = "";
 	try {
-		assert.equal(resolveRigDb(undefined, ["/workspace/rig.db"]), null, "empty override suppresses the fallback walk");
+		assert.equal(resolveRigDb(undefined, ["/workspace/rig.db"]), null, "empty override suppresses the fallback walk — filesystem-independent");
 	} finally {
 		delete process.env.RIG_DB_CANDIDATES;
 	}
+	// The override is an EXACT list: it outranks both RIG_DB and confinement,
+	// which is what makes execute-level provenance states testable at all.
+	const exact = resolveRigDbCandidates(undefined, ["/workspace/rig.db"]);
+	assert.ok(Array.isArray(exact));
 });
 
 test("sha provenance: stamped / mismatch / malformed / absent (#338 r9 B2)", async () => {
@@ -121,18 +127,36 @@ test("sha provenance: stamped / mismatch / malformed / absent (#338 r9 B2)", asy
 		r = await execute({ command: "overview" });
 		assert.equal(r.details.rig_sha, "0123abcd");
 		assert.equal(r.details.sha_state, "unchecked");
-		// stamped + verified/mismatch states are driven through the pure
-		// verifyProvenance helper — under confinement the wrapper only walks
-		// container paths, so execute-level state checks here would test the
-		// harness, not the contract.
-		const { verifyProvenance } = await import("./queries.ts");
-		const verified = verifyProvenance(shaPath, "0123abcd");
-		assert.equal(verified.state, "verified");
-		assert.equal(verified.rigSha, "0123abcd");
-		const mismatched = verifyProvenance(shaPath, "ffffffff");
-		assert.equal(mismatched.state, "mismatch");
-		assert.equal(mismatched.rigSha, "0123abcd");
+		// Execute-level states (r23 P8): the RIG_DB_CANDIDATES hatch injects the
+		// tmp graph as an exact walk, so verified / mismatch / absent-refusal
+		// are asserted through the REAL wrapper — refusal rows must be
+		// reachable, countable telemetry, not dead branches.
+		process.env.RIG_DB_CANDIDATES = dbPath;
+		// verified: expectation matches the stamp → answered
+		process.env.RIG_EXPECTED_SHA = "0123abcd";
+		r = await execute({ command: "overview" });
+		assert.equal(r.details.sha_state, "verified");
+		assert.equal(r.details.resolved, true);
+		assert.match(r.content[0].text, /fixture-repo/);
+		// mismatch: REFUSED with structured telemetry — navigating another
+		// revision is refused, but the event stays countable (r15).
+		process.env.RIG_EXPECTED_SHA = "ffffffff";
+		r = await execute({ command: "overview" });
+		assert.equal(r.details.sha_state, "mismatch");
+		assert.equal(r.details.resolved, false);
+		assert.match(r.content[0].text, /REFUSED: this graph does not match the reviewed SHA/);
+		assert.doesNotMatch(r.content[0].text, /fixture-repo/);
+		// absent-refusal: expectation set but prepare never stamped → REFUSED
+		// (r23 P4: the branch must be REACHABLE — an unstamped graph under a
+		// demanded SHA is unverifiable, not "unverified but served").
+		rmSync(shaPath, { force: true });
+		r = await execute({ command: "overview" });
+		assert.equal(r.details.sha_state, "absent-refusal");
+		assert.equal(r.details.resolved, false);
+		assert.match(r.content[0].text, /REFUSED: prepare did not stamp this graph/);
+		assert.doesNotMatch(r.content[0].text, /fixture-repo/);
 		delete process.env.RIG_EXPECTED_SHA;
+		delete process.env.RIG_DB_CANDIDATES;
 		// malformed (content never echoed — the F11 oracle class)
 		writeFileSync(shaPath, "root:x:0:0:secrets");
 		r = await execute({ command: "overview" });

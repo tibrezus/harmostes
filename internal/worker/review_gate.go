@@ -349,7 +349,7 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 			sha := res.Envelope.HeadSHA
 			at, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf, cand.pointer, sha, label, cand.labeled)
 			if err != nil {
-				if errors.Is(err, attempt.ErrDeadDispatchBreaker) || errors.Is(err, attempt.ErrRecentlyDismissed) {
+				if isIntentionalStop(err) {
 					// Surface the breaker / churn guard as the decision, not
 					// a failure: the system stopped ON PURPOSE and says why
 					// (#328, #343).
@@ -371,10 +371,17 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 				sha = candSha(cand)
 			}
 			if _, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf, cand.pointer, sha, label, cand.labeled); err != nil {
-				if errors.Is(err, attempt.ErrRecentlyDismissed) {
-					// Churn guard: this pointer's era was horizon-dismissed —
-					// no re-arm without a human request (#343).
+				if isIntentionalStop(err) {
+					// Same discipline as the proceed branch: an intentional
+					// stop is a STANDDOWN with a timeline row — "why is this
+					// labeled PR not being reviewed?" must be answerable from
+					// pod logs or the durable history alone (r2 P7).
+					log("review-ready: %s: %v", cand.pointer, err)
 					lastDecision, lastReason = "standdown", err.Error()
+					emitGate(ctx, deps.TL, liveAgg, review.Result{
+						Evaluation:  review.Evaluation{Decision: review.DecisionStanddown, Reason: err.Error()},
+						NewArmedSha: "",
+					}, cand.repo, cand.pr)
 					continue
 				}
 				log("review-ready: arm claim %s failed: %v", cand.pointer, err)
@@ -446,6 +453,14 @@ func findClaim(claims []v1alpha1.Attempt, pointer string) *v1alpha1.Attempt {
 
 // classifyRelease maps a standdown reason onto the claim's release-reason
 // vocabulary.
+// isIntentionalStop reports arm refusals that are the system stopping ON
+// PURPOSE (#328 breaker, #343 churn guard) — surfaced as standdowns, never
+// as failures. One predicate so a third sentinel cannot be swallowed by a
+// call site forgetting to extend its list (r2 P3).
+func isIntentionalStop(err error) bool {
+	return errors.Is(err, attempt.ErrDeadDispatchBreaker) || errors.Is(err, attempt.ErrRecentlyDismissed)
+}
+
 func classifyRelease(reason string) string {
 	switch {
 	case strings.Contains(reason, "consumed"):

@@ -90,7 +90,12 @@ func (r *WorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		logger.Error(err, "claim trigger slot")
 		return ctrl.Result{RequeueAfter: r.PollInterval}, nil
 	}
+	// Post-deploy proof of the #343 churn-engine fix lives HERE: the
+	// won/lost counts are the sweep cadence, greppable in the reconcile
+	// spans.
+	span.SetAttributes(attribute.Bool("harmostes.trigger_slot_won", won))
 	if !won {
+		logger.V(1).Info("trigger slot on cooldown — no worker scheduled", "workflow", wf.Name)
 		return ctrl.Result{RequeueAfter: requeueAfter}, nil
 	}
 	logger.Info("scheduling worker", "workflow", wf.Name, "reason", dueReason(&wf))
@@ -279,6 +284,10 @@ func (r *WorkflowReconciler) observeGeneration(ctx context.Context, wf *v1alpha1
 		// never runs (init-container crash, DNS failure, image pull error) left it
 		// frozen, so isDue returned true every reconcile → rapid-fire triggers
 		// (#118). The worker overwrites this with the actual completion time.
+		// The SCHEDULE-time stamp (this line + claimTriggerSlot's, same
+		// reconcile) is the authoritative cooldown anchor; the worker's
+		// completion-time overwrite is bookkeeping for the next due check
+		// (#118). Do not remove either without re-reading isDue.
 		fresh.Status.LastRunAt = metav1.Now()
 		fresh.Status.Conditions = setCondition(fresh.Status.Conditions, metav1.Condition{
 			Type: "Scheduled", Status: metav1.ConditionTrue, Reason: "TriggerPublished",

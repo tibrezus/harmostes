@@ -132,12 +132,26 @@ func ArmClaim(ctx context.Context, c client.Client, scheme *runtime.Scheme, wf *
 		}
 		r := s.Review
 		sameClaim := r.PR == pr && r.HeadSHA == headSHA
+		// A REVIVED era (re-arming a released claim) starts fresh — a
+		// horizon dismissal means the old clock is already expired, and a
+		// dispatch-lost release ended the era by definition (#344 F1).
+		// Live-refresh anchoring (#343 fix 1) is the !wasReleased half:
+		// refreshing a LIVE claim keeps its clock, so the verdict window
+		// still reaches verdicts posted mid-era.
+		wasReleased := r.Released
 		r.PR, r.HeadSHA, r.Label = pr, headSHA, label
-		// The horizon clock persists across refreshes of the SAME claim;
-		// a new claim (new SHA/PR) arms fresh.
-		if !sameClaim || r.ArmedSince == nil {
+		if !sameClaim || r.ArmedSince == nil || wasReleased {
 			t := now
 			r.ArmedSince = &t
+		}
+		if wasReleased {
+			// The era's dispatch, if any, ended with the release — carrying
+			// DispatchedAt across a revival is a phantom dispatch: pass A
+			// counts it against capacity with no Job behind it, and the
+			// timer pass strikes the breaker for a dispatch never made
+			// (#344 F2 — the mirror of #331: the observably dead must not
+			// be counted alive).
+			r.DispatchedAt = nil
 		}
 		// The breaker counts deaths of THIS head's dispatches; a new head
 		// or an explicit human re-request starts from zero.

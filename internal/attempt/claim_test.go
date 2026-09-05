@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -340,14 +341,74 @@ func TestArmClaim_HorizonDismissalChurnGuard(t *testing.T) {
 		t.Fatalf("want ErrRecentlyDismissed, got %v", err)
 	}
 
-	// Human request overrides.
+	// Human request overrides — and yields a WORKING era: fresh clock (the
+	// old one was already past the horizon), not a revival of the expired
+	// one (r2 F1: the override was accepted before, but the revived era was
+	// born expired and stood down again on the next sweep).
 	if _, err := armFor(t, ctx, c, wf, pr, sha, "needs-review", true); err != nil {
 		t.Fatalf("human re-request must override the guard: %v", err)
+	}
+	a, err := resolveForTest(t, ctx, c, wf, sha)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if age := time.Since(a.Status.Review.ArmedSince.Time); age > time.Minute {
+		t.Fatalf("overridden era must start a FRESH clock, got ArmedSince age %v", age)
 	}
 
 	// A different head is a new era — no guard.
 	const newHead = "aaaaaaaaface0003"
 	if _, err := armFor(t, ctx, c, wf, pr, newHead, "needs-review", false); err != nil {
 		t.Fatalf("new head must arm past the guard: %v", err)
+	}
+}
+
+// TestArmClaim_RevivedEraClearsPhantomDispatch (#344 F2): the job-death pass
+// releases dispatched claims as dispatch-lost WITH the death counted; a
+// revival must not carry the dead dispatch forward — DispatchedAt cleared
+// (no phantom capacity/breaker strike), the death count kept (honest
+// ledger), ArmedSince fresh (new era).
+func TestArmClaim_RevivedEraClearsPhantomDispatch(t *testing.T) {
+	ctx := context.Background()
+	c := newFakeClient(t)
+	wf := wikiWorkflow()
+	const pr = "git.rezus.cloud/tibrez/rhesadox#1864"
+	const sha = "5472b055cafe0004"
+
+	name, err := armFor(t, ctx, c, wf, pr, sha, "needs-review", false)
+	if err != nil {
+		t.Fatalf("first arm: %v", err)
+	}
+	if err := MarkClaimDispatched(ctx, c, "harmostes", name); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	recorded, _, err := ReleaseClaimDead(ctx, c, "harmostes", name, "dispatch-lost")
+	if err != nil || !recorded {
+		t.Fatalf("dead release: recorded=%v err=%v", recorded, err)
+	}
+
+	name2, err := armFor(t, ctx, c, wf, pr, sha, "needs-review", false)
+	if err != nil {
+		t.Fatalf("revival arm: %v", err)
+	}
+	if name2 != name {
+		t.Fatalf("same (pr, head) must reuse the era, got %s", name2)
+	}
+	a, err := resolveForTest(t, ctx, c, wf, sha)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := a.Status.Review
+	if r.Released {
+		t.Fatal("revived era must be live")
+	}
+	if r.DispatchedAt != nil {
+		t.Fatalf("revived era carries a phantom dispatch: DispatchedAt=%v", r.DispatchedAt)
+	}
+	if r.DeadDispatches != 1 {
+		t.Fatalf("the recorded death must stay in the ledger, got %d", r.DeadDispatches)
+	}
+	if age := time.Since(r.ArmedSince.Time); age > time.Minute {
+		t.Fatalf("revived era must start a fresh clock, got %v", age)
 	}
 }

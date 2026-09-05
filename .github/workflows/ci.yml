@@ -82,6 +82,12 @@ jobs:
         # TestPinnedVersionsAgree + TestExtensionsSingleSource (piargs).
         run: make test-extensions
 
+      # The rig-emit plugin's Python validator severity (cycles warn —
+      # rhesadox#1864 review ran graph-less because a cyclic repo failed the
+      # emit). Stdlib-only, no deps.
+      - name: rig-emit validator
+        run: make test-rig-emit
+
       # Compares the COMMITTED fixture's canonical hash against a fresh build
       # in a tempdir — it must NOT regenerate the committed file first, or the
       # gate could only ever catch producer/library skew, never committed

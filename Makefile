@@ -12,7 +12,8 @@ TAG           ?= dev
 BIN_DIR       := bin
 GO            := go
 
-.PHONY: all build test test-go test-ui vet tidy generate manifests controller-worker docker docker-push docker-ui test-extensions test-integration clean
+.PHONY: all build test test-go test-ui vet tidy generate manifests controller-worker docker docker-push docker-ui test-extensions test-integration clean test-rig-emit
+
 
 all: test build
 
@@ -24,7 +25,8 @@ build:
 ## only the Go toolchain; test-extensions adds Node ≥ 22.5 + npm + python3
 ## (the fixture producer). CI runs them as separate steps, so a host without
 ## Node still gets a meaningful `make test-go`.
-test: test-go test-extensions
+test: test-go test-extensions test-rig-emit
+
 
 ## test-go: the Go tier alone.
 test-go:
@@ -44,6 +46,12 @@ test-extensions:
 		extensions/rig-query/index.parse.test.ts \
 		extensions/rig-query/index.runtime.test.ts
 	python3 extensions/rig-query/fixtures/freshness.py
+
+## test-rig-emit: the rig-emit plugin's Python validator — severity pin:
+## circular deps WARN (the graph represents the codebase as it is; failing
+## the emit left reviews graph-less, rhesadox#1864), the rest stay errors.
+test-rig-emit:
+	python3 plugins/rig-emit/test_validator.py
 
 ## test-integration: integration tier — the attempt ledger + review-claim
 ## lifecycles against a REAL API server (envtest) with the chart CRDs

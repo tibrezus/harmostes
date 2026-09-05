@@ -3,10 +3,12 @@
 Mirrors Spade's rig_validator (github.com/Greenfuze/spade) adapted to run
 against the RIGBuilder's output (or a loaded JSON dict).
 
-Key difference from the wiki-side validate-rig.py: this runs **in the
-project repo** where source files exist, so it can enforce the paper's
-source-file existence invariant.  Completeness (every repo source file
-in a component) is an ERROR here, not a warning.
+Severity (r5, #345): dangling refs, duplicate IDs and missing evidence are
+ERRORS; circular dependencies and completeness (uncovered source files)
+are WARNINGS. `check_source_existence=False` skips the completeness walk
+(which reads the CWD filesystem) — the unit pin relies on that hermeticity.
+The wiki-side validate-rig.py keeps its own severities; drift between the
+copies is a tracked llm-wiki concern.
 """
 
 from __future__ import annotations
@@ -19,19 +21,23 @@ from .builder import all_source_paths, BUILD_CONFIG_FILES
 def validate_rig(rig: dict, *, check_source_existence: bool = True) -> tuple[list[str], list[str]]:
     """Validate a RIG dict. Returns (errors, warnings) — both empty = valid.
 
-    Hard errors (dangling refs, cycles, duplicate IDs, missing evidence) fail
-    the build.  Completeness (uncovered source files) is a WARNING — repos with
-    multiple languages or tooling scripts may legitimately have files outside
-    any build target.
+    Hard errors (dangling refs, duplicate IDs, missing evidence) fail the
+    build.  Completeness (uncovered source files) and CIRCULAR DEPENDENCIES
+    are WARNINGs: a cycle is a fact about the codebase the graph must
+    represent, not an emission failure — refusing to emit because the code
+    has a cycle left reviews graph-LESS (observed live: rhesadox#1864, where
+    the emit failure degraded ADR-0009 navigation to grep archaeology). The
+    deps table is navigable with cycles; consumers surface the warning.
     """
     errors: list[str] = []
     warnings: list[str] = []
 
     errors.extend(_check_dangling_refs(rig))
-    errors.extend(_check_circular_deps(rig))
+    warnings.extend(_check_circular_deps(rig))
     errors.extend(_check_duplicate_ids(rig))
     errors.extend(_check_evidence(rig))
-    warnings.extend(_check_completeness(rig))
+    if check_source_existence:
+        warnings.extend(_check_completeness(rig))
 
     return errors, warnings
 
@@ -105,28 +111,55 @@ def _check_circular_deps(rig: dict) -> list[str]:
             graph[nid] = node.get("depends_on_ids", [])
     WHITE, GRAY, BLACK = 0, 1, 2
     color = {n: WHITE for n in graph}
-    found = [False]
+    found: list[list[str]] = []
 
-    def _dfs(node):
-        color[node] = GRAY
-        for nb in graph.get(node, []):
-            if nb not in color:
-                continue
-            if color[nb] == GRAY:
-                found[0] = True
-                return
-            if color[nb] == WHITE:
-                _dfs(nb)
-                if found[0]:
-                    return
-        color[node] = BLACK
-
-    for n in graph:
-        if color[n] == WHITE:
-            _dfs(n)
-            if found[0]:
-                break
-    return ["Circular dependency detected"] if found[0] else []
+    # Iterative DFS (r3 P4): recursion is one frame per component in the
+    # longest chain and runs BEFORE anything is written — a RecursionError
+    # on a deep monorepo would fail prepare outright. Explicit stack; the
+    # path list doubles as the cycle-member source.
+    for root in graph:
+        if color[root] != WHITE:
+            continue
+        path: list[str] = []
+        stack = [(root, iter([nb for nb in graph.get(root, []) if nb in color]))]
+        color[root] = GRAY
+        path.append(root)
+        while stack:
+            node, it = stack[-1]
+            advanced = False
+            for nb in it:
+                if color.get(nb) == GRAY:
+                    idx = path.index(nb)
+                    found.append(path[idx:] + [nb])
+                elif color.get(nb) == WHITE:
+                    color[nb] = GRAY
+                    path.append(nb)
+                    stack.append((nb, iter([x for x in graph.get(nb, []) if x in color])))
+                    advanced = True
+                    break
+            if not advanced:
+                stack.pop()
+                path.pop()
+                color[node] = BLACK
+    if not found:
+        return []
+    # Canonical form (r4 P4.2): the warning (and the canonical hash derived
+    # from it) must be a function of the GRAPH, not of DFS entry order —
+    # rotate the cycle to start at its smallest member NAME. Count ALL
+    # cycles: the traversal runs to completion and each GRAY back-edge is
+    # one cycle (self-loops and distinct cycles both count).
+    names = {n.get("id",""): n.get("name", n.get("id","")) for key in
+             ("components", "aggregators", "runners") for n in rig.get(key, [])}
+    cyc_nodes = found[0]
+    names_seq = [names.get(x, x) for x in cyc_nodes]
+    k = names_seq.index(min(names_seq))
+    names_seq = names_seq[k:-1] + names_seq[:k] + [names_seq[k]]
+    cyc = " → ".join(names_seq)
+    msg = [f"Circular dependency detected: {cyc} (emitted as-is — the "
+           "deps table represents the cycle; navigation is unaffected)"]
+    if len(found) > 1:
+        msg[0] += f"; +{len(found) - 1} more distinct cycle(s)"
+    return msg
 
 
 def _check_duplicate_ids(rig: dict) -> list[str]:

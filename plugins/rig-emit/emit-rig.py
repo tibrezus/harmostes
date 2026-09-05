@@ -5,7 +5,7 @@ emit-rig.py — Universal Repository Intelligence Graph generator (v2).
 Modular architecture:
   rig/model.py       — Spade data types (Component, Runner, TestDefinition, …)
   rig/builder.py     — RIGBuilder (ID assignment, evidence, name→ID resolution)
-  rig/validator.py   — generation-time validation (completeness as ERROR)
+  rig/validator.py   — generation-time validation (cycles/completeness warn; refs/dups/evidence error)
   rig/extractors/    — one module per build system (Go, Zig, Cargo, npm, …)
 
 Follows the RIG standard (arXiv:2601.10112, github.com/Greenfuze/Spade):
@@ -94,11 +94,15 @@ def main():
     # Build the RIG JSON
     rig = builder.build(extractor_names)
 
-    # Validate (references, cycles, evidence = errors; completeness = warning)
+    # Validate (dangling refs, duplicate IDs, evidence = errors; cycles and
+    # completeness = warnings — a cycle is a code fact the graph represents)
     if not args.no_validate:
         errors, warnings = validate_rig(rig)
         if warnings:
-            for w in warnings[:10]:
+            # Persisted into rig.db meta by write_db — the artifact says
+            # what it contains (#346 r2 P7).
+            rig["warnings"] = warnings
+            for w in warnings:
                 print(f"  WARN: {w}", file=sys.stderr)
         if errors:
             print(f"[emit-rig] VALIDATION FAILED ({len(errors)} error(s)):", file=sys.stderr)

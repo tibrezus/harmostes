@@ -52,7 +52,25 @@ git clone --depth 100 --branch "$SRC_BRANCH" "$SRC_URL" "$SRC_DIR" 2>&1 | tail -
 }
 
 log "generating RIG (language=${SRC_LANG:-auto})…"
-( cd "$SRC_DIR" && bash "$EMITTER_DIR/emit-rig.sh" "$RIG_FILE" "$SRC_LANG" ) 2>&1 | tail -3
+# Full emit log to a side file; WARN/ERROR lines surfaced on the plugin
+# log (tail -3 alone dropped the cycle warning whenever a completeness
+# warning travelled with it). The emit GATES: under `set -euo pipefail` a
+# command in an `if` condition is errexit-exempt, so the emit must run
+# BARE with an explicit rc capture — an `if (…)|tee|tail` wrapper turned
+# hard ERRORs into a green prepare (#346 r2 P4, mechanically verified).
+# NOTE: the emit prints to STDERR only; the plugin contract parses the
+# last JSON line of combined stdout+stderr — never print() to stdout in
+# emit-rig.py.
+EMIT_LOG="$RIG_FILE.emit.log"; rc=0
+( cd "$SRC_DIR" && bash "$EMITTER_DIR/emit-rig.sh" "$RIG_FILE" "$SRC_LANG" ) >"$EMIT_LOG" 2>&1 || rc=$?
+grep -E "^  (WARN|ERROR):|VALIDATION FAILED" "$EMIT_LOG" >&2 || true
+tail -3 "$EMIT_LOG" >&2
+if [ "$rc" -ne 0 ]; then
+  log "EMIT FAILED (rc=$rc) — full log: $EMIT_LOG (kept)"
+  echo '{"changed":false,"status":"failed","event":{"error":"rig emit failed"}}'
+  exit 1
+fi
+rm -f "$EMIT_LOG"
 
 COMPONENTS=$(python3 -c "import json;print(len(json.load(open('$RIG_FILE'))['components']))" 2>/dev/null || echo 0)
 log "RIG: $COMPONENTS components"

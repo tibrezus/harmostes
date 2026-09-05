@@ -86,7 +86,7 @@ Prefer this over find/grep for ANY "where is X" or "what uses Y" question; drop 
 			// graph location is the runtime contract (RIG_DB + the fallbacks).
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
-			const p = params as RigParams & { db?: string };
+			const p = params as RigParams;
 			// Container paths are the runtime contract (worker image layout) — they
 			// live HERE, not in the library (#338 r3 pillar 1). The FALLBACK PATH
 			// CONTRACT: pr-review prepare (ops workspace.sh) writes $WORKDIR/rig.db
@@ -148,14 +148,16 @@ Prefer this over find/grep for ANY "where is X" or "what uses Y" question; drop 
 					}
 				}
 			} catch {
-				if (process.env.RIG_EXPECTED_SHA) {
-					// Prepare was expected to stamp and did not — the failure the
-					// ADR exists to prevent; refuse rather than answer unverified
-					// (#338 r19 P7.2).
-					throw new Error("no rig.db.sha provenance stamp for this graph — prepare did not stamp it (or the file was moved); refusing to navigate an unverifiable graph");
-				}
 				rigSha = "absent";
-				shaState = "absent"; // distinct from stamped-but-wrong
+				shaState = process.env.RIG_EXPECTED_SHA ? "absent-refusal" : "absent";
+			}
+			if (shaState === "absent-refusal") {
+				// Same refusal+telemetry shape as mismatch (r20 driver 2): "prepare
+				// did not stamp" is a countable freshness event, not a free-text throw.
+				return {
+					content: [{ type: "text", text: `graph provenance: absent\nREFUSED: prepare did not stamp this graph — navigating an unverifiable graph is refused. Navigate with bash, or report the emission failure in the review body.` }],
+					details: { db: path, command: p.command, target: p.target ?? null, chars: 0, truncated: false, graph: true, probed: candidates, rig_sha: null, sha_state: "absent-refusal" },
+				};
 			}
 			if (shaState === "mismatch") {
 				// R1: REFUSAL with telemetry — the event the freshness rule most

@@ -415,11 +415,13 @@ function search(db: DatabaseSync, target: string | undefined, stats: { more: num
 
 function files(db: DatabaseSync, target: string | undefined, stats: { more: number }): string {
 	if (!target) return "files: give a path glob — * or % = any run, ? = one char (e.g. 'internal/graph/*', '*dispatch*').";
-	// Glob dialect (r18 F4): * = any run, ? = one char; % _ and \ are LITERAL.
-	// Order is load-bearing: escape the raw literals FIRST, then translate
-	// ? → _ (single char), then * → % (any run) — translating ? before * made
-	// ? collapse into the any-run wildcard (#338 r18 F4).
-	const esc = target.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_");
+	// Glob dialect (r18 F4 / r20 driver-1): * or % = any run (the storage
+	// dialect is accepted as an alias — the help text advertises both), ? = one
+	// char. The alias runs FIRST; the remaining literals (\ and _) are escaped
+	// before the operators translate, so a documented wildcard can never be
+	// silently re-interpreted and a literal can never match.
+	const glob = target.replace(/%/g, "*");
+	const esc = glob.replace(/\\/g, "\\\\").replace(/_/g, "\\_");
 	let like = esc.replace(/\?/g, "_").replace(/\*/g, "%");
 	if (!like.includes("%")) like = `%${like}%`;
 	const total = Number(db.prepare("SELECT COUNT(*) n FROM files WHERE path LIKE ? ESCAPE '\\'").get(like)?.n ?? 0);

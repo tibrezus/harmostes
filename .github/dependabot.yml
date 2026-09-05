@@ -27,3 +27,9 @@ updates:
     commit-message:
       prefix: chore(ci)
       include: scope
+  # rig-query's typebox pin is deliberately locked to pi's shipped version —
+  # bump by hand alongside PI_VERSION, not via dependabot.
+  - package-ecosystem: "npm"
+    directory: "/extensions/rig-query"
+    schedule:
+      interval: "weekly"

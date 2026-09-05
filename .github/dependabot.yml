@@ -31,5 +31,7 @@ updates:
   # bump by hand alongside PI_VERSION, not via dependabot.
   - package-ecosystem: "npm"
     directory: "/extensions/rig-query"
+    ignore:
+      - dependency-name: "typebox"  # locked to pi's shipped version; bump by hand with PI_VERSION
     schedule:
       interval: "weekly"

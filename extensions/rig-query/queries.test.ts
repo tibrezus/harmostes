@@ -125,9 +125,15 @@ test("files finds underscore-bearing paths — the r13 HIGH bug", () => {
 });
 
 test("files ? operator is a single-char wildcard, not a literal underscore", () => {
-	const out = q({ command: "files", target: "plugin?test.go" });
-	assert.match(out, /plugin_test\.go/);
-	assert.doesNotMatch(out, /no files matching/);
+	// Operators are exact-shape (LIKE semantics): "exec?go" alone requires the
+	// WHOLE path to be 7 chars — an honest miss; "%exec?go" matches with a
+	// prefix. And the % alias still works as documented (#338 r21 F4 / r20 d).
+	const exact = q({ command: "files", target: "exec?go" });
+	assert.match(exact, /no files matching/, "an exact-shape miss must say so");
+	const prefixed = q({ command: "files", target: "%exec?go" });
+	assert.match(prefixed, /exec\.go/, "% prefix allows preceding path");
+	const alias = q({ command: "files", target: "%exec%" });
+	assert.match(alias, /exec\.go/, "% alias = any run, as documented");
 });
 
 test("search by the component handle overview prints (#338 r18 F1/F2)", () => {
@@ -143,6 +149,13 @@ test("components render outside the symbol budget (#338 r18 F3)", () => {
 	// 10 helper symbols match by doc; the component candidate must still appear.
 	const out = q({ command: "search", target: "helper" });
 	assert.match(out, /helper0/);
+});
+
+test("files ? is one char, not substring-anywhere (#338 r21 F2)", () => {
+	// "internal/?" must be exactly 10 chars before the dot — the forced wrap
+	// used to widen a lone-? into substring-anywhere.
+	const out = q({ command: "files", target: "internal/?" });
+	assert.doesNotMatch(out, /attempt_types/);
 });
 
 test("files mixes literal % and _ with operators (#338 r18 F4 operator order)", () => {

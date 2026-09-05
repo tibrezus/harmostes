@@ -133,11 +133,11 @@ export function openRig(path: string): DatabaseSync {
  * flag — row-level truncation (…+N more) must be visible in telemetry, not
  * only in prose (#338 r3 pillar 7).
  */
-export function rigQuery(db: DatabaseSync, p: RigParams): { text: string; truncated: boolean } {
-	const stats = { more: 0 };
-	const run = (fn: (stats: { more: number }) => string): { text: string; truncated: boolean } => {
+export function rigQuery(db: DatabaseSync, p: RigParams): { text: string; truncated: boolean; resolved: boolean } {
+	const stats = { more: 0, resolved: false };
+	const run = (fn: (s: { more: number; resolved: boolean }) => string): { text: string; truncated: boolean; resolved: boolean } => {
 		const text = cap(fn(stats), stats);
-		return { text, truncated: stats.more > 0 || text.length > MAX_RESULT_CHARS };
+		return { text, truncated: stats.more > 0 || text.length > MAX_RESULT_CHARS, resolved: stats.resolved };
 	};
 	// Not exposed (deliberate, revisit on demand): calls/packages/artifacts/
 	// tests tables are populated by the producer but no subcommand reads them.
@@ -166,6 +166,7 @@ function meta(db: DatabaseSync, key: string): string {
 }
 
 function overview(db: DatabaseSync, stats: { more: number }): string {
+	stats.resolved = true;
 	const comps = db.prepare("SELECT id, name, type, language, entrypoint FROM components ORDER BY seq").all() as Row[];
 	if (comps.length === 0) return "rig.db has no components — graph empty.";
 	const fileCounts = new Map<string, number>();
@@ -249,6 +250,11 @@ function short(id: string): string {
 
 function resolveComponent(db: DatabaseSync, target: string | undefined): Array<{ id: string; name: string; type: unknown }> {
 	if (!target) return [];
+	// The advertised syntax is a trailing-* prefix term ("worker*") and a
+	// leading-* wildcard ("*worker") — both reduce to the suffix tail match
+	// this function already owns (#338 r21 Finding 1).
+	target = target.replace(/^\*+/, "").replace(/\*+$/, "").trim();
+	if (!target) return [];
 	const byId = db.prepare("SELECT id, name, type FROM components WHERE id = ?").all(target) as Row[];
 	if (byId.length === 1) return [byId[0] as { id: string; name: string; type: unknown }];
 	const byName = db.prepare("SELECT id, name, type FROM components WHERE name = ?").all(target) as Row[];
@@ -278,6 +284,7 @@ function ambiguous(matches: Array<{ id: string; name: string; type: unknown }>):
 }
 
 function component(db: DatabaseSync, target: string | undefined, stats: { more: number }): string {
+	stats.resolved = true;
 	const matches = resolveComponent(db, target);
 	if (matches.length === 0) return `no component matching ${JSON.stringify(target ?? "")} — use rig overview for names.`;
 	const amb = ambiguous(matches);
@@ -414,6 +421,7 @@ function search(db: DatabaseSync, target: string | undefined, stats: { more: num
 }
 
 function files(db: DatabaseSync, target: string | undefined, stats: { more: number }): string {
+	stats.resolved = true;
 	if (!target) return "files: give a path glob — * or % = any run, ? = one char (e.g. 'internal/graph/*', '*dispatch*').";
 	// Glob dialect (r18 F4 / r20 driver-1): * or % = any run (the storage
 	// dialect is accepted as an alias — the help text advertises both), ? = one
@@ -423,7 +431,10 @@ function files(db: DatabaseSync, target: string | undefined, stats: { more: numb
 	const glob = target.replace(/%/g, "*");
 	const esc = glob.replace(/\\/g, "\\\\").replace(/_/g, "\\_");
 	let like = esc.replace(/\?/g, "_").replace(/\*/g, "%");
-	if (!like.includes("%")) like = `%${like}%`;
+	// The %…% convenience wrap applies ONLY to operator-free substrings — a
+	// caller's explicit ? is one char, not substring-anywhere (#338 r21 F2).
+	const hadOperator = /[*?%]/.test(target);
+	if (!hadOperator) like = `%${like}%`;
 	const total = Number(db.prepare("SELECT COUNT(*) n FROM files WHERE path LIKE ? ESCAPE '\\'").get(like)?.n ?? 0);
 	const rows = db
 		.prepare("SELECT path, lines, language, component_id FROM files WHERE path LIKE ? ESCAPE '\\' ORDER BY path LIMIT ?")
@@ -439,6 +450,7 @@ function files(db: DatabaseSync, target: string | undefined, stats: { more: numb
 }
 
 function deps(db: DatabaseSync, target: string | undefined, reverse: boolean, stats: { more: number }): string {
+	stats.resolved = true;
 	const matches = resolveComponent(db, target);
 	if (matches.length === 0) return `no component matching ${JSON.stringify(target ?? "")} — use rig overview for names.`;
 	const amb = ambiguous(matches);

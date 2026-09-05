@@ -350,6 +350,18 @@ func TestArmClaim_HorizonDismissalChurnGuard(t *testing.T) {
 	if err := ReleaseClaim(ctx, c, "harmostes", name, "horizon"); err != nil {
 		t.Fatalf("horizon release: %v", err)
 	}
+	// Backdate the released era (r5: a same-second clock made the
+	// fresh-clock assertion below vacuous — it passed for the fixture's
+	// microseconds, not because the code reset anything).
+	rel, err := resolveForTest(t, ctx, c, wf, sha)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := metav1.NewTime(time.Now().Add(-7 * time.Hour))
+	rel.Status.Review.ArmedSince = &old
+	if err := c.Status().Update(ctx, rel); err != nil {
+		t.Fatalf("backdate: %v", err)
+	}
 
 	_, err = armFor(t, ctx, c, wf, pr, sha, "needs-review", false)
 	if !errors.Is(err, ErrRecentlyDismissed) {
@@ -382,7 +394,9 @@ func TestArmClaim_HorizonDismissalChurnGuard(t *testing.T) {
 // releases dispatched claims as dispatch-lost WITH the death counted; a
 // revival must not carry the dead dispatch forward — DispatchedAt cleared
 // (no phantom capacity/breaker strike), the death count kept (honest
-// ledger), ArmedSince fresh (new era).
+// ledger), ArmedSince KEPT (anchored — r6 pins the r3 contract: a
+// dispatch-lost revival must NOT reset the clock, or the verdict window
+// stretches with every infra blip; a HUMAN re-request is the reset path).
 func TestArmClaim_RevivedEraClearsPhantomDispatch(t *testing.T) {
 	ctx := context.Background()
 	c := newFakeClient(t)
@@ -396,6 +410,17 @@ func TestArmClaim_RevivedEraClearsPhantomDispatch(t *testing.T) {
 	}
 	if err := MarkClaimDispatched(ctx, c, "harmostes", name); err != nil {
 		t.Fatalf("dispatch: %v", err)
+	}
+	// Backdate the armed clock so "KEPT" is observable.
+	armed, err := resolveForTest(t, ctx, c, wf, sha)
+	if err != nil {
+		t.Fatal(err)
+	}
+	anchored := time.Now().Add(-2 * time.Hour).Truncate(time.Second)
+	past := metav1.NewTime(anchored)
+	armed.Status.Review.ArmedSince = &past
+	if err := c.Status().Update(ctx, armed); err != nil {
+		t.Fatalf("backdate: %v", err)
 	}
 	recorded, _, err := ReleaseClaimDead(ctx, c, "harmostes", name, "dispatch-lost")
 	if err != nil || !recorded {
@@ -423,8 +448,16 @@ func TestArmClaim_RevivedEraClearsPhantomDispatch(t *testing.T) {
 	if r.DeadDispatches != 1 {
 		t.Fatalf("the recorded death must stay in the ledger, got %d", r.DeadDispatches)
 	}
-	if age := time.Since(r.ArmedSince.Time); age > time.Minute {
-		t.Fatalf("revived era must start a fresh clock, got %v", age)
+	// r6 (r5 mutation probe): the automatic dispatch-lost revival KEEPS
+	// the anchored clock — assert the KEPT backdated value explicitly, so
+	// a reset regression fails here instead of hiding behind same-second
+	// fixture timing. Dispatched deaths ride the BREAKER counter
+	// (DeadDispatches); the never-dispatched counter is untouched here.
+	if r.DispatchLostReleases != 0 {
+		t.Fatalf("dispatched deaths must not bump the never-dispatched counter, got %d", r.DispatchLostReleases)
+	}
+	if got := r.ArmedSince.Time; got.Before(anchored.Add(-time.Second)) || got.After(anchored.Add(time.Second)) {
+		t.Fatalf("dispatch-lost revival must KEEP the anchored clock %v, got %v", anchored, got)
 	}
 }
 

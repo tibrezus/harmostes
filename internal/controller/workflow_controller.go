@@ -81,11 +81,16 @@ func (r *WorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	// scheduled another sweep — the claim churn loop's engine. Webhook wakes
 	// keep a short window so a genuine human re-request is never swallowed:
 	// the loser's annotation survives and wins the next reconcile.
-	minInterval := r.PollInterval
-	if wf.Annotations["harmostes.dev/trigger-revision"] != "" {
-		minInterval = webhookMinTriggerInterval
-	}
-	won, err := r.claimTriggerSlot(ctx, &wf, minInterval)
+	//
+	// r6 P1: the SOURCE decision moved INSIDE the CAS closure. Keying it on
+	// the reconcile's `wf` copy raced the informer cache: a wake arriving
+	// before the cache caught up was evaluated WITHOUT the annotation, held
+	// to the full PollInterval anchor (freshly re-stamped by the armed
+	// sweep that published in the gap), and the human's re-request was
+	// swallowed for up to a full poll — exactly what this comment promises
+	// will not happen. The fresh Get inside claimTriggerSlot is the
+	// authoritative object; the cooldown is keyed on ITS annotation.
+	won, err := r.claimTriggerSlot(ctx, &wf, r.PollInterval, webhookMinTriggerInterval)
 	if err != nil {
 		// #118 discipline: a persistently failing CAS silently suppresses
 		// EVERY trigger — that must be visible, not just logged (r4 P7).
@@ -192,12 +197,23 @@ var errTriggerCooldown = errors.New("trigger slot on cooldown")
 // minInterval old, reporting whether THIS reconcile won the right to publish
 // a trigger. Stamp-before-publish closes the concurrent-reconcile race:
 // the loser observes the fresh stamp on its retry and stands down (#343).
-func (r *WorkflowReconciler) claimTriggerSlot(ctx context.Context, wf *v1alpha1.Workflow, minInterval time.Duration) (bool, error) {
+//
+// The cooldown is keyed on the trigger SOURCE, read from the fresh copy
+// inside the CAS (r6 P1): a webhook-due wake (annotation present on the
+// authoritative object) is held only to webhookInterval — never to a
+// scheduleInterval-sized anchor stamped by an armed/scheduled sweep that
+// raced ahead of the informer cache. scheduleInterval applies to every
+// other source (armed poll, spec change, schedule).
+func (r *WorkflowReconciler) claimTriggerSlot(ctx context.Context, wf *v1alpha1.Workflow, scheduleInterval, webhookInterval time.Duration) (bool, error) {
 	won := false
 	err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
 		var fresh v1alpha1.Workflow
 		if err := r.Get(ctx, client.ObjectKeyFromObject(wf), &fresh); err != nil {
 			return err
+		}
+		minInterval := scheduleInterval
+		if fresh.Annotations["harmostes.dev/trigger-revision"] != "" {
+			minInterval = webhookInterval
 		}
 		if !fresh.Status.LastRunAt.IsZero() && time.Since(fresh.Status.LastRunAt.Time) < minInterval {
 			return errTriggerCooldown

@@ -271,19 +271,47 @@ func TestClaimTriggerSlot_DedupsRacingReconciles(t *testing.T) {
 	r := &WorkflowReconciler{Client: cl, Scheme: k8s.Scheme(), PollInterval: 5 * time.Minute}
 	ctx := context.Background()
 
-	won, err := r.claimTriggerSlot(ctx, wf, r.PollInterval)
+	won, err := r.claimTriggerSlot(ctx, wf, r.PollInterval, webhookMinTriggerInterval)
 	if err != nil || !won {
 		t.Fatalf("first claim: won=%v err=%v — a fresh workflow must win", won, err)
 	}
-	won, err = r.claimTriggerSlot(ctx, wf, r.PollInterval)
+	won, err = r.claimTriggerSlot(ctx, wf, r.PollInterval, webhookMinTriggerInterval)
 	if err != nil || won {
 		t.Fatalf("second claim within cooldown: won=%v err=%v — must lose", won, err)
 	}
 	// The webhook window is shorter, but not zero: two racing reconciles
 	// must not BOTH publish (the second observe the first's stamp).
-	won, err = r.claimTriggerSlot(ctx, wf, webhookMinTriggerInterval)
+	won, err = r.claimTriggerSlot(ctx, wf, r.PollInterval, webhookMinTriggerInterval)
 	if err != nil || won {
 		t.Fatalf("webhook-window claim inside the race window: won=%v err=%v — the CAS must dedup", won, err)
+	}
+
+	// r6 P1: the cooldown is keyed on the AUTHORITATIVE source. A wake
+	// whose reconcile copy predates the annotation (informer lag) used to
+	// be held to the full PollInterval anchor; now the fresh copy inside
+	// the CAS decides. LastRunAt 30s old + annotation present → the wake
+	// wins on the 10s window although the 5m schedule cooldown has not
+	// elapsed. Without the annotation it must still lose (schedule key).
+	var fresh2 v1alpha1.Workflow
+	if err := cl.Get(ctx, client.ObjectKeyFromObject(wf), &fresh2); err != nil {
+		t.Fatal(err)
+	}
+	stale := fresh2.DeepCopy()
+	stale.Annotations = nil // simulate the pre-annotation cache copy
+	fresh2.Annotations = map[string]string{"harmostes.dev/trigger-revision": "rev-next"}
+	if err := cl.Update(ctx, &fresh2); err != nil {
+		t.Fatal(err)
+	}
+	if err := cl.Get(ctx, client.ObjectKeyFromObject(wf), &fresh2); err != nil {
+		t.Fatal(err)
+	}
+	fresh2.Status.LastRunAt = metav1.NewTime(metav1.Now().Add(-30 * time.Second))
+	if err := cl.Status().Update(ctx, &fresh2); err != nil {
+		t.Fatal(err)
+	}
+	won, err = r.claimTriggerSlot(ctx, stale, r.PollInterval, webhookMinTriggerInterval)
+	if err != nil || !won {
+		t.Fatalf("webhook wake behind a stale cache copy: won=%v err=%v — the fresh annotation must key the 10s window", won, err)
 	}
 
 	// After the cooldown the slot frees.
@@ -291,7 +319,7 @@ func TestClaimTriggerSlot_DedupsRacingReconciles(t *testing.T) {
 	wf2.Name = "pr-review-churn-2"
 	wf2.Namespace = "harmostes"
 	_ = cl.Create(ctx, wf2)
-	if _, err := r.claimTriggerSlot(ctx, wf2, 0); err != nil {
+	if _, err := r.claimTriggerSlot(ctx, wf2, 0, 0); err != nil {
 		t.Fatalf("zero-cooldown claim: %v", err)
 	}
 	var fresh v1alpha1.Workflow
@@ -302,7 +330,7 @@ func TestClaimTriggerSlot_DedupsRacingReconciles(t *testing.T) {
 	if err := cl.Status().Update(ctx, &fresh); err != nil {
 		t.Fatal(err)
 	}
-	won, err = r.claimTriggerSlot(ctx, wf2, r.PollInterval)
+	won, err = r.claimTriggerSlot(ctx, wf2, r.PollInterval, webhookMinTriggerInterval)
 	if err != nil || !won {
 		t.Fatalf("claim after cooldown: won=%v err=%v — must win", won, err)
 	}

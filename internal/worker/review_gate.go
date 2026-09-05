@@ -252,19 +252,23 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 		}
 		// Never dispatched: infrastructure weather, not a dead review —
 		// the breaker must NOT count it (only dispatched deaths do).
-		// r4 (BLOCKER fix): an armed-queued claim OLDER THAN THE HORIZON
-		// releases as horizon, not dispatch-lost — pass A skips
-		// never-dispatched claims, so without this their era could never
-		// expire and the release→revive loop had no clock. A horizon
-		// release arms both the revival clock reset and the dismissal
-		// guard on the next arm.
+		// r6 P1: the age bound is now UNIFORM — aged or not, a
+		// never-dispatched release is dispatch-lost (we never dispatched:
+		// that is what the reason says), bumping DispatchLostReleases.
+		// r4 released aged claims as HORIZON, which was the ambiguity
+		// dismissal — the churn guard then refused any re-arm of a
+		// labeled PR whose dispatch kept failing for weather: "we stopped
+		// asking" and "we could not dispatch" collapsed into one clock.
+		// The counter bounds the cycle instead (reuse < Max, guard at
+		// Max), and ReleaseReasonHorizon stays reserved for genuine
+		// ambiguity (verdict-window expiry on dispatched claims).
+		reason := v1alpha1.ReleaseReasonDispatchLost
 		if !arm.IsZero() && time.Since(arm) > rr.HorizonDuration() {
-			log("review-ready: claim %s (%s) never dispatched and older than the horizon — releasing as horizon", c.Name, r.PR)
-			releaseClaim(ctx, deps, c, v1alpha1.ReleaseReasonHorizon, log)
-			continue
+			log("review-ready: claim %s (%s) never dispatched and older than the horizon — releasing as dispatch-lost (aged era)", c.Name, r.PR)
+		} else {
+			log("review-ready: claim %s (%s) never dispatched — releasing as dispatch-lost (release #%d)", c.Name, r.PR, r.DispatchLostReleases+1)
 		}
-		log("review-ready: claim %s (%s) never dispatched — releasing as dispatch-lost", c.Name, r.PR)
-		releaseClaim(ctx, deps, c, v1alpha1.ReleaseReasonDispatchLost, log)
+		releaseClaim(ctx, deps, c, reason, log)
 	}
 
 	// Re-list: releases in the loop above must be visible to the drain
@@ -456,6 +460,7 @@ func findClaim(claims []v1alpha1.Attempt, pointer string) *v1alpha1.Attempt {
 // to fire (labeled PR, green CI), so both arm call sites share this (r4 P7).
 func standDown(ctx context.Context, deps GateDeps, liveAgg *v1alpha1.ReviewReadyStatus, cand candidate, err error, log func(string, ...any), lastDecision, lastReason *string) {
 	log("review-ready: %s: %v", cand.pointer, err)
+	recordReviewGate(ctx, cand.repo, err)
 	*lastDecision, *lastReason = "standdown", err.Error()
 	emitGate(ctx, deps.TL, liveAgg, review.Result{
 		Evaluation:  review.Evaluation{Decision: review.DecisionStanddown, Reason: err.Error()},
@@ -463,16 +468,16 @@ func standDown(ctx context.Context, deps GateDeps, liveAgg *v1alpha1.ReviewReady
 	}, cand.repo, cand.pr)
 }
 
+// isIntentionalStop reports arm refusals that are the system stopping ON
+// PURPOSE (#328 breaker, #343 churn guard) — surfaced as standdowns, never
+// as failures. One predicate so a third sentinel cannot be swallowed by a
+// call site forgetting to extend its list (r2 P3).
 func isIntentionalStop(err error) bool {
 	return errors.Is(err, attempt.ErrDeadDispatchBreaker) || errors.Is(err, attempt.ErrRecentlyDismissed)
 }
 
 // classifyRelease maps a standdown reason onto the claim's release-reason
 // vocabulary.
-// isIntentionalStop reports arm refusals that are the system stopping ON
-// PURPOSE (#328 breaker, #343 churn guard) — surfaced as standdowns, never
-// as failures. One predicate so a third sentinel cannot be swallowed by a
-// call site forgetting to extend its list (r2 P3).
 func classifyRelease(reason string) string {
 	switch {
 	case strings.Contains(reason, "consumed"):

@@ -1011,11 +1011,13 @@ func TestSweepDispatchTimeoutJobListFailureCountsDead(t *testing.T) {
 	}
 }
 
-// ── r4 BLOCKER mechanism: an armed-queued claim OLDER THAN THE HORIZON
-// releases as horizon (not dispatch-lost) — pass A skips never-dispatched
-// claims, so without this the era could never expire and the release→revive
-// loop had no clock. The horizon release arms the dismissal guard. ──
-func TestMultiArmNeverDispatchedAgedClaimReleasesHorizon(t *testing.T) {
+// ── r6 P1: the aged never-dispatched release is DISPATCH-LOST, not horizon
+// — "we could not dispatch" must not set the ambiguity guard's clock ("we
+// stopped asking"). The cycle now converges through the COUNTER: each sweep
+// releases the never-dispatched era again (#1, #2), the third release arms
+// the guard (Max dispatch-lost releases), and a human re-request escapes
+// with a fresh clock (r6 P2). ──
+func TestMultiArmNeverDispatchedAgedClaimConvergesDispatchLost(t *testing.T) {
 	clearTriggerEnv(t)
 	srv := labeledListServer(t, 103)
 	t.Cleanup(srv.Close)
@@ -1025,26 +1027,66 @@ func TestMultiArmNeverDispatchedAgedClaimReleasesHorizon(t *testing.T) {
 	claim := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#103", "deadbeef777", aged, nil)
 	deps, ctx := gateEnv(t, wf, &fakeStatus{}, claim)
 
-	if _, err := RunReviewGateSweep(ctx, deps, wf); err != nil {
-		t.Fatalf("sweep: %v", err)
+	const pr = "git.rezus.cloud/tibrez/rhesadox#103"
+	const sha = "deadbeef777"
+	expectRelease := func(n int) {
+		t.Helper()
+		var got v1alpha1.Attempt
+		if err := deps.Client.Get(ctx, client.ObjectKey{Namespace: wf.Namespace, Name: claim.Name}, &got); err != nil {
+			t.Fatalf("get claim: %v", err)
+		}
+		if !got.Status.Review.Released || got.Status.Review.ReleaseReason != v1alpha1.ReleaseReasonDispatchLost {
+			t.Fatalf("aged never-dispatched claim must release as dispatch-lost #%d, got released=%v reason=%q",
+				n, got.Status.Review.Released, got.Status.Review.ReleaseReason)
+		}
+		if got.Status.Review.DispatchLostReleases != n {
+			t.Fatalf("dispatch-lost release #%d must bump the counter to %d, got %d", n, n, got.Status.Review.DispatchLostReleases)
+		}
 	}
 
+	if _, err := RunReviewGateSweep(ctx, deps, wf); err != nil {
+		t.Fatalf("sweep 1: %v", err)
+	}
+	expectRelease(1)
+	if _, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf, pr, sha, "needs-review", false); err != nil {
+		t.Fatalf("auto revival #1 (counter under max) must reuse the era: %v", err)
+	}
+
+	if _, err := RunReviewGateSweep(ctx, deps, wf); err != nil {
+		t.Fatalf("sweep 2: %v", err)
+	}
+	expectRelease(2)
+	if _, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf, pr, sha, "needs-review", false); err != nil {
+		t.Fatalf("auto revival #2: %v", err)
+	}
+
+	if _, err := RunReviewGateSweep(ctx, deps, wf); err != nil {
+		t.Fatalf("sweep 3: %v", err)
+	}
+	expectRelease(3)
+	// The guard: the next AUTOMATIC arm is refused — the cycle converged
+	// into a visible standdown, not an infinite loop.
+	if _, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf, pr, sha, "needs-review", false); !errors.Is(err, attempt.ErrRecentlyDismissed) {
+		t.Fatalf("exhausted counter must refuse the auto re-arm, got %v", err)
+	}
+	// r6 P2: the HUMAN override escapes — with a FRESH clock (the anchored
+	// one is already past the horizon and would re-release instantly).
+	at2, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf, pr, sha, "needs-review", true)
+	if err != nil {
+		t.Fatalf("human re-request must override the exhausted counter: %v", err)
+	}
 	var got v1alpha1.Attempt
-	if err := deps.Client.Get(ctx, client.ObjectKey{Namespace: wf.Namespace, Name: claim.Name}, &got); err != nil {
-		t.Fatalf("get claim: %v", err)
+	if err := deps.Client.Get(ctx, client.ObjectKey{Namespace: wf.Namespace, Name: at2.Name}, &got); err != nil {
+		t.Fatal(err)
 	}
-	if !got.Status.Review.Released {
-		t.Fatal("an armed-queued claim past the horizon must be released by the sweep")
+	r2 := got.Status.Review
+	if r2.Released {
+		t.Fatal("the overridden era must be live")
 	}
-	if got.Status.Review.ReleaseReason != v1alpha1.ReleaseReasonHorizon {
-		t.Fatalf("aged never-dispatched claim must release as horizon (arms the reset + guard), got %q", got.Status.Review.ReleaseReason)
+	if age := time.Since(r2.ArmedSince.Time); age > time.Minute {
+		t.Fatalf("human override must anchor a FRESH era clock, got age %v", age)
 	}
-	if got.Status.Review.DispatchLostReleases != 0 {
-		t.Fatalf("horizon releases must not bump the dispatch-lost counter, got %d", got.Status.Review.DispatchLostReleases)
-	}
-	// The guard: the next AUTOMATIC arm of the same head is refused — the
-	// cycle converged into a visible standdown, not an infinite loop.
-	if _, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf, "git.rezus.cloud/tibrez/rhesadox#103", "deadbeef777", "needs-review", false); !errors.Is(err, attempt.ErrRecentlyDismissed) {
-		t.Fatalf("aged era's auto re-arm must be refused, got %v", err)
+	if r2.DispatchLostReleases != 0 {
+		t.Fatalf("human wake must reset the counter, got %d", r2.DispatchLostReleases)
 	}
 }

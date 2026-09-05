@@ -77,7 +77,13 @@ func ArmClaim(ctx context.Context, c client.Client, scheme *runtime.Scheme, wf *
 				reuse = a
 			}
 		}
-		if latestSameHead == nil || eraBefore(a, latestSameHead) {
+		// r6 P1: the guard's "latest era" is ordered by ArmedSince across
+		// LIVE and released eras alike — sharing eraBefore (whose first leg
+		// is live-beats-released, the right order for "which era do I
+		// revive") masked horizon dismissals whenever a newer live era
+		// existed, so the guard and the reuse bound read different objects
+		// under different interleavings.
+		if latestSameHead == nil || dismissalAfter(a, latestSameHead) {
 			latestSameHead = a
 		}
 	}
@@ -158,8 +164,15 @@ func ArmClaim(ctx context.Context, c client.Client, scheme *runtime.Scheme, wf *
 		// keeps its clock (anchoring, #343).
 		wasReleased := r.Released
 		wasHorizon := r.ReleaseReason == v1alpha1.ReleaseReasonHorizon
+		wasDispatchLost := r.ReleaseReason == v1alpha1.ReleaseReasonDispatchLost
 		r.PR, r.HeadSHA, r.Label = pr, headSHA, label
-		if !sameClaim || r.ArmedSince == nil || wasHorizon {
+		// r6 P2: a HUMAN re-request on a dispatch-lost era anchors a fresh
+		// clock — the old one is already deep in the past (the era only
+		// survives because anchoring preserves it), so the next sweep's
+		// horizon check would instantly re-release and the guard would
+		// refuse again: the human asks, the machine stands down. The
+		// AUTOMATIC path keeps its anchoring (#343).
+		if !sameClaim || r.ArmedSince == nil || wasHorizon || (humanRequest && wasDispatchLost) {
 			t := now
 			r.ArmedSince = &t
 		}
@@ -210,6 +223,10 @@ func MarkClaimDispatched(ctx context.Context, c client.Client, namespace, attemp
 		}
 		t := metav1.NewTime(time.Now())
 		s.Review.DispatchedAt = &t
+		// r6 P1: a successful dispatch breaks the "consecutive
+		// never-dispatched releases" chain — without this the counter is
+		// monotonic-since-last-human and the field's own contract is false.
+		s.Review.DispatchLostReleases = 0
 	})
 }
 
@@ -288,6 +305,31 @@ func ReleaseClaimDead(ctx context.Context, c client.Client, namespace, attemptNa
 // (r4 P2): live beats released (a tie must not resurrect a claim the sweep
 // just released), then OLDEST ArmedSince wins (nil clock = oldest), then
 // Name — metav1.Time's second granularity makes equal clocks routine.
+// dismissalAfter orders eras NEWEST-ARMED-FIRST (r6 P1): the churn guard
+// asks "did this head's latest era dismiss itself?" — latest by ArmedSince
+// regardless of released state. Deliberately NOT eraBefore: revive-order
+// (live-preferred, oldest-first) and dismissal-order are different
+// questions and must not share a comparator.
+func dismissalAfter(a, b *v1alpha1.Attempt) bool {
+	if a == nil {
+		return false
+	}
+	if b == nil {
+		return true
+	}
+	var at, bt metav1.Time
+	if a.Status.Review.ArmedSince != nil {
+		at = *a.Status.Review.ArmedSince
+	}
+	if b.Status.Review.ArmedSince != nil {
+		bt = *b.Status.Review.ArmedSince
+	}
+	if !at.Time.Equal(bt.Time) {
+		return at.Time.After(bt.Time)
+	}
+	return a.Name > b.Name
+}
+
 func eraBefore(a, b *v1alpha1.Attempt) bool {
 	if a == nil {
 		return false
@@ -316,9 +358,17 @@ func eraBefore(a, b *v1alpha1.Attempt) bool {
 // released (#343). The arm path must SEE the released era: reuse keeps the
 // armed clock honest across the never-dispatched release cycle, and the
 // churn guard reads the latest dismissal per head.
+//
+// Selection is server-side by the workflow label (r6 P6: ArmClaim runs this
+// per candidate per sweep on an UNCACHED client — a full-namespace List
+// here is O(candidates × attempts) real API round-trips, and released eras
+// are kept forever as the guard's evidence). Claims are labeled at create
+// (lifecycle.go) — a claim without the label is not part of the workflow's
+// era chain and must not be.
 func AllReviewClaims(ctx context.Context, c client.Client, namespace, workflowName string) ([]v1alpha1.Attempt, error) {
 	var list v1alpha1.AttemptList
-	if err := c.List(ctx, &list, client.InNamespace(namespace)); err != nil {
+	if err := c.List(ctx, &list, client.InNamespace(namespace),
+		client.MatchingLabels{v1alpha1.WorkflowLabel: workflowName}); err != nil {
 		return nil, fmt.Errorf("list attempts: %w", err)
 	}
 	var out []v1alpha1.Attempt

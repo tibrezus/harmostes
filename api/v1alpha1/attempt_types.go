@@ -241,7 +241,9 @@ type ReviewClaimStatus struct {
 	DeadDispatches int `json:"deadDispatches,omitempty"`
 	// DispatchLostReleases counts consecutive dispatch-lost releases of
 	// this claim (#343 fix 3) — bounds never-dispatched era reuse and
-	// feeds the auto re-arm refusal. Reset only by a fresh claim.
+	// feeds the auto re-arm refusal. "Consecutive" is true by
+	// construction (r6): reset by a successful dispatch
+	// (MarkClaimDispatched), by a human request, or by a fresh claim.
 	DispatchLostReleases int `json:"dispatchLostReleases,omitempty"`
 }
 

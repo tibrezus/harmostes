@@ -40,6 +40,10 @@ export function resolveRigDbCandidates(explicit?: string, extra: string[] = []):
 	// NO cwd-relative or bare candidates: a graph resolved out of the working
 	// tree is PR content answering as authoritative architecture (#338 r20
 	// S1). The default walk is explicit → RIG_DB → the caller's extras.
+	// TRUST BOUNDARY (r24 note): RIG_DB is operator/pod-spec-scoped — the
+	// agent cannot set env (the tool schema dropped the db-path parameter for
+	// exactly that reason, r8 F11), so its rank in the walk is a deployment
+	// decision, not an agent-influenceable one.
 	return [
 		explicit,
 		process.env.RIG_DB,

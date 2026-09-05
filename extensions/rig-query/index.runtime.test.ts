@@ -157,11 +157,28 @@ test("sha provenance: stamped / mismatch / malformed / absent (#338 r9 B2)", asy
 		assert.doesNotMatch(r.content[0].text, /fixture-repo/);
 		delete process.env.RIG_EXPECTED_SHA;
 		delete process.env.RIG_DB_CANDIDATES;
-		// malformed (content never echoed — the F11 oracle class)
+		// malformed (content never echoed — the F11 oracle class) — now REFUSED,
+		// not caveat-served: an unreadable stamp establishes nothing (r24 D1).
 		writeFileSync(shaPath, "root:x:0:0:secrets");
+		process.env.RIG_DB_CANDIDATES = dbPath;
 		r = await execute({ command: "overview" });
 		assert.equal(r.details.rig_sha, "malformed");
+		assert.equal(r.details.sha_state, "malformed");
+		assert.equal(r.details.resolved, false);
+		assert.match(r.content[0].text, /REFUSED: the graph's stamp is unreadable/);
 		assert.doesNotMatch(r.content[0].text, /secrets/);
+		// unchecked under RIG_REQUIRE_SHA=1 (r24 D1): a stamped graph with no
+		// injected expectation must REFUSE — strictness is a per-run contract.
+		writeFileSync(shaPath, "0123abcd");
+		delete process.env.RIG_EXPECTED_SHA;
+		process.env.RIG_REQUIRE_SHA = "1";
+		r = await execute({ command: "overview" });
+		assert.equal(r.details.sha_state, "unchecked");
+		assert.equal(r.details.resolved, false);
+		assert.match(r.content[0].text, /REFUSED: this run demands a verified graph/);
+		assert.doesNotMatch(r.content[0].text, /fixture-repo/);
+		delete process.env.RIG_REQUIRE_SHA;
+		delete process.env.RIG_DB_CANDIDATES;
 	} finally {
 		delete process.env.RIG_EXPECTED_SHA;
 		rmSync(shaPath, { force: true });

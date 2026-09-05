@@ -2,6 +2,7 @@ package worker
 
 import (
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -121,6 +122,71 @@ func TestExtensionsSingleSource(t *testing.T) {
 		args := buildPiArgs(v1alpha1.AgentSpec{Skill: "s", Model: "m"}, Extensions, alwaysPresent)
 		if !strings.Contains(strings.Join(args, " "), ext) {
 			t.Errorf("PiArgs does not load %s", ext)
+		}
+	}
+}
+
+// piShippedTypebox is the typebox version the pinned PI_VERSION ships and
+// aliases at runtime (pi's extension loader injects `typebox` → its bundled
+// copy). extensions/rig-query/package.json pins exactly this version so
+// `node --test` validates the schema against the SAME typebox the worker
+// image loads (#338 r24 D4: the pin is the whole load-gate guarantee).
+// Bump PI_VERSION → check pi's bundled typebox → bump BOTH together.
+const piShippedTypebox = "1.3.7"
+
+// TestPinnedVersionsAgree pins the version pair the load gate declares
+// coupled: both worker images must carry the identical ARG PI_VERSION, and
+// the extension's typebox pin must equal what that pi ships (#338 r24 D4).
+// A hand-bump of PI_VERSION alone previously left every gate green while
+// the image loaded a different typebox than the tests validated against.
+func TestPinnedVersionsAgree(t *testing.T) {
+	dev := string(mustRead(t, "../../Dockerfile.worker"))
+	rel := string(mustRead(t, "../../.github/Dockerfile.worker.release"))
+	devPI := mustArg(t, dev)
+	relPI := mustArg(t, rel)
+	if devPI == "" || relPI == "" {
+		t.Fatalf("ARG PI_VERSION missing (dev=%q release=%q) — the load gate has no anchor", devPI, relPI)
+	}
+	if devPI != relPI {
+		t.Errorf("PI_VERSION drifted: Dockerfile.worker=%s release=%s — dev and published images load DIFFERENT pi runtimes", devPI, relPI)
+	}
+	pkg := string(mustRead(t, "../../extensions/rig-query/package.json"))
+	want := `"typebox": "` + piShippedTypebox + `"`
+	if !strings.Contains(pkg, want) {
+		t.Errorf("extensions/rig-query/package.json typebox pin != %s (what pi %s ships) — update the pin WITH PI_VERSION, together", piShippedTypebox, devPI)
+	}
+}
+
+func mustArg(t *testing.T, dockerfile string) string {
+	t.Helper()
+	for _, line := range strings.Split(dockerfile, "\n") {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(line), "ARG PI_VERSION="); ok {
+			return v
+		}
+	}
+	return ""
+}
+
+// TestWorkerAgentImportStaysOneWay guards the load-bearing import edge
+// cmd/harmostes-agent → internal/worker → internal/agent (#338 r24 D2).
+// The reverse edge (internal/agent importing internal/worker) would close a
+// cycle and break `make build`, `go test ./...`, and every goreleaser binary
+// at once. One `go list -deps` per run pins the direction; no cycle exists
+// today (verified on the head graph), and this keeps it that way.
+func TestWorkerAgentImportStaysOneWay(t *testing.T) {
+	if testing.Short() {
+		t.Skip("go list exec — skipped in -short")
+	}
+	root := "../.."
+	cmd := exec.Command("go", "list", "-deps", "./internal/agent")
+	cmd.Dir = root // the test binary's CWD is the package dir — resolve from repo root
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("go list -deps ./internal/agent: %v", err)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line == "github.com/tibrezus/harmostes/internal/worker" {
+			t.Fatal("internal/agent imports internal/worker — the one-way edge internal/worker → internal/agent is closed into a cycle; move the shared shape (PiArgs) to a leaf package instead")
 		}
 	}
 }

@@ -2,11 +2,14 @@ package main
 
 import (
 	"context"
-	"github.com/tibrezus/harmostes/internal/timeline"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/tibrezus/harmostes/internal/observability"
+	"github.com/tibrezus/harmostes/internal/timeline"
 )
 
 // TestFlushTelemetryCallsShutdown: the worker's exit path flushes telemetry —
@@ -149,5 +152,34 @@ func TestSubjectFromEnv(t *testing.T) {
 				t.Fatalf("subjectFromEnv() = %+v, want %+v", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestGraphPresenceLine pins the run-level degradation signal (#338 r24 D5):
+// with the reviewed SHA armed, a missing graph or missing stamp must be a
+// greppable pod-log line — the archaeology cost must not return invisibly.
+func TestGraphPresenceLine(t *testing.T) {
+	dir := t.TempDir()
+	graph := filepath.Join(dir, "rig.db")
+
+	// no graph at all
+	line, ok := graphPresenceLine(graph)
+	if !ok || !strings.Contains(line, "graph: absent") {
+		t.Fatalf("missing graph: want graph: absent line, got ok=%v %q", ok, line)
+	}
+	// graph without stamp
+	if err := os.WriteFile(graph, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	line, ok = graphPresenceLine(graph)
+	if !ok || !strings.Contains(line, "graph: unstamped") {
+		t.Fatalf("unstamped graph: want graph: unstamped line, got ok=%v %q", ok, line)
+	}
+	// both halves present → silent
+	if err := os.WriteFile(graph+".sha", []byte("0123abcd"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if line, ok := graphPresenceLine(graph); ok {
+		t.Fatalf("healthy graph must stay silent, got %q", line)
 	}
 }

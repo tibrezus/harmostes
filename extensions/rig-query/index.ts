@@ -132,6 +132,26 @@ Prefer this over find/grep for ANY "where is X" or "what uses Y" question; drop 
 				rigSha = "absent";
 				shaState = "absent";
 			}
+			// A malformed stamp is NEVER servable (r24 D1): provenance cannot be
+			// established from an unreadable stamp — answering would be
+			// "unverified but served" with worse evidence than absent.
+			if (shaState === "malformed") {
+				return {
+					content: [{ type: "text", text: `graph provenance: malformed stamp at ${path}.sha\nREFUSED: the graph's stamp is unreadable — provenance cannot be established. Navigate with bash, or fix prepare's emission.` }],
+					details: { db: path, command: p.command, target: p.target ?? null, chars: 0, truncated: false, resolved: false, graph: true, probed: candidates, rig_sha: "malformed", sha_state: "malformed" },
+				};
+			}
+			// RIG_REQUIRE_SHA=1 (r24 D1): the run DEMANDS a verified graph — the
+			// controller injects it next to RIG_EXPECTED_SHA. Under it, an
+			// unchecked graph (stamped, nothing to verify against) is refused:
+			// strictness is a deliberate per-run contract, not an accident of
+			// which code path set an env var.
+			if (shaState === "unchecked" && process.env.RIG_REQUIRE_SHA === "1") {
+				return {
+					content: [{ type: "text", text: `graph sha: ${rigSha} (state: unchecked — no reviewed SHA was injected)\nREFUSED: this run demands a verified graph (RIG_REQUIRE_SHA=1) but no RIG_EXPECTED_SHA reached the session. Navigate with bash, or fix the dispatch env wiring.` }],
+					details: { db: path, command: p.command, target: p.target ?? null, chars: 0, truncated: false, resolved: false, graph: true, probed: candidates, rig_sha: rigSha, sha_state: "unchecked" },
+				};
+			}
 			if (shaState === "absent-refusal") {
 				// Same refusal+telemetry shape as mismatch (r20 driver 2): "prepare
 				// did not stamp" is a countable freshness event, not a free-text throw.

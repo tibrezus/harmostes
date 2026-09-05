@@ -24,3 +24,13 @@ consumed by both the worker and `harmostes.py` — pinned by
 telemetry (`details.{command,target,chars,truncated,rig_sha}`) are the
 measurement surface for review-session efficiency (#336, #337). The emitting
 half of the review-time graph lives in the ops repo (`workspace.sh`).
+
+Freshness contract (both halves required for the rule to hold): the only
+sanctioned graph location is `/workspace/rig.db`, produced by the ops
+prepare (`workspace.sh`) together with its provenance stamp
+`/workspace/rig.db.sha` (the reviewed HEAD SHA). On the one-shot dispatch
+path the worker injects `RIG_EXPECTED_SHA` + `RIG_REQUIRE_SHA=1` into the
+pi child's env; under that contract `mismatch`, `absent`, `malformed` and
+`unchecked` graphs are all REFUSED — strictness is a per-run decision, and
+run-level absence (`graph: absent` / `graph: unstamped`) is logged at worker
+startup so degraded runs stay countable from pod logs alone.

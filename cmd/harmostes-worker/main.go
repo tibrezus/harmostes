@@ -57,6 +57,19 @@ var (
 	obsShutdown observability.ShutdownFunc
 )
 
+// graphPresenceLine reports, at run level, whether the SHA-exact graph and
+// its stamp exist for a run whose reviewed SHA was injected. Empty ok=false
+// means both halves are present — the common path stays silent (#338 r24 D5).
+func graphPresenceLine(graphPath string) (string, bool) {
+	if _, err := os.Stat(graphPath); err != nil {
+		return "graph: absent — prepare emitted no rig.db; the rig tool will degrade to grep (archaeology cost returns)", true
+	}
+	if _, err := os.Stat(graphPath + ".sha"); err != nil {
+		return "graph: unstamped — prepare emitted rig.db but no .sha; the rig tool will refuse it (RIG_EXPECTED_SHA is armed)", true
+	}
+	return "", false
+}
+
 func main() {
 	// argv is the authoritative dispatch (ADR-0007 phase 2): the consumer
 	// execs "run" children and the per-Attempt Job runs "run" directly —
@@ -296,6 +309,18 @@ func runOneShot() {
 	piEnv := os.Environ()
 	if sha := os.Getenv("HARMOSTES_TRIGGER_SHA"); sha != "" {
 		piEnv = append(piEnv, "RIG_EXPECTED_SHA="+sha)
+		// Strictness is a deliberate per-run contract (#338 r24 D1): with an
+		// expectation injected, unchecked/malformed graphs must refuse too —
+		// the freshness rule is a rule, not best-effort.
+		piEnv = append(piEnv, "RIG_REQUIRE_SHA=1")
+		// Run-level degradation signal (#338 r24 D5): when the expectation is
+		// armed but prepare emitted no graph (or no stamp), say so at startup —
+		// "graph missing" must be countable from pod logs alone, without a
+		// session join, or the archaeology cost this feature exists to kill
+		// returns invisibly.
+		if line, ok := graphPresenceLine("/workspace/rig.db"); ok {
+			logf("%s", line)
+		}
 	}
 	deps.Agent = worker.RPCAgentRunner{
 		Opts: agent.RPCOptions{

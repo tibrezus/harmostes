@@ -87,12 +87,17 @@ func (r *WorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 	won, err := r.claimTriggerSlot(ctx, &wf, minInterval)
 	if err != nil {
+		// #118 discipline: a persistently failing CAS silently suppresses
+		// EVERY trigger — that must be visible, not just logged (r4 P7).
 		logger.Error(err, "claim trigger slot")
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "claim trigger slot")
 		return ctrl.Result{RequeueAfter: r.PollInterval}, nil
 	}
-	// Post-deploy proof of the #343 churn-engine fix lives HERE: the
-	// won/lost counts are the sweep cadence, greppable in the reconcile
-	// spans.
+	// Post-deploy proof of the #343 churn-engine fix: the won/lost rate on
+	// harmostes_trigger_slot_total is the sweep cadence, graphable (spans
+	// are sampled; the attribute below is the correlating trace signal).
+	recordTriggerSlot(ctx, wf.Name, won)
 	span.SetAttributes(attribute.Bool("harmostes.trigger_slot_won", won))
 	if !won {
 		logger.V(1).Info("trigger slot on cooldown — no worker scheduled", "workflow", wf.Name)

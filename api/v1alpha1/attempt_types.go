@@ -239,6 +239,10 @@ type ReviewClaimStatus struct {
 	// breaker (#328) refuses to re-arm a head at MaxDeadDispatchesPerHead;
 	// a head change or an explicit label wake resets it.
 	DeadDispatches int `json:"deadDispatches,omitempty"`
+	// DispatchLostReleases counts consecutive dispatch-lost releases of
+	// this claim (#343 fix 3) — bounds never-dispatched era reuse and
+	// feeds the auto re-arm refusal. Reset only by a fresh claim.
+	DispatchLostReleases int `json:"dispatchLostReleases,omitempty"`
 }
 
 // RunRecord is one Workflow Run (job) executed inside an attempt.

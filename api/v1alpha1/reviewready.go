@@ -19,10 +19,13 @@ const OneShotRunBound = 30 * time.Minute
 // OneShotRunBound — observed live: 19 dead runs over 12 hours on one PR.
 // The breaker converts the silent burn into a bounded, visible standdown.
 // It resets on a new head push or an explicit label wake (human override).
-// Release reasons recorded on a review claim's ReleaseReason. Shared
-// vocabulary: produced by the gate's classifyRelease, consumed by the arm
-// path's era rules — bare literals across that boundary silently disable
-// the churn guard on a rename (#344 r3 P2).
+
+// ReleaseReason is the release-reason vocabulary recorded on a review
+// claim's ReleaseReason. Shared between the gate's classifyRelease
+// (producer) and the arm path's era rules (consumer) — bare literals
+// across that boundary silently disable the churn guard on a rename
+// (#344 r3 P2). "consumed"/"closed"/"superseded"/"standdown" stay
+// open-string on purpose: terminal classes nothing branches on.
 const (
 	// ReleaseReasonDispatchLost: the sweep released the claim before any
 	// dispatch (never-consummated era — revival keeps the era clock).
@@ -36,7 +39,20 @@ const (
 	ReleaseReasonDispatchTimeout = "dispatch-timeout"
 )
 
+// MaxDeadDispatchesPerHead is the dead-dispatch circuit breaker (#328):
+// see the doc paragraph above.
 const MaxDeadDispatchesPerHead = 3
+
+// MaxDispatchLostReleases bounds era stickiness for NEVER-DISPATCHED
+// claims (#343 fix 3): a head whose armed-queued claim was released
+// dispatch-lost this many times consecutively is not re-armed
+// automatically — the release/revive cycle must converge into a visible
+// standdown instead of flapping one Attempt forever. Resets on a new head
+// push (fresh claim) or an explicit label wake (human override). The
+// never-dispatched pass also releases claims older than the horizon as
+// ReleaseReasonHorizon, which stops the cycle earlier and arms the
+// dismissal guard.
+const MaxDispatchLostReleases = 3
 
 // MinDispatchMargin is the minimum delivery/queue margin a configured
 // DispatchTimeout must leave over OneShotRunBound. Enforced (not merely

@@ -427,3 +427,91 @@ func TestArmClaim_RevivedEraClearsPhantomDispatch(t *testing.T) {
 		t.Fatalf("revived era must start a fresh clock, got %v", age)
 	}
 }
+
+// ── r4 BLOCKER: bounded dispatch-lost reuse — the release/revive cycle
+// must converge into a refused arm within MaxDispatchLostReleases sweeps,
+// and a request-shaped wake resets the budget. ──
+func TestArmClaim_DispatchLostCycleConverges(t *testing.T) {
+	ctx := context.Background()
+	c := newFakeClient(t)
+	wf := wikiWorkflow()
+	const pr = "git.rezus.cloud/tibrez/rhesadox#2001"
+	const sha = "5472b055cafe2001"
+
+	name, err := armFor(t, ctx, c, wf, pr, sha, "needs-review", false)
+	if err != nil {
+		t.Fatalf("arm 0: %v", err)
+	}
+	// Simulate the never-dispatched release/revive cycle. Era reuse must
+	// keep the SAME attempt (no attempt spam) and each cycle accumulates
+	// the consecutive-release counter. The Nth release is the LAST that
+	// may be revived: the arm after it is the refusal (convergence).
+	for i := 1; i < v1alpha1.MaxDispatchLostReleases; i++ {
+		if err := ReleaseClaim(ctx, c, "harmostes", name, v1alpha1.ReleaseReasonDispatchLost); err != nil {
+			t.Fatalf("release %d: %v", i, err)
+		}
+		revived, err := armFor(t, ctx, c, wf, pr, sha, "needs-review", false)
+		if err != nil {
+			t.Fatalf("cycle %d revive: %v", i, err)
+		}
+		if revived != name {
+			t.Fatalf("cycle %d: era reuse must keep the same attempt, got %s", i, revived)
+		}
+	}
+	// The final release exhausts the budget; the next automatic arm is refused.
+	if err := ReleaseClaim(ctx, c, "harmostes", name, v1alpha1.ReleaseReasonDispatchLost); err != nil {
+		t.Fatalf("final release: %v", err)
+	}
+	if _, err := armFor(t, ctx, c, wf, pr, sha, "needs-review", false); !errors.Is(err, ErrRecentlyDismissed) {
+		t.Fatalf("want ErrRecentlyDismissed (converged after %d releases), got %v", v1alpha1.MaxDispatchLostReleases, err)
+	}
+
+	// Counter visible on the claim (the "3 consecutive releases" is
+	// provable from the object, not just from behavior).
+	a, err := resolveForTest(t, ctx, c, wf, sha)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if got := a.Status.Review.DispatchLostReleases; got != v1alpha1.MaxDispatchLostReleases {
+		t.Fatalf("DispatchLostReleases = %d, want %d", got, v1alpha1.MaxDispatchLostReleases)
+	}
+
+	// A request-shaped wake resets the budget (fix 3's contract).
+	if _, err := armFor(t, ctx, c, wf, pr, sha, "needs-review", true); err != nil {
+		t.Fatalf("human override: %v", err)
+	}
+	a, _ = resolveForTest(t, ctx, c, wf, sha)
+	if got := a.Status.Review.DispatchLostReleases; got != 0 {
+		t.Fatalf("counter after human wake = %d, want 0", got)
+	}
+}
+
+// ── r4 P2: the era tie-break is TOTAL — a live claim beats a released one
+// at the same clock, so a tie never resurrects a just-released claim. ──
+func TestArmClaim_TieBreakPrefersLiveEra(t *testing.T) {
+	ctx := context.Background()
+	c := newFakeClient(t)
+	wf := wikiWorkflow()
+	const pr = "git.rezus.cloud/tibrez/rhesadox#2002"
+	const sha = "5472b055cafe2002"
+
+	name, err := armFor(t, ctx, c, wf, pr, sha, "needs-review", false)
+	if err != nil {
+		t.Fatalf("arm: %v", err)
+	}
+	// Release it, then re-arm: the revival is the SAME (now live) object.
+	if err := ReleaseClaim(ctx, c, "harmostes", name, v1alpha1.ReleaseReasonDispatchLost); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	revived, err := armFor(t, ctx, c, wf, pr, sha, "needs-review", false)
+	if err != nil {
+		t.Fatalf("revive: %v", err)
+	}
+	if revived != name {
+		t.Fatalf("tie must resolve to the one same-head era, got %s", revived)
+	}
+	a, _ := resolveForTest(t, ctx, c, wf, sha)
+	if a.Status.Review.Released {
+		t.Fatal("the surviving era must be LIVE — a tie must not resurrect the released object")
+	}
+}

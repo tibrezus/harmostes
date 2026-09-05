@@ -61,23 +61,39 @@ func ArmClaim(ctx context.Context, c client.Client, scheme *runtime.Scheme, wf *
 		// armed era. Reusing it keeps ArmedSince anchored, so the verdict
 		// window still reaches verdicts posted before a supersede cycle and
 		// the horizon clock actually expires instead of resetting per sweep.
+		//
+		// r4 P1: reuse is BOUNDED — a dispatch-lost era is only reusable
+		// while its consecutive-release count is under
+		// MaxDispatchLostReleases. Unbounded reuse relocated the #343 churn
+		// (never-dispatched claims are invisible to pass A's horizon, so
+		// their only release path loops dispatch-lost forever); the counter
+		// converges the cycle into a refused arm within N sweeps.
 		r := a.Status.Review
-		if !r.Released || r.ReleaseReason == v1alpha1.ReleaseReasonDispatchLost {
-			if reuse == nil || armedSinceAfter(a, reuse) {
+		reusable := !r.Released ||
+			(r.ReleaseReason == v1alpha1.ReleaseReasonDispatchLost &&
+				r.DispatchLostReleases < v1alpha1.MaxDispatchLostReleases)
+		if reusable {
+			if reuse == nil || eraBefore(a, reuse) {
 				reuse = a
 			}
 		}
-		if latestSameHead == nil || armedSinceAfter(a, latestSameHead) {
+		if latestSameHead == nil || eraBefore(a, latestSameHead) {
 			latestSameHead = a
 		}
 	}
-	// Churn guard: the head's latest era was dismissed by the horizon —
-	// automatic re-arm would restart the identical ambiguity. Human request
-	// overrides (re-apply the label / push + label).
-	if !humanRequest && latestSameHead != nil && latestSameHead.Status.Review.Released &&
-		latestSameHead.Status.Review.ReleaseReason == v1alpha1.ReleaseReasonHorizon {
-		return nil, fmt.Errorf("%w: %s — automatic re-arm refused; re-apply the label to request a fresh review",
-			ErrRecentlyDismissed, shortSHA(headSHA))
+	// Churn guard (r4: BOTH legs of #343 fix 3's contract): the head's
+	// latest era was dismissed by the horizon (born expired — revival would
+	// restart the identical ambiguity), OR the head burned through
+	// MaxDispatchLostReleases consecutive never-dispatched releases (the
+	// release/revive cycle must stop, not flap). Human request overrides
+	// (re-apply the label / push + label).
+	if !humanRequest && latestSameHead != nil {
+		lr := latestSameHead.Status.Review
+		if (lr.Released && lr.ReleaseReason == v1alpha1.ReleaseReasonHorizon) ||
+			lr.DispatchLostReleases >= v1alpha1.MaxDispatchLostReleases {
+			return nil, fmt.Errorf("%w: %s — automatic re-arm refused; re-apply the label to request a fresh review",
+				ErrRecentlyDismissed, shortSHA(headSHA))
+		}
 	}
 
 	var at *v1alpha1.Attempt
@@ -134,28 +150,34 @@ func ArmClaim(ctx context.Context, c client.Client, scheme *runtime.Scheme, wf *
 		sameClaim := r.PR == pr && r.HeadSHA == headSHA
 		// Revival rules SPLIT BY RELEASE REASON (r3 P4 — the r2 blanket reset
 		// re-opened the #343 churn): a dispatch-lost release is a
-		// never-consummated era — revival KEEPS the era clock, so the horizon
-		// can expire it and the verdict window still reaches verdicts posted
-		// mid-era. A horizon release is born expired — revival RESETS the
-		// clock (r2 F1: the human override must produce a working era). A
-		// live claim refresh always keeps its clock (anchoring, #343).
+		// never-consummated era — revival KEEPS the era clock, so the verdict
+		// window still reaches verdicts posted mid-era and the never-dispatched
+		// pass's own horizon check (r4) can expire the era. A horizon release
+		// is born expired — revival RESETS the clock (r2 F1: the human
+		// override must produce a working era). A live claim refresh always
+		// keeps its clock (anchoring, #343).
 		wasReleased := r.Released
-		wasDispatchLost := r.ReleaseReason == v1alpha1.ReleaseReasonDispatchLost
 		wasHorizon := r.ReleaseReason == v1alpha1.ReleaseReasonHorizon
 		r.PR, r.HeadSHA, r.Label = pr, headSHA, label
 		if !sameClaim || r.ArmedSince == nil || wasHorizon {
 			t := now
 			r.ArmedSince = &t
 		}
+		if humanRequest {
+			// Request-shaped wakes reset the consecutive-release counter
+			// (#343 fix 3): the human said "review this", the machine
+			// restarts its bounded budget.
+			r.DispatchLostReleases = 0
+		}
 		if wasReleased {
-			// The era's dispatch, if any, ended with the release — carrying
-			// DispatchedAt across a revival is a phantom dispatch: pass A
-			// counts it against capacity with no Job behind it, and the
-			// timer pass strikes the breaker for a dispatch never made
-			// (#344 F2 — the mirror of #331: the observably dead must not
-			// be counted alive).
+			// REVIVAL ONLY (not live refresh): the era's dispatch, if any,
+			// ended with the release — carrying DispatchedAt across a
+			// revival is a phantom dispatch: pass A counts it against
+			// capacity with no Job behind it, and the timer pass strikes
+			// the breaker for a dispatch never made (#344 F2 — the mirror
+			// of #331). A LIVE refresh keeps DispatchedAt: pass A's
+			// capacity accounting reads "in flight" from its presence.
 			r.DispatchedAt = nil
-			_ = wasDispatchLost // documented above: the clock deliberately does NOT reset
 		}
 		// The breaker counts deaths of THIS head's dispatches; a new head
 		// or an explicit human re-request starts from zero.
@@ -199,6 +221,12 @@ func ReleaseClaim(ctx context.Context, c client.Client, namespace, attemptName, 
 		}
 		s.Review.Released = true
 		s.Review.ReleaseReason = reason
+		// Consecutive never-dispatched releases for this pointer (#343 fix
+		// 3): feeds the reuse bound and the auto re-arm refusal. Revivals
+		// keep the count — it is per (pr, head) era chain, not per release.
+		if reason == v1alpha1.ReleaseReasonDispatchLost {
+			s.Review.DispatchLostReleases++
+		}
 	})
 }
 
@@ -256,16 +284,32 @@ func ReleaseClaimDead(ctx context.Context, c client.Client, namespace, attemptNa
 	return recorded, deadDispatches, err
 }
 
-// armedSinceAfter reports a's ArmedSince strictly after b's (nil = zero).
-func armedSinceAfter(a, b *v1alpha1.Attempt) bool {
+// eraBefore orders same-head era candidates TOTAL and deterministically
+// (r4 P2): live beats released (a tie must not resurrect a claim the sweep
+// just released), then OLDEST ArmedSince wins (nil clock = oldest), then
+// Name — metav1.Time's second granularity makes equal clocks routine.
+func eraBefore(a, b *v1alpha1.Attempt) bool {
+	if a == nil {
+		return false
+	}
+	if b == nil {
+		return true
+	}
+	al, bl := !a.Status.Review.Released, !b.Status.Review.Released
+	if al != bl {
+		return al
+	}
 	var at, bt metav1.Time
-	if a != nil && a.Status.Review.ArmedSince != nil {
+	if a.Status.Review.ArmedSince != nil {
 		at = *a.Status.Review.ArmedSince
 	}
-	if b != nil && b.Status.Review.ArmedSince != nil {
+	if b.Status.Review.ArmedSince != nil {
 		bt = *b.Status.Review.ArmedSince
 	}
-	return at.After(bt.Time)
+	if !at.Time.Equal(bt.Time) {
+		return at.Time.Before(bt.Time)
+	}
+	return a.Name < b.Name
 }
 
 // AllReviewClaims returns every review claim for the workflow — live AND
@@ -294,7 +338,8 @@ func AllReviewClaims(ctx context.Context, c client.Client, namespace, workflowNa
 // attempt first (stable arm order for sweeps).
 func LiveReviewClaims(ctx context.Context, c client.Client, namespace, workflowName string) ([]v1alpha1.Attempt, error) {
 	var list v1alpha1.AttemptList
-	if err := c.List(ctx, &list, client.InNamespace(namespace)); err != nil {
+	if err := c.List(ctx, &list, client.InNamespace(namespace),
+		client.MatchingLabels{v1alpha1.WorkflowLabel: workflowName}); err != nil {
 		return nil, fmt.Errorf("list attempts: %w", err)
 	}
 	var out []v1alpha1.Attempt

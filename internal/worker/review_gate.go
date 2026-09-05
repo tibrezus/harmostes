@@ -178,7 +178,7 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 		res := review.Evaluate(ctx, api, p)
 		if res.Decision == review.DecisionStanddown {
 			reason := classifyRelease(res.Reason)
-			if reason == "dispatch-timeout" && jobAlive(c.Name) {
+			if reason == v1alpha1.ReleaseReasonDispatchTimeout && jobAlive(c.Name) {
 				// The bound presumes death; the Job is observably still
 				// alive (slow deadline enforcement, clock skew). The fact
 				// wins: keep the claim live — it holds its slot — and let
@@ -196,7 +196,7 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 				}
 				continue
 			}
-			if reason == "dispatch-timeout" {
+			if reason == v1alpha1.ReleaseReasonDispatchTimeout {
 				// A dispatched review presumed dead without a verdict IS a
 				// dead dispatch: the breaker counts it and the ledger
 				// finalizes the run (#328).
@@ -252,8 +252,19 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 		}
 		// Never dispatched: infrastructure weather, not a dead review —
 		// the breaker must NOT count it (only dispatched deaths do).
+		// r4 (BLOCKER fix): an armed-queued claim OLDER THAN THE HORIZON
+		// releases as horizon, not dispatch-lost — pass A skips
+		// never-dispatched claims, so without this their era could never
+		// expire and the release→revive loop had no clock. A horizon
+		// release arms both the revival clock reset and the dismissal
+		// guard on the next arm.
+		if !arm.IsZero() && time.Since(arm) > rr.HorizonDuration() {
+			log("review-ready: claim %s (%s) never dispatched and older than the horizon — releasing as horizon", c.Name, r.PR)
+			releaseClaim(ctx, deps, c, v1alpha1.ReleaseReasonHorizon, log)
+			continue
+		}
 		log("review-ready: claim %s (%s) never dispatched — releasing as dispatch-lost", c.Name, r.PR)
-		releaseClaim(ctx, deps, c, "dispatch-lost", log)
+		releaseClaim(ctx, deps, c, v1alpha1.ReleaseReasonDispatchLost, log)
 	}
 
 	// Re-list: releases in the loop above must be visible to the drain
@@ -350,12 +361,8 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 			at, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf, cand.pointer, sha, label, cand.labeled)
 			if err != nil {
 				if isIntentionalStop(err) {
-					// Surface the breaker / churn guard as the decision, not
-					// a failure: the system stopped ON PURPOSE and says why
-					// (#328, #343).
-					log("review-ready: %s: %v", cand.pointer, err)
-					lastDecision, lastReason = "standdown", err.Error()
-					continue
+					standDown(ctx, deps, liveAgg, cand, err, log, &lastDecision, &lastReason)
+					continue // before free--: a refusal must not consume a slot
 				}
 				log("review-ready: arm claim %s failed: %v", cand.pointer, err)
 				lastDecision, lastReason = string(res.Decision), res.Reason
@@ -372,16 +379,7 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 			}
 			if _, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf, cand.pointer, sha, label, cand.labeled); err != nil {
 				if isIntentionalStop(err) {
-					// Same discipline as the proceed branch: an intentional
-					// stop is a STANDDOWN with a timeline row — "why is this
-					// labeled PR not being reviewed?" must be answerable from
-					// pod logs or the durable history alone (r2 P7).
-					log("review-ready: %s: %v", cand.pointer, err)
-					lastDecision, lastReason = "standdown", err.Error()
-					emitGate(ctx, deps.TL, liveAgg, review.Result{
-						Evaluation:  review.Evaluation{Decision: review.DecisionStanddown, Reason: err.Error()},
-						NewArmedSha: "",
-					}, cand.repo, cand.pr)
+					standDown(ctx, deps, liveAgg, cand, err, log, &lastDecision, &lastReason)
 					continue
 				}
 				log("review-ready: arm claim %s failed: %v", cand.pointer, err)
@@ -449,6 +447,20 @@ func findClaim(claims []v1alpha1.Attempt, pointer string) *v1alpha1.Attempt {
 		}
 	}
 	return nil
+}
+
+// standDown records an intentional stop (breaker, churn guard) ONE way:
+// log + Workflow status + a durable gate timeline row. "Why is this labeled
+// PR not being reviewed?" must be answerable from pod logs or the durable
+// history alone — and the proceed branch is where the guard is MOST likely
+// to fire (labeled PR, green CI), so both arm call sites share this (r4 P7).
+func standDown(ctx context.Context, deps GateDeps, liveAgg *v1alpha1.ReviewReadyStatus, cand candidate, err error, log func(string, ...any), lastDecision, lastReason *string) {
+	log("review-ready: %s: %v", cand.pointer, err)
+	*lastDecision, *lastReason = "standdown", err.Error()
+	emitGate(ctx, deps.TL, liveAgg, review.Result{
+		Evaluation:  review.Evaluation{Decision: review.DecisionStanddown, Reason: err.Error()},
+		NewArmedSha: "",
+	}, cand.repo, cand.pr)
 }
 
 func isIntentionalStop(err error) bool {

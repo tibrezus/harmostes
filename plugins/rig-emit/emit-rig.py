@@ -101,8 +101,8 @@ def main():
         if warnings:
             # Persisted into rig.db meta by write_db — the artifact says
             # what it contains (#346 r2 P7).
-            rig["warnings"] = warnings[:10]
-            for w in warnings[:10]:
+            rig["warnings"] = warnings
+            for w in warnings:
                 print(f"  WARN: {w}", file=sys.stderr)
         if errors:
             print(f"[emit-rig] VALIDATION FAILED ({len(errors)} error(s)):", file=sys.stderr)

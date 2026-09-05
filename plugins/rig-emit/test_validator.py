@@ -9,6 +9,7 @@ Run: python3 plugins/rig-emit/test_validator.py  (stdlib only; exit ≠ 0 fails)
 CI: wired as `make test-rig-emit` (ci.yml test job).
 """
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -37,10 +38,7 @@ def main() -> int:
     ev = [{"id": "e1"}]
 
     # 1. A dependency cycle must NOT be an error.
-    cyclic = rig_with([
-        {"id": "a", "name": "A", "depends_on_ids": ["b"], "external_packages_ids": [], "evidence_ids": ["e1"], "source_files": []},
-        {"id": "b", "name": "B", "depends_on_ids": ["a"], "external_packages_ids": [], "evidence_ids": ["e1"], "source_files": []},
-    ])
+    cyclic = rig_with([comp("a", ["b"]), comp("b", ["a"])])
     errors, warnings = validate_rig(cyclic, check_source_existence=False)
     if errors:
         print(f"FAIL: cycle must not error, got {errors}")
@@ -49,8 +47,9 @@ def main() -> int:
     if not named:
         print(f"FAIL: cycle warning must NAME the members, got {warnings}")
         return 2
-    if "a → b → a" not in named[0]:
-        print(f"FAIL: cycle warning must name members in order, got {named[0]}")
+    # canonical rotation to the smallest member NAME (r4 P4.2)
+    if "A → B → A" not in named[0]:
+        print(f"FAIL: cycle warning must name CANONICAL members, got {named[0]}")
         return 2
 
     # 2. Dangling refs stay errors.
@@ -90,6 +89,15 @@ def main() -> int:
     if errors or any("Circular" in w for w in warnings):
         print(f"FAIL: clean rig must validate cleanly, got {errors} / {warnings}")
         return 6
+
+    # The producer probe below needs the Go toolchain (the extractor runs
+    # `go list`): SKIP with a printed reason where go is absent — the tier
+    # is otherwise stdlib-only and must stay green on a python3-only host
+    # (r4 BLOCKER: the unguarded probe red on `make test`).
+    if shutil.which("go") is None:
+        print("SKIP producer+wrapper probes (no go toolchain) — library severity cases all ran")
+        print("rig-emit validator severity: OK (library cases; producer probe skipped)")
+        return 0
 
     # Producer wiring (r5 gate 6): the thing that actually broke was
     # "errors ⇒ rig.db written". Run the REAL emitter on a cyclic fixture

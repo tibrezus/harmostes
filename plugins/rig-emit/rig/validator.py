@@ -124,31 +124,42 @@ def _check_circular_deps(rig: dict) -> list[str]:
         stack = [(root, iter([nb for nb in graph.get(root, []) if nb in color]))]
         color[root] = GRAY
         path.append(root)
-        while stack and not found:
+        while stack:
             node, it = stack[-1]
             advanced = False
             for nb in it:
                 if color.get(nb) == GRAY:
                     idx = path.index(nb)
                     found.append(path[idx:] + [nb])
-                    break
-                if color.get(nb) == WHITE:
+                elif color.get(nb) == WHITE:
                     color[nb] = GRAY
                     path.append(nb)
                     stack.append((nb, iter([x for x in graph.get(nb, []) if x in color])))
                     advanced = True
                     break
-            if found:
-                break
             if not advanced:
                 stack.pop()
                 path.pop()
                 color[node] = BLACK
     if not found:
         return []
-    cyc = " → ".join(found[0])
-    return [f"Circular dependency detected: {cyc} (emitted as-is — the "
-            "deps table represents the cycle; navigation is unaffected)"]
+    # Canonical form (r4 P4.2): the warning (and the canonical hash derived
+    # from it) must be a function of the GRAPH, not of DFS entry order —
+    # rotate the cycle to start at its smallest member NAME. Count ALL
+    # cycles: the traversal runs to completion and each GRAY back-edge is
+    # one cycle (self-loops and distinct cycles both count).
+    names = {n.get("id",""): n.get("name", n.get("id","")) for key in
+             ("components", "aggregators", "runners") for n in rig.get(key, [])}
+    cyc_nodes = found[0]
+    names_seq = [names.get(x, x) for x in cyc_nodes]
+    k = names_seq.index(min(names_seq))
+    names_seq = names_seq[k:-1] + names_seq[:k] + [names_seq[k]]
+    cyc = " → ".join(names_seq)
+    msg = [f"Circular dependency detected: {cyc} (emitted as-is — the "
+           "deps table represents the cycle; navigation is unaffected)"]
+    if len(found) > 1:
+        msg[0] += f"; +{len(found) - 1} more distinct cycle(s)"
+    return msg
 
 
 def _check_duplicate_ids(rig: dict) -> list[str]:

@@ -472,8 +472,15 @@ func TestMultiArmDispatchLostClaimRefilled(t *testing.T) {
 	if err := deps.Client.Get(ctx, client.ObjectKey{Namespace: wf.Namespace, Name: claim.Name}, &old); err != nil {
 		t.Fatalf("stale claim: %v", err)
 	}
-	if old.Status.Review == nil || !old.Status.Review.Released || old.Status.Review.ReleaseReason != "dispatch-lost" {
-		t.Fatalf("stale claim must be released as dispatch-lost, got %+v", old.Status.Review)
+	// #343 era reuse: the refill may REVIVE the same (pr, head) claim — the
+	// armed era stays sticky and the slot is still filled. Only a genuinely
+	// different refill attempt must leave the old one released.
+	if old.Name != re.Name {
+		if old.Status.Review == nil || !old.Status.Review.Released || old.Status.Review.ReleaseReason != "dispatch-lost" {
+			t.Fatalf("stale claim must be released as dispatch-lost, got %+v", old.Status.Review)
+		}
+	} else if old.Status.Review.Released {
+		t.Fatalf("revived era must be live, got %+v", old.Status.Review)
 	}
 }
 
@@ -528,8 +535,15 @@ func TestMultiArmDeadJobClaimRefilled(t *testing.T) {
 	if err := deps.Client.Get(ctx, client.ObjectKey{Namespace: wf.Namespace, Name: claim.Name}, &old); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
-	if old.Status.Review == nil || !old.Status.Review.Released || old.Status.Review.ReleaseReason != "dispatch-lost" {
-		t.Fatalf("dead-job claim must be released as dispatch-lost, got %+v", old.Status.Review)
+	// #343 era reuse: the refill may revive the dead claim's era (same pr +
+	// head) — the slot is filled either way; only a different refill attempt
+	// must leave the dead one released.
+	if old.Name != out[0].Attempt {
+		if old.Status.Review == nil || !old.Status.Review.Released || old.Status.Review.ReleaseReason != "dispatch-lost" {
+			t.Fatalf("dead-job claim must be released as dispatch-lost, got %+v", old.Status.Review)
+		}
+	} else if old.Status.Review.Released {
+		t.Fatalf("revived era must be live, got %+v", old.Status.Review)
 	}
 }
 

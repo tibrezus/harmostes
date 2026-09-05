@@ -115,7 +115,24 @@ def main() -> int:
             print(f"FAIL: emitter stderr must carry the cycle warning, got {r.stderr[-200:]}")
             return 9
 
-    print("rig-emit validator severity: OK (cycles warn NAMED; dangling/duplicate/evidence error; producer writes the db)")
+    # Wrapper-level pin (r2 P4 BLOCKER): rig-emit.sh gates on the emit's
+    # rc. Under set -euo pipefail an `if (…)|tee|tail` wrapper is
+    # errexit-exempt — failures fell through to a green prepare. Pin the
+    # file's construct AND the construct's behaviour.
+    wrapper = Path(__file__).parent / "rig-emit.sh"
+    wsrc = wrapper.read_text()
+    if "if ( cd \"$SRC_DIR\" && bash" in wsrc:
+        print("FAIL: rig-emit.sh wraps the emit in `if (…)` — errexit-exempt (r2 P4 regression)")
+        return 10
+    if "|| rc=$?" not in wsrc:
+        print("FAIL: rig-emit.sh must capture the emit rc explicitly (|| rc=$?)")
+        return 11
+    r = subprocess.run(["bash", "-c", 'set -euo pipefail\nrc=0\n( exit 3 ) >/dev/null 2>&1 || rc=$?\nif [ "$rc" -ne 0 ]; then exit 1; fi\n'], capture_output=True, text=True)
+    if r.returncode != 1:
+        print(f"FAIL: the rc-capture gate must abort on emit failure, rc={r.returncode}")
+        return 12
+
+    print("rig-emit validator severity: OK (cycles warn NAMED; dangling/duplicate/evidence error; producer writes the db; wrapper gates on rc)")
     return 0
 
 

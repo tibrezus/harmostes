@@ -467,16 +467,21 @@ def canonical_hash(db_path: Path) -> str:
 
 def _write_meta(con, rig: dict) -> None:
     repo = rig.get("repository", {})
-    con.executemany(
-        "INSERT INTO meta(key, value) VALUES (?,?)",
-        [
-            ("db_schema_version", str(DB_SCHEMA_VERSION)),
-            ("rig_schema_version", rig.get("schema_version", "rig-1.0")),
-            ("repo_name", repo.get("name", "")),
-            ("repo_language", repo.get("language", "unknown")),
-            ("build_system", repo.get("build_system", "")),
-            ("generator", repo.get("generator", "")),
-        ])
+    rows = [
+        ("db_schema_version", str(DB_SCHEMA_VERSION)),
+        ("rig_schema_version", rig.get("schema_version", "rig-1.0")),
+        ("repo_name", repo.get("name", "")),
+        ("repo_language", repo.get("language", "unknown")),
+        ("build_system", repo.get("build_system", "")),
+        ("generator", repo.get("generator", "")),
+    ]
+    # Generation warnings travel WITH the artifact (#346 r2 P7): a rig.db
+    # whose repo has an import cycle must be able to say so — the graph is
+    # honest about what it represents.
+    warnings = rig.get("warnings") or []
+    if warnings:
+        rows.append(("warnings", json.dumps(warnings)))
+    con.executemany("INSERT INTO meta(key, value) VALUES (?,?)", rows)
 
 
 def _write_evidence(con, rig: dict) -> None:

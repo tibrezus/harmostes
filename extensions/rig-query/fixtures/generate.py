@@ -80,6 +80,15 @@ rig = {
     ],
 }
 
+# CORPUS HONESTY (r25 F1): this fixture is hand-authored to exercise QUERY
+# behavior (arms, budgets, markers), NOT to mirror what the real emitter
+# indexes. The real producer (plugins/rig-emit/rig/symbols.py) indexes
+# EXPORTED package-level symbols of compiled sources only — unexported funcs,
+# methods, test files and non-Go sources never enter the graph. Hand-written
+# rows below may therefore be broader than production (e.g. renderReport in a
+# .go file) ON PURPOSE: the query layer must behave correctly on any corpus
+# the schema admits. The tool's DESCRIPTION and miss message carry the
+# coverage truth; if the emitter's rule ever changes, update those first.
 symbols = [
     # The camelCase case: doc matches the common term too.
     {"file": "internal/model/types.go", "name": "NodeResultEnvelope", "kind": "type", "line": 44,
@@ -103,6 +112,18 @@ symbols = [
      "signature": "type Executor struct", "doc": ""},
     {"file": "cmd/worker/main.go", "name": "ExecutorMain", "kind": "func", "line": 7,
      "signature": "func ExecutorMain()", "doc": ""},
+    # The F10 mixed case (r25): 2 prefix-arm hits + 7 doc-only mentions = 9
+    # distinct rows. The hyphen makes FTS reject the term (syntax error → the
+    # catch skips FTS), so the SWEEP is the filler: with the old one-shot
+    # LIMIT, the 2 prefix duplicates consumed the budget, the pool sat at 7/8
+    # with no marker while 2 more rows existed. The paging sweep must reach
+    # the full pool and the probe must set the "…more hits" marker.
+    {"file": "internal/worker/mc0.go", "name": "mixed-case0", "kind": "func", "line": 12,
+     "signature": "func mixedCase0()", "doc": "prefix arm carrier"},
+    {"file": "internal/worker/mc1.go", "name": "mixed-case1", "kind": "func", "line": 13,
+     "signature": "func mixedCase1()", "doc": "prefix arm carrier"},
+    *[{"file": f"internal/worker/pl{i}.go", "name": f"plainRoute{i}", "kind": "func", "line": 20 + i,
+       "signature": f"func plainRoute{i}()", "doc": f"routes mixed-case traffic {i}"} for i in range(7)],
 ]
 
 files = [

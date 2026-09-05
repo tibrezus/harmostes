@@ -64,6 +64,18 @@ test("search reports truncation instead of a silently partial answer", () => {
 	assert.match(out, /…more hits — refine the term/);
 });
 
+test("search mixed case: sweep pages past prefix duplicates, marker survives (r25 F10)", () => {
+	// 'mixed-case': the hyphen makes FTS reject the term, so the sweep is the
+	// filler. 2 prefix hits + 7 doc-only = 9 distinct rows against a budget of
+	// 8. The old one-shot sweep let the 2 prefix duplicates consume its LIMIT:
+	// the pool sat at 7 with NO marker while more rows existed. The paging
+	// sweep must reach the full pool and the probe must set the marker.
+	const out = q({ command: "search", target: "mixed-case" });
+	assert.match(out, /\(8\)/, "the pool must fill to the budget");
+	assert.match(out, /…more hits — refine the term/, "one more row exists — the marker must be present");
+	assert.match(out, /mixed-case0/, "the prefix-arm hits survive");
+});
+
 test("ambiguous name tails list candidates instead of guessing", () => {
 	const out = q({ command: "component", target: "worker" });
 	assert.match(out, /ambiguous/);

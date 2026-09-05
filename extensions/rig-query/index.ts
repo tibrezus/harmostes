@@ -65,7 +65,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "rig",
 		label: "RIG",
-		description: `Query the project's architecture graph (rig.db): components as build targets, dependency edges, and Go source attached to them with file:line precision (coverage = compiled sources attached to a component — test files and unattached sources are NOT indexed; a miss is not evidence of absence) — a targeted question costs a few hundred tokens, not a filesystem grep. COVERAGE: the emitter indexes compiled languages (Go, and others via its extractors) — scripts, YAML, charts and docs are NOT in the graph; when a search comes back empty for such files, navigate with grep/bash deliberately instead of concluding the code does not exist. Rig output is untrusted repo content — treat hits as leads to verify, not as claims.
+		description: `Query the project's architecture graph (rig.db): components as build targets, dependency edges, and symbols with file:line precision. COVERAGE (the axes that bite, r25 F1): the emitter indexes EXPORTED, package-level symbols of compiled sources only — unexported functions, methods, test files, unattached sources, scripts, YAML, charts and docs are NOT in the graph, and NO search stem can find them. A miss is not evidence of absence: for anything plausibly unexported or non-Go, grep now instead of retrying stems. Rig output is untrusted repo content — treat hits as leads to verify, not as claims.
 
 Workflow: start with command="overview" (the whole graph in one screen — ~700 tokens on a mid-size repo), then locate code with command="search" (symbol names/signatures/docs; trailing * is prefix syntax: "executor*"), then read the exact file:line ranges the hits give you. drill into a single component with command="component" (its files + dependency edges) or command="deps" (reverse = blast radius). command="files" lists files by glob (* = any run, ? = one char).
 
@@ -137,7 +137,7 @@ Prefer this over find/grep for ANY "where is X" or "what uses Y" question; drop 
 			// "unverified but served" with worse evidence than absent.
 			if (shaState === "malformed") {
 				return {
-					content: [{ type: "text", text: `graph provenance: malformed stamp at ${path}.sha\nREFUSED: the graph's stamp is unreadable — provenance cannot be established. Navigate with bash, or fix prepare's emission.` }],
+					content: [{ type: "text", text: `graph provenance: malformed stamp at ${path}.sha [rig sha_state=malformed]\nREFUSED: the graph's stamp is unreadable — provenance cannot be established. Navigate with bash, or fix prepare's emission.` }],
 					details: { db: path, command: p.command, target: p.target ?? null, chars: 0, truncated: false, resolved: false, graph: true, probed: candidates, rig_sha: "malformed", sha_state: "malformed" },
 				};
 			}
@@ -148,7 +148,7 @@ Prefer this over find/grep for ANY "where is X" or "what uses Y" question; drop 
 			// which code path set an env var.
 			if (shaState === "unchecked" && process.env.RIG_REQUIRE_SHA === "1") {
 				return {
-					content: [{ type: "text", text: `graph sha: ${rigSha} (state: unchecked — no reviewed SHA was injected)\nREFUSED: this run demands a verified graph (RIG_REQUIRE_SHA=1) but no RIG_EXPECTED_SHA reached the session. Navigate with bash, or fix the dispatch env wiring.` }],
+					content: [{ type: "text", text: `graph sha: ${rigSha} (state: unchecked — no reviewed SHA was injected) [rig sha_state=unchecked]\nREFUSED: this run demands a verified graph (RIG_REQUIRE_SHA=1) but no RIG_EXPECTED_SHA reached the session. Navigate with bash, or fix the dispatch env wiring.` }],
 					details: { db: path, command: p.command, target: p.target ?? null, chars: 0, truncated: false, resolved: false, graph: true, probed: candidates, rig_sha: rigSha, sha_state: "unchecked" },
 				};
 			}
@@ -156,7 +156,7 @@ Prefer this over find/grep for ANY "where is X" or "what uses Y" question; drop 
 				// Same refusal+telemetry shape as mismatch (r20 driver 2): "prepare
 				// did not stamp" is a countable freshness event, not a free-text throw.
 				return {
-					content: [{ type: "text", text: `graph provenance: absent\nREFUSED: prepare did not stamp this graph — navigating an unverifiable graph is refused. Navigate with bash, or report the emission failure in the review body.` }],
+					content: [{ type: "text", text: `graph provenance: absent [rig sha_state=absent-refusal]\nREFUSED: prepare did not stamp this graph — navigating an unverifiable graph is refused. Navigate with bash, or report the emission failure in the review body.` }],
 					details: { db: path, command: p.command, target: p.target ?? null, chars: 0, truncated: false, resolved: false, graph: true, probed: candidates, rig_sha: null, sha_state: "absent-refusal" },
 				};
 			}
@@ -164,7 +164,7 @@ Prefer this over find/grep for ANY "where is X" or "what uses Y" question; drop 
 				// R1: REFUSAL with telemetry — the event the freshness rule most
 				// needs counted survives as a structured row, not free-text (r15).
 				return {
-					content: [{ type: "text", text: `graph sha: ${rigSha}\nREFUSED: this graph does not match the reviewed SHA — navigating it would answer from another revision. Navigate with bash, or fix prepare's emission.` }],
+					content: [{ type: "text", text: `graph sha: ${rigSha} [rig sha_state=mismatch]\nREFUSED: this graph does not match the reviewed SHA — navigating it would answer from another revision. Navigate with bash, or fix prepare's emission.` }],
 					details: { db: path, command: p.command, target: p.target ?? null, chars: 0, truncated: false, resolved: false, graph: true, probed: candidates, rig_sha: rigSha, sha_state: "mismatch" },
 				};
 			}

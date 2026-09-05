@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -238,6 +239,16 @@ func (r *RPC) Prompt(ctx context.Context, message, label string) (Event, int, Us
 					if toolSpan != nil {
 						toolSpan.SetAttributes(attribute.Bool("harmostes.success", success))
 					}
+					// Freshness incidents must be countable WITHOUT a session
+					// join (#338 r25 F11): a rig refusal carries a machine-
+					// greppable [rig sha_state=…] token in its text; one event
+					// line here makes a stale-graph run visible in the pod's
+					// event stream — the class the ADR-0009 rule exists for.
+					if capture.Tools[idx].Name == "rig" {
+						if state := rigRefusalState(result); state != "" {
+							logf(r.log, Event{Type: "rig_refused", Message: "graph refused, sha_state=" + state})
+						}
+					}
 				}
 				endTool()
 			case pijsonl.EvAgentEnd:
@@ -247,6 +258,20 @@ func (r *RPC) Prompt(ctx context.Context, message, label string) (Event, int, Us
 			}
 		}
 	}
+}
+
+// rigRefusalRe matches the machine-greppable token every rig-query refusal
+// text carries ([rig sha_state=mismatch] and friends). Non-refusal answers
+// never contain it, so a match IS the incident.
+var rigRefusalRe = regexp.MustCompile(`\[rig sha_state=([a-z-]+)\]`)
+
+// rigRefusalState extracts the refusal's sha_state from a rig tool result,
+// or "" when the result is not a refusal (#338 r25 F11).
+func rigRefusalState(result string) string {
+	if m := rigRefusalRe.FindStringSubmatch(result); m != nil {
+		return m[1]
+	}
+	return ""
 }
 
 // Abort sends an abort, closes stdin, and waits for pi to exit.

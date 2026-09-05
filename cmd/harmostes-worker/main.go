@@ -318,7 +318,7 @@ func runOneShot() {
 		// "graph missing" must be countable from pod logs alone, without a
 		// session join, or the archaeology cost this feature exists to kill
 		// returns invisibly.
-		if line, ok := graphPresenceLine("/workspace/rig.db"); ok {
+		if line, ok := graphPresenceLine(worker.RigGraphPath); ok {
 			logf("%s", line)
 		}
 	}

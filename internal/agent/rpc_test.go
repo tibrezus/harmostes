@@ -147,3 +147,26 @@ func TestRPCEndToEnd(t *testing.T) {
 		t.Fatalf("expected 2 agent_end events, got %d", agentEnds)
 	}
 }
+
+// TestRigRefusalState pins the freshness-incident extractor (#338 r25 F11):
+// every rig refusal text carries [rig sha_state=…]; the worker's event
+// stream greps it so a stale-graph run is countable without a session join.
+func TestRigRefusalState(t *testing.T) {
+	cases := []struct {
+		name, in, want string
+	}{
+		{"mismatch", "graph sha: deadbeef [rig sha_state=mismatch]\nREFUSED: this graph does not match the reviewed SHA — …", "mismatch"},
+		{"absent-refusal", "graph provenance: absent [rig sha_state=absent-refusal]\nREFUSED: prepare did not stamp this graph — …", "absent-refusal"},
+		{"malformed", "graph provenance: malformed stamp [rig sha_state=malformed]\nREFUSED: …", "malformed"},
+		{"unchecked-require", "graph sha: 0123abcd (state: unchecked) [rig sha_state=unchecked]\nREFUSED: …", "unchecked"},
+		{"not-a-refusal", "overview: 23 components, 456 symbols", ""},
+		{"empty", "", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := rigRefusalState(c.in); got != c.want {
+				t.Fatalf("rigRefusalState(%q) = %q, want %q", c.in, got, c.want)
+			}
+		})
+	}
+}

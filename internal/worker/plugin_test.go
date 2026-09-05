@@ -16,7 +16,9 @@ import (
 func TestPiArgsLoadBuiltinExtensions(t *testing.T) {
 	args := buildPiArgs(v1alpha1.AgentSpec{Skill: "pr-review", Model: "litellm/test-model"}, Extensions, alwaysPresent)
 	joined := strings.Join(args, " ")
-	for _, ext := range []string{"/extensions/litellm-provider", "/extensions/rig-query"} {
+	// r25 F7: iterate the REAL Extensions list — a hard-coded copy here is the
+	// drift hole it exists to catch.
+	for _, ext := range Extensions {
 		if !strings.Contains(joined, ext) {
 			t.Errorf("PiArgs must load %s, got %v", ext, args)
 		}
@@ -112,13 +114,18 @@ func TestExtensionsSingleSource(t *testing.T) {
 		}
 		// The tool the extension registers must match the allowlist the Python
 		// path builds — value drift is the r17 M4 class (a path can load while
-		// the tool it registers never enters --tools).
-		if tool, ok := map[string]string{"/extensions/rig-query": "rig"}[ext]; ok {
+		// the tool it registers never enters --tools). r25 F7: iterate the REAL
+		// extensionTools map, not a re-literalized copy — the guard must not
+		// itself be a duplicate of the value it guards.
+		if tool, ok := extensionTools[ext]; ok {
 			entry := "\"" + ext + "\": \"" + tool + "\""
 			if !strings.Contains(py, entry) {
 				t.Errorf("harmostes.py extension_tools is missing %s", entry)
 			}
 		}
+		// (provider-only extensions legitimately have no entry — see the
+		// extensionTools comment; iterating the REAL map means a tool ADDED
+		// there is checked without this test growing a copy, r25 F7.)
 		args := buildPiArgs(v1alpha1.AgentSpec{Skill: "s", Model: "m"}, Extensions, alwaysPresent)
 		if !strings.Contains(strings.Join(args, " "), ext) {
 			t.Errorf("PiArgs does not load %s", ext)
@@ -188,6 +195,20 @@ func TestWorkerAgentImportStaysOneWay(t *testing.T) {
 		if line == "github.com/tibrezus/harmostes/internal/worker" {
 			t.Fatal("internal/agent imports internal/worker — the one-way edge internal/worker → internal/agent is closed into a cycle; move the shared shape (PiArgs) to a leaf package instead")
 		}
+	}
+}
+
+// TestRigGraphPathSingleSource pins the THIRD half of the freshness wiring
+// (#338 r25 F6): the extension's container-candidates list must name exactly
+// RigGraphPath. The Go half (graphPresenceLine) consumes the constant; this
+// keeps the TypeScript half from drifting — with workdir reassigned by
+// fetchWorkspaceRepo, a path mismatch would log "graph: absent" for a graph
+// the extension happily serves (and vice versa).
+func TestRigGraphPathSingleSource(t *testing.T) {
+	idx := string(mustRead(t, "../../extensions/rig-query/index.ts"))
+	want := `resolveRigDbCandidates(undefined, ["` + RigGraphPath + `"])`
+	if !strings.Contains(idx, want) {
+		t.Errorf("rig-query index.ts does not probe %s — the extension's container list and the worker pre-flight have drifted apart (want %q in the candidates call)", RigGraphPath, want)
 	}
 }
 

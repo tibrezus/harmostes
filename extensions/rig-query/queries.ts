@@ -94,6 +94,11 @@ export function verifyProvenance(
 	return match ? { rigSha, state: "verified" } : { rigSha, state: "mismatch" };
 }
 
+// TEST-ONLY convenience (r25 F7): the wrapper deliberately uses
+// resolveRigDbCandidates + its own find so details.probed (the telemetry
+// interface) is emitted from the SAME array that resolved the graph. Nothing
+// in production calls this — do not "simplify" the wrapper onto it without
+// keeping the probed-candidates telemetry.
 export function resolveRigDb(explicit?: string, extra: string[] = []): string | null {
 	for (const p of resolveRigDbCandidates(explicit, extra)) {
 		if (existsSync(p)) return p;
@@ -103,7 +108,7 @@ export function resolveRigDb(explicit?: string, extra: string[] = []): string | 
 
 const MAX_RESULT_CHARS = 6000;
 /** Overview renders the WHOLE graph on a mid-size repo (~2.7k chars at 23 components) before any row cap applies. */
-const OVERVIEW_ROWS = 64; // ~1.5k tokens — sized for the grouped overview (a 23-component repo renders ~2.2k chars; r6's edge grouping grew it)
+const OVERVIEW_ROWS = 64; // sized for the grouped overview — a 23-component repo renders ~2.7k chars ≈ 700 tokens against the 6000-char budget (r25 F9 recalibration)
 
 // Truncation is COUNTED, not sniffed: builders register elided rows/edges in
 // a shared stats object and render the marker from the same number — `truncated`
@@ -130,6 +135,11 @@ function row(v: unknown): string {
 		return Object.values(v as Record<string, unknown>).map((x) => (x == null ? "" : String(x))).join(":");
 	}
 	return String(v);
+}
+
+/** Identity key of a symbol row — the dedup boundary across search arms. */
+function hitKey(r: Row): string {
+	return `sym:${row(r.file)}:${row(r.line)}:${row(r.name)}`;
 }
 
 /** One-line summary of a symbol row. */
@@ -418,11 +428,10 @@ function search(db: DatabaseSync, target: string | undefined, stats: { more: num
 	// Symbols: name-prefix arm first (camelCase-honest), then FTS, then the
 	// sweep — each bounded by the REMAINING budget (r18 F3).
 	const hits = new Map<string, Row>();
-	let sweepExhausted = false;
 	const pre = db
 		.prepare("SELECT file, line, kind, name, signature, doc FROM symbols WHERE name LIKE ? || '%' ESCAPE '\\' ORDER BY seq LIMIT ?")
 		.all(likeTerm, SEARCH_LIMIT) as Row[];
-	for (const r of pre) hits.set(`sym:${row(r.file)}:${row(r.line)}:${row(r.name)}`, r);
+	for (const r of pre) hits.set(hitKey(r), r);
 	if (hits.size < SEARCH_LIMIT) {
 		try {
 			const rows = db
@@ -434,32 +443,44 @@ function search(db: DatabaseSync, target: string | undefined, stats: { more: num
 				.all(term.includes(" ") ? `"${term}"` : `${term}*`, SEARCH_LIMIT - hits.size) as Row[];
 			for (const r of rows) {
 				if (hits.size >= SEARCH_LIMIT) break;
-				hits.set(`sym:${row(r.file)}:${row(r.line)}:${row(r.name)}`, r);
+				hits.set(hitKey(r), r);
 			}
 		} catch {
 			// FTS unavailable — the sweep below still answers.
 		}
 	}
 	if (hits.size < SEARCH_LIMIT) {
+		// The sweep PAGES past rows earlier arms already collected (r25 F10):
+		// the sweep's WHERE cannot exclude them, so a one-shot LIMIT let
+		// duplicates consume the budget and mask remaining corpus — the pool
+		// then sat below SEARCH_LIMIT with no "…more" marker while more rows
+		// existed. A window of SEARCH_LIMIT+1 rows: a short window proves the
+		// corpus ended; a full window of pure duplicates just advances OFFSET.
 		const like = `%${likeTerm}%`;
-		const likeRows = db
-			.prepare(
-				`SELECT file, line, kind, name, signature, doc FROM symbols
-				 WHERE name LIKE ? ESCAPE '\\' OR signature LIKE ? ESCAPE '\\' OR doc LIKE ? ESCAPE '\\' ORDER BY seq LIMIT ?`,
-			)
-			.all(like, like, like, SEARCH_LIMIT - hits.size + 1) as Row[];
-		sweepExhausted = likeRows.length <= SEARCH_LIMIT - hits.size;
-		for (const r of likeRows) {
-			if (hits.size >= SEARCH_LIMIT) break;
-			hits.set(`sym:${row(r.file)}:${row(r.line)}:${row(r.name)}`, r);
+		const stmt = db.prepare(
+			`SELECT file, line, kind, name, signature, doc FROM symbols
+			 WHERE name LIKE ? ESCAPE '\\' OR signature LIKE ? ESCAPE '\\' OR doc LIKE ? ESCAPE '\\' ORDER BY seq LIMIT ? OFFSET ?`,
+		);
+		for (let offset = 0; hits.size < SEARCH_LIMIT; offset += SEARCH_LIMIT + 1) {
+			const rows = stmt.all(like, like, like, SEARCH_LIMIT + 1, offset) as Row[];
+			for (const r of rows) {
+				if (hits.size >= SEARCH_LIMIT) break;
+				hits.set(hitKey(r), r);
+			}
+			if (rows.length < SEARCH_LIMIT + 1) break; // corpus exhausted — no marker needed
 		}
 	}
 
-	// Honest completeness: a full symbol pool + a short sweep proves the corpus
-	// is exhausted; otherwise one existence probe decides the marker. Component
-	// rows never participate (#338 r18 F3).
+	// Honest completeness (r25 F10): the probe is the GROUND TRUTH and always
+	// runs at a full pool — a "did the sweep exhaust the corpus?" shortcut
+	// under-counted, because the sweep's WHERE does not exclude rows the
+	// name-prefix arm already collected, so a budget refill was misread as
+	// exhaustion and the "…more hits" marker was dropped while more rows
+	// existed. The probe is LIMIT-bounded (pool size + 1) and cannot
+	// over-count: it only answers "does at least one more row match?".
+	// Component rows never participate (#338 r18 F3).
 	let more = "";
-	if (hits.size >= SEARCH_LIMIT && !sweepExhausted) {
+	if (hits.size >= SEARCH_LIMIT) {
 		const like = `%${likeTerm}%`;
 		const probe = db
 			.prepare(
@@ -472,7 +493,12 @@ function search(db: DatabaseSync, target: string | undefined, stats: { more: num
 		}
 	}
 	if (hits.size === 0 && comps.length === 0) {
-		return `no symbols or components matching "${term}" — try a shorter stem with * (rig search 'handler*').`;
+		// F1 (r25): a miss is NOT evidence of absence — the graph indexes
+		// EXPORTED package-level symbols of compiled sources only. Unexported
+		// funcs, methods, test files, and non-compiled sources are outside the
+		// corpus, and no stem experiment can find them. Route to grep directly
+		// instead of burning the call budget on shorter stems.
+		return `no symbols or components matching "${term}" — the graph indexes exported package-level symbols of compiled sources only. For an unexported symbol, a method, a test, or a non-Go file, grep now: grep -rn "${term}" --include="*.go" (do NOT retry search stems).`;
 	}
 	const symbolLines = [...hits.values()].map((r) => symLine(r.file, r.line, r.kind, r.name, r.signature, r.doc));
 	return cap([...compLines, `symbols matching "${term}" (${hits.size}):`, ...symbolLines, ...(more ? [more] : [])].join("\n"), stats);

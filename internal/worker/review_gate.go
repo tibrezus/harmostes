@@ -228,7 +228,7 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 			}
 			if !jobAlive(c.Name) {
 				log("review-ready: claim %s (%s) has no live job — releasing as dispatch-lost", c.Name, r.PR)
-				releaseDeadClaim(ctx, deps, c, "dispatch-lost", log)
+				releaseDeadClaim(ctx, deps, c, v1alpha1.ReleaseReasonDispatchLost, log)
 			}
 		}
 	}
@@ -451,24 +451,24 @@ func findClaim(claims []v1alpha1.Attempt, pointer string) *v1alpha1.Attempt {
 	return nil
 }
 
+func isIntentionalStop(err error) bool {
+	return errors.Is(err, attempt.ErrDeadDispatchBreaker) || errors.Is(err, attempt.ErrRecentlyDismissed)
+}
+
 // classifyRelease maps a standdown reason onto the claim's release-reason
 // vocabulary.
 // isIntentionalStop reports arm refusals that are the system stopping ON
 // PURPOSE (#328 breaker, #343 churn guard) — surfaced as standdowns, never
 // as failures. One predicate so a third sentinel cannot be swallowed by a
 // call site forgetting to extend its list (r2 P3).
-func isIntentionalStop(err error) bool {
-	return errors.Is(err, attempt.ErrDeadDispatchBreaker) || errors.Is(err, attempt.ErrRecentlyDismissed)
-}
-
 func classifyRelease(reason string) string {
 	switch {
 	case strings.Contains(reason, "consumed"):
 		return "consumed"
 	case strings.Contains(reason, "presumed dead"):
-		return "dispatch-timeout"
+		return v1alpha1.ReleaseReasonDispatchTimeout
 	case strings.Contains(reason, "horizon exceeded"):
-		return "horizon"
+		return v1alpha1.ReleaseReasonHorizon
 	case strings.Contains(reason, "closed"):
 		return "closed"
 	default:

@@ -19,6 +19,23 @@ const OneShotRunBound = 30 * time.Minute
 // OneShotRunBound — observed live: 19 dead runs over 12 hours on one PR.
 // The breaker converts the silent burn into a bounded, visible standdown.
 // It resets on a new head push or an explicit label wake (human override).
+// Release reasons recorded on a review claim's ReleaseReason. Shared
+// vocabulary: produced by the gate's classifyRelease, consumed by the arm
+// path's era rules — bare literals across that boundary silently disable
+// the churn guard on a rename (#344 r3 P2).
+const (
+	// ReleaseReasonDispatchLost: the sweep released the claim before any
+	// dispatch (never-consummated era — revival keeps the era clock).
+	ReleaseReasonDispatchLost = "dispatch-lost"
+	// ReleaseReasonHorizon: the horizon expired the era (revival resets the
+	// clock — it is born expired).
+	ReleaseReasonHorizon = "horizon"
+	// ReleaseReasonDispatchTimeout: a DISPATCHED claim died without a verdict
+	// (timer bound) — the dead-dispatch class: the breaker counts it and the
+	// #331 hold keys on it. Distinct from DispatchLost by design.
+	ReleaseReasonDispatchTimeout = "dispatch-timeout"
+)
+
 const MaxDeadDispatchesPerHead = 3
 
 // MinDispatchMargin is the minimum delivery/queue margin a configured

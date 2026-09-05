@@ -96,6 +96,12 @@ func (r *WorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	span.SetAttributes(attribute.Bool("harmostes.trigger_slot_won", won))
 	if !won {
 		logger.V(1).Info("trigger slot on cooldown — no worker scheduled", "workflow", wf.Name)
+		// A webhook-due (requeueAfter == 0) loser must not requeue
+		// IMMEDIATELY — that is a busy loop until the 10s race window
+		// closes. Requeue at the cooldown floor instead.
+		if requeueAfter == 0 {
+			requeueAfter = webhookMinTriggerInterval
+		}
 		return ctrl.Result{RequeueAfter: requeueAfter}, nil
 	}
 	logger.Info("scheduling worker", "workflow", wf.Name, "reason", dueReason(&wf))

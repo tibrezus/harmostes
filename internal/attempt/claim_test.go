@@ -9,6 +9,8 @@ import (
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
 )
 
@@ -282,7 +284,16 @@ func TestArmClaim_ReusesSameHeadEra(t *testing.T) {
 	if a1.Name != name1 {
 		t.Fatalf("identity drift: %s != %s", a1.Name, name1)
 	}
-	firstArm := a1.Status.Review.ArmedSince.Time
+	// Backdate the era clock EXPLICITLY: metav1.Time has second granularity,
+	// so two arms in the same wall-clock second would make a reset
+	// indistinguishable from an anchor — the vacuous pass that shipped r2.
+	backdate := metav1.NewTime(time.Now().Add(-1 * time.Hour))
+	a1.Status.Review.ArmedSince = &backdate
+	if err := c.Status().Update(ctx, a1); err != nil {
+		t.Fatalf("backdate: %v", err)
+	}
+	// firstArm = the BACKDATED clock: a revival must preserve exactly this.
+	firstArm := backdate.Time
 
 	// Sweep 2: same (pr, head) → the SAME attempt, ArmedSince NOT reset.
 	name2, err := armFor(t, ctx, c, wf, pr, sha, "needs-review", false)
@@ -293,7 +304,11 @@ func TestArmClaim_ReusesSameHeadEra(t *testing.T) {
 		t.Fatalf("churn: second arm created %s instead of reusing %s", name2, name1)
 	}
 	a2, _ := resolveForTest(t, ctx, c, wf, sha)
-	if !a2.Status.Review.ArmedSince.Time.Equal(firstArm) {
+	// Second-granularity compare: serialization strips sub-second precision,
+	// but a CLOCK RESET still fails this — the anchored value is 1h in the
+	// past, a reset is "now". Not vacuous (r3 P8a): the eras differ by an hour.
+	trunc := func(t time.Time) time.Time { return t.Truncate(time.Second) }
+	if !trunc(a2.Status.Review.ArmedSince.Time).Equal(trunc(firstArm)) {
 		t.Fatalf("ArmedSince slid: %v → %v (the horizon/verdict window must stay anchored)", firstArm, a2.Status.Review.ArmedSince.Time)
 	}
 
@@ -313,7 +328,7 @@ func TestArmClaim_ReusesSameHeadEra(t *testing.T) {
 	if a3.Status.Review.Released {
 		t.Fatal("revived claim must be live")
 	}
-	if !a3.Status.Review.ArmedSince.Time.Equal(firstArm) {
+	if !trunc(a3.Status.Review.ArmedSince.Time).Equal(trunc(firstArm)) {
 		t.Fatalf("ArmedSince slid across release: %v → %v", firstArm, a3.Status.Review.ArmedSince.Time)
 	}
 }

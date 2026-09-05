@@ -287,11 +287,18 @@ func TestMultiArmDispatchTimeoutReleasesAndReArms(t *testing.T) {
 	if claim.Status.Review.Released == false {
 		_ = claim // fixture object is a pre-patch snapshot; state checked via re-list below
 	}
+	// #343 era reuse: the stale fixture claim (same pr + head) is REVIVED as
+	// the deterministic attempt rather than duplicated — exactly ONE live
+	// claim for the PR may exist.
 	claims, _ := attempt.LiveReviewClaims(ctx, deps.Client, wf.Namespace, wf.Name)
+	live := 0
 	for _, c := range claims {
-		if c.Name == claim.Name {
-			t.Fatal("the stale fixture claim must not be live alongside the deterministic one")
+		if c.Status.Review.PR == "git.rezus.cloud/tibrez/rhesadox#99" {
+			live++
 		}
+	}
+	if live != 1 {
+		t.Fatalf("era reuse must leave exactly one live claim for the PR, got %d", live)
 	}
 }
 

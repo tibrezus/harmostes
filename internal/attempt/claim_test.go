@@ -5,8 +5,11 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
 )
@@ -253,5 +256,295 @@ func TestReleaseClaimDead_NeverDispatchedDoesNotCount(t *testing.T) {
 	a, _ := resolveForTest(t, ctx, c, wf, "sha-q")
 	if a.Status.Review.DeadDispatches != 0 {
 		t.Errorf("never-dispatched deaths must not count, got %d", a.Status.Review.DeadDispatches)
+	}
+}
+
+// TestArmClaim_ReusesSameHeadEra (#343 fix 1): arming the same (pr, head)
+// again must REFUSE to create a fresh era — the live claim is reused with
+// its ArmedSince intact (the horizon and verdict window stay anchored), and
+// a dispatch-lost-released claim is revived into the same era rather than
+// replaced. The observed churn: every sweep supersede-recreated the claim,
+// resetting ArmedSince, so neither the verdict window nor the horizon could
+// ever fire.
+func TestArmClaim_ReusesSameHeadEra(t *testing.T) {
+	ctx := context.Background()
+	c := newFakeClient(t)
+	wf := wikiWorkflow()
+	const pr = "git.rezus.cloud/tibrez/rhesadox#1864"
+	const sha = "5472b055cafe0001"
+
+	name1, err := armFor(t, ctx, c, wf, pr, sha, "needs-review", false)
+	if err != nil {
+		t.Fatalf("first arm: %v", err)
+	}
+	a1, err := resolveForTest(t, ctx, c, wf, sha)
+	if err != nil {
+		t.Fatalf("resolve 1: %v", err)
+	}
+	if a1.Name != name1 {
+		t.Fatalf("identity drift: %s != %s", a1.Name, name1)
+	}
+	// Backdate the era clock EXPLICITLY: metav1.Time has second granularity,
+	// so two arms in the same wall-clock second would make a reset
+	// indistinguishable from an anchor — the vacuous pass that shipped r2.
+	backdate := metav1.NewTime(time.Now().Add(-1 * time.Hour))
+	a1.Status.Review.ArmedSince = &backdate
+	if err := c.Status().Update(ctx, a1); err != nil {
+		t.Fatalf("backdate: %v", err)
+	}
+	// firstArm = the BACKDATED clock: a revival must preserve exactly this.
+	firstArm := backdate.Time
+
+	// Sweep 2: same (pr, head) → the SAME attempt, ArmedSince NOT reset.
+	name2, err := armFor(t, ctx, c, wf, pr, sha, "needs-review", false)
+	if err != nil {
+		t.Fatalf("second arm: %v", err)
+	}
+	if name2 != name1 {
+		t.Fatalf("churn: second arm created %s instead of reusing %s", name2, name1)
+	}
+	a2, _ := resolveForTest(t, ctx, c, wf, sha)
+	// Second-granularity compare: serialization strips sub-second precision,
+	// but a CLOCK RESET still fails this — the anchored value is 1h in the
+	// past, a reset is "now". Not vacuous (r3 P8a): the eras differ by an hour.
+	trunc := func(t time.Time) time.Time { return t.Truncate(time.Second) }
+	if !trunc(a2.Status.Review.ArmedSince.Time).Equal(trunc(firstArm)) {
+		t.Fatalf("ArmedSince slid: %v → %v (the horizon/verdict window must stay anchored)", firstArm, a2.Status.Review.ArmedSince.Time)
+	}
+
+	// The never-dispatched release (reDispatchGrace) must NOT start a new
+	// era either: reviving the released claim keeps the original clock.
+	if err := ReleaseClaim(ctx, c, "harmostes", name1, "dispatch-lost"); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	name3, err := armFor(t, ctx, c, wf, pr, sha, "needs-review", false)
+	if err != nil {
+		t.Fatalf("arm after dispatch-lost release: %v", err)
+	}
+	if name3 != name1 {
+		t.Fatalf("churn: arm after dispatch-lost created %s instead of reviving %s", name3, name1)
+	}
+	a3, _ := resolveForTest(t, ctx, c, wf, sha)
+	if a3.Status.Review.Released {
+		t.Fatal("revived claim must be live")
+	}
+	if !trunc(a3.Status.Review.ArmedSince.Time).Equal(trunc(firstArm)) {
+		t.Fatalf("ArmedSince slid across release: %v → %v", firstArm, a3.Status.Review.ArmedSince.Time)
+	}
+}
+
+// TestArmClaim_HorizonDismissalChurnGuard (#343 fix 3): after the horizon
+// dismisses a head's era, automatic re-arm of the SAME head is refused; a
+// human request overrides; a new head is a new era and proceeds.
+func TestArmClaim_HorizonDismissalChurnGuard(t *testing.T) {
+	ctx := context.Background()
+	c := newFakeClient(t)
+	wf := wikiWorkflow()
+	const pr = "git.rezus.cloud/tibrez/rhesadox#1864"
+	const sha = "5472b055cafe0002"
+
+	name, err := armFor(t, ctx, c, wf, pr, sha, "needs-review", false)
+	if err != nil {
+		t.Fatalf("first arm: %v", err)
+	}
+	if err := ReleaseClaim(ctx, c, "harmostes", name, "horizon"); err != nil {
+		t.Fatalf("horizon release: %v", err)
+	}
+	// Backdate the released era (r5: a same-second clock made the
+	// fresh-clock assertion below vacuous — it passed for the fixture's
+	// microseconds, not because the code reset anything).
+	rel, err := resolveForTest(t, ctx, c, wf, sha)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := metav1.NewTime(time.Now().Add(-7 * time.Hour))
+	rel.Status.Review.ArmedSince = &old
+	if err := c.Status().Update(ctx, rel); err != nil {
+		t.Fatalf("backdate: %v", err)
+	}
+
+	_, err = armFor(t, ctx, c, wf, pr, sha, "needs-review", false)
+	if !errors.Is(err, ErrRecentlyDismissed) {
+		t.Fatalf("want ErrRecentlyDismissed, got %v", err)
+	}
+
+	// Human request overrides — and yields a WORKING era: fresh clock (the
+	// old one was already past the horizon), not a revival of the expired
+	// one (r2 F1: the override was accepted before, but the revived era was
+	// born expired and stood down again on the next sweep).
+	if _, err := armFor(t, ctx, c, wf, pr, sha, "needs-review", true); err != nil {
+		t.Fatalf("human re-request must override the guard: %v", err)
+	}
+	a, err := resolveForTest(t, ctx, c, wf, sha)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if age := time.Since(a.Status.Review.ArmedSince.Time); age > time.Minute {
+		t.Fatalf("overridden era must start a FRESH clock, got ArmedSince age %v", age)
+	}
+
+	// A different head is a new era — no guard.
+	const newHead = "aaaaaaaaface0003"
+	if _, err := armFor(t, ctx, c, wf, pr, newHead, "needs-review", false); err != nil {
+		t.Fatalf("new head must arm past the guard: %v", err)
+	}
+}
+
+// TestArmClaim_RevivedEraClearsPhantomDispatch (#344 F2): the job-death pass
+// releases dispatched claims as dispatch-lost WITH the death counted; a
+// revival must not carry the dead dispatch forward — DispatchedAt cleared
+// (no phantom capacity/breaker strike), the death count kept (honest
+// ledger), ArmedSince KEPT (anchored — r6 pins the r3 contract: a
+// dispatch-lost revival must NOT reset the clock, or the verdict window
+// stretches with every infra blip; a HUMAN re-request is the reset path).
+func TestArmClaim_RevivedEraClearsPhantomDispatch(t *testing.T) {
+	ctx := context.Background()
+	c := newFakeClient(t)
+	wf := wikiWorkflow()
+	const pr = "git.rezus.cloud/tibrez/rhesadox#1864"
+	const sha = "5472b055cafe0004"
+
+	name, err := armFor(t, ctx, c, wf, pr, sha, "needs-review", false)
+	if err != nil {
+		t.Fatalf("first arm: %v", err)
+	}
+	if err := MarkClaimDispatched(ctx, c, "harmostes", name); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	// Backdate the armed clock so "KEPT" is observable.
+	armed, err := resolveForTest(t, ctx, c, wf, sha)
+	if err != nil {
+		t.Fatal(err)
+	}
+	anchored := time.Now().Add(-2 * time.Hour).Truncate(time.Second)
+	past := metav1.NewTime(anchored)
+	armed.Status.Review.ArmedSince = &past
+	if err := c.Status().Update(ctx, armed); err != nil {
+		t.Fatalf("backdate: %v", err)
+	}
+	recorded, _, err := ReleaseClaimDead(ctx, c, "harmostes", name, "dispatch-lost")
+	if err != nil || !recorded {
+		t.Fatalf("dead release: recorded=%v err=%v", recorded, err)
+	}
+
+	name2, err := armFor(t, ctx, c, wf, pr, sha, "needs-review", false)
+	if err != nil {
+		t.Fatalf("revival arm: %v", err)
+	}
+	if name2 != name {
+		t.Fatalf("same (pr, head) must reuse the era, got %s", name2)
+	}
+	a, err := resolveForTest(t, ctx, c, wf, sha)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := a.Status.Review
+	if r.Released {
+		t.Fatal("revived era must be live")
+	}
+	if r.DispatchedAt != nil {
+		t.Fatalf("revived era carries a phantom dispatch: DispatchedAt=%v", r.DispatchedAt)
+	}
+	if r.DeadDispatches != 1 {
+		t.Fatalf("the recorded death must stay in the ledger, got %d", r.DeadDispatches)
+	}
+	// r6 (r5 mutation probe): the automatic dispatch-lost revival KEEPS
+	// the anchored clock — assert the KEPT backdated value explicitly, so
+	// a reset regression fails here instead of hiding behind same-second
+	// fixture timing. Dispatched deaths ride the BREAKER counter
+	// (DeadDispatches); the never-dispatched counter is untouched here.
+	if r.DispatchLostReleases != 0 {
+		t.Fatalf("dispatched deaths must not bump the never-dispatched counter, got %d", r.DispatchLostReleases)
+	}
+	if got := r.ArmedSince.Time; got.Before(anchored.Add(-time.Second)) || got.After(anchored.Add(time.Second)) {
+		t.Fatalf("dispatch-lost revival must KEEP the anchored clock %v, got %v", anchored, got)
+	}
+}
+
+// ── r4 BLOCKER: bounded dispatch-lost reuse — the release/revive cycle
+// must converge into a refused arm within MaxDispatchLostReleases sweeps,
+// and a request-shaped wake resets the budget. ──
+func TestArmClaim_DispatchLostCycleConverges(t *testing.T) {
+	ctx := context.Background()
+	c := newFakeClient(t)
+	wf := wikiWorkflow()
+	const pr = "git.rezus.cloud/tibrez/rhesadox#2001"
+	const sha = "5472b055cafe2001"
+
+	name, err := armFor(t, ctx, c, wf, pr, sha, "needs-review", false)
+	if err != nil {
+		t.Fatalf("arm 0: %v", err)
+	}
+	// Simulate the never-dispatched release/revive cycle. Era reuse must
+	// keep the SAME attempt (no attempt spam) and each cycle accumulates
+	// the consecutive-release counter. The Nth release is the LAST that
+	// may be revived: the arm after it is the refusal (convergence).
+	for i := 1; i < v1alpha1.MaxDispatchLostReleases; i++ {
+		if err := ReleaseClaim(ctx, c, "harmostes", name, v1alpha1.ReleaseReasonDispatchLost); err != nil {
+			t.Fatalf("release %d: %v", i, err)
+		}
+		revived, err := armFor(t, ctx, c, wf, pr, sha, "needs-review", false)
+		if err != nil {
+			t.Fatalf("cycle %d revive: %v", i, err)
+		}
+		if revived != name {
+			t.Fatalf("cycle %d: era reuse must keep the same attempt, got %s", i, revived)
+		}
+	}
+	// The final release exhausts the budget; the next automatic arm is refused.
+	if err := ReleaseClaim(ctx, c, "harmostes", name, v1alpha1.ReleaseReasonDispatchLost); err != nil {
+		t.Fatalf("final release: %v", err)
+	}
+	if _, err := armFor(t, ctx, c, wf, pr, sha, "needs-review", false); !errors.Is(err, ErrRecentlyDismissed) {
+		t.Fatalf("want ErrRecentlyDismissed (converged after %d releases), got %v", v1alpha1.MaxDispatchLostReleases, err)
+	}
+
+	// Counter visible on the claim (the "3 consecutive releases" is
+	// provable from the object, not just from behavior).
+	a, err := resolveForTest(t, ctx, c, wf, sha)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if got := a.Status.Review.DispatchLostReleases; got != v1alpha1.MaxDispatchLostReleases {
+		t.Fatalf("DispatchLostReleases = %d, want %d", got, v1alpha1.MaxDispatchLostReleases)
+	}
+
+	// A request-shaped wake resets the budget (fix 3's contract).
+	if _, err := armFor(t, ctx, c, wf, pr, sha, "needs-review", true); err != nil {
+		t.Fatalf("human override: %v", err)
+	}
+	a, _ = resolveForTest(t, ctx, c, wf, sha)
+	if got := a.Status.Review.DispatchLostReleases; got != 0 {
+		t.Fatalf("counter after human wake = %d, want 0", got)
+	}
+}
+
+// ── r4 P2: the era tie-break is TOTAL — a live claim beats a released one
+// at the same clock, so a tie never resurrects a just-released claim. ──
+func TestArmClaim_TieBreakPrefersLiveEra(t *testing.T) {
+	ctx := context.Background()
+	c := newFakeClient(t)
+	wf := wikiWorkflow()
+	const pr = "git.rezus.cloud/tibrez/rhesadox#2002"
+	const sha = "5472b055cafe2002"
+
+	name, err := armFor(t, ctx, c, wf, pr, sha, "needs-review", false)
+	if err != nil {
+		t.Fatalf("arm: %v", err)
+	}
+	// Release it, then re-arm: the revival is the SAME (now live) object.
+	if err := ReleaseClaim(ctx, c, "harmostes", name, v1alpha1.ReleaseReasonDispatchLost); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	revived, err := armFor(t, ctx, c, wf, pr, sha, "needs-review", false)
+	if err != nil {
+		t.Fatalf("revive: %v", err)
+	}
+	if revived != name {
+		t.Fatalf("tie must resolve to the one same-head era, got %s", revived)
+	}
+	a, _ := resolveForTest(t, ctx, c, wf, sha)
+	if a.Status.Review.Released {
+		t.Fatal("the surviving era must be LIVE — a tie must not resurrect the released object")
 	}
 }

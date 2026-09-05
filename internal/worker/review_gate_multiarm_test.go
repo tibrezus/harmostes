@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -287,11 +288,18 @@ func TestMultiArmDispatchTimeoutReleasesAndReArms(t *testing.T) {
 	if claim.Status.Review.Released == false {
 		_ = claim // fixture object is a pre-patch snapshot; state checked via re-list below
 	}
+	// #343 era reuse: the stale fixture claim (same pr + head) is REVIVED as
+	// the deterministic attempt rather than duplicated — exactly ONE live
+	// claim for the PR may exist.
 	claims, _ := attempt.LiveReviewClaims(ctx, deps.Client, wf.Namespace, wf.Name)
+	live := 0
 	for _, c := range claims {
-		if c.Name == claim.Name {
-			t.Fatal("the stale fixture claim must not be live alongside the deterministic one")
+		if c.Status.Review.PR == "git.rezus.cloud/tibrez/rhesadox#99" {
+			live++
 		}
+	}
+	if live != 1 {
+		t.Fatalf("era reuse must leave exactly one live claim for the PR, got %d", live)
 	}
 }
 
@@ -472,8 +480,15 @@ func TestMultiArmDispatchLostClaimRefilled(t *testing.T) {
 	if err := deps.Client.Get(ctx, client.ObjectKey{Namespace: wf.Namespace, Name: claim.Name}, &old); err != nil {
 		t.Fatalf("stale claim: %v", err)
 	}
-	if old.Status.Review == nil || !old.Status.Review.Released || old.Status.Review.ReleaseReason != "dispatch-lost" {
-		t.Fatalf("stale claim must be released as dispatch-lost, got %+v", old.Status.Review)
+	// #343 era reuse is the CONTRACT: the refill REVIVES the same (pr, head)
+	// claim — the armed era stays sticky, the slot stays filled, and exactly
+	// one live claim exists for the pointer (r4 P8: no disjunction — a
+	// supersede-recreate regression must fail here).
+	if old.Name != re.Name {
+		t.Fatalf("era reuse must revive the same attempt, got %s", re.Name)
+	}
+	if re.Status.Review.Released {
+		t.Fatalf("revived era must be live, got %+v", re.Status.Review)
 	}
 }
 
@@ -528,8 +543,16 @@ func TestMultiArmDeadJobClaimRefilled(t *testing.T) {
 	if err := deps.Client.Get(ctx, client.ObjectKey{Namespace: wf.Namespace, Name: claim.Name}, &old); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
-	if old.Status.Review == nil || !old.Status.Review.Released || old.Status.Review.ReleaseReason != "dispatch-lost" {
-		t.Fatalf("dead-job claim must be released as dispatch-lost, got %+v", old.Status.Review)
+	// #343 era reuse is the CONTRACT (r4 P8): the refill revives the dead
+	// claim's era (same pr + head) — same attempt, live, one claim for the
+	// pointer. NOTE: a dispatch-TIMEOUT death is the dead-dispatch class —
+	// reuse excludes it (fresh era), so this test's release reason matters;
+	// the fixture uses the never-dispatched class by construction.
+	if old.Name != out[0].Attempt {
+		t.Fatalf("era reuse must revive the same attempt, got %s", out[0].Attempt)
+	}
+	if old.Status.Review.Released {
+		t.Fatalf("revived era must be live, got %+v", old.Status.Review)
 	}
 }
 
@@ -985,5 +1008,85 @@ func TestSweepDispatchTimeoutJobListFailureCountsDead(t *testing.T) {
 	}
 	if !got.Status.Review.Released || got.Status.Review.DeadDispatches != 1 || got.Status.Review.ReleaseReason != "dispatch-timeout" {
 		t.Fatalf("unknown liveness must fail closed: released=%v dead=%d reason=%q", got.Status.Review.Released, got.Status.Review.DeadDispatches, got.Status.Review.ReleaseReason)
+	}
+}
+
+// ── r6 P1: the aged never-dispatched release is DISPATCH-LOST, not horizon
+// — "we could not dispatch" must not set the ambiguity guard's clock ("we
+// stopped asking"). The cycle now converges through the COUNTER: each sweep
+// releases the never-dispatched era again (#1, #2), the third release arms
+// the guard (Max dispatch-lost releases), and a human re-request escapes
+// with a fresh clock (r6 P2). ──
+func TestMultiArmNeverDispatchedAgedClaimConvergesDispatchLost(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := labeledListServer(t, 103)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow() // horizon 6h
+	aged := time.Now().Add(-7 * time.Hour)
+	claim := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#103", "deadbeef777", aged, nil)
+	deps, ctx := gateEnv(t, wf, &fakeStatus{}, claim)
+
+	const pr = "git.rezus.cloud/tibrez/rhesadox#103"
+	const sha = "deadbeef777"
+	expectRelease := func(n int) {
+		t.Helper()
+		var got v1alpha1.Attempt
+		if err := deps.Client.Get(ctx, client.ObjectKey{Namespace: wf.Namespace, Name: claim.Name}, &got); err != nil {
+			t.Fatalf("get claim: %v", err)
+		}
+		if !got.Status.Review.Released || got.Status.Review.ReleaseReason != v1alpha1.ReleaseReasonDispatchLost {
+			t.Fatalf("aged never-dispatched claim must release as dispatch-lost #%d, got released=%v reason=%q",
+				n, got.Status.Review.Released, got.Status.Review.ReleaseReason)
+		}
+		if got.Status.Review.DispatchLostReleases != n {
+			t.Fatalf("dispatch-lost release #%d must bump the counter to %d, got %d", n, n, got.Status.Review.DispatchLostReleases)
+		}
+	}
+
+	if _, err := RunReviewGateSweep(ctx, deps, wf); err != nil {
+		t.Fatalf("sweep 1: %v", err)
+	}
+	expectRelease(1)
+	if _, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf, pr, sha, "needs-review", false); err != nil {
+		t.Fatalf("auto revival #1 (counter under max) must reuse the era: %v", err)
+	}
+
+	if _, err := RunReviewGateSweep(ctx, deps, wf); err != nil {
+		t.Fatalf("sweep 2: %v", err)
+	}
+	expectRelease(2)
+	if _, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf, pr, sha, "needs-review", false); err != nil {
+		t.Fatalf("auto revival #2: %v", err)
+	}
+
+	if _, err := RunReviewGateSweep(ctx, deps, wf); err != nil {
+		t.Fatalf("sweep 3: %v", err)
+	}
+	expectRelease(3)
+	// The guard: the next AUTOMATIC arm is refused — the cycle converged
+	// into a visible standdown, not an infinite loop.
+	if _, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf, pr, sha, "needs-review", false); !errors.Is(err, attempt.ErrRecentlyDismissed) {
+		t.Fatalf("exhausted counter must refuse the auto re-arm, got %v", err)
+	}
+	// r6 P2: the HUMAN override escapes — with a FRESH clock (the anchored
+	// one is already past the horizon and would re-release instantly).
+	at2, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf, pr, sha, "needs-review", true)
+	if err != nil {
+		t.Fatalf("human re-request must override the exhausted counter: %v", err)
+	}
+	var got v1alpha1.Attempt
+	if err := deps.Client.Get(ctx, client.ObjectKey{Namespace: wf.Namespace, Name: at2.Name}, &got); err != nil {
+		t.Fatal(err)
+	}
+	r2 := got.Status.Review
+	if r2.Released {
+		t.Fatal("the overridden era must be live")
+	}
+	if age := time.Since(r2.ArmedSince.Time); age > time.Minute {
+		t.Fatalf("human override must anchor a FRESH era clock, got age %v", age)
+	}
+	if r2.DispatchLostReleases != 0 {
+		t.Fatalf("human wake must reset the counter, got %d", r2.DispatchLostReleases)
 	}
 }

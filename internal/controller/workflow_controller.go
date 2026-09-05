@@ -8,6 +8,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -72,6 +73,47 @@ func (r *WorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{RequeueAfter: requeueAfter}, nil
 	}
 
+	// Trigger slot (#343 fix 2): claim BEFORE publishing. Two racing
+	// reconciles both pass isDue; only the one that wins the LastRunAt
+	// compare-and-set publishes — the loser requeues. The armed-gate
+	// carve-out above has NO time cooldown of its own, so without this slot
+	// every reconcile of an armed workflow (attempt events, status patches)
+	// scheduled another sweep — the claim churn loop's engine. Webhook wakes
+	// keep a short window so a genuine human re-request is never swallowed:
+	// the loser's annotation survives and wins the next reconcile.
+	//
+	// r6 P1: the SOURCE decision moved INSIDE the CAS closure. Keying it on
+	// the reconcile's `wf` copy raced the informer cache: a wake arriving
+	// before the cache caught up was evaluated WITHOUT the annotation, held
+	// to the full PollInterval anchor (freshly re-stamped by the armed
+	// sweep that published in the gap), and the human's re-request was
+	// swallowed for up to a full poll — exactly what this comment promises
+	// will not happen. The fresh Get inside claimTriggerSlot is the
+	// authoritative object; the cooldown is keyed on ITS annotation.
+	won, err := r.claimTriggerSlot(ctx, &wf, r.PollInterval, webhookMinTriggerInterval)
+	if err != nil {
+		// #118 discipline: a persistently failing CAS silently suppresses
+		// EVERY trigger — that must be visible, not just logged (r4 P7).
+		logger.Error(err, "claim trigger slot")
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "claim trigger slot")
+		return ctrl.Result{RequeueAfter: r.PollInterval}, nil
+	}
+	// Post-deploy proof of the #343 churn-engine fix: the won/lost rate on
+	// harmostes_trigger_slot_total is the sweep cadence, graphable (spans
+	// are sampled; the attribute below is the correlating trace signal).
+	recordTriggerSlot(ctx, wf.Name, won)
+	span.SetAttributes(attribute.Bool("harmostes.trigger_slot_won", won))
+	if !won {
+		logger.V(1).Info("trigger slot on cooldown — no worker scheduled", "workflow", wf.Name)
+		// A webhook-due (requeueAfter == 0) loser must not requeue
+		// IMMEDIATELY — that is a busy loop until the 10s race window
+		// closes. Requeue at the cooldown floor instead.
+		if requeueAfter == 0 {
+			requeueAfter = webhookMinTriggerInterval
+		}
+		return ctrl.Result{RequeueAfter: requeueAfter}, nil
+	}
 	logger.Info("scheduling worker", "workflow", wf.Name, "reason", dueReason(&wf))
 	// Canonical Orchestration History (ADR-0005): resolve or create the Attempt
 	// this run belongs to, so its history is recorded. Best-effort — an empty
@@ -142,6 +184,58 @@ func (r *WorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 // isDue decides whether a run should start now. Due if the spec generation
 // changed since last observed, the poll interval elapsed since the last run,
 // or a webhook trigger annotation is present.
+// webhookMinTriggerInterval bounds how close two webhook wakes may fire —
+// the CAS race dedup needs a nonzero window, and a genuine re-request
+// delayed by this much is re-evaluated by the armed poll anyway (#343).
+const webhookMinTriggerInterval = 10 * time.Second
+
+// errTriggerCooldown: the slot was claimed within the cooldown — the caller
+// must not publish (another reconcile already did, or the poll just ran).
+var errTriggerCooldown = errors.New("trigger slot on cooldown")
+
+// claimTriggerSlot atomically advances LastRunAt when it is at least
+// minInterval old, reporting whether THIS reconcile won the right to publish
+// a trigger. Stamp-before-publish closes the concurrent-reconcile race:
+// the loser observes the fresh stamp on its retry and stands down (#343).
+//
+// The cooldown is keyed on the trigger SOURCE, read from the fresh copy
+// inside the CAS (r6 P1): a webhook-due wake (annotation present on the
+// authoritative object) is held only to webhookInterval — never to a
+// scheduleInterval-sized anchor stamped by an armed/scheduled sweep that
+// raced ahead of the informer cache. scheduleInterval applies to every
+// other source (armed poll, spec change, schedule).
+func (r *WorkflowReconciler) claimTriggerSlot(ctx context.Context, wf *v1alpha1.Workflow, scheduleInterval, webhookInterval time.Duration) (bool, error) {
+	won := false
+	err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		var fresh v1alpha1.Workflow
+		if err := r.Get(ctx, client.ObjectKeyFromObject(wf), &fresh); err != nil {
+			return err
+		}
+		minInterval := scheduleInterval
+		if fresh.Annotations["harmostes.dev/trigger-revision"] != "" {
+			minInterval = webhookInterval
+		}
+		if !fresh.Status.LastRunAt.IsZero() && time.Since(fresh.Status.LastRunAt.Time) < minInterval {
+			return errTriggerCooldown
+		}
+		base := fresh.DeepCopy()
+		fresh.Status.LastRunAt = metav1.Now()
+		patch := client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})
+		if err := r.Status().Patch(ctx, &fresh, patch); err != nil {
+			return err
+		}
+		won = true
+		return nil
+	})
+	if errors.Is(err, errTriggerCooldown) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return won, nil
+}
+
 func (r *WorkflowReconciler) isDue(wf *v1alpha1.Workflow) (bool, time.Duration) {
 	// Webhook trigger: check for trigger-revision annotation
 	if triggerRev := wf.Annotations["harmostes.dev/trigger-revision"]; triggerRev != "" {
@@ -217,6 +311,10 @@ func (r *WorkflowReconciler) observeGeneration(ctx context.Context, wf *v1alpha1
 		// never runs (init-container crash, DNS failure, image pull error) left it
 		// frozen, so isDue returned true every reconcile → rapid-fire triggers
 		// (#118). The worker overwrites this with the actual completion time.
+		// The SCHEDULE-time stamp (this line + claimTriggerSlot's, same
+		// reconcile) is the authoritative cooldown anchor; the worker's
+		// completion-time overwrite is bookkeeping for the next due check
+		// (#118). Do not remove either without re-reading isDue.
 		fresh.Status.LastRunAt = metav1.Now()
 		fresh.Status.Conditions = setCondition(fresh.Status.Conditions, metav1.Condition{
 			Type: "Scheduled", Status: metav1.ConditionTrue, Reason: "TriggerPublished",

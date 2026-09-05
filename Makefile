@@ -31,24 +31,6 @@ test-go:
 	git submodule update --init --recursive
 	$(GO) test ./...
 
-## ## test-rig-emit: the rig-emit plugin's Python validator — severity pin:
-## circular deps WARN (the graph represents the codebase as it is; failing
-## the emit left reviews graph-less, rhesadox#1864), the rest stay errors.
-test-rig-emit:
-	python3 plugins/rig-emit/test_validator.py
-
-test-extensions: the pi extensions' TypeScript (rig-query) — the query
-## layer is pure TS over rig.db; its fixture suite runs under node --test
-## with type stripping (requires Node ≥ 22.5 — the same runtime the worker
-## image ships). The fixture is regenerated with the REAL producer
-## (python3 extensions/rig-query/fixtures/generate.py) and committed; CI
-## regenerates and fails on drift.
-## test-rig-emit: the rig-emit plugin's Python validator — severity pin:
-## circular deps WARN (the graph represents the codebase as it is; failing
-## the emit left reviews graph-less, rhesadox#1864), the rest stay errors.
-test-rig-emit:
-	python3 plugins/rig-emit/test_validator.py
-
 test-extensions:
 	npm ci --prefix extensions/rig-query --no-audit --no-fund --silent
 	node --test --experimental-strip-types \
@@ -56,6 +38,12 @@ test-extensions:
 		extensions/rig-query/index.parse.test.ts \
 		extensions/rig-query/index.runtime.test.ts
 	python3 extensions/rig-query/fixtures/freshness.py
+
+## test-rig-emit: the rig-emit plugin's Python validator — severity pin:
+## circular deps WARN (the graph represents the codebase as it is; failing
+## the emit left reviews graph-less, rhesadox#1864), the rest stay errors.
+test-rig-emit:
+	python3 plugins/rig-emit/test_validator.py
 
 ## test-integration: integration tier — the attempt ledger + review-claim
 ## lifecycles against a REAL API server (envtest) with the chart CRDs

@@ -229,14 +229,39 @@ func (r *RPC) Prompt(ctx context.Context, message, label string) (Event, int, Us
 				recordToolCall(ctx, wf, ev.ToolName)
 			case pijsonl.EvToolEnd:
 				// Capture tool result (full content, Option A) for the current tool.
+				// (harmostes.success was accidentally dropped from the span in the
+				// r27 rigRefused refactor — restored r28: per-tool failure rate is
+				// the milestone v0.6.0 business-telemetry join.)
 				if len(capture.Tools) > 0 {
 					idx := len(capture.Tools) - 1
 					result, isErr := toolEndResult(ev.Raw)
 					success := !isErr
 					capture.Tools[idx].Result = result
 					capture.Tools[idx].Success = &success
+					details := toolEndDetails(ev.Raw)
+					capture.Tools[idx].Details = details
 					if toolSpan != nil {
 						toolSpan.SetAttributes(attribute.Bool("harmostes.success", success))
+					}
+					// Contract-drift alarm (r28 P3): the refused flag is the ONLY
+					// trigger for rig_refused; if a producer refactor renames the
+					// key, incidents silently stop being countable. A rig row with
+					// NO refused key at all is therefore itself an event.
+					if capture.Tools[idx].Name == "rig" {
+						if _, ok := details["refused"]; !ok {
+							logf(r.log, Event{Type: "rig_schema_drift", Message: "rig tool result carries no refused key — incident telemetry is blind until the extension and worker agree again"})
+						}
+					}
+					// Freshness incidents must be countable WITHOUT a session
+					// join (#338 r25 F11). The trigger is the STRUCTURED
+					// refused flag (r27 F2), never text matching: a
+					// served-with-caveat answer under an armed expectation is
+					// the deliberate ARCH-2 steady state, not an incident —
+					// keying off the text token counted every ordinary answer.
+					if capture.Tools[idx].Name == "rig" {
+						if state, refused := rigRefused(details); refused {
+							logf(r.log, Event{Type: "rig_refused", Message: "graph refused, sha_state=" + state})
+						}
 					}
 				}
 				endTool()
@@ -247,6 +272,17 @@ func (r *RPC) Prompt(ctx context.Context, message, label string) (Event, int, Us
 			}
 		}
 	}
+}
+
+// rigRefused reads a rig tool result's structured refusal: the refused flag
+// is set by the extension's refusal rows only (#338 r27 F2) — served-with-
+// caveat answers (unstamped graph, armed expectation) are NOT incidents.
+func rigRefused(details map[string]any) (state string, refused bool) {
+	if b, ok := details["refused"].(bool); !ok || !b {
+		return "", false
+	}
+	s, _ := details["sha_state"].(string)
+	return s, true
 }
 
 // Abort sends an abort, closes stdin, and waits for pi to exit.

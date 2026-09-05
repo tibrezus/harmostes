@@ -12,7 +12,7 @@ TAG           ?= dev
 BIN_DIR       := bin
 GO            := go
 
-.PHONY: all build test test-ui vet tidy generate manifests controller-worker docker docker-push docker-ui clean
+.PHONY: all build test test-go test-ui vet tidy generate manifests controller-worker docker docker-push docker-ui test-extensions test-integration clean
 
 all: test build
 
@@ -20,10 +20,30 @@ all: test build
 build:
 	$(GO) build -o $(BIN_DIR)/harmostes-agent ./cmd/harmostes-agent
 
-## test: run all unit tests.
-test:
+## test: every tier. Tiers degrade independently (#338 r24 D3): test-go needs
+## only the Go toolchain; test-extensions adds Node ≥ 22.5 + npm + python3
+## (the fixture producer). CI runs them as separate steps, so a host without
+## Node still gets a meaningful `make test-go`.
+test: test-go test-extensions
+
+## test-go: the Go tier alone.
+test-go:
 	git submodule update --init --recursive
 	$(GO) test ./...
+
+## test-extensions: the pi extensions' TypeScript (rig-query) — the query
+## layer is pure TS over rig.db; its fixture suite runs under node --test
+## with type stripping (requires Node ≥ 22.5 — the same runtime the worker
+## image ships). The fixture is regenerated with the REAL producer
+## (python3 extensions/rig-query/fixtures/generate.py) and committed; CI
+## regenerates and fails on drift.
+test-extensions:
+	npm ci --prefix extensions/rig-query --no-audit --no-fund --silent
+	node --test --experimental-strip-types \
+		extensions/rig-query/queries.test.ts \
+		extensions/rig-query/index.parse.test.ts \
+		extensions/rig-query/index.runtime.test.ts
+	python3 extensions/rig-query/fixtures/freshness.py
 
 ## test-integration: integration tier — the attempt ledger + review-claim
 ## lifecycles against a REAL API server (envtest) with the chart CRDs

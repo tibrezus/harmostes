@@ -38,6 +38,11 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Set up Node (the extensions tier needs >= 22.5 — the worker image ships node:22)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
       - name: Download modules
         run: go mod download
 
@@ -58,6 +63,33 @@ jobs:
 
       - name: go test (race + coverage)
         run: go test -race -cover ./...
+
+      - name: extensions (node --test · rig-query)
+        # The lockfile pins typebox to pi's shipped version so tests validate the
+        # same schema shape production loads. make test-extensions runs npm ci
+        # itself. NOTE: the image does NOT install node_modules — the
+        # extension's typebox resolves through pi's alias injection at runtime;
+        # this tier validates the schema shape, the Dockerfile load gate
+        # validates that the runtime resolves it.
+        # WHO BUILDS THE IMAGES (r26 TEST-1, stated so nobody re-derives it):
+        # neither worker Dockerfile is built by this PR pipeline. The
+        # published image (.github/Dockerfile.worker.release + its
+        # `pi -e /extensions/rig-query` load probe) is built by the release
+        # workflow (release.yml → goreleaser snapshot + release) — the probe
+        # fails the build on a dead extension. The dev image
+        # (Dockerfile.worker) is built by `make docker` / `make controller-
+        # worker` on demand; its COPY + probe drift is pinned textually by
+        # TestPinnedVersionsAgree + TestExtensionsSingleSource (piargs).
+        run: make test-extensions
+
+      # Compares the COMMITTED fixture's canonical hash against a fresh build
+      # in a tempdir — it must NOT regenerate the committed file first, or the
+      # gate could only ever catch producer/library skew, never committed
+      # drift (#338 r3).
+      - name: rig fixture freshness (canonical hash, build-independent)
+        run: |
+          python3 extensions/rig-query/fixtures/freshness.py \
+            || { echo "::error::fixtures/rig.db is stale — run extensions/rig-query/fixtures/generate.py and commit"; exit 1; }
 
       # Fails if go.mod/go.sum drift from `go mod tidy` — catches dependency
       # checked in half-way or a missing go.sum entry.

@@ -37,7 +37,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # pi.dev harness (the only non-Go runtime — Node, the agent's tool host)
-RUN npm install -g @earendil-works/pi-coding-agent
+# Pinned by hand, deliberately: the rig-query load gate is the version's
+# acceptance test, so an auto-bump that passes CI without rebuilding the
+# image is worse than a conscious bump (#338 r20).
+ARG PI_VERSION=0.84.4
+RUN npm install -g @earendil-works/pi-coding-agent@${PI_VERSION}
 
 # Lint tools — the wiki-lint gate runs the wiki's full ci-lint.sh (markdownlint,
 # mdlint, remark, mermaid render via Chromium, likec4, health, RIG compliance).
@@ -106,9 +110,21 @@ RUN git config --global user.name 'harmostes-bot' && \
 # pi extensions:
 # - litellm-provider: registers the litellm/* model prefix from LITELLM_URL +
 #   LITELLM_API_KEY env vars injected by the controller
+# - rig-query: architecture-graph navigation tool over rig.db (ADR-0009,
+#   #337) — degrades gracefully when prepare emitted no graph
 # - pi-searxng: web search + content fetch (for pr-review's selective
 #   best-practice/CVE lookup). Auto-discovered via settings.json packages.
 COPY extensions/litellm-provider /extensions/litellm-provider
+COPY extensions/rig-query        /extensions/rig-query
+# Startup smoke gate (r17 M12 / r20 driver 3): pi exits 1 when the extension
+# fails to PARSE, THROWS at load, or the -e path is missing — a non-zero rc
+# fails the build. Typebox itself resolves through pi's alias injection
+# (guaranteed by the pinned PI_VERSION below), which is why unresolvable-
+# dependency failures are covered by the TS tier, not this probe.
+RUN PI_SKIP_VERSION_CHECK=1 timeout 60 pi -e /extensions/rig-query --mode rpc </dev/null >/tmp/pi-load.log 2>&1; rc=$?; \
+    if [ $rc -ne 0 ]; then \
+      echo "rig-query load probe failed (pi exit $rc):"; cat /tmp/pi-load.log; exit 1; \
+    fi
 RUN pi install npm:pi-searxng
 # pi settings: auto-load the searxng extension on every pi invocation
 RUN mkdir -p /root/.pi/agent && \

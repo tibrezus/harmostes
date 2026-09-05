@@ -47,6 +47,7 @@ import (
 	"github.com/tibrezus/harmostes/internal/graph"
 	"github.com/tibrezus/harmostes/internal/k8s"
 	"github.com/tibrezus/harmostes/internal/observability"
+	"github.com/tibrezus/harmostes/internal/piargs"
 	"github.com/tibrezus/harmostes/internal/timeline"
 	"github.com/tibrezus/harmostes/internal/worker"
 	"github.com/tibrezus/harmostes/version"
@@ -56,6 +57,23 @@ var (
 	logger      *slog.Logger
 	obsShutdown observability.ShutdownFunc
 )
+
+// graphPresenceLine reports, at run level, whether the SHA-exact graph and
+// its stamp exist for a run whose reviewed SHA was injected. Empty ok=false
+// means both halves are present — the common path stays silent (#338 r24 D5).
+func graphPresenceLine(graphPath string) (string, bool) {
+	if _, err := os.Stat(graphPath); err != nil {
+		return "graph: absent — prepare emitted no rig.db; the rig tool will degrade to grep (archaeology cost returns)", true
+	}
+	if _, err := os.Stat(graphPath + ".sha"); err != nil {
+		// r28: say what will ACTUALLY happen — strictness is armed only for a
+		// stamped graph (below), so an unstamped one is served with a caveat,
+		// not refused. A run-level line that announces an incident that
+		// structurally cannot occur trains readers to ignore the class.
+		return "graph: unstamped — prepare emitted rig.db but no .sha; the rig tool will serve it with an unverified-graph caveat (sha_state=absent-refusal)", true
+	}
+	return "", false
+}
 
 func main() {
 	// argv is the authoritative dispatch (ADR-0007 phase 2): the consumer
@@ -289,11 +307,38 @@ func runOneShot() {
 	} else {
 		piSessions = ""
 	}
+	// ADR-0009 freshness: prepare stamps /workspace/rig.db.sha with the
+	// reviewed SHA; the rig-query extension compares it against RIG_EXPECTED_SHA
+	// and REFUSES on mismatch. Scoped to the pi child's env — not process-global
+	// (deploy/gate plugins must not inherit a one-consumer variable, #338 r15).
+	piEnv := os.Environ()
+	if sha := os.Getenv("HARMOSTES_TRIGGER_SHA"); sha != "" {
+		piEnv = append(piEnv, "RIG_EXPECTED_SHA="+sha)
+		// Run-level degradation signal (#338 r24 D5): when the expectation is
+		// armed but prepare emitted no graph (or no stamp), say so at startup —
+		// "graph missing" must be countable from pod logs alone, without a
+		// session join, or the archaeology cost this feature exists to kill
+		// returns invisibly.
+		line, degraded := graphPresenceLine(piargs.RigGraphPath)
+		if degraded {
+			logf("%s", line)
+		}
+		// Strictness is armed ONLY when the run's graph is actually stamped
+		// (r26 ARCH-2): the stamp's producer is the ops repo's workspace.sh —
+		// outside this repo's enforcement. An unstamped graph under an armed
+		// expectation degrades to answered-with-caveat (the tool's prose +
+		// sha_state telemetry stay countable) instead of a fleet-wide refusal
+		// this repo cannot see or fix. A STAMPED graph gets the full rule:
+		// mismatch, malformed and unchecked all refuse.
+		if !degraded {
+			piEnv = append(piEnv, "RIG_REQUIRE_SHA=1")
+		}
+	}
 	deps.Agent = worker.RPCAgentRunner{
 		Opts: agent.RPCOptions{
-			Args:        worker.PiArgs(wf.Spec.Agent),
+			Args:        piargs.PiArgs(wf.Spec.Agent.Skill, wf.Spec.Agent.Model, wf.Spec.Agent.Tools),
 			Workdir:     workdir,
-			Env:         os.Environ(),
+			Env:         piEnv,
 			SessionRoot: piSessions,
 			Log: func(ev agent.Event) {
 				logfFn("agent: %s %s", ev.Type, ev.ToolName)

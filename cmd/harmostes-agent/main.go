@@ -20,9 +20,11 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"github.com/tibrezus/harmostes/internal/piargs"
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/tibrezus/harmostes/internal/agent"
@@ -101,9 +103,14 @@ func main() {
 		obsShutdown = sh
 	}
 
+	// piargs.PiArgs is the single source of the pi invocation shape (a LEAF
+	// package — r26 ARCH-1: this stdlib-only primitive must not sit on the
+	// worker's pipeline closure to assemble flags): it loads every in-image
+	// extension (-e) and appends extension tools to the --tools allowlist —
+	// keeping this binary identical to the worker's agent path (#338 r16 F1).
 	hlog("starting pi --mode rpc (model=%s tools=%s workdir=%s)", *model, *tools, *workdir)
 	rpc, err := agent.NewRPC(ctx, agent.RPCOptions{
-		Args:    []string{"--skill", *skill, "--model", *model, "--tools", *tools},
+		Args:    piargs.PiArgs(*skill, *model, splitTools(*tools)),
 		Workdir: *workdir,
 		Env:     os.Environ(),
 		Log:     logger,
@@ -157,4 +164,11 @@ func abs(p string) string {
 		return p
 	}
 	return out
+}
+
+func splitTools(s string) []string {
+	if s == "" {
+		return nil
+	}
+	return strings.Split(s, ",")
 }

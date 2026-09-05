@@ -70,6 +70,11 @@ CREATE TABLE component_files(
   seq INTEGER NOT NULL,
   PRIMARY KEY (component_id, path)
 );
+-- NOTE: the consumer (extensions/rig-query) asserts db_schema_version — a bump
+-- hard-fails every agent until the worker image is rebuilt; roll them together.
+-- TODO(consumer-scale)(consumer-scale): symbols(name), deps(dst) and
+-- component_files(component_id) indexes when graphs outgrow ~1k symbols —
+-- rig-query's search/list arms are leading-LIKE scans today (#338 r9).
 CREATE TABLE symbols(
   seq INTEGER PRIMARY KEY,
   file TEXT NOT NULL,

@@ -47,6 +47,12 @@ type ToolCall struct {
 	Args    map[string]any `json:"args"`
 	Success *bool          `json:"success,omitempty"` // nil if unknown
 	Result  string         `json:"result"`            // full result (stringified)
+	// Details is the tool result's STRUCTURED payload when it carries one
+	// (rig-query's telemetry: chars/truncated/resolved/graph/sha_state/…).
+	// Persisted so the #336 measurement joins on columns instead of parsing
+	// the result text (#338 r26 OBS-1: the key set was asserted as "the join
+	// interface" while nothing persisted it). nil for plain-string results.
+	Details map[string]any `json:"details,omitempty"`
 }
 
 // GateResult is the outcome of a gate evaluation.
@@ -108,6 +114,25 @@ func messageEndContent(raw json.RawMessage) string {
 		}
 	}
 	return strings.Join(parts, "\n")
+}
+
+// toolEndDetails extracts a structured result's `details` object, or nil for
+// plain-string results (#338 r26 OBS-1). Rig-query (and any future tool that
+// returns {content, details}) gets its telemetry persisted as columns.
+func toolEndDetails(raw json.RawMessage) map[string]any {
+	var wrapper struct {
+		Result json.RawMessage `json:"result"`
+	}
+	if err := json.Unmarshal(raw, &wrapper); err != nil || len(wrapper.Result) == 0 {
+		return nil
+	}
+	var obj struct {
+		Details map[string]any `json:"details"`
+	}
+	if err := json.Unmarshal(wrapper.Result, &obj); err != nil {
+		return nil
+	}
+	return obj.Details
 }
 
 // toolEndResult extracts the tool result from a tool_execution_end event's

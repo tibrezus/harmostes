@@ -92,7 +92,7 @@ func claimFixture(wf *v1alpha1.Workflow, pr, sha string, armedSince time.Time, d
 // skip the gate), so in the worker-pool topology the wake never arrived.
 func gateEnvW(t *testing.T, wf *v1alpha1.Workflow, st *fakeStatus, pr, action, sha string, objects ...runtime.Object) (GateDeps, context.Context) {
 	deps, ctx := gateEnv(t, wf, st, objects...)
-	deps.WakePR, deps.WakeAction, deps.WakeRevision = pr, action, sha
+	deps.Wake = GateWake{PR: pr, Action: action, Revision: sha}
 	return deps, ctx
 }
 
@@ -1574,4 +1574,46 @@ func TestRunGate_StaleAnnotationsDoNotOverride(t *testing.T) {
 	if !strings.Contains(reason, "dead-dispatch breaker") {
 		t.Fatalf("the refusal must still be the breaker's, got %q", reason)
 	}
+}
+
+// TestGateWakeActionVocabulary (#357 Judge): the action mapping moved from
+// parseWake into GateDeps.wake — pin the WHOLE vocabulary, not just
+// "labeled". Request-shaped (label touched) wakes may supersede a live
+// claim; of those, only the label APPLYING is the breaker's human override.
+// Push-shaped actions arm nothing into a live claim (review_gate.go's
+// !cand.request continue) and are not human arms.
+func TestGateWakeActionVocabulary(t *testing.T) {
+	wf := gateWorkflow()
+	cases := []struct {
+		action      string
+		wantRequest bool
+		wantLabeled bool
+	}{
+		{"labeled", true, true},
+		{"unlabeled", true, false},
+		{"label_updated", true, false},
+		{"synchronize", false, false},
+		{"opened", false, false},
+		{"reopened", false, false},
+		{"closed", false, false},
+		{"ready_for_review", false, false},
+	}
+	for _, tc := range cases {
+		deps := GateDeps{Log: t.Logf, Wake: GateWake{
+			PR: "git.rezus.cloud/tibrez/rhesadox#99", Action: tc.action, Revision: "deadbeef123",
+		}}
+		c := deps.wake(wf)
+		if c == nil {
+			t.Fatalf("%s: wake must materialize (candidate build is action-independent)", tc.action)
+		}
+		if c.request != tc.wantRequest || c.labeled != tc.wantLabeled {
+			t.Fatalf("%s: want request=%v labeled=%v, got request=%v labeled=%v",
+				tc.action, tc.wantRequest, tc.wantLabeled, c.request, c.labeled)
+		}
+	}
+	// And the dead-dispatch-counter distinction this encodes (#328): the
+	// counter resets only through the human arm (labeled), so an unlabeled
+	// wake riding a live claim may supersede NOTHING and reset NOTHING —
+	// covered behaviorally by the !cand.request continue and ArmClaim's
+	// humanRequest gate; the table above is the seam's contract.
 }

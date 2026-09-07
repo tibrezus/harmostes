@@ -66,32 +66,48 @@ type GateDeps struct {
 	// annotations the controller CLEARS at schedule time (anti-rapid-fire),
 	// so in the worker-pool topology the wake never arrived: every labeled
 	// re-apply armed as automatic, and the breaker's documented override
-	// ("re-apply the label") was structurally dead.
-	WakePR       string
-	WakeAction   string
-	WakeRevision string
+	// ("re-apply the label") was structurally dead. One value, not three
+	// loose fields: a forgotten member compiles clean and silently kills
+	// exactly one hop of the override (#357 P2 mutation probe).
+	Wake GateWake
+}
+
+// GateWake is the trigger event, whole. Construct it at the boundary that
+// owns the event (consumer's RunRequest, or the run command's process env).
+type GateWake struct {
+	PR       string
+	Action   string
+	Revision string
 }
 
 // wake converts the threaded trigger event into the scan's leading
 // candidate. nil when this run has no wake (poll-triggered sweeps and
 // empty events) or the pointer is unparseable / out of scope.
 func (d GateDeps) wake(wf *v1alpha1.Workflow) *candidate {
-	if d.WakePR == "" {
+	if d.Wake.PR == "" {
 		return nil
 	}
-	repo, pr, err := parsePRPointer(d.WakePR)
+	repo, pr, err := parsePRPointer(d.Wake.PR)
 	if err != nil {
+		d.log()("review-ready: wake %q unusable (unparseable pointer) — arming nothing from it", d.Wake.PR)
 		return nil
 	}
 	repo = normalizeRepoPointer(repo, wf)
 	if !repoInScope(wf, repo) {
-		return nil // out-of-scope wake: arm nothing (defense-in-depth)
+		// Out-of-scope wake: arm nothing (defense-in-depth) — but say so,
+		// or a mis-scoped workflow shows up as an inexplicably automatic
+		// re-arm + breaker refusal (#357 P2 observability).
+		d.log()("review-ready: wake %q out of scope for this workflow — arming nothing from it", d.Wake.PR)
+		return nil
+	}
+	if d.Wake.Revision == "" {
+		d.log()("review-ready: wake %q has no revision — the candidate would lose the head the human re-labeled", d.Wake.PR)
 	}
 	return &candidate{
-		repo: repo, pr: pr, pointer: fmt.Sprintf("%s#%d", repo, pr), sha: d.WakeRevision,
+		repo: repo, pr: pr, pointer: fmt.Sprintf("%s#%d", repo, pr), sha: d.Wake.Revision,
 		isWake:  true,
-		request: d.WakeAction == "labeled" || d.WakeAction == "unlabeled" || d.WakeAction == "label_updated",
-		labeled: d.WakeAction == "labeled",
+		request: d.Wake.Action == "labeled" || d.Wake.Action == "unlabeled" || d.Wake.Action == "label_updated",
+		labeled: d.Wake.Action == "labeled",
 	}
 }
 
@@ -654,9 +670,6 @@ func emitGate(ctx context.Context, tl timeline.Writer, agg *v1alpha1.ReviewReady
 	}
 	_ = tl.Emit(ctx, kind, "", map[string]any{"reason": result.Reason, "pr": pr, "repo": repo})
 }
-
-// wakeRevision returns the wake event's trigger-revision (env first — the
-// controller clears annotations at schedule time — annotation fallback).
 
 // normalizeRepoPointer qualifies a repo pointer to host/owner/name. A bare
 // "owner/name" resolves via a scope entry whose suffix matches (self-hosted

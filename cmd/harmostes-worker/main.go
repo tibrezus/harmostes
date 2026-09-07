@@ -161,7 +161,10 @@ func runOneShot() {
 	// this Job for a claim — re-evaluating here would double-count API
 	// budget and risk diverging from the dispatch decision. Direct/manual
 	// runs (no marker) evaluate the gate in WAKE mode: the wake PR only,
-	// never a multi-dispatch fan-out.
+	// never a multi-dispatch fan-out. The wake is threaded from the process
+	// env below — the boundary is where scraping belongs; inside the gate
+	// it was unreachable state (#349/#357 P1: an unthreaded boundary left
+	// the wake-only sweep with an empty candidate list, a silent no-op).
 	dispatched := os.Getenv("HARMOSTES_DISPATCHED_ATTEMPT") != ""
 	if wf.Spec.ReviewReady != nil && !dispatched {
 		gateTL := timeline.NewGateWriter(dapr.Tracing(dapr.New(os.Getenv("DAPR_HTTP_ENDPOINT"))),
@@ -170,6 +173,12 @@ func runOneShot() {
 			Status: k8s.StatusPatcher{Client: cl, Namespace: namespace},
 			Client: cl, Scheme: scheme,
 			Log: logf, TL: gateTL,
+			// Same precedence the envelope export uses (SHA first).
+			Wake: worker.GateWake{
+				PR:       os.Getenv("HARMOSTES_TRIGGER_PR"),
+				Action:   os.Getenv("HARMOSTES_TRIGGER_ACTION"),
+				Revision: envOr("HARMOSTES_TRIGGER_SHA", os.Getenv("HARMOSTES_TRIGGER_REVISION")),
+			},
 		}
 		dispatches, err := worker.RunReviewGateWake(ctx, gateDeps, wf)
 		if err != nil {

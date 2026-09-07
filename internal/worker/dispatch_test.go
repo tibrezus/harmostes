@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tibrezus/harmostes/internal/attempt"
 	batchv1 "k8s.io/api/batch/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -253,5 +254,44 @@ func TestJobCredentialEnv(t *testing.T) {
 	}
 	if strings.Contains(joined, "DAPR_") || strings.Contains(joined, "POD_NAME") || strings.Contains(joined, "VALKEY") {
 		t.Fatalf("pod-scoped noise must not cross the Job boundary: %q", joined)
+	}
+}
+
+// TestDispatchWakeSurvivesTheHop (#357 P2): the RunRequest → GateDeps.Wake
+// hop is three values in one struct; a forgotten member compiles clean and
+// kills exactly one hop — dropping Action makes request/labeled false, so
+// the breaker's human override dies behind green CI. This pin arms
+// MaxDeadDispatchesPerHead dead claims and then dispatches through the
+// REAL dispatcher: the Job is created only if PR, Action AND Revision all
+// survive the hop (break open + supersede the moved nothing — the request
+// must land as the labeled human request).
+func TestDispatchWakeSurvivesTheHop(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := greenPRServer(t)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gatedDispatchWorkflow()
+	d, ctx := newTestDispatcher(t, wf)
+
+	req := dispatchRequest()
+	for i := 0; i < v1alpha1.MaxDeadDispatchesPerHead; i++ {
+		at, err := attempt.ArmClaim(ctx, d.cl, d.scheme, wf,
+			"git.rezus.cloud/tibrez/rhesadox#99", "deadbeef123", "needs-review", false)
+		if err != nil {
+			t.Fatalf("arm %d: %v", i+1, err)
+		}
+		_ = attempt.MarkClaimDispatched(ctx, d.cl, wf.Namespace, at.Name)
+		_, _, _ = attempt.ReleaseClaimDead(ctx, d.cl, wf.Namespace, at.Name, "dispatch-lost")
+	}
+
+	if err := d.Dispatch(ctx, req); err != nil {
+		t.Fatalf("dispatch with open breaker: %v", err)
+	}
+	var jobs batchv1.JobList
+	if err := d.cl.List(ctx, &jobs); err != nil {
+		t.Fatalf("list jobs: %v", err)
+	}
+	if len(jobs.Items) != 1 {
+		t.Fatalf("the threaded wake must break the breaker open and dispatch, got %d jobs", len(jobs.Items))
 	}
 }

@@ -50,30 +50,39 @@ workerPool:
   pubsubName: pubsub   # Dapr pub/sub component name
   topic: harmostes-triggers  # topic the controller publishes to
 
-# forkMaintenance: mounts the fork-maintenance engine scripts (sync-fork.sh,
-# divergence-track.sh, validate-fork.sh, etc.) into the worker pod so the
-# worker can resolve fork-maintenance plugins. The scripts live in ConfigMaps
-# applied by k8s-config (platform/harmostes/fork-maintenance/). When enabled,
-# the worker pod gets /workspace/{scripts,checks,forks,post-merge-hooks}
-# mounted from those ConfigMaps, and a fork-sync wrapper plugin is available
-# at /plugins/fork-maintenance/fork-sync.sh.
+# forkMaintenance: the fork-maintenance sync engine (ADR-0011). The engine —
+# sync/subtree/mapping scripts, checks, post-merge hooks, resolver skill — is
+# CODE and ships inside this chart (chart/fork-maintenance/); the chart renders
+# the ConfigMaps the worker pod mounts at /workspace/*. Only the fork
+# DEFINITIONS (declarative per-fork sync config consumed by sync-fork.sh) and
+# the enable flags are values. k8s-config carries no engine code.
 forkMaintenance:
   enabled: false
   scriptsConfigMap: fork-maintenance-scripts
   checksConfigMap: fork-maintenance-checks
   defsConfigMap: fork-maintenance-defs
   hooksConfigMap: fork-maintenance-hooks
+  # Fork definitions: key = file name (forks/<name>.yaml), value = content.
+  defs: {}
+  # Conflict resolver: always-on HTTP service receiving
+  # fork.conflict.needs-resolution events; runs the pi-agent resolution
+  # (resolve-conflict.sh + the fork-maintenance skill).
+  resolver:
+    enabled: false
+    image: ghcr.io/tibrezus/llm-wiki-controller:0.3.0
+    # Must carry the litellm/ prefix — the provider comes from the mounted
+    # litellm-provider extension (unqualified ids are unreachable).
+    model: litellm/zai/glm-4.7
+    resources:
+      requests: { cpu: 200m, memory: 1Gi }
+      limits: { cpu: "2", memory: 8Gi }
 
-# pluginConfigMaps: additional ConfigMaps to mount under /plugins/ in the
-# worker pod. Each entry creates a volume mounted at
-# /plugins/<configmap-name>/, making the plugins inside resolvable by the
-# worker's BuiltinResolver as PluginRef{Name: "<key-without-.sh>",
-# ConfigMap: "<configmap-name>"}. Applied by k8s-config.
+# pluginConfigMaps: LEGACY escape hatch — additional ConfigMaps to mount under
+# /plugins/ in the worker pod (resolved as PluginRef{Name: "<key-without-.sh>",
+# ConfigMap: "<name>"}). ADR-0011 moved every production plugin (workspace,
+# pr-review, post-review, fork-sync) into the worker image as built-ins; only
+# use this for out-of-tree plugins that cannot ship in the image.
 pluginConfigMaps: []
-  # - harmostes-pr-review   # mounts pr-fetch.sh, pr-review.sh, post-review.sh
-  # - fork-maintenance-plugins  # mounts fork-sync.sh — REQUIRED for
-  #   fork-maintenance instances: the one-shot Job mounts this list, and a
-  #   plugin absent from it fails instantly with no file (#311).
 
 # harmostes-ui: self-service multi-tenant web interface (HTMX + Go templates).
 # Authenticated via Authentik forward-auth. Each user sees only workflows
@@ -122,3 +131,282 @@ observability:
   # its OTel SDK, not daprd. Workers carry the daprd sidecar for pub/sub + tracing.
   # Keep off by default; flip to true only if the controller needs daprd runtime metrics.
   controllerSidecar: false
+# ── Declarative workflow layer (ADR-0011) ────────────────────────────────────
+# WorkflowTemplates ship with the chart: the keys are the archetype registry
+# the UI discovers (grouping by templateRef), the values are the template
+# spec. Plugins reference in-image built-ins by bare name — no configMap refs.
+# Change a template here, release the chart, Flux reconciles.
+workflowTemplates:
+  wiki-lint:
+    description: Documentation sync (C4/RIG → agent → wiki-lint → push)
+    prepare:
+      plugin:
+        name: rig-emit
+    agent:
+      skill: /skills/wiki/SKILL.md
+      tools: [read, bash, edit, grep]
+      taskTemplate:
+        name: arch-sync
+        configMap: harmostes-tasks
+        key: arch-sync.txt
+      maxFixes: 3
+      gate:
+        plugin:
+          name: wiki-lint
+    deploy:
+      plugin:
+        name: git-push
+  pr-review:
+    description: PR review (fetch PR → agent → pr-review → post review)
+    scope:
+    - name: label
+      kind: string
+      label: Label trigger
+      description: only act when this label is present on a PR
+      default: needs-review
+    - name: repos
+      kind: list
+      label: Repos
+      description: the scope the prepare plugin operates on (owner/repo)
+    - name: wiki
+      kind: string
+      label: Wiki repo
+      description: context repo some agents use for design evidence
+    prepare:
+      plugin:
+        name: workspace
+    agent:
+      # qwen3.8-flash via the anthropic-compatible route — interim cost tier;
+      # see k8s-config#28 (live-verified 2026-09-03).
+      model: litellm/ali/anthropic/qwen3.8-flash
+      skill: /skills/pr-review/SKILL.md
+      tools: [read, bash, grep]
+      taskTemplate:
+        name: pr-review
+        configMap: harmostes-tasks
+        key: pr-review.txt
+      maxFixes: 1
+      # 1h agent budget: 30min killed every review of harmostes#344's 3-round,
+      # 600-line diff at exactly the deadline (3 dead dispatches tripped the
+      # #328 breaker). The breaker still bounds a hung agent.
+      timeout: 3600
+      gate:
+        plugin:
+          name: pr-review
+    deploy:
+      plugin:
+        name: post-review
+    reviewReady:
+      label: needs-review
+      horizon: 6h
+  fork-maintenance:
+    description: Fork maintenance (fork-sync → noop → noop)
+    scope:
+    - name: fork
+      kind: string
+      label: Fork
+      description: fork-maintenance registry name (forks/<name>.yaml)
+    prepare:
+      plugin:
+        name: fork-sync
+    agent:
+      enabled: false
+      model: none
+      taskTemplate:
+        name: none
+      gate:
+        plugin:
+          name: noop
+    deploy:
+      plugin:
+        name: noop
+  noop:
+    description: Deterministic-only (no LLM agent, no validation gate)
+    prepare:
+      plugin:
+        name: rig-emit
+    agent:
+      skill: ""
+      gate:
+        plugin:
+          name: noop
+    deploy:
+      plugin:
+        name: git-push
+
+# ── Agent task prompts (ADR-0011) ────────────────────────────────────────────
+# The agent's task text per template, rendered into the harmostes-tasks
+# ConfigMap. Key = ConfigMap key (referenced by agent.taskTemplate), value =
+# prompt text. Override or add per environment via values.
+tasks:
+  arch-sync.txt: |
+    You are working in a wiki repository (your current directory). The deterministic prepare step has just generated the FULL artifact set under raw/arch/<project>/: 
+      - rig.json   (component graph, evidence-backed)
+      - model.c4   (LikeC4 C4 model, deterministic from RIG)
+      - *.mmd      (Mermaid diagrams, deterministic from model.c4)
+
+    These are DETERMINISTIC. Do NOT modify, regenerate, or "fix" them. Your job is to update wiki PROSE based on what changed.
+
+    ## Step 1: Read the RIG and summarize changes
+
+      cat raw/arch/<project>/rig.json
+
+    Identify what changed since last sync:
+      - New components (added executables, libraries)
+      - Removed components
+      - Changed dependencies (new edges, broken edges)
+      - New external packages
+
+    ## Step 2: Update the llm-wiki entity page (C4 LEVEL ONLY)
+
+    Read the existing page FIRST (cat wiki/entities/<project>.md). Preserve ALL manual content (deployment notes, config, operational knowledge).
+
+    Update the architecture section:
+      1. Read the .mmd files: cat raw/arch/<project>/*.mmd
+      2. Embed them as ```mermaid blocks (copy the diagram content verbatim)
+      3. Write a SHORT summary of what changed (1-3 sentences)
+      4. Do NOT list every component, file, or dependency — that's in the RIG
+
+    C4 BOUNDARY: the llm-wiki carries context/container/component level ONLY. Code-level details (file paths, function signatures, implementation specifics) do NOT belong here.
+
+    ## Step 3: Offload low-level details to the platform wiki
+
+    If the RIG contains details that are too low-level for the llm-wiki (new modules with many source files, implementation notes, API reference), push them to the PROJECT's platform wiki:
+
+      - GitHub repos: gh api --method POST repos/<owner>/<repo>/wiki/pages ...
+        Or clone the wiki: git clone https://github.com/<owner>/<repo>.wiki.git
+      - Forgejo/Codeberg: fj wiki ...
+
+    This keeps the llm-wiki unbloated. C4 concepts here; details there.
+
+    ## Step 4: Bookkeeping
+
+      - Update index.md if pages were added/removed
+      - Append to log.md: operation 'arch-sync', project name, component count
+
+    ## Step 5: Commit (do NOT push)
+
+      git add -A && git commit -m 'docs(arch-sync): <project>'
+
+    A validation gate runs next. If it fails, fix lint errors and commit again.
+
+    ## Rules
+
+      - Do NOT write model.c4 or run likec4 — deterministic, already done
+      - Do NOT invent architecture from memory — everything comes from the RIG
+      - C4 level only in llm-wiki; push details to platform wiki
+      - Preserve manual content
+  pr-review.txt: |
+    You are a pillar-driven adversarial PR reviewer, triggered by the harmostes
+    pr-review workflow. The pr-review skill (loaded as your skill) provides the
+    methodology: 2 adversaries covering 8 CI quality pillars, then a Judge.
+    Ingress contract: you were triggered by the `needs-review` label on a PR whose
+    pipeline you did NOT gate — verify CI status from pr-context.json yourself and
+    treat red CI as REQUEST_CHANGES (do not review a red delta).
+
+    ## Your workspace
+
+    - **PR context**: `cat /workspace/pr-context.json` — host, repo, number, title,
+      body, head_sha, head_ref, issue (linked), milestone, ci_status, files_changed,
+      repo_dir, wiki_dir. If `rig_db` is set, an architecture graph exists — query
+      it with the `rig` tool (see toolkit) instead of grepping to orient.
+      `rig_path`/`c4_path` are the wiki's synced copies (background reading only).
+    - **Diff**: `cat /workspace/pr-diff.patch`
+    - **Code**: `/workspace/repo` — checked out at the PR's head SHA
+    - **Wiki**: `/workspace/wiki` — project design docs (if configured)
+
+    ## Your toolkit (use selectively)
+
+    You have a round-trip budget: every tool call costs ~25 seconds of model
+    latency. A good review fits in ~12 calls. The methodology (8 pillars) is
+    inlined below — NEVER search the filesystem for skill or pillar files.
+
+    - `rig` — the architecture graph, when pr-context.json has `rig_db`. Start
+      with {command:"overview"}: every component, dependency edge and entry
+      point in one screen. Locate code with {command:"search",target:"<term>"}
+      — it returns file:line for symbol names, signatures and docs; read exactly
+      that range, nothing more. `component`/`deps` give a component's files and
+      blast radius. NEVER run grep/find/ls expeditions to answer "where is X"
+      or "what uses Y" — one rig search replaces a dozen of them. No `rig_db`?
+      fall back to grep, and say so in the review.
+    - `read` / `grep` — read WHOLE files (`cat file`), never sed line windows;
+      never re-read a file you have already read. Prefer one call that prints
+      3 files over three calls.
+    - `bash` — TARGETED checks only. CI green is already verified before you run
+      (pr-context.json `ci_status`; the gate refuses non-green PRs), so do NOT
+      re-run full suites (make test, go test ./..., npm test) — that re-does
+      CI's job and burns the review's hard 30-minute run bound (#29). Run a
+      targeted command only to confirm a specific suspicion the CI matrix
+      cannot see (a race, a platform-specific path, a one-command repro).
+    - `web_search` — selectively, only when warranted (crypto/auth CVEs, race
+      patterns, new dependency advisories).
+
+    ## Scope discipline + clock (bound to the prepare signal)
+
+    pr-context.json carries "scope" (focused | large | huge) computed
+    deterministically from the raw patch — obey it, do not re-derive it:
+
+    - focused: full 8-pillar review as usual.
+    - large: verify the riskiest 20% of the diff mechanically, summarize the rest.
+    - huge: design-level review is MANDATORY from turn 1 — architecture, seams,
+      invariants, the shape of the change. Say explicitly which mechanical claims
+      you did not re-verify. Do not attempt line-by-line coverage.
+
+    ## The clock — the review is WRITTEN by minute 8
+
+    Budget: ~1 min orient (context is precomputed — one rig overview replaces
+    architecture rebuilding; do NOT reconstruct the project shape from source),
+    ~4 min analyze,
+    ~1 min verify, ~1 min write. Mutation probes: at most 2 per review, ONE scratch
+    checkout, only for the highest-risk claim. A shallower honest verdict beats a
+    deep nothing: if you are at minute 6 without a verdict, write what you have.
+
+    ## The 8 pillars (inlined — no lookup needed)
+
+    Architect: (1) coupling & architecture decay, (2) design intent & DRY,
+    (3) interface stability. Adversary: (4) correctness, (5) security,
+    (6) performance, (7) observability, (8) test quality.
+
+    ## Your task
+
+    Follow the skill's 3-phase process (Orient → Architect → Adversary → Judge)
+    across the 8 pillars. Every pillar appears in the body: a finding with cited
+    evidence, or "N/A — (brief reason)" (groupable).
+
+    Write the review to /workspace/review.json via python3 (not a heredoc):
+
+        {"decision": "APPROVE|REQUEST_CHANGES|COMMENT",
+         "reviewed_sha": "<head SHA of /workspace/repo>",
+         "body": "## Adversarial Review\n... (pillar-structured)",
+         "comments": [{"path": "...", "line": N, "body": "..."}]}
+
+    The body MUST end with the trailer (exact decision keyword, full SHA):
+
+        <!-- pr-review: <DECISION> @ <reviewed_sha> -->
+
+    Then verify it parses:
+    python3 -c "import json; r=json.load(open('/workspace/review.json')); print('OK', r['decision'])"
+
+    Do NOT push, commit, or modify any repository. Review only.
+# ── Credentials (ADR-0011) ───────────────────────────────────────────────────
+# ExternalSecrets rendered by the chart (external-secrets.io/v1). Each entry
+# becomes one ExternalSecret named `name`, syncing from the Bitwarden
+# ClusterSecretStore into a same-named Secret. Chart default is EMPTY — the
+# credential set is deployment-specific and lives in the GitOps values
+# (k8s-config HelmRelease), never in the public chart defaults.
+credentials: []
+#  - name: harmostes-litellm-token
+#    refreshInterval: 1h
+#    store: bitwarden
+#    template:
+#      engineVersion: v2
+#      mergePolicy: Replace
+#      type: Opaque
+#      data:
+#        url: '{{ .LITELLM_HARMOSTES_URL }}'
+#        key: '{{ .LITELLM_HARMOSTES_KEY }}'
+#    data:
+#      - secretKey: LITELLM_HARMOSTES_URL
+#        remoteRef: { key: LITELLM_HARMOSTES_URL }
+#      - secretKey: LITELLM_HARMOSTES_KEY
+#        remoteRef: { key: LITELLM_HARMOSTES_KEY }

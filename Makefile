@@ -46,6 +46,8 @@ test-extensions:
 		extensions/rig-query/index.parse.test.ts \
 		extensions/rig-query/index.runtime.test.ts \
 		extensions/litellm-provider/fallbacks.test.ts
+	@node --check --experimental-strip-types extensions/litellm-provider/index.ts
+	@echo "litellm-provider: syntax gate + fallback table green"
 	python3 extensions/rig-query/fixtures/freshness.py
 
 ## test-rig-emit: the rig-emit plugin's Python validator — severity pin:

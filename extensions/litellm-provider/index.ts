@@ -100,7 +100,15 @@ export default async function (_pi: ExtensionAPI) {
     api: "openai-completions",
     authHeader: true,
     models: models.map((model) => {
-      const chain = fallbacks[model.id];
+      // A fallback id that is not a discovered proxy group would make the
+      // router's failover attempt fail too — drop it and warn (r17 review:
+      // the clamp only worked for ids present in /v1/models, and the log
+      // reported unwired chains as wired).
+      const chain = (fallbacks[model.id] ?? []).filter((id) => {
+        if (byId.has(id)) return true;
+        console.error(`[litellm-provider] WARNING: fallback "${id}" (for ${model.id}) is not a known proxy group — dropped`);
+        return false;
+      });
       // Conservative windows for chained models (r16-review pillar 6):
       // after a failover LiteLLM replays the SAME payload against the
       // fallback group — if the fallback's window is smaller, the replay
@@ -135,13 +143,18 @@ export default async function (_pi: ExtensionAPI) {
     }),
   });
 
-  // Honest wiring log: report the chains actually ATTACHED to registered
-  // models; a key that matched nothing is a warning (misspelled id or a
-  // renamed proxy group — the protection silently absent, r16-review pillar 7).
+  // Honest wiring log: report the chains actually ATTACHED (primary known
+  // AND every fallback id known); a key that matched nothing is a warning
+  // (misspelled id or a renamed proxy group — the protection silently
+  // absent, r16-review pillar 7; unwired-but-logged, r17-review).
   const wired: string[] = [];
   for (const [model, chain] of Object.entries(fallbacks)) {
-    if (byId.has(model)) wired.push(`${model} → ${chain.join(", ")}`);
-    else console.error(`[litellm-provider] WARNING: fallback chain for "${model}" matched no registered model — not wired`);
+    if (!byId.has(model)) {
+      console.error(`[litellm-provider] WARNING: fallback chain for "${model}" matched no registered model — not wired`);
+      continue;
+    }
+    if (chain.some((id) => !byId.has(id))) continue; // per-id warnings above
+    if (chain.length > 0) wired.push(`${model} → ${chain.join(", ")}`);
   }
   console.error(
     `[litellm-provider] registered ${models.length} model(s): ${models.map((m) => m.id).join(", ")}` +

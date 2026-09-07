@@ -22,6 +22,7 @@ import (
 	"github.com/tibrezus/harmostes/internal/k8s"
 	"github.com/tibrezus/harmostes/internal/review"
 	"github.com/tibrezus/harmostes/internal/timeline"
+	"github.com/tibrezus/harmostes/internal/webhook"
 )
 
 // reDispatchGrace bounds how long an armed-but-never-dispatched claim
@@ -103,10 +104,14 @@ func (d GateDeps) wake(wf *v1alpha1.Workflow) *candidate {
 	if d.Wake.Revision == "" {
 		d.log()("review-ready: wake %q has no revision — the candidate would lose the head the human re-labeled", d.Wake.PR)
 	}
+	// A labeled wake without a revision cannot name the head the human
+	// re-labeled: probed live, "" != HeadSHA reads as "the head moved" and
+	// supersedes a dispatched claim on no evidence — refuse the override
+	// (r16 pillar 4). The missing-revision case is logged above.
+	requestShaped := webhook.RequestShapedActions[d.Wake.Action] && d.Wake.Revision != ""
 	return &candidate{
 		repo: repo, pr: pr, pointer: fmt.Sprintf("%s#%d", repo, pr), sha: d.Wake.Revision,
-		isWake:  true,
-		request: d.Wake.Action == "labeled" || d.Wake.Action == "unlabeled" || d.Wake.Action == "label_updated",
+		request: requestShaped,
 		labeled: d.Wake.Action == "labeled",
 	}
 }
@@ -147,8 +152,7 @@ type candidate struct {
 	pr      int
 	pointer string // host/owner/name#N (normalized)
 	sha     string // wake revision, when the wake carried one
-	isWake  bool
-	request bool // request-shaped (label touched): may supersede a live claim
+	request bool   // request-shaped (label touched): may supersede a live claim
 	// labeled: the wake was the label being APPLIED — the breaker's human
 	// override. unlabeled/label_updated touch the label without asking for
 	// a retry, so they must not reset the dead-dispatch counter (#328).

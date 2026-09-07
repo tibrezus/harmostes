@@ -630,9 +630,21 @@ func envReq(key string) string {
 // env is the only event source here (no RunRequest exists), and scraping
 // belongs at the boundary, not inside the gate (#349/#357). SHA wins over
 // REVISION, matching EnvelopeEnv's own precedence.
+//
+// The env carries TWO shapes and both must parse (r16 2.1): the consumer's
+// dispatchEnv writes HARMOSTES_TRIGGER_PR as a BARE NUMBER with the repo in
+// HARMOSTES_TRIGGER_REPO, while EnvelopeEnv writes a full pointer and no
+// REPO. A boundary that reads only one shape turns the other into the
+// silent no-op this function exists to prevent.
 func wakeFromEnv() worker.GateWake {
+	pr := os.Getenv("HARMOSTES_TRIGGER_PR")
+	if pr != "" && !strings.Contains(pr, "#") {
+		if repo := os.Getenv("HARMOSTES_TRIGGER_REPO"); repo != "" {
+			pr = repo + "#" + pr // bare number + repo → the gate's pointer form
+		}
+	}
 	return worker.GateWake{
-		PR:       os.Getenv("HARMOSTES_TRIGGER_PR"),
+		PR:       pr,
 		Action:   os.Getenv("HARMOSTES_TRIGGER_ACTION"),
 		Revision: envOr("HARMOSTES_TRIGGER_SHA", os.Getenv("HARMOSTES_TRIGGER_REVISION")),
 	}

@@ -221,6 +221,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request, workflowNa
 // pullRequestWakeActions are the consolidated actions that wake the
 // Review-Ready Gate. Everything else (assigned, review_requested, …) is a
 // no-op: 200, no annotations.
+// RequestShapedActions are the label-touching actions: they may supersede a
+// live claim, and of them only "labeled" is the breaker's human override
+// (#328). Single source — review_gate's wake() reuses this set so the two
+// lists cannot drift (#357 r16 2.2).
+var RequestShapedActions = map[string]bool{
+	"labeled":       true,
+	"unlabeled":     true,
+	"label_updated": true,
+}
+
 var pullRequestWakeActions = map[string]bool{
 	"labeled":          true, // a human or the skill set a label — arm
 	"unlabeled":        true, // label removed (also the post-review consume) — re-evaluate

@@ -192,13 +192,19 @@ func TestWakeFromEnvPrecedence(t *testing.T) {
 		name          string
 		pr, action    string
 		sha, revision string
+		repo          string
 		wantPR        string
 		wantAction    string
 		wantRevision  string
 	}{
-		{"sha wins over revision", "#99", "labeled", "deadbeefsha", "deadbeefrev", "#99", "labeled", "deadbeefsha"},
-		{"revision used when sha empty", "#99", "labeled", "", "deadbeefrev", "#99", "labeled", "deadbeefrev"},
-		{"no event at all", "", "", "", "", "", "", ""},
+		{"sha wins over revision", "#99", "labeled", "deadbeefsha", "deadbeefrev", "", "#99", "labeled", "deadbeefsha"},
+		{"revision used when sha empty", "#99", "labeled", "", "deadbeefrev", "", "#99", "labeled", "deadbeefrev"},
+		{"no event at all", "", "", "", "", "", "", "", ""},
+		// dispatchEnv's shape: BARE number + separate repo (r16 2.1 — the
+		// boundary must parse both shapes its own package exports, or the
+		// wake dies as unparseable: the exact silent no-op #349 filed).
+		{"bare number + repo composes", "99", "labeled", "deadbeefsha", "", "git.rezus.cloud/tibrez/rhesadox", "git.rezus.cloud/tibrez/rhesadox#99", "labeled", "deadbeefsha"},
+		{"bare number without repo stays bare (gate logs the reject)", "99", "labeled", "", "", "", "99", "labeled", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -206,6 +212,7 @@ func TestWakeFromEnvPrecedence(t *testing.T) {
 			t.Setenv("HARMOSTES_TRIGGER_ACTION", tc.action)
 			t.Setenv("HARMOSTES_TRIGGER_SHA", tc.sha)
 			t.Setenv("HARMOSTES_TRIGGER_REVISION", tc.revision)
+			t.Setenv("HARMOSTES_TRIGGER_REPO", tc.repo)
 			w := wakeFromEnv()
 			if w.PR != tc.wantPR || w.Action != tc.wantAction || w.Revision != tc.wantRevision {
 				t.Fatalf("want (PR=%q Action=%q Rev=%q), got (PR=%q Action=%q Rev=%q)",

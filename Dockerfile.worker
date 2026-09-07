@@ -125,6 +125,14 @@ RUN PI_SKIP_VERSION_CHECK=1 timeout 60 pi -e /extensions/rig-query --mode rpc </
     if [ $rc -ne 0 ]; then \
       echo "rig-query load probe failed (pi exit $rc):"; cat /tmp/pi-load.log; exit 1; \
     fi
+# litellm-provider load probe (#359 pillar 8): same parse/load gate. The stub
+# URL makes the /v1/models fetch fail fast, exercising the extension's
+# graceful early-return — pi must still exit 0 (a parse or load-time throw
+# would not).
+RUN LITELLM_URL=http://127.0.0.1:1 LITELLM_API_KEY=stub PI_SKIP_VERSION_CHECK=1 timeout 60 pi -e /extensions/litellm-provider --mode rpc </dev/null >/tmp/pi-litellm-load.log 2>&1; rc=$?; \
+    if [ $rc -ne 0 ]; then \
+      echo "litellm-provider load probe failed (pi exit $rc):"; cat /tmp/pi-litellm-load.log; exit 1; \
+    fi
 RUN pi install npm:pi-searxng
 # pi settings: auto-load the searxng extension on every pi invocation
 RUN mkdir -p /root/.pi/agent && \

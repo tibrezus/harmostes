@@ -308,3 +308,20 @@ func attemptAttemptFixture(t *testing.T, ctx context.Context, d *Dispatcher, wf 
 	}
 	return at.Name
 }
+
+// TestJobEnvAllowlistCarriesFallbacks (#359 r4 P4.1): LITELLM_FALLBACKS must
+// cross the Job boundary or the extension's override knob is a pool-pod-only
+// no-op on the attempt Jobs pr-review agents run in. The extension's header
+// documents this entry as the delivery path — the cross-language contract is
+// pinned here, in Go, where it fails CI when either side drifts.
+func TestJobEnvAllowlistCarriesFallbacks(t *testing.T) {
+	found := false
+	for _, k := range jobEnvAllowlist {
+		if k == "LITELLM_FALLBACKS" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("LITELLM_FALLBACKS must be in jobEnvAllowlist — without it the fallback override cannot reach attempt Jobs")
+	}
+}

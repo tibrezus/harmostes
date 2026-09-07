@@ -44,7 +44,10 @@ test-extensions:
 	node --test --experimental-strip-types \
 		extensions/rig-query/queries.test.ts \
 		extensions/rig-query/index.parse.test.ts \
-		extensions/rig-query/index.runtime.test.ts
+		extensions/rig-query/index.runtime.test.ts \
+		extensions/litellm-provider/fallbacks.test.ts
+	@node --experimental-strip-types -e 'await import("./extensions/litellm-provider/index.ts")'
+	@echo "litellm-provider: import gate + fallback table green"
 	python3 extensions/rig-query/fixtures/freshness.py
 
 ## test-rig-emit: the rig-emit plugin's Python validator — severity pin:

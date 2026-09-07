@@ -332,6 +332,12 @@ var jobEnvAllowlist = []string{
 	"HARMOSTES_RZC_PASSWORD",
 	"LITELLM_API_KEY",
 	"LITELLM_URL",
+	// LITELLM_FALLBACKS: the litellm-provider extension's per-model fallback
+	// chains (#358). Without this the knob is a pool-pod-only no-op on the
+	// attempt Jobs every pr-review agent actually runs in (#359 r4 P4.1 —
+	// the reviewer's grep caught the first attempt landing on the wrong
+	// branch; this entry IS the fix).
+	"LITELLM_FALLBACKS",
 }
 
 // jobCredentialEnv forwards the allowlisted deployment-level vars from the

@@ -80,7 +80,10 @@ export interface ChainedModel {
  *   unwired);
  * - chained models register min(primary, fallback) windows so the
  *   post-failover replay fits the fallback group (with a clampNote for
- *   the log).
+ *   the log). Under the shipped default (speed → flash, #363) this clamp
+ *   is an OVERRIDE-ONLY path: the failover replays small→large, so no
+ *   clamping happens on the default chain — clampNote fires only when an
+ *   operator override chains a smaller-window fallback.
  */
 export function applyChains(
   models: Array<{ id: string; max_input_tokens?: number; max_output_tokens?: number }>,

@@ -96,6 +96,14 @@ RUN PI_SKIP_VERSION_CHECK=1 timeout 60 pi -e /extensions/rig-query --mode rpc </
     if [ $rc -ne 0 ]; then \
       echo "rig-query load probe failed (pi exit $rc):"; cat /tmp/pi-load.log; exit 1; \
     fi
+# litellm-provider load probe (#359 r17 P8): mirror of the dev image's gate —
+# the stub URL fails the /v1/models fetch fast; the extension must degrade
+# gracefully (early return) so pi exits 0. A parse or load-time throw fails
+# the release build.
+RUN LITELLM_URL=http://127.0.0.1:1 LITELLM_API_KEY=stub PI_SKIP_VERSION_CHECK=1 timeout 60 pi -e /extensions/litellm-provider --mode rpc </dev/null >/tmp/pi-litellm-load.log 2>&1; rc=$?; \
+    if [ $rc -ne 0 ]; then \
+      echo "litellm-provider load probe failed (pi exit $rc):"; cat /tmp/pi-litellm-load.log; exit 1; \
+    fi
 
 WORKDIR /workspace
 

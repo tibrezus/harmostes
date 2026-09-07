@@ -45,3 +45,72 @@ export function resolveFallbackChains(
   }
   return { chains };
 }
+
+/** One model's registration-relevant fields after chain application. */
+export interface ChainedModel {
+  id: string;
+  contextWindow: number;
+  maxTokens: number;
+  /** Present ONLY when a non-empty, fully-resolved chain applies. */
+  samplingParams?: Record<string, unknown>;
+  /** Set when a chain clamped this model's window (observability, r17 P7b). */
+  clampNote?: string;
+  /** Fallback ids dropped for not being discovered proxy groups. */
+  droppedIds: string[];
+}
+
+/**
+ * Apply fallback chains to the proxy's discovered model list. Pure: no
+ * fetch, no env — the table tests own every branch.
+ *
+ * Contract (r17-review P4/P7):
+ * - an unchained model carries NO samplingParams key (an explicit empty
+ *   `fallbacks: []` would OVERRIDE proxy-configured fallbacks — the
+ *   opposite of this feature's name, on every model, fleet-wide);
+ * - a chained model's ids are filtered to DISCOVERED groups (a router
+ *   cannot fail over to a group it does not know); dropped ids surface in
+ *   `droppedIds` for the warning log;
+ * - a chain that filters to empty attaches nothing (and is reported
+ *   unwired);
+ * - chained models register min(primary, fallback) windows so the
+ *   post-failover replay fits the fallback group (with a clampNote for
+ *   the log).
+ */
+export function applyChains(
+  models: Array<{ id: string; max_input_tokens?: number; max_output_tokens?: number }>,
+  chains: Record<string, string[]>,
+  byId: Map<string, { max_input_tokens?: number; max_output_tokens?: number }>,
+): { wired: string[]; annotated: ChainedModel[] } {
+  const wired: string[] = [];
+  const annotated = models.map((model) => {
+    const rawChain = chains[model.id];
+    const contextWindow = model.max_input_tokens ?? 131072;
+    const maxTokens = model.max_output_tokens ?? 8192;
+    const out: ChainedModel = { id: model.id, contextWindow, maxTokens, droppedIds: [] };
+    if (!rawChain) return out;
+
+    const chain = rawChain.filter((id) => {
+      if (byId.has(id)) return true;
+      out.droppedIds.push(id);
+      return false;
+    });
+    if (chain.length === 0) return out; // nothing usable — attach no key at all
+
+    let cw = contextWindow;
+    let mt = maxTokens;
+    for (const id of chain) {
+      const fb = byId.get(id)!;
+      if (fb.max_input_tokens && fb.max_input_tokens < cw) cw = fb.max_input_tokens;
+      if (fb.max_output_tokens && fb.max_output_tokens < mt) mt = fb.max_output_tokens;
+    }
+    if (cw < contextWindow || mt < maxTokens) {
+      out.clampNote = `ctx ${contextWindow}→${cw} (fallback clamp)`;
+      out.contextWindow = cw;
+      out.maxTokens = mt;
+    }
+    out.samplingParams = { fallbacks: chain };
+    wired.push(`${model.id} → ${chain.join(", ")}`);
+    return out;
+  });
+  return { wired, annotated };
+}

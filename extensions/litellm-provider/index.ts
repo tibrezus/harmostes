@@ -31,16 +31,23 @@
  * harmostes-side model strings carry the litellm/ provider prefix
  * (litellm/mtplx/...).
  *
- * Two honest limits (r16-review): (1) LITELLM_FALLBACKS is read in the
- * worker IMAGE — overriding it means the worker Deployment's env, not a
- * per-Job knob. (2) A run that failed over is indistinguishable from a
- * healthy run here (same --model string); attribute via the proxy's router
- * logs, which record the serving group per request. Chained models register
- * min(primary, fallback) context/output windows so the post-failover replay
- * fits the fallback group's smaller window (mtplx 262144 < flash 1048576).
+ * Honest limits (r16/r17/r18 reviews — the canonical statement; the code
+ * points here instead of restating it): (1) LITELLM_FALLBACKS is delivered
+ * to agents via jobEnvAllowlist (worker/dispatch.go) from the pool pod's
+ * env — set it on the worker Deployment. `LITELLM_FALLBACKS='{}'` DISABLES
+ * all chains (the off-switch); unset keeps the default. (2) A run that
+ * failed over is indistinguishable from a healthy run here (same --model
+ * string); attribute via the proxy's router logs, which record the serving
+ * group per request. (3) Chained models register min(primary, fallback)
+ * windows so the post-failover replay fits the fallback group — a real
+ * capacity cost on every healthy run, taken for correctness. (4) The clamp
+ * is not transitive: a proxy-side chain hanging off the fallback group is
+ * invisible here. (5) A failover moves the whole review context to a
+ * DIFFERENT upstream group — chains are Deployment-env-settable, so the
+ * trust boundary for review payloads is whoever can edit that Deployment.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { resolveFallbackChains } from "./fallbacks.ts";
+import { applyChains, resolveFallbackChains } from "./fallbacks.ts";
 
 export default async function (_pi: ExtensionAPI) {
   const rawUrl = process.env.LITELLM_URL;
@@ -93,69 +100,49 @@ export default async function (_pi: ExtensionAPI) {
   }
   const byId = new Map(models.map((m) => [m.id, m]));
 
+  const { wired, annotated } = applyChains(models, fallbacks, byId);
+
   _pi.registerProvider("litellm", {
     name: "LiteLLM Proxy",
     baseUrl: `${baseUrl}/v1`,
     apiKey: "$LITELLM_API_KEY",
     api: "openai-completions",
     authHeader: true,
-    models: models.map((model) => {
-      // A fallback id that is not a discovered proxy group would make the
-      // router's failover attempt fail too — drop it and warn (r17 review:
-      // the clamp only worked for ids present in /v1/models, and the log
-      // reported unwired chains as wired).
-      const chain = (fallbacks[model.id] ?? []).filter((id) => {
-        if (byId.has(id)) return true;
-        console.error(`[litellm-provider] WARNING: fallback "${id}" (for ${model.id}) is not a known proxy group — dropped`);
-        return false;
-      });
-      // Conservative windows for chained models (r16-review pillar 6):
-      // after a failover LiteLLM replays the SAME payload against the
-      // fallback group — if the fallback's window is smaller, the replay
-      // 400s and the stream dies anyway. pi cannot see the failover, so
-      // the client registers min(primary, fallback) and compacts early.
-      // Live: flash primary 1048576 vs mtplx 262144 → chained models
-      // register 262144 and pi compacts before the proxy ever replays.
-      let contextWindow = model.max_input_tokens ?? 131072;
-      let maxTokens = model.max_output_tokens ?? 8192;
-      for (const id of chain ?? []) {
-        const fb = byId.get(id);
-        if (fb?.max_input_tokens) contextWindow = Math.min(contextWindow, fb.max_input_tokens);
-        if (fb?.max_output_tokens) maxTokens = Math.min(maxTokens, fb.max_output_tokens);
-      }
-      return {
-        id: model.id,
-        name: model.id,
-        reasoning: false,
-        input: ["text" as const],
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        contextWindow,
-        maxTokens,
-        // LiteLLM's request-level failover: when this model group fails, the
-        // proxy retries the chain server-side and the stream never breaks.
-        samplingParams: chain ? { fallbacks: chain } : undefined,
-        compat: {
-          // LiteLLM proxies upstream providers; use the broadest-compatible flags.
-          supportsDeveloperRole: false,
-          maxTokensField: "max_tokens",
-        },
-      };
-    }),
+    // All chain math is pure and table-tested (fallbacks.ts:applyChains) —
+    // the wiring below only translates the result into provider config.
+    models: annotated.map((model) => ({
+      id: model.id,
+      name: model.id,
+      reasoning: false,
+      input: ["text" as const],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: model.contextWindow,
+      maxTokens: model.maxTokens,
+      // LiteLLM's request-level failover: when this model group fails, the
+      // proxy retries the chain server-side and the stream never breaks.
+      // ABSENT on unchained models — an explicit `fallbacks: []` would
+      // override proxy-configured fallbacks with "none", fleet-wide
+      // (r17-review P4.1: observed live via a stubbed /v1/models).
+      samplingParams: model.samplingParams,
+      compat: {
+        // LiteLLM proxies upstream providers; use the broadest-compatible flags.
+        supportsDeveloperRole: false,
+        maxTokensField: "max_tokens",
+      },
+    })),
   });
 
-  // Honest wiring log: report the chains actually ATTACHED (primary known
-  // AND every fallback id known); a key that matched nothing is a warning
-  // (misspelled id or a renamed proxy group — the protection silently
-  // absent, r16-review pillar 7; unwired-but-logged, r17-review).
-  const wired: string[] = [];
-  for (const [model, chain] of Object.entries(fallbacks)) {
-    if (!byId.has(model)) {
-      console.error(`[litellm-provider] WARNING: fallback chain for "${model}" matched no registered model — not wired`);
-      continue;
+  for (const model of annotated) {
+    for (const id of model.droppedIds) {
+      console.error(`[litellm-provider] WARNING: fallback "${id}" (for ${model.id}) is not a known proxy group — dropped`);
     }
-    if (chain.some((id) => !byId.has(id))) continue; // per-id warnings above
-    if (chain.length > 0) wired.push(`${model} → ${chain.join(", ")}`);
+    if (model.clampNote) {
+      console.error(`[litellm-provider] ${model.id}: ${model.clampNote}`);
+    }
   }
+  // Honest wiring log: applyChains reports the chains actually ATTACHED —
+  // fully-resolved (primary known, every fallback id a discovered group)
+  // and non-empty. Anything else is "no fallbacks wired" for that model.
   console.error(
     `[litellm-provider] registered ${models.length} model(s): ${models.map((m) => m.id).join(", ")}` +
       (wired.length ? ` | fallbacks wired: ${wired.join("; ")}` : " | no fallbacks wired"),

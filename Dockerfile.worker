@@ -102,10 +102,6 @@ COPY plugins/workspace/workspace.sh   /usr/local/lib/harmostes/plugins/workspace
 COPY plugins/pr-review/pr-review.sh   /usr/local/lib/harmostes/plugins/pr-review.sh
 COPY plugins/post-review/post-review.sh /usr/local/lib/harmostes/plugins/post-review.sh
 COPY plugins/fork-sync/fork-sync.sh   /usr/local/lib/harmostes/plugins/fork-sync.sh
-COPY plugins/workspace/workspace.sh      /usr/local/lib/harmostes/plugins/workspace.sh
-COPY plugins/pr-review/pr-review.sh      /usr/local/lib/harmostes/plugins/pr-review.sh
-COPY plugins/post-review/post-review.sh  /usr/local/lib/harmostes/plugins/post-review.sh
-COPY plugins/fork-sync/fork-sync.sh      /usr/local/lib/harmostes/plugins/fork-sync.sh
 COPY plugins/divergence-track/divergence-track.sh /usr/local/lib/harmostes/plugins/divergence-track.sh
 RUN chmod +x /usr/local/lib/harmostes/plugins/*.sh
 

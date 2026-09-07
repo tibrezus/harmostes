@@ -18,6 +18,16 @@
  * Model discovery is dynamic: the extension fetches /v1/models at startup so
  * new models added to the proxy are available immediately without rebuilding
  * the worker image.
+ *
+ * Fallbacks (#358): models with a configured fallback chain carry LiteLLM's
+ * request-level `fallbacks` param (via Model.samplingParams) — when the
+ * primary model group fails mid-run, the proxy's router fails over to the
+ * fallback group and the agent's stream continues instead of dying. Default
+ * chain: ali/anthropic/qwen3.8-flash → mtplx/qwen38-27b-optimized-quality-fp16
+ * (both live on the proxy). Override with LITELLM_FALLBACKS, a JSON object
+ * mapping model id → array of fallback ids. NOTE the naming boundary: on the
+ * proxy, ids are BARE group names (mtplx/...); harmostes-side model strings
+ * carry the litellm/ provider prefix (litellm/mtplx/...).
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
@@ -60,29 +70,54 @@ export default async function (_pi: ExtensionAPI) {
     return;
   }
 
+  // Fallback chains (#358): model id → LiteLLM request-level `fallbacks`.
+  // Default protects the review fleet's primary; LITELLM_FALLBACKS overrides
+  // the whole map (invalid JSON kills the override loudly, keeping the default).
+  const defaultFallbacks: Record<string, string[]> = {
+    "ali/anthropic/qwen3.8-flash": ["mtplx/qwen38-27b-optimized-quality-fp16"],
+  };
+  let fallbacks = defaultFallbacks;
+  if (process.env.LITELLM_FALLBACKS) {
+    try {
+      fallbacks = JSON.parse(process.env.LITELLM_FALLBACKS) as Record<string, string[]>;
+    } catch {
+      console.error("[litellm-provider] LITELLM_FALLBACKS is not valid JSON — keeping default chains");
+    }
+  }
+
   _pi.registerProvider("litellm", {
     name: "LiteLLM Proxy",
     baseUrl: `${baseUrl}/v1`,
     apiKey: "$LITELLM_API_KEY",
     api: "openai-completions",
     authHeader: true,
-    models: models.map((model) => ({
-      id: model.id,
-      name: model.id,
-      reasoning: false,
-      input: ["text" as const],
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-      contextWindow: model.max_input_tokens ?? 131072,
-      maxTokens: model.max_output_tokens ?? 8192,
-      compat: {
-        // LiteLLM proxies upstream providers; use the broadest-compatible flags.
-        supportsDeveloperRole: false,
-        maxTokensField: "max_tokens",
-      },
-    })),
+    models: models.map((model) => {
+      const chain = fallbacks[model.id];
+      return {
+        id: model.id,
+        name: model.id,
+        reasoning: false,
+        input: ["text" as const],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: model.max_input_tokens ?? 131072,
+        maxTokens: model.max_output_tokens ?? 8192,
+        // LiteLLM's request-level failover: when this model group fails, the
+        // proxy retries the chain server-side and the stream never breaks.
+        samplingParams: chain ? { fallbacks: chain } : undefined,
+        compat: {
+          // LiteLLM proxies upstream providers; use the broadest-compatible flags.
+          supportsDeveloperRole: false,
+          maxTokensField: "max_tokens",
+        },
+      };
+    }),
   });
 
+  const wired = Object.entries(fallbacks)
+    .map(([m, chain]) => `${m} → ${chain.join(", ")}`)
+    .join("; ");
   console.error(
-    `[litellm-provider] registered ${models.length} model(s): ${models.map((m) => m.id).join(", ")}`,
+    `[litellm-provider] registered ${models.length} model(s): ${models.map((m) => m.id).join(", ")}` +
+      (wired ? ` | fallbacks: ${wired}` : ""),
   );
 }

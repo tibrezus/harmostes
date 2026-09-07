@@ -7,8 +7,10 @@
  * of #359: valid JSON with a wrong shape is the accidental-value risk).
  */
 
+// The target is operator-chosen (#360: speed over quality — same 27b
+// optimized family, faster reviews; both live in the proxy key's scope).
 export const DEFAULT_FALLBACKS: Record<string, string[]> = {
-  "mtplx/qwen38-27b-optimized-speed-fp16": ["ali/anthropic/qwen3.8-flash"],
+  "ali/anthropic/qwen3.8-flash": ["mtplx/qwen38-27b-optimized-speed-fp16"],
 };
 
 /**

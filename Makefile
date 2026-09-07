@@ -44,7 +44,8 @@ test-extensions:
 	node --test --experimental-strip-types \
 		extensions/rig-query/queries.test.ts \
 		extensions/rig-query/index.parse.test.ts \
-		extensions/rig-query/index.runtime.test.ts
+		extensions/rig-query/index.runtime.test.ts \
+		extensions/litellm-provider/fallbacks.test.ts
 	python3 extensions/rig-query/fixtures/freshness.py
 
 ## test-rig-emit: the rig-emit plugin's Python validator — severity pin:

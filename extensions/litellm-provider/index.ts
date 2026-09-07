@@ -25,11 +25,22 @@
  * fallback group and the agent's stream continues instead of dying. Default
  * chain: ali/anthropic/qwen3.8-flash → mtplx/qwen38-27b-optimized-quality-fp16
  * (both live on the proxy). Override with LITELLM_FALLBACKS, a JSON object
- * mapping model id → array of fallback ids. NOTE the naming boundary: on the
- * proxy, ids are BARE group names (mtplx/...); harmostes-side model strings
- * carry the litellm/ provider prefix (litellm/mtplx/...).
+ * mapping model id → array of fallback ids — resolved by fallbacks.ts, which
+ * degrades to the default chain on any semantically-bad value. NOTE the
+ * naming boundary: on the proxy, ids are BARE group names (mtplx/...);
+ * harmostes-side model strings carry the litellm/ provider prefix
+ * (litellm/mtplx/...).
+ *
+ * Two honest limits (r16-review): (1) LITELLM_FALLBACKS is read in the
+ * worker IMAGE — overriding it means the worker Deployment's env, not a
+ * per-Job knob. (2) A run that failed over is indistinguishable from a
+ * healthy run here (same --model string); attribute via the proxy's router
+ * logs, which record the serving group per request. Chained models register
+ * min(primary, fallback) context/output windows so the post-failover replay
+ * fits the fallback group's smaller window (mtplx 262144 < flash 1048576).
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { resolveFallbackChains } from "./fallbacks.ts";
 
 export default async function (_pi: ExtensionAPI) {
   const rawUrl = process.env.LITELLM_URL;
@@ -71,19 +82,16 @@ export default async function (_pi: ExtensionAPI) {
   }
 
   // Fallback chains (#358): model id → LiteLLM request-level `fallbacks`.
-  // Default protects the review fleet's primary; LITELLM_FALLBACKS overrides
-  // the whole map (invalid JSON kills the override loudly, keeping the default).
-  const defaultFallbacks: Record<string, string[]> = {
-    "ali/anthropic/qwen3.8-flash": ["mtplx/qwen38-27b-optimized-quality-fp16"],
-  };
-  let fallbacks = defaultFallbacks;
-  if (process.env.LITELLM_FALLBACKS) {
-    try {
-      fallbacks = JSON.parse(process.env.LITELLM_FALLBACKS) as Record<string, string[]>;
-    } catch {
-      console.error("[litellm-provider] LITELLM_FALLBACKS is not valid JSON — keeping default chains");
-    }
+  // Resolution/validation is pure and table-tested (fallbacks.ts); a
+  // semantically-bad LITELLM_FALLBACKS degrades to the default chain loudly.
+  // NOTE: the env is read in the worker IMAGE (piargs loads this extension for
+  // every agent) — reaching the override from a deployment means setting it on
+  // the worker Deployment/env template, not per-Job.
+  const { chains: fallbacks, warning } = resolveFallbackChains(process.env.LITELLM_FALLBACKS);
+  if (warning) {
+    console.error(`[litellm-provider] ${warning}`);
   }
+  const byId = new Map(models.map((m) => [m.id, m]));
 
   _pi.registerProvider("litellm", {
     name: "LiteLLM Proxy",
@@ -93,14 +101,28 @@ export default async function (_pi: ExtensionAPI) {
     authHeader: true,
     models: models.map((model) => {
       const chain = fallbacks[model.id];
+      // Conservative windows for chained models (r16-review pillar 6):
+      // after a failover LiteLLM replays the SAME payload against the
+      // fallback group — if the fallback's window is smaller, the replay
+      // 400s and the stream dies anyway. pi cannot see the failover, so
+      // the client registers min(primary, fallback) and compacts early.
+      // Live: flash primary 1048576 vs mtplx 262144 → chained models
+      // register 262144 and pi compacts before the proxy ever replays.
+      let contextWindow = model.max_input_tokens ?? 131072;
+      let maxTokens = model.max_output_tokens ?? 8192;
+      for (const id of chain ?? []) {
+        const fb = byId.get(id);
+        if (fb?.max_input_tokens) contextWindow = Math.min(contextWindow, fb.max_input_tokens);
+        if (fb?.max_output_tokens) maxTokens = Math.min(maxTokens, fb.max_output_tokens);
+      }
       return {
         id: model.id,
         name: model.id,
         reasoning: false,
         input: ["text" as const],
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        contextWindow: model.max_input_tokens ?? 131072,
-        maxTokens: model.max_output_tokens ?? 8192,
+        contextWindow,
+        maxTokens,
         // LiteLLM's request-level failover: when this model group fails, the
         // proxy retries the chain server-side and the stream never breaks.
         samplingParams: chain ? { fallbacks: chain } : undefined,
@@ -113,11 +135,16 @@ export default async function (_pi: ExtensionAPI) {
     }),
   });
 
-  const wired = Object.entries(fallbacks)
-    .map(([m, chain]) => `${m} → ${chain.join(", ")}`)
-    .join("; ");
+  // Honest wiring log: report the chains actually ATTACHED to registered
+  // models; a key that matched nothing is a warning (misspelled id or a
+  // renamed proxy group — the protection silently absent, r16-review pillar 7).
+  const wired: string[] = [];
+  for (const [model, chain] of Object.entries(fallbacks)) {
+    if (byId.has(model)) wired.push(`${model} → ${chain.join(", ")}`);
+    else console.error(`[litellm-provider] WARNING: fallback chain for "${model}" matched no registered model — not wired`);
+  }
   console.error(
     `[litellm-provider] registered ${models.length} model(s): ${models.map((m) => m.id).join(", ")}` +
-      (wired ? ` | fallbacks: ${wired}` : ""),
+      (wired.length ? ` | fallbacks wired: ${wired.join("; ")}` : " | no fallbacks wired"),
   );
 }

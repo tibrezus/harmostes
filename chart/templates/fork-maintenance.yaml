@@ -1,0 +1,99 @@
+{{- if .Values.forkMaintenance.enabled }}
+{{- $fm := .Values.forkMaintenance }}
+# ── Fork-maintenance engine payload (ADR-0011) ──────────────────────────────
+# The sync engine is CODE and ships inside this chart (chart/fork-maintenance/).
+# Only the fork DEFINITIONS are values (forkMaintenance.defs) — they are the
+# declarative per-fork configuration. ConfigMap names match the worker-pool
+# mounts (forkMaintenance.*ConfigMap), so the worker pods see the same
+# /workspace layout the k8s-config kustomize generator used to produce.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $fm.scriptsConfigMap }}
+  namespace: {{ $.Values.namespace }}
+  labels:
+    app.kubernetes.io/name: harmostes
+    app.kubernetes.io/managed-by: {{ $.Release.Service }}
+data:
+  sync-fork.sh: |
+    {{- $.Files.Get "fork-maintenance/scripts/sync-fork.sh" | nindent 4 }}
+  subtree-mode.sh: |
+    {{- $.Files.Get "fork-maintenance/scripts/subtree-mode.sh" | nindent 4 }}
+  mapping-mode.sh: |
+    {{- $.Files.Get "fork-maintenance/scripts/mapping-mode.sh" | nindent 4 }}
+  backport.sh: |
+    {{- $.Files.Get "fork-maintenance/scripts/backport.sh" | nindent 4 }}
+  git-host.sh: |
+    {{- $.Files.Get "fork-maintenance/scripts/git-host.sh" | nindent 4 }}
+  resolve-conflict.sh: |
+    {{- $.Files.Get "fork-maintenance/scripts/resolve-conflict.sh" | nindent 4 }}
+  conflict-subscriber.py: |
+    {{- $.Files.Get "fork-maintenance/scripts/conflict-subscriber.py" | nindent 4 }}
+  generate-manifest.sh: |
+    {{- $.Files.Get "fork-maintenance/scripts/generate-manifest.sh" | nindent 4 }}
+  verify-patches.sh: |
+    {{- $.Files.Get "fork-maintenance/scripts/verify-patches.sh" | nindent 4 }}
+  divergence-track.sh: |
+    {{- $.Files.Get "fork-maintenance/scripts/divergence-track.sh" | nindent 4 }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $fm.checksConfigMap }}
+  namespace: {{ $.Values.namespace }}
+  labels:
+    app.kubernetes.io/name: harmostes
+    app.kubernetes.io/managed-by: {{ $.Release.Service }}
+data:
+  validate-fork.sh: |
+    {{- $.Files.Get "fork-maintenance/checks/validate-fork.sh" | nindent 4 }}
+  gate-resolved.sh: |
+    {{- $.Files.Get "fork-maintenance/checks/gate-resolved.sh" | nindent 4 }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $fm.hooksConfigMap }}
+  namespace: {{ $.Values.namespace }}
+  labels:
+    app.kubernetes.io/name: harmostes
+    app.kubernetes.io/managed-by: {{ $.Release.Service }}
+data:
+  {{- range $name, $content := dict "signoz" "signoz.sh" "dapr" "dapr.sh" "llama-cpp" "llama-cpp.sh" }}
+  {{ $content }}: |
+    {{- $.Files.Get (printf "fork-maintenance/hooks/%s" $content) | nindent 4 }}
+  {{- end }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $fm.defsConfigMap }}
+  namespace: {{ $.Values.namespace }}
+  labels:
+    app.kubernetes.io/name: harmostes
+    app.kubernetes.io/managed-by: {{ $.Release.Service }}
+data:
+  {{- range $file, $content := $fm.defs }}
+  {{ $file }}: |
+    {{- $content | nindent 4 }}
+  {{- end }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fork-maintenance-skill
+  namespace: {{ $.Values.namespace }}
+  labels:
+    app.kubernetes.io/name: harmostes
+    app.kubernetes.io/managed-by: {{ $.Release.Service }}
+data:
+  SKILL.md: |
+    {{- $.Files.Get "fork-maintenance/skill/SKILL.md" | nindent 4 }}
+  conflict-resolution.md: |
+    {{- $.Files.Get "fork-maintenance/skill/references/conflict-resolution.md" | nindent 4 }}
+  safeguards.md: |
+    {{- $.Files.Get "fork-maintenance/skill/references/safeguards.md" | nindent 4 }}
+  architecture.md: |
+    {{- $.Files.Get "fork-maintenance/skill/references/architecture.md" | nindent 4 }}
+{{- end }}

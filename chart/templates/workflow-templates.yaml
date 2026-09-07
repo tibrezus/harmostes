@@ -1,0 +1,15 @@
+{{- if .Values.workflowTemplates }}
+{{- range $name, $tpl := .Values.workflowTemplates }}
+---
+apiVersion: harmostes.dev/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: {{ $name }}
+  namespace: {{ $.Values.namespace }}
+  labels:
+    app.kubernetes.io/name: harmostes
+    app.kubernetes.io/managed-by: {{ $.Release.Service }}
+spec:
+  {{- toYaml $tpl | nindent 2 }}
+{{- end }}
+{{- end }}

@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -19,6 +20,11 @@ import (
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
 	"github.com/tibrezus/harmostes/internal/attempt"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
 // gateEnv: a fake k8s client (claim storage) + fake status (aggregates) +
@@ -47,14 +53,24 @@ func gateEnv(t *testing.T, wf *v1alpha1.Workflow, st *fakeStatus, objects ...run
 	return deps, context.Background()
 }
 
-// claimFixture builds an unreleased review claim on wf.
+// claimFixture builds an unreleased review claim on wf. The attempt name
+// is the REAL derived identity (source repo + head SHA) — ArmClaim resolves
+// pointer-locally by that name (r7 P1), so a synthetic name would silently
+// test a different object.
 func claimFixture(wf *v1alpha1.Workflow, pr, sha string, armedSince time.Time, dispatchedAt *time.Time) *v1alpha1.Attempt {
-	name := "attempt-claim-" + pr[strings.LastIndex(pr, "#")+1:]
+	obj := attempt.DeriveObjective(wf, attempt.TriggerContext{Revision: sha, Source: "webhook"})
+	name := attempt.AttemptName(wf.Name, attempt.Identity(obj))
 	at := &v1alpha1.Attempt{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: name, Namespace: wf.Namespace,
 			CreationTimestamp: metav1.NewTime(armedSince.Add(-time.Minute)),
-			Labels:            map[string]string{"harmostes.dev/workflow": wf.Name},
+			// No review-claim marker: ABSENCE means live (r8 P1) — the
+			// fixture IS the pre-upgrade shape. The objective-kind label
+			// rides along: the live-list selector pins it.
+			Labels: map[string]string{
+				"harmostes.dev/workflow":       wf.Name,
+				"harmostes.dev/objective-kind": attempt.DeriveKind(wf),
+			},
 		},
 		Spec: v1alpha1.AttemptSpec{WorkflowRef: wf.Namespace + "/" + wf.Name},
 	}
@@ -185,7 +201,7 @@ func TestMultiArmWaitingArmsClaimWithoutDispatch(t *testing.T) {
 	if len(out) != 0 {
 		t.Fatalf("waiting must not dispatch, got %d", len(out))
 	}
-	claims, err := attempt.LiveReviewClaims(ctx, deps.Client, wf.Namespace, wf.Name)
+	claims, err := attempt.LiveReviewClaims(ctx, deps.Client, wf)
 	if err != nil || len(claims) != 1 {
 		t.Fatalf("waiting must arm a claim, got %d (%v)", len(claims), err)
 	}
@@ -243,7 +259,7 @@ func TestMultiArmVerdictConsumesAndDrains(t *testing.T) {
 	if len(out) != 1 || out[0].Envelope.PR != 100 {
 		t.Fatalf("consumed claim must free the slot for PR 100, got %+v (aggregates %+v)", out, st.last.ReviewReady)
 	}
-	claims, _ := attempt.LiveReviewClaims(ctx, deps.Client, wf.Namespace, wf.Name)
+	claims, _ := attempt.LiveReviewClaims(ctx, deps.Client, wf)
 	for _, c := range claims {
 		if c.Status.Review.PR == "git.rezus.cloud/tibrez/rhesadox#99" && !c.Status.Review.Released {
 			t.Fatal("the consumed claim must be released")
@@ -287,11 +303,18 @@ func TestMultiArmDispatchTimeoutReleasesAndReArms(t *testing.T) {
 	if claim.Status.Review.Released == false {
 		_ = claim // fixture object is a pre-patch snapshot; state checked via re-list below
 	}
-	claims, _ := attempt.LiveReviewClaims(ctx, deps.Client, wf.Namespace, wf.Name)
+	// #343 era reuse: the stale fixture claim (same pr + head) is REVIVED as
+	// the deterministic attempt rather than duplicated — exactly ONE live
+	// claim for the PR may exist.
+	claims, _ := attempt.LiveReviewClaims(ctx, deps.Client, wf)
+	live := 0
 	for _, c := range claims {
-		if c.Name == claim.Name {
-			t.Fatal("the stale fixture claim must not be live alongside the deterministic one")
+		if c.Status.Review.PR == "git.rezus.cloud/tibrez/rhesadox#99" {
+			live++
 		}
+	}
+	if live != 1 {
+		t.Fatalf("era reuse must leave exactly one live claim for the PR, got %d", live)
 	}
 }
 
@@ -319,7 +342,7 @@ func TestMultiArmRequestWakeSupersedesMovedHead(t *testing.T) {
 	if out[0].Attempt == claim.Name {
 		t.Fatal("the moved-head review must arm a NEW claim")
 	}
-	claims, _ := attempt.LiveReviewClaims(ctx, deps.Client, wf.Namespace, wf.Name)
+	claims, _ := attempt.LiveReviewClaims(ctx, deps.Client, wf)
 	for _, c := range claims {
 		if c.Name == claim.Name && !c.Status.Review.Released {
 			t.Fatal("the stale-head claim must be released as superseded")
@@ -368,6 +391,15 @@ func TestMultiArmCapacityHoldsQueue(t *testing.T) {
 	if len(out) != 0 {
 		t.Fatalf("at capacity nothing new may dispatch, got %d", len(out))
 	}
+	// The saturated sweep SKIPS the labeled scan (r11 — the one
+	// unbounded-per-repo call) and says so in the aggregates: "capacity
+	// full", not the sweep-start "nothing to evaluate" (pillar 7).
+	if st.last.ReviewReady == nil {
+		t.Fatal("no aggregates recorded")
+	}
+	if !strings.Contains(st.last.ReviewReady.LastReason, "capacity full") {
+		t.Fatalf("a saturated sweep must report capacity, got %q", st.last.ReviewReady.LastReason)
+	}
 }
 
 // ── Per-PR dedupe: a labeled candidate whose PR already has an armed-queued
@@ -410,7 +442,7 @@ func TestMultiArmBarePointerNormalizesIntoClaim(t *testing.T) {
 	if len(out) != 1 || out[0].Envelope.Repo != "git.rezus.cloud/tibrez/rhesadox" {
 		t.Fatalf("bare pointer must normalize, got %+v", out)
 	}
-	claims, _ := attempt.LiveReviewClaims(ctx, deps.Client, wf.Namespace, wf.Name)
+	claims, _ := attempt.LiveReviewClaims(ctx, deps.Client, wf)
 	if len(claims) != 1 || claims[0].Status.Review.PR != "git.rezus.cloud/tibrez/rhesadox#99" {
 		t.Fatalf("claim must carry the normalized pointer, got %+v", claims)
 	}
@@ -434,7 +466,7 @@ func TestMultiArmOutOfScopeWakeIgnored(t *testing.T) {
 	if len(out) != 0 {
 		t.Fatalf("out-of-scope wake must not dispatch, got %d", len(out))
 	}
-	claims, _ := attempt.LiveReviewClaims(ctx, deps.Client, wf.Namespace, wf.Name)
+	claims, _ := attempt.LiveReviewClaims(ctx, deps.Client, wf)
 	if len(claims) != 0 {
 		t.Fatalf("out-of-scope wake must not arm, got %d claims", len(claims))
 	}
@@ -472,8 +504,15 @@ func TestMultiArmDispatchLostClaimRefilled(t *testing.T) {
 	if err := deps.Client.Get(ctx, client.ObjectKey{Namespace: wf.Namespace, Name: claim.Name}, &old); err != nil {
 		t.Fatalf("stale claim: %v", err)
 	}
-	if old.Status.Review == nil || !old.Status.Review.Released || old.Status.Review.ReleaseReason != "dispatch-lost" {
-		t.Fatalf("stale claim must be released as dispatch-lost, got %+v", old.Status.Review)
+	// #343 era reuse is the CONTRACT: the refill REVIVES the same (pr, head)
+	// claim — the armed era stays sticky, the slot stays filled, and exactly
+	// one live claim exists for the pointer (r4 P8: no disjunction — a
+	// supersede-recreate regression must fail here).
+	if old.Name != re.Name {
+		t.Fatalf("era reuse must revive the same attempt, got %s", re.Name)
+	}
+	if re.Status.Review.Released {
+		t.Fatalf("revived era must be live, got %+v", re.Status.Review)
 	}
 }
 
@@ -528,8 +567,16 @@ func TestMultiArmDeadJobClaimRefilled(t *testing.T) {
 	if err := deps.Client.Get(ctx, client.ObjectKey{Namespace: wf.Namespace, Name: claim.Name}, &old); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
-	if old.Status.Review == nil || !old.Status.Review.Released || old.Status.Review.ReleaseReason != "dispatch-lost" {
-		t.Fatalf("dead-job claim must be released as dispatch-lost, got %+v", old.Status.Review)
+	// #343 era reuse is the CONTRACT (r4 P8): the refill revives the dead
+	// claim's era (same pr + head) — same attempt, live, one claim for the
+	// pointer. NOTE: a dispatch-TIMEOUT death is the dead-dispatch class —
+	// reuse excludes it (fresh era), so this test's release reason matters;
+	// the fixture uses the never-dispatched class by construction.
+	if old.Name != out[0].Attempt {
+		t.Fatalf("era reuse must revive the same attempt, got %s", out[0].Attempt)
+	}
+	if old.Status.Review.Released {
+		t.Fatalf("revived era must be live, got %+v", old.Status.Review)
 	}
 }
 
@@ -733,7 +780,7 @@ func TestSweepBreakerHumanOverrideDispatches(t *testing.T) {
 	if len(out) != 1 {
 		t.Fatalf("human override must dispatch, got %d", len(out))
 	}
-	claims, err := attempt.LiveReviewClaims(ctx, deps.Client, wf.Namespace, wf.Name)
+	claims, err := attempt.LiveReviewClaims(ctx, deps.Client, wf)
 	if err != nil || len(claims) != 1 {
 		t.Fatalf("override must leave a live claim, got %d (%v)", len(claims), err)
 	}
@@ -815,7 +862,7 @@ func TestSweepBreakerOverrideThroughLiveClaim(t *testing.T) {
 	if len(out) != 1 {
 		t.Fatalf("labeled wake through a live partial-count claim must dispatch, got %d", len(out))
 	}
-	claims, err := attempt.LiveReviewClaims(ctx, deps.Client, wf.Namespace, wf.Name)
+	claims, err := attempt.LiveReviewClaims(ctx, deps.Client, wf)
 	if err != nil || len(claims) != 1 {
 		t.Fatalf("exactly one live claim after override, got %d (%v)", len(claims), err)
 	}
@@ -985,5 +1032,497 @@ func TestSweepDispatchTimeoutJobListFailureCountsDead(t *testing.T) {
 	}
 	if !got.Status.Review.Released || got.Status.Review.DeadDispatches != 1 || got.Status.Review.ReleaseReason != "dispatch-timeout" {
 		t.Fatalf("unknown liveness must fail closed: released=%v dead=%d reason=%q", got.Status.Review.Released, got.Status.Review.DeadDispatches, got.Status.Review.ReleaseReason)
+	}
+}
+
+// ── r6 P1: the aged never-dispatched release is DISPATCH-LOST, not horizon
+// — "we could not dispatch" must not set the ambiguity guard's clock ("we
+// stopped asking"). The cycle now converges through the COUNTER: each sweep
+// releases the never-dispatched era again (#1, #2), the third release arms
+// the guard (Max dispatch-lost releases), and a human re-request escapes
+// with a fresh clock (r6 P2). ──
+func TestMultiArmNeverDispatchedAgedClaimConvergesDispatchLost(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := labeledListServer(t, 103)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow() // horizon 6h
+	aged := time.Now().Add(-7 * time.Hour)
+	claim := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#103", "deadbeef777", aged, nil)
+	deps, ctx := gateEnv(t, wf, &fakeStatus{}, claim)
+
+	const pr = "git.rezus.cloud/tibrez/rhesadox#103"
+	const sha = "deadbeef777"
+	expectRelease := func(n int) {
+		t.Helper()
+		var got v1alpha1.Attempt
+		if err := deps.Client.Get(ctx, client.ObjectKey{Namespace: wf.Namespace, Name: claim.Name}, &got); err != nil {
+			t.Fatalf("get claim: %v", err)
+		}
+		if !got.Status.Review.Released || got.Status.Review.ReleaseReason != v1alpha1.ReleaseReasonDispatchLost {
+			t.Fatalf("aged never-dispatched claim must release as dispatch-lost #%d, got released=%v reason=%q",
+				n, got.Status.Review.Released, got.Status.Review.ReleaseReason)
+		}
+		if got.Status.Review.DispatchLostReleases != n {
+			t.Fatalf("dispatch-lost release #%d must bump the counter to %d, got %d", n, n, got.Status.Review.DispatchLostReleases)
+		}
+	}
+
+	if _, err := RunReviewGateSweep(ctx, deps, wf); err != nil {
+		t.Fatalf("sweep 1: %v", err)
+	}
+	expectRelease(1)
+	if _, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf, pr, sha, "needs-review", false); err != nil {
+		t.Fatalf("auto revival #1 (counter under max) must reuse the era: %v", err)
+	}
+
+	if _, err := RunReviewGateSweep(ctx, deps, wf); err != nil {
+		t.Fatalf("sweep 2: %v", err)
+	}
+	expectRelease(2)
+	if _, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf, pr, sha, "needs-review", false); err != nil {
+		t.Fatalf("auto revival #2: %v", err)
+	}
+
+	if _, err := RunReviewGateSweep(ctx, deps, wf); err != nil {
+		t.Fatalf("sweep 3: %v", err)
+	}
+	expectRelease(3)
+	// The guard: the next AUTOMATIC arm is refused — the cycle converged
+	// into a visible standdown, not an infinite loop.
+	if _, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf, pr, sha, "needs-review", false); !errors.Is(err, attempt.ErrChurnBudgetExhausted) {
+		t.Fatalf("exhausted counter must refuse the auto re-arm (as the BUDGET sentinel, not the horizon dismissal — r12 must-fix 2), got %v", err)
+	}
+	// r6 P2: the HUMAN override escapes — with a FRESH clock (the anchored
+	// one is already past the horizon and would re-release instantly).
+	at2, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf, pr, sha, "needs-review", true)
+	if err != nil {
+		t.Fatalf("human re-request must override the exhausted counter: %v", err)
+	}
+	var got v1alpha1.Attempt
+	if err := deps.Client.Get(ctx, client.ObjectKey{Namespace: wf.Namespace, Name: at2.Name}, &got); err != nil {
+		t.Fatal(err)
+	}
+	r2 := got.Status.Review
+	if r2.Released {
+		t.Fatal("the overridden era must be live")
+	}
+	if age := time.Since(r2.ArmedSince.Time); age > time.Minute {
+		t.Fatalf("human override must anchor a FRESH era clock, got age %v", age)
+	}
+	if r2.DispatchLostReleases != 0 {
+		t.Fatalf("human wake must reset the counter, got %d", r2.DispatchLostReleases)
+	}
+}
+
+// ── r8: refusal ATTRIBUTION + budget reset, both driven through the gate. ──
+
+// TestSweepRefusalAttribution_ChurnRefusalReportsBudget drives the
+// never-dispatched convergence THROUGH RunReviewGateSweep (the r6-era test
+// called ArmClaim directly, which is why the guard's attribution was never
+// observed at the boundary): an exhausted counter must surface as the
+// CHURN BUDGET's standdown ("re-apply the label..."), never as the
+// dead-dispatch breaker nor as the horizon dismissal — the three refusal
+// classes are distinct failures to an operator, in the timeline and in
+// harmostes_review_gate_total (r7 P4.2/P7, r12 must-fix 2).
+func TestSweepRefusalAttribution_ChurnRefusalReportsBudget(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := labeledListServer(t, 104)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	// The fixture head MUST equal the served PR head (greenPullBody's
+	// deadbeef123) — the sweep evaluates the candidate at the PR's head,
+	// and the pointer-local guard only fires on the matching attempt.
+	claim := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#104", "deadbeef123", time.Now().Add(-time.Hour), nil)
+	claim.Status.Review.DispatchLostReleases = v1alpha1.MaxDispatchLostReleases
+	st := &fakeStatus{}
+	deps, ctx := gateEnv(t, wf, st, claim)
+
+	out, err := RunReviewGateSweep(ctx, deps, wf)
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if len(out) != 0 {
+		t.Fatalf("exhausted counter must refuse the dispatch, got %d", len(out))
+	}
+	if st.last.ReviewReady == nil || st.last.ReviewReady.LastDecision != "standdown" {
+		t.Fatalf("aggregates must surface the standdown, got %+v", st.last.ReviewReady)
+	}
+	reason := st.last.ReviewReady.LastReason
+	if !strings.Contains(reason, "re-apply the label to request a fresh review") {
+		t.Fatalf("churn refusal must carry the override text, got %q", reason)
+	}
+	if strings.Contains(reason, "dead-dispatch breaker") {
+		t.Fatalf("never-dispatched churn must NOT be reported as the dead-dispatch breaker, got %q", reason)
+	}
+	if strings.Contains(reason, "recently dismissed by horizon") {
+		t.Fatalf("never-dispatched churn must NOT be reported as the horizon dismissal, got %q", reason)
+	}
+	if !strings.Contains(reason, "consecutive never-dispatched releases") {
+		t.Fatalf("churn refusal must carry the BUDGET cause, got %q", reason)
+	}
+}
+
+// TestRunGate_DispatchClearsChurnBudget pins the field's contract at the
+// boundary the cycle actually runs (r7 P4.3/P8: the reset lived only in
+// MarkClaimDispatched and no test observed it — deleting the line left the
+// suite green). Dispatch success clears the never-dispatched budget, so a
+// single later release starts from 1 and the head is NOT refused.
+func TestRunGate_DispatchClearsChurnBudget(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := labeledListServer(t, 105)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	// The churn cycle's actual shape: the era was RELEASED dispatch-lost
+	// (counter at Max-1), and this sweep's drain REVIVES it — the revival
+	// arms, the dispatcher marks dispatched, and THAT must clear the
+	// budget. Head matches the served PR (greenPullBody's deadbeef123).
+	claim := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#105", "deadbeef123", time.Now().Add(-time.Hour), nil)
+	claim.Status.Review.Released = true
+	claim.Status.Review.ReleaseReason = v1alpha1.ReleaseReasonDispatchLost
+	claim.Status.Review.DispatchLostReleases = v1alpha1.MaxDispatchLostReleases - 1
+	claim.Labels[v1alpha1.ReviewClaimLabel] = v1alpha1.ReviewClaimReleased
+	st := &fakeStatus{}
+	deps, ctx := gateEnv(t, wf, st, claim)
+
+	const pr = "git.rezus.cloud/tibrez/rhesadox#105"
+	const sha = "deadbeef123"
+
+	out, err := RunReviewGateSweep(ctx, deps, wf)
+	if err != nil || len(out) != 1 {
+		t.Fatalf("counter under max must dispatch, got %d dispatches err=%v", len(out), err)
+	}
+	// The dispatcher's contract: a created job marks the claim dispatched.
+	if err := attempt.MarkClaimDispatched(ctx, deps.Client, wf.Namespace, out[0].Attempt); err != nil {
+		t.Fatalf("mark dispatched: %v", err)
+	}
+
+	var got v1alpha1.Attempt
+	if err := deps.Client.Get(ctx, client.ObjectKey{Namespace: wf.Namespace, Name: claim.Name}, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.Review.DispatchLostReleases != 0 {
+		t.Fatalf("dispatch success must clear the budget (was %d), got %d", v1alpha1.MaxDispatchLostReleases-1, got.Status.Review.DispatchLostReleases)
+	}
+	if got.Status.Review.Released {
+		t.Fatal("the revival must have committed Released=false")
+	}
+	if _, marked := got.Labels[v1alpha1.ReviewClaimLabel]; marked {
+		t.Fatal("the revival must have removed the released marker (absence = live)")
+	}
+
+	// One later never-dispatched release starts from 1 (not 3) — the head
+	// is still revivable. This is the assertion the reset-line deletion
+	// flips (mutation probe).
+	if err := attempt.ReleaseClaim(ctx, deps.Client, wf.Namespace, claim.Name, v1alpha1.ReleaseReasonDispatchLost); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	if err := deps.Client.Get(ctx, client.ObjectKey{Namespace: wf.Namespace, Name: claim.Name}, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.Review.DispatchLostReleases != 1 {
+		t.Fatalf("one release after a successful dispatch must count 1, got %d", got.Status.Review.DispatchLostReleases)
+	}
+	if _, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf, pr, sha, "needs-review", false); err != nil {
+		t.Fatalf("one churned release after a dispatch must NOT refuse the auto re-arm: %v", err)
+	}
+}
+
+// withManualMeter / collectMetrics mirror internal/controller/telemetry_test.go
+// (package-private there — the 18 lines are cheaper than an exported testutil
+// for two packages; revisit if a third package needs the pattern).
+func withManualMeter(t *testing.T) (*sdkmetric.ManualReader, func() metricdata.ResourceMetrics) {
+	t.Helper()
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	prev := otel.GetMeterProvider()
+	otel.SetMeterProvider(mp)
+	t.Cleanup(func() {
+		otel.SetMeterProvider(prev)
+		_ = mp.Shutdown(context.Background())
+	})
+	return reader, func() metricdata.ResourceMetrics {
+		var rm metricdata.ResourceMetrics
+		if err := reader.Collect(context.Background(), &rm); err != nil {
+			t.Fatalf("collect: %v", err)
+		}
+		return rm
+	}
+}
+
+// TestSweepHeldReasonSurvivesLaterRefusal (r8 F2): pass A's hold — "a live
+// Job is observably alive past its DispatchTimeout" (#331) — is a
+// durability promise about a run IN FLIGHT. A second candidate whose arm
+// the churn guard refuses later in the same sweep must not clobber it:
+// the aggregates must still carry the held reason. This is the test the
+// r8 HasPrefix form was written for and could never pass (the marker is a
+// suffix; the flag now tracks it).
+func TestSweepHeldReasonSurvivesLaterRefusal(t *testing.T) {
+	clearTriggerEnv(t)
+	// Combined server: the labeled scan lists ONLY PR 106 (the churned
+	// candidate); PR 101 (the held claim) fetches as open, green, and
+	// VERDICT-LESS — the hold's Evaluate must see no verdict to classify
+	// dispatch-timeout. labeledListServer cannot serve that shape (its
+	// /comments 404s), so this test carries its own handler.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(req.URL.Path, "/pulls"):
+			json.NewEncoder(w).Encode([]map[string]any{
+				{"number": 106, "updated_at": "2026-08-30T00:00:00Z",
+					"labels": []map[string]string{{"name": "needs-review"}}},
+			})
+		case strings.Contains(req.URL.Path, "/comments"):
+			json.NewEncoder(w).Encode([]any{})
+		case strings.Contains(req.URL.Path, "/branch_protections/"):
+			json.NewEncoder(w).Encode(map[string]any{"status_check_contexts": []string{"ci / build-test (push)"}})
+		case strings.HasSuffix(req.URL.Path, "/statuses"):
+			json.NewEncoder(w).Encode([]map[string]string{
+				{"context": "ci / build-test (push)", "status": "success"},
+			})
+		case strings.Contains(req.URL.Path, "/pulls/"):
+			json.NewEncoder(w).Encode(greenPullBody())
+		default:
+			http.NotFound(w, req)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	st := &fakeStatus{}
+	now := time.Now()
+	disp := now.Add(-46 * time.Minute) // past DispatchTimeout (45m)
+
+	// Claim A: dispatched, past the timeout, Job observably ALIVE → held.
+	held := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#101", "deadbeef321", now.Add(-46*time.Minute), &disp)
+	held.Status.Phase = v1alpha1.AttemptPhaseReconciling
+	liveJob := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "attempt-job-alive", Namespace: wf.Namespace,
+			Labels: map[string]string{
+				"app.kubernetes.io/name": "harmostes",
+				"harmostes.dev/workflow": wf.Name,
+				v1alpha1.AttemptLabel:    held.Name,
+			},
+		},
+	}
+
+	// Claim B: churned out — its automatic arm must be refused in the drain.
+	refused := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#106", "deadbeef123", now.Add(-time.Hour), nil)
+	refused.Status.Review.DispatchLostReleases = v1alpha1.MaxDispatchLostReleases
+
+	_, collect := withManualMeter(t)
+	deps, ctx := gateEnv(t, wf, st, held, liveJob, refused)
+
+	if _, err := RunReviewGateSweep(ctx, deps, wf); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if st.last.ReviewReady == nil {
+		t.Fatal("no aggregates recorded")
+	}
+	if !strings.Contains(st.last.ReviewReady.LastReason, "held") {
+		t.Fatalf("the held durability promise must survive a later candidate's refusal, got %q", st.last.ReviewReady.LastReason)
+	}
+
+	// PREFERENCE, not a mute (r10): the preserved headline must not
+	// swallow the refusal — the turned-away candidate is still counted.
+	rm := collect()
+	found := false
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != "harmostes_review_gate_total" {
+				continue
+			}
+			found = true
+			dp, ok := m.Data.(metricdata.Sum[int64])
+			if !ok {
+				t.Fatalf("unexpected datapoint type %T", m.Data)
+			}
+			total := int64(0)
+			budget := int64(0)
+			for _, point := range dp.DataPoints {
+				total += point.Value
+				for _, kv := range point.Attributes.ToSlice() {
+					if kv.Key == attribute.Key("reason") && kv.Value.Emit() == "budget" {
+						budget += point.Value
+					}
+				}
+			}
+			// Claim B's refusal is the BUDGET class (exhausted dispatch-lost
+			// counter) — the r12 sentinel split means it must count under
+			// reason="budget", NOT "dismissed" (that is the horizon's).
+			if total == 0 || budget == 0 {
+				t.Fatalf("the refusal must be counted (reason=budget), got total=%d budget=%d", total, budget)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("harmostes_review_gate_total was never incremented — the refusal went unrecorded")
+	}
+}
+
+// TestSweepNeverDispatchedPassSparesLiveJob (r9 (b)): DispatchedAt == nil
+// means "nobody ran MarkClaimDispatched", NOT "no Job" — the dispatcher can
+// Create the Job and fail the mark, and the live-Job dedupe continues
+// before the mark. Pass C (the never-dispatched release) is the only pass
+// that never consulted jobAlive; before the fix it spent the churn budget
+// on a RUNNING review (probe-verified upstream: counter 1→2 while the Job
+// lived). The budget must only be spent on claims with no Job at all.
+func TestSweepNeverDispatchedPassSparesLiveJob(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := noVerdictServer(t)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	st := &fakeStatus{}
+	now := time.Now()
+
+	// Armed past reDispatchGrace, never marked dispatched, budget already
+	// warm — and a LIVE Job carrying the attempt label.
+	claim := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#107", "deadbeef123", now.Add(-10*time.Minute), nil)
+	claim.Status.Review.DispatchLostReleases = 1
+	liveJob := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "attempt-job-running-unmarked", Namespace: wf.Namespace,
+			Labels: map[string]string{
+				"app.kubernetes.io/name": "harmostes",
+				"harmostes.dev/workflow": wf.Name,
+				v1alpha1.AttemptLabel:    claim.Name,
+			},
+		},
+	}
+	deps, ctx := gateEnv(t, wf, st, claim, liveJob)
+
+	if _, err := RunReviewGateSweep(ctx, deps, wf); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+
+	var got v1alpha1.Attempt
+	if err := deps.Client.Get(ctx, client.ObjectKey{Namespace: wf.Namespace, Name: claim.Name}, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.Review.Released {
+		t.Fatal("a claim whose review Job is RUNNING must not be released as never-dispatched")
+	}
+	if gotCount := got.Status.Review.DispatchLostReleases; gotCount != 1 {
+		t.Fatalf("the churn budget must not be spent on a live run: counter = %d, want 1", gotCount)
+	}
+}
+
+// TestSweepNeverDispatchedPassFailsClosedOnJobListError (r11 must-fix 3):
+// an empty Job snapshot on a list error means "we could not tell", not "no
+// Job" — and on the Create-succeeded-mark-failed case the claim's Job is
+// RUNNING. Releasing it there is the r9 (b) bug class on the error path;
+// passes A/B fail closed on this exact signal and pass C must too.
+func TestSweepNeverDispatchedPassFailsClosedOnJobListError(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := noVerdictServer(t)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	st := &fakeStatus{}
+	now := time.Now()
+
+	// Armed far past reDispatchGrace, never marked dispatched: pass C's
+	// exact release shape — if it consulted the (broken) Job snapshot, it
+	// would see "no Job" and release.
+	claim := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#108", "deadbeef456", now.Add(-10*time.Minute), nil)
+	claim.Status.Review.DispatchLostReleases = 1
+
+	scheme := runtime.NewScheme()
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("AddToScheme: %v", err)
+	}
+	if err := batchv1.AddToScheme(scheme); err != nil {
+		t.Fatalf("batchv1: %v", err)
+	}
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&v1alpha1.Attempt{}).
+		WithRuntimeObjects(claim).
+		WithInterceptorFuncs(interceptor.Funcs{List: func(ctx context.Context, cl client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			if _, ok := list.(*batchv1.JobList); ok {
+				return fmt.Errorf("api blip")
+			}
+			return cl.List(ctx, list, opts...)
+		}}).
+		Build()
+	deps := GateDeps{Status: st, Client: cl, Scheme: scheme, FleetMaxConcurrent: 3, Log: t.Logf}
+	ctx := t.Context()
+
+	if _, err := RunReviewGateSweep(ctx, deps, wf); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+
+	var got v1alpha1.Attempt
+	if err := cl.Get(ctx, client.ObjectKey{Namespace: wf.Namespace, Name: claim.Name}, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.Review.Released {
+		t.Fatal("liveness-unknown must fail closed: pass C must not release on a Job-list error")
+	}
+	if gotCount := got.Status.Review.DispatchLostReleases; gotCount != 1 {
+		t.Fatalf("the churn budget must not be spent on liveness-unknown: counter = %d, want 1", gotCount)
+	}
+}
+
+// TestGateSweepDeadlineInsideReDispatchGrace pins the ordering invariant the
+// comments on both constants describe (r11 pillar 1): the sweep deadline plus
+// an arm's worst case must stay comfortably inside reDispatchGrace, or an
+// aborted sweep strands armed claims the NEXT sweep eats before their
+// dispatch loop can speak — retuning either constant alone re-opens #343.
+// Three lines here do what two packages of prose cannot: fail CI on a
+// retune that violates it.
+func TestGateSweepDeadlineInsideReDispatchGrace(t *testing.T) {
+	if gateSweepDeadline >= reDispatchGrace {
+		t.Fatalf("gateSweepDeadline (%v) must stay strictly below reDispatchGrace (%v): an aborted sweep must leave armed claims room for the next sweep's dispatch loop", gateSweepDeadline, reDispatchGrace)
+	}
+	if reDispatchGrace < 2*gateSweepDeadline {
+		t.Fatalf("reDispatchGrace (%v) should be at least 2x gateSweepDeadline (%v): the sweep is not the only consumer of the grace window (arm + dispatch are)", reDispatchGrace, gateSweepDeadline)
+	}
+}
+
+// TestSweepAbortSpeaksInTheAggregates (r11 pillar 7): an aborted sweep must
+// not leave the sweep-start default "nothing to evaluate" as the reason a
+// human reads first — the round the operator most needs the cause is the
+// round it was being erased. The abort keeps its counter (sweep-abort) AND
+// lands in LastReason.
+func TestSweepAbortSpeaksInTheAggregates(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := noVerdictServer(t)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	st := &fakeStatus{}
+	now := time.Now()
+
+	// Armed far past the grace window: pass C would release this claim if
+	// the sweep got that far — it must not, and the status must say why.
+	claim := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#109", "deadbeef789", now.Add(-10*time.Minute), nil)
+	deps, ctx := gateEnv(t, wf, st, claim)
+
+	deadlineCtx, cancel := context.WithTimeout(ctx, time.Nanosecond)
+	defer cancel()
+	time.Sleep(time.Millisecond) // let the deadline actually fire
+	// The sweep handles its own abort: it returns nil (the abort is logged
+	// and counted, not an error to the caller) — the assertions below pin
+	// what must still be TRUE after it: aggregates written, cause recorded,
+	// no releases.
+	RunReviewGateSweep(deadlineCtx, deps, wf)
+
+	if st.last.ReviewReady == nil {
+		t.Fatal("no aggregates recorded — durable records must survive the abort")
+	}
+	if !strings.Contains(st.last.ReviewReady.LastReason, "sweep aborted") {
+		t.Fatalf("an aborted sweep must record its cause in the aggregates, got %q", st.last.ReviewReady.LastReason)
+	}
+	var got v1alpha1.Attempt
+	if err := deps.Client.Get(context.Background(), client.ObjectKey{Namespace: wf.Namespace, Name: claim.Name}, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.Review.Released {
+		t.Fatal("an aborted sweep must not release claims")
 	}
 }

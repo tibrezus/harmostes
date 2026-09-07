@@ -31,6 +31,22 @@ func recordWorkflowRunScheduled(ctx context.Context, workflow string) {
 		attribute.String("outcome", "scheduled")))
 }
 
+// recordTriggerSlot increments harmostes_trigger_slot_total{workflow,
+// outcome="won|lost"}: the sweep-cadence signal. The churn-engine fix
+// (#343) is proven post-deploy by "is the loss rate flat?" — spans are
+// sampled, a counter is graphable (r4 P7).
+func recordTriggerSlot(ctx context.Context, workflow string, won bool) {
+	outcome := "lost"
+	if won {
+		outcome = "won"
+	}
+	c, _ := observability.Meter().Int64Counter("harmostes_trigger_slot_total",
+		metric.WithDescription("Trigger-slot CAS outcomes per workflow (won = a worker may be scheduled)."))
+	c.Add(ctx, 1, metric.WithAttributes(
+		attribute.String("workflow", workflow),
+		attribute.String("outcome", outcome)))
+}
+
 // recordReconcileSeconds records the reconcile wall-clock duration per workflow
 // on harmostes_reconcile_seconds{workflow}.
 func recordReconcileSeconds(ctx context.Context, workflow string, d time.Duration) {

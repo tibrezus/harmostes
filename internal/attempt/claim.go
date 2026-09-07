@@ -7,7 +7,10 @@ import (
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/selection"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
@@ -28,9 +31,28 @@ import (
 // match with errors.Is.
 var ErrDeadDispatchBreaker = errors.New("dead-dispatch breaker open")
 
+// ErrRecentlyDismissed is returned by ArmClaim when the SAME head's latest
+// claim was dismissed by the horizon: automatic re-arm would restart the
+// identical ambiguity with no new information (#343). A human request
+// (label re-apply, or a push followed by one) overrides.
+var ErrRecentlyDismissed = errors.New("recently dismissed by horizon")
+
+// ErrChurnBudgetExhausted is returned by ArmClaim when the SAME head burned
+// through MaxDispatchLostReleases consecutive never-dispatched releases: the
+// release/revive cycle must stop, not flap (#343 fix 3). Deliberately a
+// SENTINEL DISTINCT from ErrRecentlyDismissed (r12 must-fix 2): "we stopped
+// asking" (horizon) and "we could not dispatch" (budget) are different
+// failures to an operator — the post-deploy review of #343 must be able to
+// tell a converged churn loop from labeled work dropped on broken
+// dispatching, and the metric reason follows the sentinel.
+var ErrChurnBudgetExhausted = errors.New("dispatch-lost churn budget exhausted")
+
 // ArmClaim arms (or refreshes) this workflow's claim on the PR: resolving
 // the deterministic Attempt for (workflow, head SHA) and stamping its review
-// state. Any OTHER live claim on the same PR releases as superseded — one
+// state. The returned Attempt is the PRE-PATCH resolve snapshot: its
+// Status.Review does NOT reflect the arm just written — callers must use
+// .Name (and re-Get if they need post-arm state), never the returned status.
+// Any OTHER live claim on the same PR releases as superseded — one
 // live claim per PR is the invariant that makes parallel reviews safe.
 //
 // humanRequest marks an explicit human re-request (label wake) on an
@@ -38,8 +60,17 @@ var ErrDeadDispatchBreaker = errors.New("dead-dispatch breaker open")
 // now" resets the dead-dispatch count and re-arms. Automatic sweeps pass
 // false and are refused once the breaker is open.
 func ArmClaim(ctx context.Context, c client.Client, scheme *runtime.Scheme, wf *v1alpha1.Workflow, pr, headSHA, label string, humanRequest bool) (*v1alpha1.Attempt, error) {
+	// Pointer-local era read (r7 P1): attempt identity is (source repo,
+	// head SHA) — every era of this pointer IS this one object. The r6
+	// full-history List read the workflow's ENTIRE retained attempt set
+	// (released eras included, full status with run ledgers) once per
+	// candidate per sweep on the gate's uncached client, to answer a
+	// question about ONE object; released eras are never deleted, so the
+	// read grew forever and — with no sweep deadline — degraded under load
+	// into exactly the never-dispatched releases the churn guard refuses.
+	// Resolve the object by name instead: O(1), no history on the wire.
 	obj := DeriveObjective(wf, TriggerContext{Revision: headSHA, Source: "webhook"})
-	at, _, err := ResolveOrCreate(ctx, c, obj, ResolveOptions{
+	at, created, err := ResolveOrCreate(ctx, c, obj, ResolveOptions{
 		Namespace:   wf.Namespace,
 		WorkflowRef: wf.Namespace + "/" + wf.Name,
 		Owner:       wf,
@@ -49,8 +80,54 @@ func ArmClaim(ctx context.Context, c client.Client, scheme *runtime.Scheme, wf *
 		return nil, fmt.Errorf("resolve claim attempt: %w", err)
 	}
 
+	// Era stickiness + churn guard (#343), read off the SAME object.
+	// sameClaim gates every guard: attempt identity carries no PR number,
+	// so two pointers (PR re-opened under a new number, head force-pushed
+	// back) resolve to one object — a guard may only fire on evidence the
+	// ASKING pointer produced (r7 P2).
+	r := at.Status.Review
+	sameClaim := !created && r != nil && r.PR == pr && r.HeadSHA == headSHA
+	// Churn guard (r4: BOTH legs of #343 fix 3's contract): the head's
+	// latest era was dismissed by the horizon (born expired — revival would
+	// restart the identical ambiguity), OR the head burned through
+	// MaxDispatchLostReleases consecutive never-dispatched releases (the
+	// release/revive cycle must stop, not flap). Human request overrides
+	// (re-apply the label / push + label).
+	if !humanRequest && sameClaim {
+		// Horizon leg reads the PERSISTED dismissal (r11 must-fix 1), not
+		// era state: Released/ReleaseReason are cleared by the revival that
+		// answers them, so the old leg fired exactly once and the criterion
+		// rode the counter alone. DismissedAt survives revival AND the
+		// human override (the override is the human's own arm), expiring
+		// with the horizon — the dismissal is only "recent" for the window
+		// the horizon names.
+		// The horizon window reads the OPERATOR'S number, not the default
+		// (r12 P1): a workflow with no reviewReady block must not silently
+		// grow a 6h dismissal window — skip the leg instead.
+		if wf.Spec.ReviewReady != nil && r.DismissedAt != nil &&
+			time.Since(r.DismissedAt.Time) < wf.Spec.ReviewReady.HorizonDuration() {
+			return nil, fmt.Errorf("%w: %s — automatic re-arm refused; re-apply the label to request a fresh review",
+				ErrRecentlyDismissed, shortSHA(headSHA))
+		}
+		if r.DispatchLostReleases >= v1alpha1.MaxDispatchLostReleases {
+			return nil, fmt.Errorf("%w: %s — %d consecutive never-dispatched releases (max %d); re-apply the label to request a fresh review",
+				ErrChurnBudgetExhausted, shortSHA(headSHA), r.DispatchLostReleases, v1alpha1.MaxDispatchLostReleases)
+		}
+	}
+	// Reusable era: pointer-local now — the era IS this object, so "reuse"
+	// just means "the revival rules below decide what an arm of a released
+	// era means". The reuse BUDGET lives in the guard above (r4 P1: a
+	// dispatch-lost era is only revivable under MaxDispatchLostReleases;
+	// the cycle converges into a refusal instead of flapping).
+
 	// Supersede other live claims on this PR (head moved, or an older arm).
-	others, err := LiveReviewClaims(ctx, c, wf.Namespace, wf.Name)
+	// One full live list per arm is UNAVOIDABLE here: attempt identity is
+	// (kind, source repo, head SHA) and carries no PR number, so "is there
+	// another live claim on this pointer?" cannot resolve by name. Cost is
+	// bounded by live claims per workflow — fine at fleet width ≤ dozens;
+	// revisit if that approaches ~100 (NOT the r6 shape: the released
+	// history never crosses the wire).
+	others, err := LiveReviewClaims(ctx, c, wf)
 	if err != nil {
 		return nil, err
 	}
@@ -72,6 +149,17 @@ func ArmClaim(ctx context.Context, c client.Client, scheme *runtime.Scheme, wf *
 			ErrDeadDispatchBreaker, cur.DeadDispatches, shortSHA(headSHA))
 	}
 
+	// Live-marker removal BEFORE the status patch (r8 P1): absence means
+	// live, so the arm's visibility commit is the label removal. If it
+	// fails, abort BEFORE the status write — the claim stays released
+	// (invisible, harmless) and the next sweep's arm retries the removal;
+	// committing Released=false first would strand a live claim outside the
+	// gate's list — the committed-but-invisible arm. A refused arm never
+	// reaches this: the claim keeps its marker and its evidence.
+	if err := markClaimLive(ctx, c, wf.Namespace, at.Name); err != nil {
+		return nil, fmt.Errorf("unmark released claim: %w", err)
+	}
+
 	now := metav1.NewTime(time.Now())
 	err = patchAttemptStatus(ctx, c, wf.Namespace, at.Name, func(s *v1alpha1.AttemptStatus) {
 		// Stamp the phase here, not only at create: the real API server's
@@ -85,17 +173,53 @@ func ArmClaim(ctx context.Context, c client.Client, scheme *runtime.Scheme, wf *
 		}
 		r := s.Review
 		sameClaim := r.PR == pr && r.HeadSHA == headSHA
+		// Revival rules SPLIT BY RELEASE REASON (r3 P4 — the r2 blanket reset
+		// re-opened the #343 churn): a dispatch-lost release is a
+		// never-consummated era — revival KEEPS the era clock, so the verdict
+		// window still reaches verdicts posted mid-era and the never-dispatched
+		// pass's own horizon check (r4) can expire the era. A horizon release
+		// is born expired — revival RESETS the clock (r2 F1: the human
+		// override must produce a working era). A live claim refresh always
+		// keeps its clock (anchoring, #343).
+		wasReleased := r.Released
+		wasHorizon := r.ReleaseReason == v1alpha1.ReleaseReasonHorizon
+		wasDispatchLost := r.ReleaseReason == v1alpha1.ReleaseReasonDispatchLost
 		r.PR, r.HeadSHA, r.Label = pr, headSHA, label
-		// The horizon clock persists across refreshes of the SAME claim;
-		// a new claim (new SHA/PR) arms fresh.
-		if !sameClaim || r.ArmedSince == nil {
+		// r6 P2: a HUMAN re-request on a dispatch-lost era anchors a fresh
+		// clock — the old one is already deep in the past (the era only
+		// survives because anchoring preserves it), so the next sweep's
+		// horizon check would instantly re-release and the guard would
+		// refuse again: the human asks, the machine stands down. The
+		// AUTOMATIC path keeps its anchoring (#343).
+		if !sameClaim || r.ArmedSince == nil || wasHorizon || (humanRequest && wasDispatchLost) {
 			t := now
 			r.ArmedSince = &t
 		}
+		if wasReleased {
+			// REVIVAL ONLY (not live refresh): the era's dispatch, if any,
+			// ended with the release — carrying DispatchedAt across a
+			// revival is a phantom dispatch: pass A counts it against
+			// capacity with no Job behind it, and the timer pass strikes
+			// the breaker for a dispatch never made (#344 F2 — the mirror
+			// of #331). A LIVE refresh keeps DispatchedAt: pass A's
+			// capacity accounting reads "in flight" from its presence.
+			r.DispatchedAt = nil
+		}
 		// The breaker counts deaths of THIS head's dispatches; a new head
-		// or an explicit human re-request starts from zero.
+		// or an explicit human re-request starts from zero. The release
+		// counter resets under the same predicate (a human wake said
+		// "review this" — #343 fix 3; a pointer change must not inherit the
+		// first pointer's churn evidence — r7 P2: two pointers sharing one
+		// head resolve to this ONE attempt object).
 		if !sameClaim || humanRequest {
 			r.DeadDispatches = 0
+			r.DispatchLostReleases = 0
+			// DismissedAt is deliberately NOT cleared here — not even by a
+			// human request (r11 must-fix 1): the override is the human's
+			// OWN arm (the guard reads !humanRequest); the NEXT automatic
+			// arm within the horizon window is still refused, and time is
+			// the dismissal's only eraser. "Horizon-dismiss → human revival
+			// → automatic arm refused" is the named contract.
 		}
 		r.Released = false
 		r.ReleaseReason = ""
@@ -123,18 +247,39 @@ func MarkClaimDispatched(ctx context.Context, c client.Client, namespace, attemp
 		}
 		t := metav1.NewTime(time.Now())
 		s.Review.DispatchedAt = &t
+		// r6 P1: a successful dispatch breaks the "consecutive
+		// never-dispatched releases" chain — without this the counter is
+		// monotonic-since-last-human and the field's own contract is false.
+		s.Review.DispatchLostReleases = 0
 	})
 }
 
 // ReleaseClaim frees the claim's capacity slot.
 func ReleaseClaim(ctx context.Context, c client.Client, namespace, attemptName, reason string) error {
-	return patchAttemptStatus(ctx, c, namespace, attemptName, func(s *v1alpha1.AttemptStatus) {
+	if err := patchAttemptStatus(ctx, c, namespace, attemptName, func(s *v1alpha1.AttemptStatus) {
 		if s.Review == nil {
 			s.Review = &v1alpha1.ReviewClaimStatus{}
 		}
 		s.Review.Released = true
 		s.Review.ReleaseReason = reason
-	})
+		// Consecutive never-dispatched releases for this pointer (#343 fix
+		// 3): feeds the reuse bound and the auto re-arm refusal. Same-pointer
+		// revivals keep the count — it is the era chain's churn evidence —
+		// while a pointer CHANGE resets it (ArmClaim; identity carries no PR
+		// number, so two pointers share one attempt object, r7 P2).
+		if reason == v1alpha1.ReleaseReasonDispatchLost {
+			s.Review.DispatchLostReleases++
+		}
+		if reason == v1alpha1.ReleaseReasonHorizon {
+			t := metav1.NewTime(time.Now())
+			s.Review.DismissedAt = &t
+		}
+	}); err != nil {
+		return err
+	}
+	// Off the gate's live list with the era (r7 P1, r8 rework): the marker
+	// IS the release's visibility commit — additive, RV-preconditioned.
+	return markClaimReleased(ctx, c, namespace, attemptName)
 }
 
 // ReleaseClaimDead releases a dispatched claim that provably died without a
@@ -188,19 +333,120 @@ func ReleaseClaimDead(ctx context.Context, c client.Client, namespace, attemptNa
 			s.Message = fmt.Sprintf("run ended without a verdict (%s)", reason)
 		}
 	})
+	if err != nil {
+		return recorded, deadDispatches, err
+	}
+	if recorded {
+		// Off the gate's live list with the era — only when this observer
+		// recorded the release (an idempotent re-observe must not relabel a
+		// claim a revival already re-armed).
+		err = markClaimReleased(ctx, c, namespace, attemptName)
+	}
 	return recorded, deadDispatches, err
+}
+
+// markClaimReleased / markClaimLive maintain the release marker (see
+// ReviewClaimLabel) under the SAME write discipline as the status ledger
+// (#257): Get → RV-preconditioned MergeFromWithOptimisticLock inside
+// RetryOnConflict. Two writers (arm's removal, release's set) race on one
+// key; the RV precondition alone does not close the cross-resource race
+// (RetryOnConflict re-Gets), so markClaimReleased is additionally
+// CONDITIONAL on the status ledger: it stamps only when the freshly-read
+// status still says Released (r12 must-fix 1). Both divergence directions
+// are pinned by test — see TestMarkClaimReleased_DoesNotStompRevival and
+// TestMarkClaimReleased_StatusReleasedMarkerAbsent.
+//
+// markClaimLive is SUBTRACTIVE (removes the key): absence means live, so
+// the pre-upgrade truth is the live truth and a legacy claim holding a
+// slot is visible to the first post-deploy sweep with zero backfill.
+func markClaimReleased(ctx context.Context, c client.Client, namespace, name string) error {
+	return retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		var at v1alpha1.Attempt
+		key := client.ObjectKey{Namespace: namespace, Name: name}
+		if err := c.Get(ctx, key, &at); err != nil {
+			return err
+		}
+		if at.Labels[v1alpha1.ReviewClaimLabel] == v1alpha1.ReviewClaimReleased {
+			return nil
+		}
+		// The marker may only commit when the STATUS ledger agrees the
+		// claim is released (r12 must-fix 1, probe-verified): a concurrent
+		// ArmClaim revival can commit Released=false in the gap between
+		// ReleaseClaim's status patch and THIS marker write — stamping the
+		// marker then makes the live claim invisible to the gate's list
+		// forever (liveDispatched undercounts, the sweep over-dispatches).
+		// The revival wins; the next release re-stamps.
+		if at.Status.Review == nil || !at.Status.Review.Released {
+			return nil
+		}
+		base := at.DeepCopy()
+		if at.Labels == nil {
+			at.Labels = map[string]string{}
+		}
+		at.Labels[v1alpha1.ReviewClaimLabel] = v1alpha1.ReviewClaimReleased
+		return c.Patch(ctx, &at, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
+	})
+}
+
+func markClaimLive(ctx context.Context, c client.Client, namespace, name string) error {
+	return retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		var at v1alpha1.Attempt
+		key := client.ObjectKey{Namespace: namespace, Name: name}
+		if err := c.Get(ctx, key, &at); err != nil {
+			return err
+		}
+		if _, marked := at.Labels[v1alpha1.ReviewClaimLabel]; !marked {
+			return nil
+		}
+		base := at.DeepCopy()
+		delete(at.Labels, v1alpha1.ReviewClaimLabel)
+		return c.Patch(ctx, &at, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
+	})
 }
 
 // LiveReviewClaims returns the workflow's unreleased review claims, oldest
 // attempt first (stable arm order for sweeps).
-func LiveReviewClaims(ctx context.Context, c client.Client, namespace, workflowName string) ([]v1alpha1.Attempt, error) {
+func LiveReviewClaims(ctx context.Context, c client.Client, wf *v1alpha1.Workflow) ([]v1alpha1.Attempt, error) {
+	namespace, workflowName := wf.Namespace, wf.Name
 	var list v1alpha1.AttemptList
-	if err := c.List(ctx, &list, client.InNamespace(namespace)); err != nil {
+	// Server-side bounded (r7 P1, r8 rework): (workflow=X, review-claim
+	// DoesNotExist) — the released era history (one attempt per reviewed
+	// head, retained forever, full status with run ledgers) never crosses
+	// the wire. ABSENCE of the marker means live, so pre-upgrade claims
+	// (unlabeled, holding real slots) are visible to the first sweep — the
+	// rollout cannot over-dispatch past them. The Released re-check is
+	// belt-and-braces for label/status drift, not the bound.
+	wfReq, err := labels.NewRequirement(v1alpha1.WorkflowLabel, selection.Equals, []string{workflowName})
+	if err != nil {
+		return nil, fmt.Errorf("live-claim selector: %w", err)
+	}
+	unmarked, err := labels.NewRequirement(v1alpha1.ReviewClaimLabel, selection.DoesNotExist, nil)
+	if err != nil {
+		return nil, fmt.Errorf("live-claim selector: %w", err)
+	}
+	// The objective-kind leg is deliberately NOT server-side (r11 must-fix
+	// 2): the label is written at create by the worker image, a SEPARATELY
+	// deployable binary — a gate that rolled first would drop every
+	// label-less live claim from this list, undercount capacity, and
+	// over-dispatch past maxConcurrent. The marker's ABSENCE is the
+	// correctness leg (unlabeled pre-upgrade claims stay visible); the kind
+	// filter below is HYGIENE (wire bytes only — correctness leans on the
+	// client-side kind + Review checks). Keep the two roles distinct: the
+	// next reader will otherwise "restore" the server-side Equals leg and
+	// reintroduce the rollout coupling.
+	sel := labels.NewSelector().Add(*wfReq).Add(*unmarked)
+	if err := c.List(ctx, &list, client.InNamespace(namespace), client.MatchingLabelsSelector{Selector: sel}); err != nil {
 		return nil, fmt.Errorf("list attempts: %w", err)
 	}
 	var out []v1alpha1.Attempt
 	for _, a := range list.Items {
 		if a.Status.Review == nil || a.Status.Review.Released {
+			continue
+		}
+		// Kind check client-side (see selector comment — hygiene, not
+		// correctness; but it keeps non-review Attempts out of supersede
+		// and capacity arithmetic).
+		if a.Labels[v1alpha1.ObjectiveKindLabel] != DeriveKind(wf) {
 			continue
 		}
 		if a.Spec.WorkflowRef != namespace+"/"+workflowName {

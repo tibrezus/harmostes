@@ -17,3 +17,7 @@ e2e/playwright-report/
 /harmostes-agent
 /rig.db
 /rig.db.sha
+
+# UI design-review artifacts (screenshots + critiques) — local working notes,
+# not part of any PR contract (r6 review, scope discipline).
+.impeccable/

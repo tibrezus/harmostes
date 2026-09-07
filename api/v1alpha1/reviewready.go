@@ -11,6 +11,25 @@ import (
 // without a verdict is provably dead. Keep in sync with the consumer.
 const OneShotRunBound = 30 * time.Minute
 
+// ReleaseReason is the release-reason vocabulary recorded on a review
+// claim's ReleaseReason. Shared between the gate's classifyRelease
+// (producer) and the arm path's era rules (consumer) — bare literals
+// across that boundary silently disable the churn guard on a rename
+// (#344 r3 P2). "consumed"/"closed"/"superseded"/"standdown" stay
+// open-string on purpose: terminal classes nothing branches on.
+const (
+	// ReleaseReasonDispatchLost: the sweep released the claim before any
+	// dispatch (never-consummated era — revival keeps the era clock).
+	ReleaseReasonDispatchLost = "dispatch-lost"
+	// ReleaseReasonHorizon: the horizon expired the era (revival resets the
+	// clock — it is born expired).
+	ReleaseReasonHorizon = "horizon"
+	// ReleaseReasonDispatchTimeout: a DISPATCHED claim died without a verdict
+	// (timer bound) — the dead-dispatch class: the breaker counts it and the
+	// #331 hold keys on it. Distinct from DispatchLost by design.
+	ReleaseReasonDispatchTimeout = "dispatch-timeout"
+)
+
 // MaxDeadDispatchesPerHead is the dead-dispatch circuit breaker (#328): a
 // head whose dispatched reviews died without a verdict this many times is
 // not re-armed automatically. Every recovery mechanism involved (job-death
@@ -20,6 +39,36 @@ const OneShotRunBound = 30 * time.Minute
 // The breaker converts the silent burn into a bounded, visible standdown.
 // It resets on a new head push or an explicit label wake (human override).
 const MaxDeadDispatchesPerHead = 3
+
+// MaxDispatchLostReleases bounds era stickiness for NEVER-DISPATCHED
+// claims (#343 fix 3): a head whose armed-queued claim was released
+// dispatch-lost this many times consecutively is not re-armed
+// automatically — the release/revive cycle must converge into a visible
+// standdown instead of flapping one Attempt forever. Resets on a new head
+// push (fresh claim), an explicit label wake (human override), or a
+// successful dispatch (the chain the counter measures is
+// consecutive-since-last-dispatch). Aged or not, every never-dispatched
+// release IS ReleaseReasonDispatchLost (r6 P1): "we could not dispatch"
+// never masquerades as the horizon's "we stopped asking", and only
+// genuine verdict-window expiry (ReleaseReasonHorizon on DISPATCHED
+// claims) arms the dismissal guard.
+//
+// In wall-clock terms (r8 review): 3 sweeps at the configured PollInterval
+// — ~15 minutes at the chart default — of degraded dispatching before the
+// refusal; a bad API-server hour consumes the budget in a quarter of it
+// and the labeled PR waits for a human. That is the intended convergence:
+// bounded, visible, and cheaper than unbounded churn; the arm-error and
+// sweep-abort reasons on harmostes_review_gate_total are what tell you it
+// was weather. The concrete arithmetic lives next to pollInterval in
+// chart/values.yaml, where the interval is chosen.
+//
+// One budget, three constants (r11 nit): gateSweepDeadline + reDispatchGrace
+// (internal/worker) is the OTHER pressure that feeds this counter — a sweep
+// aborted by its deadline strands armed-undispatched claims that the next
+// sweep releases dispatch-lost. The ordering gateSweepDeadline <
+// reDispatchGrace is CI-pinned (TestGateSweepDeadlineInsideReDispatchGrace);
+// retuning any of the three alone re-opens the loop.
+const MaxDispatchLostReleases = 3
 
 // MinDispatchMargin is the minimum delivery/queue margin a configured
 // DispatchTimeout must leave over OneShotRunBound. Enforced (not merely

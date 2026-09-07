@@ -194,6 +194,7 @@ _Avoid_: The workflow itself
 - Every **External System Binding** has a **Binding Role** and a **Surface Contract**
 - The set of declared **External System Bindings** defines the **Binding Authority Boundary** of a **Workflow**
 - An **External System Binding** identifies the target surface, while a **Connection Profile** defines how Harmostes speaks to it
+- A review claim's liveness is carried by the ABSENCE of the `harmostes.dev/review-claim` label on its Attempt — presence marks the claim **released**. Any capacity query must select `(harmostes.dev/workflow, !harmostes.dev/review-claim)` server-side and filter `harmostes.dev/objective-kind` client-side: the marker's absence is the CORRECTNESS leg (an equals-leg on a create-time label couples the bound to the worker image's rollout), the kind filter is HYGIENE (wire bytes); listing by the workflow label alone counts every retained released era and contradicts the gate's numbers
 - Every **External System Binding** declares a **Canonical Surface Kind**
 - A **Node** requests one or more **Surface Capabilities** against the bindings it uses
 - The kernel applies **Capability Policy** before execution

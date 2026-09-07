@@ -52,9 +52,9 @@ func ResolveOrCreate(ctx context.Context, c client.Client, obj v1alpha1.Objectiv
 			Name:      name,
 			Namespace: opts.Namespace,
 			Labels: map[string]string{
-				v1alpha1.WorkflowLabel:         ownerName(opts),
-				v1alpha1.OwnerLabel:            ownerValue(opts.Owner),
-				"harmostes.dev/objective-kind": obj.Kind,
+				v1alpha1.WorkflowLabel:      ownerName(opts),
+				v1alpha1.OwnerLabel:         ownerValue(opts.Owner),
+				v1alpha1.ObjectiveKindLabel: obj.Kind,
 			},
 		},
 		Spec: AttemptSpecFromObjective(obj, opts),
@@ -68,7 +68,18 @@ func ResolveOrCreate(ctx context.Context, c client.Client, obj v1alpha1.Objectiv
 		}
 	}
 	if err := c.Create(ctx, a); err != nil {
-		return nil, false, fmt.Errorf("create attempt %s: %w", name, err)
+		// Lost a create race (two arms of one head — the gate overlapping
+		// its own previous sweep): the object EXISTS, so resolve it instead
+		// of failing the arm (r11). The winner's object is the truth; the
+		// loser proceeds with created=false and the revival rules decide.
+		if !apierrors.IsAlreadyExists(err) {
+			return nil, false, fmt.Errorf("create attempt %s: %w", name, err)
+		}
+		got := &v1alpha1.Attempt{}
+		if err := c.Get(ctx, client.ObjectKey{Namespace: a.Namespace, Name: name}, got); err != nil {
+			return nil, false, fmt.Errorf("re-get raced attempt %s: %w", name, err)
+		}
+		return got, false, nil
 	}
 	return a, true, nil
 }

@@ -239,6 +239,22 @@ type ReviewClaimStatus struct {
 	// breaker (#328) refuses to re-arm a head at MaxDeadDispatchesPerHead;
 	// a head change or an explicit label wake resets it.
 	DeadDispatches int `json:"deadDispatches,omitempty"`
+	// DispatchLostReleases counts consecutive dispatch-lost releases of
+	// this claim (#343 fix 3) — bounds never-dispatched era reuse and
+	// feeds the auto re-arm refusal. "Consecutive" is true by
+	// construction (r6): reset by a successful dispatch
+	// (MarkClaimDispatched), by a human request, or by a fresh claim.
+	DispatchLostReleases int `json:"dispatchLostReleases,omitempty"`
+
+	// DismissedAt persists the last horizon dismissal of this head (r11
+	// must-fix 1): Released/ReleaseReason are cleared by the very revival
+	// that answers them, so inferring "recently dismissed" from era state
+	// made the guard leg fire exactly once and only the counter leg
+	// carried #343's criterion thereafter. DismissedAt is set on horizon
+	// release, survives revival AND the human override (the override is
+	// the human's own arm — the next automatic arm within the window is
+	// still refused), and expires after HorizonDuration: time-bounded.
+	DismissedAt *metav1.Time `json:"dismissedAt,omitempty"`
 }
 
 // RunRecord is one Workflow Run (job) executed inside an attempt.

@@ -26,6 +26,14 @@ import (
 
 // reDispatchGrace bounds how long an armed-but-never-dispatched claim
 // holds its PR before a sweep releases it for refill (#279).
+//
+// INVARIANT (r8 review, F1): gateSweepDeadline + arm-worst-case must stay
+// comfortably inside reDispatchGrace. The sweep arms claims; the CALLER
+// creates the Jobs and marks them dispatched. A sweep aborted by its own
+// deadline strands armed-undispatched claims; reDispatchGrace is what
+// keeps the NEXT sweep from eating them before their dispatch loop (or a
+// jobAlive re-check) can speak. Retuning either constant alone re-opens
+// the #343 churn loop.
 const reDispatchGrace = 5 * time.Minute
 
 // jobDeathGrace lets a just-created Job's controller sync (a new Job
@@ -96,11 +104,27 @@ type candidate struct {
 	labeled bool
 }
 
+// gateSweepDeadline bounds the sweep itself (r7 P1): a healthy sweep is
+// sub-second (label-filtered live lists, pointer-local arm reads), but the
+// deadline is what makes that true under failure — without it, a slow API
+// server pushes the sweep into the Job deadline, the run dies
+// never-dispatched, and the churn guard converts infrastructure pressure
+// into silently dropped reviews. A mid-sweep abort between arm and
+// dispatch leaves an armed-but-undispatched claim whose rescue is NOT this
+// timer's expiry but the NEXT sweep's liveness re-check: jobAlive finds no
+// Job for the claim and — after the reDispatchGrace window protects a
+// genuinely in-flight dispatch — releases it dispatch-lost (r8 P4.4: do
+// not retune this deadline expecting it to rescue claims; it only stops
+// the sweep from running unbounded).
+const gateSweepDeadline = 2 * time.Minute
+
 func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly bool) ([]GateDispatch, error) {
 	rr := wf.Spec.ReviewReady
 	if rr == nil {
 		return nil, nil // gate not configured for this workflow
 	}
+	ctx, cancel := context.WithTimeout(ctx, gateSweepDeadline)
+	defer cancel()
 	log := deps.log()
 	now := time.Now()
 	capacity := rr.EffectiveMaxConcurrent(deps.FleetMaxConcurrent)
@@ -114,8 +138,9 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 		liveAgg = st.ReviewReady
 	}
 	lastDecision, lastReason := "waiting", "nothing to evaluate this cycle"
+	heldRecorded := false // pass A preserved a live Job — its reason wins the sweep (#331, r8 F2)
 
-	claims, err := attempt.LiveReviewClaims(ctx, deps.Client, wf.Namespace, wf.Name)
+	claims, err := attempt.LiveReviewClaims(ctx, deps.Client, wf)
 	if err != nil {
 		return nil, fmt.Errorf("list claims: %w", err)
 	}
@@ -178,7 +203,7 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 		res := review.Evaluate(ctx, api, p)
 		if res.Decision == review.DecisionStanddown {
 			reason := classifyRelease(res.Reason)
-			if reason == "dispatch-timeout" && jobAlive(c.Name) {
+			if reason == v1alpha1.ReleaseReasonDispatchTimeout && jobAlive(c.Name) {
 				// The bound presumes death; the Job is observably still
 				// alive (slow deadline enforcement, clock skew). The fact
 				// wins: keep the claim live — it holds its slot — and let
@@ -191,12 +216,13 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 				if lastDecision != string(res.Decision) {
 					lastDecision, lastReason = string(res.Decision), heldReason
 				}
+				heldRecorded = true
 				if deps.TL != nil && (liveAgg == nil || liveAgg.LastReason != heldReason) {
 					_ = deps.TL.Emit(ctx, timeline.KindGateStanddown, "", map[string]any{"reason": heldReason, "pr": pr, "repo": repo, "jobAlive": true})
 				}
 				continue
 			}
-			if reason == "dispatch-timeout" {
+			if reason == v1alpha1.ReleaseReasonDispatchTimeout {
 				// A dispatched review presumed dead without a verdict IS a
 				// dead dispatch: the breaker counts it and the ledger
 				// finalizes the run (#328).
@@ -228,7 +254,7 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 			}
 			if !jobAlive(c.Name) {
 				log("review-ready: claim %s (%s) has no live job — releasing as dispatch-lost", c.Name, r.PR)
-				releaseDeadClaim(ctx, deps, c, "dispatch-lost", log)
+				releaseDeadClaim(ctx, deps, c, v1alpha1.ReleaseReasonDispatchLost, log)
 			}
 		}
 	}
@@ -238,27 +264,63 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 	// the #277 scheme-bug class). Release as dispatch-lost so this same
 	// sweep's drain re-evaluates and re-fills the slot — the createMu
 	// and live-Job dedupe make the refill safe (#279).
-	for _, c := range claims {
-		r := c.Status.Review
-		if r.DispatchedAt != nil {
-			continue
+	//
+	// ABORT-AWARE (r8 F1): never release on an aborted sweep. A sweep
+	// that hit gateSweepDeadline is an unreliable observer — it may have
+	// armed claims whose dispatch loop never ran; releasing them here
+	// burns their churn budget for a dispatch that was never attempted,
+	// and three such sweeps refuse a labeled, green PR. The claims are
+	// not lost: the next HEALTHY sweep re-checks them.
+	// FAIL-CLOSED on unknown liveness (r11 must-fix 3): an empty snapshot
+	// on jobListErr means "we could not tell" — and on the
+	// Create-succeeded-mark-failed case the claim's Job is RUNNING, so
+	// releasing it there is the r9 (b) bug class on the error path. Same
+	// polarity as passes A/B ("a failed list latches for the whole sweep").
+	jobsKnown := func() bool { activeJobs(); return jobListErr == nil }
+	if ctx.Err() != nil {
+		log("review-ready: sweep aborted (ctx: %v) — skipping the never-dispatched release pass (unreliable observer)", ctx.Err())
+	} else if !jobsKnown() {
+		log("review-ready: live-job list failed (%v) — skipping the never-dispatched release pass (release is destructive; unknown must fail closed)", jobListErr)
+	} else {
+		for _, c := range claims {
+			r := c.Status.Review
+			// DispatchedAt == nil means "nobody ran MarkClaimDispatched",
+			// NOT "no Job": the dispatcher can Create the Job and fail the
+			// mark, and the live-Job dedupe continues before the mark. Both
+			// leave a RUNNING review with a nil marker — releasing it here
+			// spends the churn budget on a live run (r9 (b)). The jobAlive
+			// snapshot is already memoised; the other two passes consult it
+			// and so does this one now.
+			if r.DispatchedAt != nil || jobAlive(c.Name) {
+				continue
+			}
+			arm := time.Time{}
+			if r.ArmedSince != nil {
+				arm = r.ArmedSince.Time
+			}
+			if time.Since(arm) <= reDispatchGrace {
+				continue // fresh arm: its sweep's dispatch loop is still in flight
+			}
+			// Never dispatched: infrastructure weather, not a dead review —
+			// the breaker must NOT count it (only dispatched deaths do).
+			// r6 P1: the age bound is now UNIFORM — aged or not, a
+			// never-dispatched release is dispatch-lost (we never dispatched:
+			// that is what the reason says), bumping DispatchLostReleases.
+			// r4 released aged claims as HORIZON, which was the ambiguity
+			// dismissal — the churn guard then refused any re-arm of a
+			// labeled PR whose dispatch kept failing for weather: "we stopped
+			// asking" and "we could not dispatch" collapsed into one clock.
+			// The counter bounds the cycle instead (reuse < Max, guard at
+			// Max), and ReleaseReasonHorizon stays reserved for genuine
+			// ambiguity (verdict-window expiry on dispatched claims).
+			log("review-ready: claim %s (%s) never dispatched — releasing as dispatch-lost (release #%d, aged=%t)", c.Name, r.PR, r.DispatchLostReleases+1, !arm.IsZero() && time.Since(arm) > rr.HorizonDuration())
+			releaseClaim(ctx, deps, c, v1alpha1.ReleaseReasonDispatchLost, log)
 		}
-		arm := time.Time{}
-		if r.ArmedSince != nil {
-			arm = r.ArmedSince.Time
-		}
-		if time.Since(arm) <= reDispatchGrace {
-			continue // fresh arm: its sweep's dispatch loop is still in flight
-		}
-		// Never dispatched: infrastructure weather, not a dead review —
-		// the breaker must NOT count it (only dispatched deaths do).
-		log("review-ready: claim %s (%s) never dispatched — releasing as dispatch-lost", c.Name, r.PR)
-		releaseClaim(ctx, deps, c, "dispatch-lost", log)
 	}
 
 	// Re-list: releases in the loop above must be visible to the drain
 	// (liveOn/claims snapshots are stale the moment a claim releases).
-	claims, err = attempt.LiveReviewClaims(ctx, deps.Client, wf.Namespace, wf.Name)
+	claims, err = attempt.LiveReviewClaims(ctx, deps.Client, wf)
 	if err != nil {
 		return nil, fmt.Errorf("re-list claims: %w", err)
 	}
@@ -271,6 +333,7 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 		}
 	}
 	free := capacity - liveDispatched
+	capacityFull := false
 
 	// ── B. Candidates: the wake (priority) + the labeled set (oldest first). ──
 	var cands []candidate
@@ -285,12 +348,24 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 	if wake := parseWake(wf); wake != nil {
 		addCand(*wake)
 	}
-	if !wakeOnly {
+	// (c) A saturated fleet skips the scan: the labeled List is the one
+	// unbounded-per-repo call in the sweep, and when no slot is free its
+	// candidates cannot dispatch anyway — one bounded live-list plus the
+	// wake is the whole sweep (r9 P6(c)). The saturation is RECORDED here
+	// (r11 pillar 7): with the scan skipped, the queue break below never
+	// fires on a saturated sweep, so this is the site that must speak.
+	if !wakeOnly && free <= 0 {
+		capacityFull = true
+	}
+	if !wakeOnly && free > 0 {
 		for _, repo := range scopeRepos(wf) {
 			norm := normalizeRepoPointer(repo, wf)
 			pulls, err := api.ListLabeledOpenPulls(ctx, norm, label)
 			if err != nil {
 				log("review-ready: labeled scan %s failed: %v", norm, err)
+				// "We could not check CI" must not be identical to
+				// "nothing was labeled" (r9 (d)).
+				recordReviewGateReason(ctx, wf.Name, norm, "scan-error")
 				continue
 			}
 			for _, pr := range pulls {
@@ -335,6 +410,10 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 			}
 		}
 		if free <= 0 {
+			// Saturation is a REASON, not "nothing to evaluate" (r11):
+			// "why is this labeled PR not being reviewed?" must answer
+			// "capacity full", and section D writes what we record here.
+			capacityFull = true
 			break // durable queue: the labeled set re-fills on the next sweep
 		}
 
@@ -349,14 +428,15 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 			sha := res.Envelope.HeadSHA
 			at, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf, cand.pointer, sha, label, cand.labeled)
 			if err != nil {
-				if errors.Is(err, attempt.ErrDeadDispatchBreaker) {
-					// Surface the breaker as the decision, not a failure:
-					// the system stopped ON PURPOSE and says why (#328).
-					log("review-ready: %s: %v", cand.pointer, err)
-					lastDecision, lastReason = "standdown", err.Error()
-					continue
+				if isIntentionalStop(err) {
+					standDown(ctx, deps, liveAgg, wf.Name, cand, err, log, &lastDecision, &lastReason, &heldRecorded)
+					continue // before free--: a refusal must not consume a slot
 				}
 				log("review-ready: arm claim %s failed: %v", cand.pointer, err)
+				// A ctx-bound arm failure is the pressure signal (r8 F1):
+				// count it or the fleet stops reviewing at zero on the
+				// only series the post-deploy review reads.
+				recordReviewGate(ctx, wf.Name, cand.repo, err)
 				lastDecision, lastReason = string(res.Decision), res.Reason
 				continue
 			}
@@ -370,7 +450,12 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 				sha = candSha(cand)
 			}
 			if _, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf, cand.pointer, sha, label, cand.labeled); err != nil {
+				if isIntentionalStop(err) {
+					standDown(ctx, deps, liveAgg, wf.Name, cand, err, log, &lastDecision, &lastReason, &heldRecorded)
+					continue
+				}
 				log("review-ready: arm claim %s failed: %v", cand.pointer, err)
+				recordReviewGate(ctx, wf.Name, cand.repo, err)
 			}
 			lastDecision, lastReason = string(res.Decision), res.Reason
 			emitGate(ctx, deps.TL, liveAgg, res, cand.repo, cand.pr)
@@ -381,7 +466,28 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 	}
 
 	// ── D. Aggregates (the Workflow status stops being a hot field). ──
-	if err := deps.Status.PatchStatus(ctx, wf.Name, func(s *v1alpha1.WorkflowStatus) {
+	// Durable records speak on a ctx the deadline CANNOT cancel (r8 (e)):
+	// an aborted sweep must still write its summary and its counters, or
+	// the failure mode this deadline exists for is invisible in it.
+	recordCtx := context.WithoutCancel(ctx)
+	if ctx.Err() != nil {
+		// The abort itself is countable — the effect of this safeguard is
+		// falsifiable from telemetry, not only from a log grep. repo stays
+		// "" (r11 nit): "sweep" in a pointer-typed label breaks group-by-repo.
+		recordReviewGateReason(recordCtx, wf.Name, "", "sweep-abort")
+	}
+	if !heldRecorded {
+		// The status a human reads first must carry the real cause (r11
+		// pillar 7): "nothing to evaluate" on an aborted or saturated sweep
+		// is the misleading signal the aggregates exist to prevent. A held
+		// headline (a live run outranks a refusal as news) still wins.
+		if ctx.Err() != nil {
+			lastDecision, lastReason = "waiting", fmt.Sprintf("sweep aborted before completion: %v", ctx.Err())
+		} else if capacityFull {
+			lastDecision, lastReason = "waiting", fmt.Sprintf("capacity full (live=%d/cap=%d) — labeled PRs queue for the next sweep", liveDispatched, capacity)
+		}
+	}
+	if err := deps.Status.PatchStatus(recordCtx, wf.Name, func(s *v1alpha1.WorkflowStatus) {
 		s.ReviewReady = &v1alpha1.ReviewReadyStatus{
 			LiveClaims:   liveDispatched,
 			Capacity:     capacity,
@@ -437,16 +543,57 @@ func findClaim(claims []v1alpha1.Attempt, pointer string) *v1alpha1.Attempt {
 	return nil
 }
 
+// standDown records an intentional stop (breaker, churn guard) ONE way:
+// log + Workflow status + a durable gate timeline row. "Why is this labeled
+// PR not being reviewed?" must be answerable from pod logs or the durable
+// history alone — and the proceed branch is where the guard is MOST likely
+// to fire (labeled PR, green CI), so both arm call sites share this (r4 P7).
+func standDown(ctx context.Context, deps GateDeps, liveAgg *v1alpha1.ReviewReadyStatus, wfName string, cand candidate, err error, log func(string, ...any), lastDecision, lastReason *string, heldRecorded *bool) {
+	// A refusal must not clobber a stronger reason recorded earlier in the
+	// same sweep: pass A's "(held: Job still alive)" (#331) is a durability
+	// promise about a live run — a later candidate's refusal is metadata,
+	// not a contradiction. Tracked as a FLAG, not by sniffing the prose:
+	// the reason sentence belongs to the review package and may reword.
+	// (r8 F2: the HasPrefix form here was dead code — the marker is a
+	// suffix — and no test noticed.)
+	// PREFERENCE, not a mute (r10): the held reason stays as the sweep's
+	// headline (a live run outranks a refusal as news), but the refusal is
+	// still fully recorded — counted on the counter and emitted to the
+	// timeline for ITS candidate. Muting it made the turned-away candidate
+	// invisible in exactly the round the counter exists for.
+	log("review-ready: %s: %v", cand.pointer, err)
+	recordReviewGate(ctx, wfName, cand.repo, err)
+	if !*heldRecorded {
+		*lastDecision, *lastReason = "standdown", err.Error()
+	}
+	emitGate(ctx, deps.TL, liveAgg, review.Result{
+		Evaluation:  review.Evaluation{Decision: review.DecisionStanddown, Reason: err.Error()},
+		NewArmedSha: "",
+	}, cand.repo, cand.pr)
+}
+
+// isIntentionalStop reports arm refusals that are the system stopping ON
+// PURPOSE (#328 breaker, #343 churn guard) — surfaced as standdowns, never
+// as failures. One predicate so a third sentinel cannot be swallowed by a
+// call site forgetting to extend its list (r2 P3).
+func isIntentionalStop(err error) bool {
+	return errors.Is(err, attempt.ErrDeadDispatchBreaker) ||
+		errors.Is(err, attempt.ErrRecentlyDismissed) ||
+		errors.Is(err, attempt.ErrChurnBudgetExhausted)
+}
+
 // classifyRelease maps a standdown reason onto the claim's release-reason
-// vocabulary.
+// vocabulary. "consumed"/"closed"/"superseded"/"standdown" stay bare
+// literals on purpose — terminal classes nothing branches on (the open-
+// string note lives on the ReleaseReason const block in api/v1alpha1).
 func classifyRelease(reason string) string {
 	switch {
 	case strings.Contains(reason, "consumed"):
 		return "consumed"
 	case strings.Contains(reason, "presumed dead"):
-		return "dispatch-timeout"
+		return v1alpha1.ReleaseReasonDispatchTimeout
 	case strings.Contains(reason, "horizon exceeded"):
-		return "horizon"
+		return v1alpha1.ReleaseReasonHorizon
 	case strings.Contains(reason, "closed"):
 		return "closed"
 	default:

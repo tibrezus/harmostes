@@ -13,6 +13,9 @@ skills:
 controller:
   serviceAccount: harmostes-controller
   pollInterval: 5m        # default run cadence for Workflows without a schedule
+                          # churn-budget note: MaxDispatchLostReleases=3 ≈ 3 sweeps
+                          # at THIS interval (~15m) before a never-dispatching head
+                          # is refused (api/v1alpha1.MaxDispatchLostReleases)
   resources:
     requests: { cpu: 100m, memory: 128Mi }
     limits:   { cpu: 1, memory: 512Mi }

@@ -626,16 +626,18 @@ func envReq(key string) string {
 	return v
 }
 
-// wakeFromEnv reads the trigger event at the run command's process boundary —
-// env is the only event source here (no RunRequest exists), and scraping
-// belongs at the boundary, not inside the gate (#349/#357). SHA wins over
-// REVISION, matching EnvelopeEnv's own precedence.
-//
-// The env carries TWO shapes and both must parse (r16 2.1): the consumer's
-// dispatchEnv writes HARMOSTES_TRIGGER_PR as a BARE NUMBER with the repo in
-// HARMOSTES_TRIGGER_REPO, while EnvelopeEnv writes a full pointer and no
-// REPO. A boundary that reads only one shape turns the other into the
-// silent no-op this function exists to prevent.
+// wakeFromEnv reads the trigger event at the run command's process boundary.
+// This is the MANUAL-OPERATOR escape hatch, not the production seam: the
+// in-cluster producers either co-write HARMOSTES_DISPATCHED_ATTEMPT (the
+// dispatcher's dispatchEnv — which makes runOneShot SKIP this gate) or land
+// their env after the gate has already run (EnvelopeEnv). The production
+// wake path is consumer → dispatch.go's GateWake. What this boundary must
+// do is parse BOTH env shapes those producers emit, because a wrong model
+// of the input here has cost three review rounds (#357 r16 2.1, r18 P4):
+// dispatchEnv writes HARMOSTES_TRIGGER_PR as a FULL POINTER (req.Pr) and no
+// REPO; EnvelopeEnv writes a BARE NUMBER plus HARMOSTES_TRIGGER_REPO. SHA
+// wins over REVISION — each producer writes exactly one of the two names.
+// An operator running `harmostes-worker run` by hand can use either shape.
 func wakeFromEnv() worker.GateWake {
 	pr := os.Getenv("HARMOSTES_TRIGGER_PR")
 	if pr != "" && !strings.Contains(pr, "#") {

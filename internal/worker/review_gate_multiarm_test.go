@@ -1678,3 +1678,25 @@ func TestRunGate_RevisionlessWakeCannotSupersedeDispatched(t *testing.T) {
 		t.Fatalf("the dispatched claim must be untouched: %v", claims[0].Status.Review)
 	}
 }
+
+// TestMultiArmHostilePrefixWakeIgnored (r18 nit — the security row): a wake
+// pointer with a hostile host PREFIX must be rejected by repoInScope's
+// EXACT match. If a future refactor loosens the match (suffix/prefix
+// contains), this row goes red before the gate arms against evil.com.
+func TestMultiArmHostilePrefixWakeIgnored(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := greenPRServer(t)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	st := &fakeStatus{}
+	deps, ctx := gateEnvW(t, wf, st, "evil.com/github.com/tibrezus/harmostes#99", "labeled", "deadbeef123")
+
+	out, err := RunReviewGateSweep(ctx, deps, wf)
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if len(out) != 0 {
+		t.Fatalf("hostile host prefix must not arm, got %d dispatches", len(out))
+	}
+}

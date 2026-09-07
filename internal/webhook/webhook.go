@@ -218,52 +218,20 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request, workflowNa
 	fmt.Fprintf(w, "workflow %s triggered for revision %s\n", workflowName, revision)
 }
 
-// pullRequestWakeActions are the consolidated actions that wake the
-// Review-Ready Gate. Everything else (assigned, review_requested, …) is a
-// no-op: 200, no annotations. Forgejo's granular aliases are normalized
-// before this set is consulted — the set is GitHub-shaped on purpose
-// (single source; do not add aliases here).
-var pullRequestWakeActions = map[string]bool{
-	"labeled":          true, // a human or the skill set a label — arm
-	"unlabeled":        true, // label removed (also the post-review consume) — re-evaluate
-	"synchronize":      true, // new push — head moved, re-arm at new SHA
-	"opened":           true,
-	"reopened":         true,
-	"closed":           true, // disarm path — the gate stands down promptly
-	"ready_for_review": true,
-
-	// Forgejo granular-event vocabulary (the `pull_request_label` /
-	// `pull_request_sync` event types carry their own action names; the
-	// gate re-verifies state, so a wake is a wake):
-	"label_updated": true,
-	"synchronized":  true,
-}
-
-// requestShapedActions are the label-touching subset of the wake actions:
-// they may supersede a live claim, and of them only "labeled" is the
-// breaker's human override (#328). Single source — review_gate consults
-// RequestShaped so the two lists cannot drift (#357 r16 2.2). Unexported:
-// an exported mutable map hands a fleet-wide override flip to any stray
-// write, compile-clean and CI-green.
-var requestShapedActions = map[string]bool{
-	"labeled":       true,
-	"unlabeled":     true,
-	"label_updated": true,
-}
-
-// RequestShaped reports whether a webhook action is label-touching — the
-// request-shaped class that may supersede a live review claim.
-func RequestShaped(action string) bool {
-	return requestShapedActions[action]
-}
-
 // servePullRequest handles a consolidated pull_request event. The handler
-// stays DUMB: verify → parse → annotate. No business logic lives here — the
-// Review-Ready Gate (internal/review, executed by the worker) re-verifies
-// label presence and CI greenness at evaluation time, so duplicate or early
-// events are free.
+// stays DUMB: verify → parse → normalize → annotate. No business logic
+// lives here — the Review-Ready Gate (internal/review, executed by the
+// worker) re-verifies label presence and CI greenness at evaluation time,
+// so duplicate or early events are free. The ONE vocabulary decision made
+// here is alias normalization: Forgejo's granular names become the
+// GitHub-shaped set in v1alpha1 BEFORE the action is stamped, so every
+// downstream consumer sees one vocabulary (r18 P2 — the previous comment
+// claimed this normalization; now it exists).
 func (h *Handler) servePullRequest(w http.ResponseWriter, req *http.Request, wf *v1alpha1.Workflow, pre PullRequestEvent) {
-	if !pullRequestWakeActions[pre.Action] {
+	if pre.Action == "synchronized" {
+		pre.Action = "synchronize" // Forgejo alias → the canonical GitHub shape
+	}
+	if !v1alpha1.PullRequestWakeActions[pre.Action] {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprintf(w, "action %q ignored\n", pre.Action)
 		return

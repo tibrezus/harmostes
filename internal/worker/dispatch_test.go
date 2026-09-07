@@ -257,14 +257,15 @@ func TestJobCredentialEnv(t *testing.T) {
 	}
 }
 
-// TestDispatchWakeSurvivesTheHop (#357 P2): the RunRequest → GateDeps.Wake
-// hop is three values in one struct; a forgotten member compiles clean and
-// kills exactly one hop — dropping Action makes request/labeled false, so
-// the breaker's human override dies behind green CI. This pin arms
-// MaxDeadDispatchesPerHead dead claims and then dispatches through the
-// REAL dispatcher: the Job is created only if PR, Action AND Revision all
-// survive the hop (break open + supersede the moved nothing — the request
-// must land as the labeled human request).
+// TestDispatchWakeSurvivesTheHop (#357 P2, r18 P8 rework): the
+// RunRequest → GateDeps.Wake hop is three values in one struct; a forgotten
+// member compiles clean and kills exactly one hop. The fixture is a
+// MOVED-HEAD claim (armed at oldhead000, PR now green at deadbeef123) so
+// the wake's Revision decides which attempt the Job runs: with Revision,
+// the supersede arms at deadbeef123's derived name; with Revision lost,
+// candSha collapses to "" and the arm derives a foreign objective — a
+// different attempt name on the Job. Dropping Action kills the override
+// outright (0 jobs). Both mutations verified red on this test.
 func TestDispatchWakeSurvivesTheHop(t *testing.T) {
 	clearTriggerEnv(t)
 	srv := greenPRServer(t)
@@ -274,34 +275,36 @@ func TestDispatchWakeSurvivesTheHop(t *testing.T) {
 	d, ctx := newTestDispatcher(t, wf)
 
 	req := dispatchRequest()
-	claimName := ""
-	for i := 0; i < v1alpha1.MaxDeadDispatchesPerHead; i++ {
-		at, err := attempt.ArmClaim(ctx, d.cl, d.scheme, wf,
-			"git.rezus.cloud/tibrez/rhesadox#99", "deadbeef123", "needs-review", false)
-		if err != nil {
-			t.Fatalf("arm %d: %v", i+1, err)
-		}
-		claimName = at.Name
-		_ = attempt.MarkClaimDispatched(ctx, d.cl, wf.Namespace, at.Name)
-		_, _, _ = attempt.ReleaseClaimDead(ctx, d.cl, wf.Namespace, at.Name, "dispatch-lost")
-	}
+	// A LIVE claim at the OLD head: the moved-head labeled wake (request-
+	// shaped) supersedes it and arms at the NEW head's identity.
+	armed := time.Now().Add(-5 * time.Minute)
+	claim := attemptAttemptFixture(t, ctx, d, wf, "git.rezus.cloud/tibrez/rhesadox#99", "oldhead000", armed)
 
 	if err := d.Dispatch(ctx, req); err != nil {
-		t.Fatalf("dispatch with open breaker: %v", err)
+		t.Fatalf("dispatch over a moved-head claim: %v", err)
 	}
 	var jobs batchv1.JobList
 	if err := d.cl.List(ctx, &jobs); err != nil {
 		t.Fatalf("list jobs: %v", err)
 	}
 	if len(jobs.Items) != 1 {
-		t.Fatalf("the threaded wake must break the breaker open and dispatch, got %d jobs", len(jobs.Items))
+		t.Fatalf("the threaded wake must supersede the moved-head claim and dispatch, got %d jobs", len(jobs.Items))
 	}
-	// Revision is the third member and the pin must FEEL it drop: with the
-	// revision, the labeled wake is the same-head human override — it re-arms
-	// the SAME attempt (objective identity derives from the head SHA). With
-	// Revision lost, candSha collapses to "" and the arm derives a foreign
-	// objective: a different attempt name on the Job. Assert the name.
-	if got := jobs.Items[0].Labels["harmostes.dev/attempt"]; got != claimName {
-		t.Fatalf("the wake must re-arm the same-head claim in place (override, not supersede): job attempt %q want %q", got, claimName)
+	obj := attempt.DeriveObjective(wf, attempt.TriggerContext{Revision: "deadbeef123", Source: "webhook"})
+	want := attempt.AttemptName(wf.Name, attempt.Identity(obj))
+	if got := jobs.Items[0].Labels["harmostes.dev/attempt"]; got != want {
+		t.Fatalf("the Job must run the deadbeef123 identity (Revision decided it), got %q want %q", got, want)
 	}
+	_ = claim
+}
+
+// attemptAttemptFixture arms a live claim through the real path (the
+// dispatcher will supersede it).
+func attemptAttemptFixture(t *testing.T, ctx context.Context, d *Dispatcher, wf *v1alpha1.Workflow, pr, sha string, armed time.Time) string {
+	t.Helper()
+	at, err := attempt.ArmClaim(ctx, d.cl, d.scheme, wf, pr, sha, "needs-review", false)
+	if err != nil {
+		t.Fatalf("arm %s: %v", sha, err)
+	}
+	return at.Name
 }

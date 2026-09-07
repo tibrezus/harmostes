@@ -23,7 +23,7 @@
  * request-level `fallbacks` param (via Model.samplingParams) — when the
  * primary model group fails mid-run, the proxy's router fails over to the
  * fallback group and the agent's stream continues instead of dying. Default
- * chain: ali/anthropic/qwen3.8-flash → mtplx/qwen38-27b-optimized-quality-fp16
+ * chain: ali/anthropic/qwen3.8-flash → mtplx/qwen38-27b-optimized-speed-fp16
  * (both live on the proxy). Override with LITELLM_FALLBACKS, a JSON object
  * mapping model id → array of fallback ids — resolved by fallbacks.ts, which
  * degrades to the default chain on any semantically-bad value. NOTE the

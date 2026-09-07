@@ -44,7 +44,7 @@ import { applyChains } from "./fallbacks.ts";
 
 const proxy = new Map([
   ["ali/anthropic/qwen3.8-flash", { max_input_tokens: 1048576, max_output_tokens: 32768 }],
-  ["mtplx/qwen38-27b-optimized-quality-fp16", { max_input_tokens: 262144, max_output_tokens: 32768 }],
+  ["mtplx/qwen38-27b-optimized-speed-fp16", { max_input_tokens: 262144, max_output_tokens: 32768 }],
 ]);
 const models = [
   { id: "ali/anthropic/qwen3.8-flash", max_input_tokens: 1048576, max_output_tokens: 32768 },
@@ -60,10 +60,10 @@ test("applyChains: unchained model carries NO fallbacks key (an explicit [] over
 
 test("applyChains: chained model gets the chain and the min-window clamp", () => {
   const { annotated, wired } = applyChains(models, {
-    "ali/anthropic/qwen3.8-flash": ["mtplx/qwen38-27b-optimized-quality-fp16"],
+    "ali/anthropic/qwen3.8-flash": ["mtplx/qwen38-27b-optimized-speed-fp16"],
   }, proxy);
   const flash = annotated.find((m) => m.id === "ali/anthropic/qwen3.8-flash")!;
-  assert.deepEqual(flash.samplingParams, { fallbacks: ["mtplx/qwen38-27b-optimized-quality-fp16"] });
+  assert.deepEqual(flash.samplingParams, { fallbacks: ["mtplx/qwen38-27b-optimized-speed-fp16"] });
   assert.equal(flash.contextWindow, 262144); // min(1048576, 262144) — the replay must fit
   assert.match(flash.clampNote!, /fallback clamp/);
   assert.equal(wired.length, 1);
@@ -71,10 +71,10 @@ test("applyChains: chained model gets the chain and the min-window clamp", () =>
 
 test("applyChains: unknown fallback ids are dropped, partial chains stay wired", () => {
   const { annotated, wired } = applyChains(models, {
-    "ali/anthropic/qwen3.8-flash": ["mtplx/gone", "mtplx/qwen38-27b-optimized-quality-fp16"],
+    "ali/anthropic/qwen3.8-flash": ["mtplx/gone", "mtplx/qwen38-27b-optimized-speed-fp16"],
   }, proxy);
   const flash = annotated.find((m) => m.id === "ali/anthropic/qwen3.8-flash")!;
-  assert.deepEqual(flash.samplingParams, { fallbacks: ["mtplx/qwen38-27b-optimized-quality-fp16"] });
+  assert.deepEqual(flash.samplingParams, { fallbacks: ["mtplx/qwen38-27b-optimized-speed-fp16"] });
   assert.deepEqual(flash.droppedIds, ["mtplx/gone"]);
   assert.equal(wired.length, 1); // r17 failure mode: wired must not read unwired
 });
@@ -101,10 +101,10 @@ test("applyChains: self-chain (a→a) is dropped entirely — no failing-over to
 
 test("applyChains: duplicate fallback ids are deduped", () => {
   const { annotated } = applyChains(models, {
-    "ali/anthropic/qwen3.8-flash": ["mtplx/qwen38-27b-optimized-quality-fp16", "mtplx/qwen38-27b-optimized-quality-fp16"],
+    "ali/anthropic/qwen3.8-flash": ["mtplx/qwen38-27b-optimized-speed-fp16", "mtplx/qwen38-27b-optimized-speed-fp16"],
   }, proxy);
   const flash = annotated.find((m) => m.id === "ali/anthropic/qwen3.8-flash")!;
-  assert.deepEqual(flash.samplingParams, { fallbacks: ["mtplx/qwen38-27b-optimized-quality-fp16"] });
+  assert.deepEqual(flash.samplingParams, { fallbacks: ["mtplx/qwen38-27b-optimized-speed-fp16"] });
 });
 
 test("applyChains: prototype-named models (toString) read own properties only", () => {
@@ -117,8 +117,8 @@ test("applyChains: prototype-named models (toString) read own properties only", 
   assert.equal(annotated[0].samplingParams, undefined);
   assert.equal(wired.length, 0);
   // And an OWN "toString" chain still wires normally (own-key lookup wins).
-  const { annotated: own, wired: wiredOwn } = applyChains(models2, { toString: ["mtplx/qwen38-27b-optimized-quality-fp16"] }, proxy);
-  assert.deepEqual(own[0].samplingParams, { fallbacks: ["mtplx/qwen38-27b-optimized-quality-fp16"] });
+  const { annotated: own, wired: wiredOwn } = applyChains(models2, { toString: ["mtplx/qwen38-27b-optimized-speed-fp16"] }, proxy);
+  assert.deepEqual(own[0].samplingParams, { fallbacks: ["mtplx/qwen38-27b-optimized-speed-fp16"] });
   assert.equal(wiredOwn.length, 1);
 });
 

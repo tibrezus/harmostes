@@ -58,6 +58,41 @@ type GateDeps struct {
 	FleetMaxConcurrent int
 	Log                func(format string, args ...any)
 	TL                 timeline.Writer
+	// Wake carries the TRIGGER EVENT that scheduled this run (#349): the
+	// controller publishes it, the consumer hands it down with the run
+	// request, and the gate turns it into the labeled-scan's leading
+	// candidate. It must ride the event — the old parseWake scraped env
+	// vars set on dispatched JOB pods (which skip the gate) and workflow
+	// annotations the controller CLEARS at schedule time (anti-rapid-fire),
+	// so in the worker-pool topology the wake never arrived: every labeled
+	// re-apply armed as automatic, and the breaker's documented override
+	// ("re-apply the label") was structurally dead.
+	WakePR       string
+	WakeAction   string
+	WakeRevision string
+}
+
+// wake converts the threaded trigger event into the scan's leading
+// candidate. nil when this run has no wake (poll-triggered sweeps and
+// empty events) or the pointer is unparseable / out of scope.
+func (d GateDeps) wake(wf *v1alpha1.Workflow) *candidate {
+	if d.WakePR == "" {
+		return nil
+	}
+	repo, pr, err := parsePRPointer(d.WakePR)
+	if err != nil {
+		return nil
+	}
+	repo = normalizeRepoPointer(repo, wf)
+	if !repoInScope(wf, repo) {
+		return nil // out-of-scope wake: arm nothing (defense-in-depth)
+	}
+	return &candidate{
+		repo: repo, pr: pr, pointer: fmt.Sprintf("%s#%d", repo, pr), sha: d.WakeRevision,
+		isWake:  true,
+		request: d.WakeAction == "labeled" || d.WakeAction == "unlabeled" || d.WakeAction == "label_updated",
+		labeled: d.WakeAction == "labeled",
+	}
 }
 
 func (d GateDeps) log() func(string, ...any) {
@@ -345,7 +380,7 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 		seen[c.pointer] = true
 		cands = append(cands, c)
 	}
-	if wake := parseWake(wf); wake != nil {
+	if wake := deps.wake(wf); wake != nil {
 		addCand(*wake)
 	}
 	// (c) A saturated fleet skips the scan: the labeled List is the one
@@ -501,37 +536,6 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 	return out, nil
 }
 
-// parseWake reads the trigger annotations (env first — the controller clears
-// annotations at schedule time). nil when this cycle has no wake.
-func parseWake(wf *v1alpha1.Workflow) *candidate {
-	trigPR := os.Getenv("HARMOSTES_TRIGGER_PR")
-	if trigPR == "" {
-		trigPR = wf.Annotations["harmostes.dev/trigger-pr"]
-	}
-	if trigPR == "" {
-		return nil
-	}
-	action := os.Getenv("HARMOSTES_TRIGGER_ACTION")
-	if action == "" {
-		action = wf.Annotations["harmostes.dev/trigger-action"]
-	}
-	repo, pr, err := parsePRPointer(trigPR)
-	if err != nil {
-		return nil
-	}
-	repo = normalizeRepoPointer(repo, wf)
-	if !repoInScope(wf, repo) {
-		return nil // out-of-scope wake: arm nothing (defense-in-depth)
-	}
-	sha := wakeRevision(wf)
-	return &candidate{
-		repo: repo, pr: pr, pointer: fmt.Sprintf("%s#%d", repo, pr), sha: sha,
-		isWake:  true,
-		request: action == "labeled" || action == "unlabeled" || action == "label_updated",
-		labeled: action == "labeled",
-	}
-}
-
 func candSha(c candidate) string { return c.sha }
 
 func findClaim(claims []v1alpha1.Attempt, pointer string) *v1alpha1.Attempt {
@@ -653,12 +657,6 @@ func emitGate(ctx context.Context, tl timeline.Writer, agg *v1alpha1.ReviewReady
 
 // wakeRevision returns the wake event's trigger-revision (env first — the
 // controller clears annotations at schedule time — annotation fallback).
-func wakeRevision(wf *v1alpha1.Workflow) string {
-	if rev := os.Getenv("HARMOSTES_TRIGGER_REVISION"); rev != "" {
-		return rev
-	}
-	return wf.Annotations["harmostes.dev/trigger-revision"]
-}
 
 // normalizeRepoPointer qualifies a repo pointer to host/owner/name. A bare
 // "owner/name" resolves via a scope entry whose suffix matches (self-hosted

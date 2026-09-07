@@ -47,25 +47,23 @@ func newTestDispatcher(t *testing.T, objects ...runtime.Object) (*Dispatcher, co
 	return d, context.Background()
 }
 
-// gatedDispatchWorkflow: the gate fixture with the durable wake on the CR —
-// the webhook annotates before publishing, so the in-process gate reads the
-// annotation (env is per-process and the dispatcher is shared).
+// gatedDispatchWorkflow: the gate fixture. The wake does NOT ride the CR —
+// the controller clears the trigger annotations at schedule time and the
+// env vars land on dispatched Job pods, so in the worker-pool topology the
+// event reaches the gate only through GateDeps.Wake* (#349); the fixture's
+// annotations are gone on purpose. The request pointer must stay in the
+// workflow's configured scope — an out-of-scope wake arms nothing.
 func gatedDispatchWorkflow() *v1alpha1.Workflow {
 	wf := gateWorkflow()
 	wf.Name = "pr-review-harmostes"
 	wf.Namespace = "default"
-	wf.Annotations = map[string]string{
-		"harmostes.dev/trigger-pr":       "git.rezus.cloud/tibrez/rhesadox#99",
-		"harmostes.dev/trigger-action":   "labeled",
-		"harmostes.dev/trigger-revision": "deadbeef123",
-	}
 	return wf
 }
 
 func dispatchRequest() RunRequest {
 	return RunRequest{
 		Workflow: "pr-review-harmostes", Namespace: "default",
-		Pr: "github.com/tibrezus/harmostes#99", Action: "labeled",
+		Pr: "git.rezus.cloud/tibrez/rhesadox#99", Action: "labeled",
 		Revision: "deadbeef123", PrTitle: "t",
 	}
 }

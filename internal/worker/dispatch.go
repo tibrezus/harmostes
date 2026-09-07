@@ -233,6 +233,9 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req RunRequest) error {
 		Scheme:             d.scheme,
 		FleetMaxConcurrent: d.cfg.FleetMaxConcurrent,
 		Log:                d.logf,
+		WakePR:             req.Pr,
+		WakeAction:         req.Action,
+		WakeRevision:       req.Revision,
 		TL: timeline.NewGateWriter(dapr.Tracing(dapr.New(os.Getenv("DAPR_HTTP_ENDPOINT"))),
 			envOr("HARMOSTES_STATE_STORE", "statestore"), wf.Name, "", triggerSubject(req)),
 	}

@@ -85,12 +85,15 @@ func claimFixture(wf *v1alpha1.Workflow, pr, sha string, armedSince time.Time, d
 	return at
 }
 
-func wakeAnnotations(pr, action, sha string) map[string]string {
-	return map[string]string{
-		"harmostes.dev/trigger-pr":       pr,
-		"harmostes.dev/trigger-action":   action,
-		"harmostes.dev/trigger-revision": sha,
-	}
+// gateEnvW is gateEnv with the trigger event threaded the production way:
+// GateDeps.Wake* as handed down from the RunRequest (#349). The old
+// annotation/env scraping is gone — the controller clears the annotations
+// at schedule time and the env vars land on dispatched JOB pods (which
+// skip the gate), so in the worker-pool topology the wake never arrived.
+func gateEnvW(t *testing.T, wf *v1alpha1.Workflow, st *fakeStatus, pr, action, sha string, objects ...runtime.Object) (GateDeps, context.Context) {
+	deps, ctx := gateEnv(t, wf, st, objects...)
+	deps.WakePR, deps.WakeAction, deps.WakeRevision = pr, action, sha
+	return deps, ctx
 }
 
 // greenPullBody is the green, labeled, open PR at deadbeef123.
@@ -190,9 +193,9 @@ func TestMultiArmWaitingArmsClaimWithoutDispatch(t *testing.T) {
 	t.Cleanup(srv.Close)
 	pinReviewAPI(t, srv, true)
 	wf := gateWorkflow()
-	wf.Annotations = wakeAnnotations("git.rezus.cloud/tibrez/rhesadox#99", "labeled", "deadbeef123")
+	// wake rides the EVENT (GateDeps.Wake*), not annotations (#349):
 	st := &fakeStatus{}
-	deps, ctx := gateEnv(t, wf, st)
+	deps, ctx := gateEnvW(t, wf, st, "git.rezus.cloud/tibrez/rhesadox#99", "labeled", "deadbeef123")
 
 	out, err := RunReviewGateWake(ctx, deps, wf)
 	if err != nil {
@@ -221,11 +224,11 @@ func TestMultiArmInFlightNotReDispatched(t *testing.T) {
 	t.Cleanup(srv.Close)
 	pinReviewAPI(t, srv, true)
 	wf := gateWorkflow()
-	wf.Annotations = wakeAnnotations("git.rezus.cloud/tibrez/rhesadox#99", "labeled", "deadbeef123")
+	// wake rides the EVENT (GateDeps.Wake*), not annotations (#349):
 	st := &fakeStatus{}
 	now := time.Now()
 	claim := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#99", "deadbeef123", now.Add(-2*time.Minute), &now)
-	deps, ctx := gateEnv(t, wf, st, claim)
+	deps, ctx := gateEnvW(t, wf, st, "git.rezus.cloud/tibrez/rhesadox#99", "labeled", "deadbeef123", claim)
 
 	out, err := RunReviewGateSweep(ctx, deps, wf)
 	if err != nil {
@@ -276,11 +279,11 @@ func TestMultiArmDispatchTimeoutReleasesAndReArms(t *testing.T) {
 	pinReviewAPI(t, srv, true)
 	wf := gateWorkflow()
 	wf.Spec.ReviewReady.DispatchTimeout = "45m"
-	wf.Annotations = wakeAnnotations("git.rezus.cloud/tibrez/rhesadox#99", "labeled", "deadbeef123")
+	// wake rides the EVENT (GateDeps.Wake*), not annotations (#349):
 	st := &fakeStatus{}
 	stale := time.Now().Add(-50 * time.Minute)
 	claim := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#99", "deadbeef123", stale, &stale)
-	deps, ctx := gateEnv(t, wf, st, claim)
+	deps, ctx := gateEnvW(t, wf, st, "git.rezus.cloud/tibrez/rhesadox#99", "labeled", "deadbeef123", claim)
 
 	out, err := RunReviewGateSweep(ctx, deps, wf)
 	if err != nil {
@@ -326,11 +329,11 @@ func TestMultiArmRequestWakeSupersedesMovedHead(t *testing.T) {
 	t.Cleanup(srv.Close)
 	pinReviewAPI(t, srv, true)
 	wf := gateWorkflow()
-	wf.Annotations = wakeAnnotations("git.rezus.cloud/tibrez/rhesadox#99", "labeled", "deadbeef123")
+	// wake rides the EVENT (GateDeps.Wake*), not annotations (#349):
 	st := &fakeStatus{}
 	armed := time.Now().Add(-5 * time.Minute)
 	claim := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#99", "oldhead000", armed, nil)
-	deps, ctx := gateEnv(t, wf, st, claim)
+	deps, ctx := gateEnvW(t, wf, st, "git.rezus.cloud/tibrez/rhesadox#99", "labeled", "deadbeef123", claim)
 
 	out, err := RunReviewGateSweep(ctx, deps, wf)
 	if err != nil {
@@ -431,9 +434,9 @@ func TestMultiArmBarePointerNormalizesIntoClaim(t *testing.T) {
 	t.Cleanup(srv.Close)
 	pinReviewAPI(t, srv, true)
 	wf := gateWorkflow()
-	wf.Annotations = wakeAnnotations("tibrez/rhesadox#99", "labeled", "deadbeef123")
+	// wake rides the EVENT (GateDeps.Wake*), not annotations (#349):
 	st := &fakeStatus{}
-	deps, ctx := gateEnv(t, wf, st)
+	deps, ctx := gateEnvW(t, wf, st, "tibrez/rhesadox#99", "labeled", "deadbeef123")
 
 	out, err := RunReviewGateWake(ctx, deps, wf)
 	if err != nil {
@@ -455,9 +458,9 @@ func TestMultiArmOutOfScopeWakeIgnored(t *testing.T) {
 	t.Cleanup(srv.Close)
 	pinReviewAPI(t, srv, true)
 	wf := gateWorkflow()
-	wf.Annotations = wakeAnnotations("github.com/other/repo#7", "labeled", "deadbeef123")
+	// wake rides the EVENT (GateDeps.Wake*), not annotations (#349):
 	st := &fakeStatus{}
-	deps, ctx := gateEnv(t, wf, st)
+	deps, ctx := gateEnvW(t, wf, st, "github.com/other/repo#7", "labeled", "deadbeef123")
 
 	out, err := RunReviewGateWake(ctx, deps, wf)
 	if err != nil {
@@ -760,9 +763,9 @@ func TestSweepBreakerHumanOverrideDispatches(t *testing.T) {
 	t.Cleanup(srv.Close)
 	pinReviewAPI(t, srv, true)
 	wf := gateWorkflow()
-	wf.Annotations = wakeAnnotations("git.rezus.cloud/tibrez/rhesadox#99", "labeled", "deadbeef123")
+	// wake rides the EVENT (GateDeps.Wake*), not annotations (#349):
 	st := &fakeStatus{}
-	deps, ctx := gateEnv(t, wf, st)
+	deps, ctx := gateEnvW(t, wf, st, "git.rezus.cloud/tibrez/rhesadox#99", "labeled", "deadbeef123")
 	for i := 0; i < v1alpha1.MaxDeadDispatchesPerHead; i++ {
 		at, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf,
 			"git.rezus.cloud/tibrez/rhesadox#99", "deadbeef123", "needs-review", false)
@@ -837,9 +840,9 @@ func TestSweepBreakerOverrideThroughLiveClaim(t *testing.T) {
 	t.Cleanup(srv.Close)
 	pinReviewAPI(t, srv, true)
 	wf := gateWorkflow()
-	wf.Annotations = wakeAnnotations("git.rezus.cloud/tibrez/rhesadox#99", "labeled", "deadbeef123")
+	// wake rides the EVENT (GateDeps.Wake*), not annotations (#349):
 	st := &fakeStatus{}
-	deps, ctx := gateEnv(t, wf, st)
+	deps, ctx := gateEnvW(t, wf, st, "git.rezus.cloud/tibrez/rhesadox#99", "labeled", "deadbeef123")
 	// Two deaths, then a re-arm: a LIVE claim holding a partial count.
 	for i := 0; i < 2; i++ {
 		at, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf,
@@ -1524,5 +1527,51 @@ func TestSweepAbortSpeaksInTheAggregates(t *testing.T) {
 	}
 	if got.Status.Review.Released {
 		t.Fatal("an aborted sweep must not release claims")
+	}
+}
+
+// TestRunGate_StaleAnnotationsDoNotOverride (issue #349): the breaker's
+// human override must engage on the EVENT (GateDeps.Wake* from the
+// RunRequest), never on scraped state. The controller stamps
+// harmostes.dev/trigger-* annotations before publishing and CLEARS them at
+// schedule time; a stale pair left on the fetched CR (failed clear, manual
+// kubectl edit, pre-upgrade object) used to wake the gate as a HUMAN
+// request — an automatic override with no human in the loop. The event
+// threading replaced the scrape; this pins that the scrape is gone: stale
+// annotations plus NO event must leave the breaker closed.
+func TestRunGate_StaleAnnotationsDoNotOverride(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := labeledListServer(t, 99)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	// The stale state: annotations still on the CR, event never delivered.
+	wf.Annotations = map[string]string{
+		"harmostes.dev/trigger-pr":       "git.rezus.cloud/tibrez/rhesadox#99",
+		"harmostes.dev/trigger-action":   "labeled",
+		"harmostes.dev/trigger-revision": "deadbeef123",
+	}
+	st := &fakeStatus{}
+	deps, ctx := gateEnv(t, wf, st) // no wake: the pool got no event
+	for i := 0; i < v1alpha1.MaxDeadDispatchesPerHead; i++ {
+		at, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf,
+			"git.rezus.cloud/tibrez/rhesadox#99", "deadbeef123", "needs-review", false)
+		if err != nil {
+			t.Fatalf("arm %d: %v", i+1, err)
+		}
+		_ = attempt.MarkClaimDispatched(ctx, deps.Client, wf.Namespace, at.Name)
+		_, _, _ = attempt.ReleaseClaimDead(ctx, deps.Client, wf.Namespace, at.Name, "dispatch-lost")
+	}
+
+	out, err := RunReviewGateSweep(ctx, deps, wf)
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if len(out) != 0 {
+		t.Fatalf("stale annotations must NOT engage the human override, got %d dispatches", len(out))
+	}
+	reason := st.last.ReviewReady.LastReason
+	if !strings.Contains(reason, "dead-dispatch breaker") {
+		t.Fatalf("the refusal must still be the breaker's, got %q", reason)
 	}
 }

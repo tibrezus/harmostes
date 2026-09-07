@@ -141,3 +141,24 @@ test("resolveFallbackChains: the default does not leak by reference", () => {
   const { chains: again } = resolveFallbackChains(undefined);
   assert.equal(Object.keys(again).length, Object.keys(DEFAULT_FALLBACKS).length);
 });
+
+test("the default chain guards the template primary (#363 — the content pin)", () => {
+  // The constant is an ops decision (workflow-templates.yaml:63 is the
+  // other home); this test is the join — flipping the model roles MUST
+  // break CI here, or the flip is unpinnable (r18 P8 mutation-probed:
+  // BOGUS content passed the suite before this test existed).
+  assert.deepEqual(Object.keys(DEFAULT_FALLBACKS), ["mtplx/qwen38-27b-optimized-speed-fp16"]);
+  assert.deepEqual(DEFAULT_FALLBACKS["mtplx/qwen38-27b-optimized-speed-fp16"], ["ali/anthropic/qwen3.8-flash"]);
+});
+
+test("applyChains: the DEFAULT path never clamps (speed→flash replays small→large)", () => {
+  const both = [
+    { id: "mtplx/qwen38-27b-optimized-speed-fp16", max_input_tokens: 262144, max_output_tokens: 32768 },
+    { id: "ali/anthropic/qwen3.8-flash", max_input_tokens: 1048576, max_output_tokens: 32768 },
+  ];
+  const { annotated, wired } = applyChains(both, DEFAULT_FALLBACKS, proxy);
+  const speed = annotated.find((m) => m.id === "mtplx/qwen38-27b-optimized-speed-fp16")!;
+  assert.deepEqual(speed.samplingParams, { fallbacks: ["ali/anthropic/qwen3.8-flash"] });
+  assert.equal(speed.clampNote, undefined); // speed keeps its own 256 KiB
+  assert.equal(wired.length, 1);
+});

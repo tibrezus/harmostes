@@ -39,13 +39,17 @@
  * failed over is indistinguishable from a healthy run here (same --model
  * string); attribute via the proxy's router logs, which record the serving
  * group per request. (3) Chained models register min(primary, fallback)
- * windows so the post-failover replay fits the fallback group — a real
- * capacity cost on every healthy run, taken for correctness — pi compacts
- * at window−reserve, so flash runs compact ~4× earlier (1 MiB→256 KiB).
- * The alternative, clamping only the fallback and letting the first
- * over-long replay 400, was considered and rejected: it trades a clean
- * early compaction for a dead stream exactly when the primary is already
- * down. (4) The clamp
+ * windows so the post-failover replay fits the fallback group. Under the
+ * CURRENT default (speed → flash, #363) the clamp never fires on the
+ * default path: each model keeps its own window (speed 256 KiB, flash
+ * 1 MiB), and the failover replay runs small→large, which structurally
+ * always fits — the per-attempt clampNote signal is silently ABSENT for
+ * the default chain by design; it returns (stderr, per attempt) only when
+ * an operator override chains a fallback with a SMALLER window than its
+ * primary. The alternative, clamping only the fallback and letting the
+ * first over-long replay 400, was considered and rejected: it trades a
+ * clean early compaction for a dead stream exactly when the primary is
+ * already down. (4) The clamp
  * is not transitive: a proxy-side chain hanging off the fallback group is
  * invisible here. (5) A failover moves the whole review context to a
  * DIFFERENT upstream group — chains are Deployment-env-settable, so the

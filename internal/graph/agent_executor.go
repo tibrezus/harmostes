@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -83,6 +84,18 @@ func (e *AgentExecutor) Execute(ctx context.Context, node v1alpha1.NodeSpec, env
 	// project under raw/arch/).
 	if cfg.Scope != "" {
 		task = task + "\n\n" + cfg.Scope
+	}
+
+	// ADR-0010: a resumed lineage gets a delta note — the transcript above
+	// already holds this PR's orientation, findings, and reasoning; the
+	// agent must not redo that work, only verify what changed.
+	if os.Getenv("HARMOSTES_SESSION_RESUME") == "1" {
+		note := "Session note: this is a RESUMED session. Your prior orientation, findings, and verdict reasoning are already in the transcript above — do not redo that work. Verify only what changed since your last turn"
+		if sha := os.Getenv("HARMOSTES_TRIGGER_SHA"); sha != "" {
+			note += " (new head: " + sha + ")"
+		}
+		note += "."
+		task = task + "\n\n" + note
 	}
 
 	// Build the gate (optional).

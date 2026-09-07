@@ -311,6 +311,22 @@ func runOneShot() {
 	} else {
 		piSessions = ""
 	}
+	// ADR-0010: PR-shaped runs own ONE session lineage — resume, don't
+	// rebuild. The delta note (HARMOSTES_SESSION_RESUME) is read by the
+	// graph agent executor; this process runs exactly one review, so the
+	// process env is the correct scope for it.
+	lineageDir, sessionID := "", ""
+	if piSessions != "" {
+		if dir, id, resume, err := sessionLineageForRun(piSessions); err != nil {
+			logf("session lineage unavailable, per-run persistence: %v", err)
+		} else if dir != "" {
+			lineageDir, sessionID = dir, id
+			if resume {
+				os.Setenv("HARMOSTES_SESSION_RESUME", "1")
+			}
+			logf("session lineage: resume=%v id=%s dir=%s", resume, id, dir)
+		}
+	}
 	// ADR-0009 freshness: prepare stamps /workspace/rig.db.sha with the
 	// reviewed SHA; the rig-query extension compares it against RIG_EXPECTED_SHA
 	// and REFUSES on mismatch. Scoped to the pi child's env — not process-global
@@ -344,6 +360,8 @@ func runOneShot() {
 			Workdir:     workdir,
 			Env:         piEnv,
 			SessionRoot: piSessions,
+			LineageDir:  lineageDir,
+			SessionID:   sessionID,
 			Log: func(ev agent.Event) {
 				logfFn("agent: %s %s", ev.Type, ev.ToolName)
 			},
@@ -650,6 +668,20 @@ func wakeFromEnv() worker.GateWake {
 		Action:   os.Getenv("HARMOSTES_TRIGGER_ACTION"),
 		Revision: envOr("HARMOSTES_TRIGGER_SHA", os.Getenv("HARMOSTES_TRIGGER_REVISION")),
 	}
+}
+
+// sessionLineageForRun resolves this run's PR session lineage (ADR-0010).
+// Only PR-shaped runs get one — fork-maintenance and the deterministic
+// pipelines keep the per-run session dirs (#243): they have no
+// conversation worth resuming. Non-PR or malformed pointer → empty dir/id
+// (the caller falls back to per-run persistence).
+func sessionLineageForRun(root string) (dir, id string, resume bool, err error) {
+	pr := wakeFromEnv().PR
+	repo, num, ok := strings.Cut(pr, "#")
+	if pr == "" || !ok || repo == "" || num == "" {
+		return "", "", false, nil
+	}
+	return agent.ResolveSession(root, repo, num)
 }
 
 func envOr(key, def string) string {

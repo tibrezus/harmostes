@@ -77,6 +77,13 @@ type RPCOptions struct {
 	// the process and can be forked later (pi --fork <file>). Empty disables
 	// persistence (pi still sessions, but in its default location).
 	SessionRoot string
+
+	// LineageDir + SessionID (ADR-0010): when both are set they REPLACE the
+	// per-run temp dir and the timestamp id — the dir is the PR's session
+	// lineage and the stable id makes pi RESUME the existing conversation
+	// (it creates the session on first use).
+	LineageDir string
+	SessionID  string
 }
 
 // NewRPC starts a pi --mode rpc subprocess and begins reading its event stream.
@@ -98,7 +105,20 @@ func NewRPC(ctx context.Context, opts RPCOptions) (*RPC, error) {
 	// continue an old conversation — and the fresh dir makes the file
 	// findable without racing concurrent runs on one pod.
 	sessionDir := ""
-	if opts.SessionRoot != "" {
+	switch {
+	case opts.LineageDir != "" && opts.SessionID != "":
+		// ADR-0010: PR-keyed lineage. The stable id REOPENS the existing
+		// session (resume) or creates it on first use — one conversation
+		// per PR, never rebuilt. mkdir -p, NOT MkdirTemp: the lineage
+		// persists across Jobs and must accumulate.
+		if err := os.MkdirAll(opts.LineageDir, 0o700); err != nil {
+			logf(opts.Log, Event{Type: "session_dir_error", Message: err.Error()})
+			args = append(args, "--no-session")
+		} else {
+			sessionDir = opts.LineageDir
+			args = append(args, "--session-dir", sessionDir, "--session-id", opts.SessionID)
+		}
+	case opts.SessionRoot != "":
 		dir, err := os.MkdirTemp(opts.SessionRoot, "run-")
 		if err != nil {
 			// Observable degradation (#243 r1): a failed mkdir would

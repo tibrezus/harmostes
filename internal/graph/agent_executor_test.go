@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
@@ -200,5 +201,42 @@ func TestLooksLikeRef(t *testing.T) {
 				t.Errorf("looksLikeRef(%q) = %v, want %v", tt.input, got, tt.want)
 			}
 		})
+	}
+}
+
+// capturingAgentRunner records the task text it was given.
+type capturingAgentRunner struct{ task string }
+
+func (f *capturingAgentRunner) Run(_ context.Context, task string, _ agent.Gate, _ int, _ agent.Logger, _ ...agent.TaskOption) (agent.Result, error) {
+	f.task = task
+	return agent.Result{Green: true}, nil
+}
+
+// TestAgentExecutorResumeNoteAppended (ADR-0010): a resumed lineage's run
+// carries the delta note — do-not-redo + the new head.
+func TestAgentExecutorResumeNoteAppended(t *testing.T) {
+	t.Setenv("HARMOSTES_SESSION_RESUME", "1")
+	t.Setenv("HARMOSTES_TRIGGER_SHA", "deadbeef123")
+	runner := &capturingAgentRunner{}
+	exec := NewAgentExecutor(runner, nil, nil, nil, "")
+	node := v1alpha1.NodeSpec{ID: "a", Type: "agent", Config: mustJSON(t, AgentNodeConfig{Task: "review it"})}
+	if _, err := exec.Execute(context.Background(), node, NodeEnv{}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(runner.task, "RESUMED session") || !strings.Contains(runner.task, "deadbeef123") {
+		t.Fatalf("delta note missing: %q", runner.task)
+	}
+}
+
+func TestAgentExecutorFreshRunHasNoResumeNote(t *testing.T) {
+	t.Setenv("HARMOSTES_SESSION_RESUME", "")
+	runner := &capturingAgentRunner{}
+	exec := NewAgentExecutor(runner, nil, nil, nil, "")
+	node := v1alpha1.NodeSpec{ID: "a", Type: "agent", Config: mustJSON(t, AgentNodeConfig{Task: "review it"})}
+	if _, err := exec.Execute(context.Background(), node, NodeEnv{}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if strings.Contains(runner.task, "RESUMED session") {
+		t.Fatalf("fresh run must not carry the resume note: %q", runner.task)
 	}
 }

@@ -2,13 +2,18 @@
 
 Reference plugins shipped with the framework. Each is the deterministic logic
 extracted from a real workflow; new workflows reuse these or add their own.
+ADR-0011: every production plugin is a built-in — it ships in the worker image
+via `Dockerfile.worker` + `builtinPlugins()` and resolves by bare name.
 See the [Plugin Interface](https://github.com/tibrezus/harmostes/wiki/Plugin-Interface--legacy) page on the wiki for the contract.
 
 | Plugin | role | Used by | Provenance (today's script) |
 |---|---|---|---|
 | `rig-emit` | prepare | llm-wiki (lc4) | `emit-rig.py` (universal multi-language RIG generator) |
 | `raw-copy` | prepare | llm-wiki (generic) | `rsync` of source into `raw/<project>/` |
-| `merge-sync` | prepare | fork-maintenance | `sync-fork.sh` (merge upstream release branch into the release line) |
+| `fork-sync` | prepare | fork-maintenance | `sync-fork.sh` entry point (merge/subtree/mapping modes; built-in since ADR-0011) |
+| `workspace` | prepare | pr-review | PR workspace provisioning (context, diff, CI, head-SHA clone) |
+| `pr-review` | gate | pr-review | review.json output contract (decision + reviewed_sha + verdict trailer) |
+| `post-review` | deploy | pr-review | verdict comment + label consume (moved-head guard) |
 | `wiki-lint` | gate | llm-wiki | `gate-lint.sh` → full `ci-lint.sh` (markdownlint, mdlint, remark, mermaid, likec4, health, RIG compliance) |
 | `fork-maintenance` | gate | fork-maintenance | `gate-resolved.sh` (markers + `validate-fork.sh` + patch signatures) |
 | `git-push` | deploy | llm-wiki | rebase onto FETCH_HEAD + union-merge changelog + `git push HEAD:main` |
@@ -50,5 +55,5 @@ immune to squash/merge-base drift):
 - `reapply <wd> <fork> <baseline.json>`  (self-heal dropped roots from the release)
 - `verify  <wd> <baseline.json>`         (gate: exit 0 green / 1 lost)
 
-Used today by the bespoke fork-maintenance pipeline (vendored into k8s-config);
-in the framework port it slots in as the `prepare` baseline + a `verify` gate.
+Ships in the worker image (ADR-0011); the fork-sync engine uses it as the
+`prepare` baseline + a `verify` gate.

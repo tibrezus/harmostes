@@ -8,7 +8,7 @@
  */
 
 export const DEFAULT_FALLBACKS: Record<string, string[]> = {
-  "ali/anthropic/qwen3.8-flash": ["mtplx/qwen38-27b-optimized-quality-fp16"],
+  "mtplx/qwen38-27b-optimized-speed-fp16": ["ali/anthropic/qwen3.8-flash"],
 };
 
 /**

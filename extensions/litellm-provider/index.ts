@@ -40,7 +40,12 @@
  * string); attribute via the proxy's router logs, which record the serving
  * group per request. (3) Chained models register min(primary, fallback)
  * windows so the post-failover replay fits the fallback group — a real
- * capacity cost on every healthy run, taken for correctness. (4) The clamp
+ * capacity cost on every healthy run, taken for correctness — pi compacts
+ * at window−reserve, so flash runs compact ~4× earlier (1 MiB→256 KiB).
+ * The alternative, clamping only the fallback and letting the first
+ * over-long replay 400, was considered and rejected: it trades a clean
+ * early compaction for a dead stream exactly when the primary is already
+ * down. (4) The clamp
  * is not transitive: a proxy-side chain hanging off the fallback group is
  * invisible here. (5) A failover moves the whole review context to a
  * DIFFERENT upstream group — chains are Deployment-env-settable, so the

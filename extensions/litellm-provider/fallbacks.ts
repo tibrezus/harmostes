@@ -22,7 +22,10 @@ export function resolveFallbackChains(
   raw: string | undefined,
 ): { chains: Record<string, string[]>; warning?: string } {
   if (raw === undefined || raw.trim() === "") {
-    return { chains: DEFAULT_FALLBACKS };
+    // Shallow copy: the default must not leak by reference into callers
+    // that might normalize in place (r18-review P2 probe — a mutation of
+    // the returned map reached the exported const).
+    return { chains: { ...DEFAULT_FALLBACKS } };
   }
   let parsed: unknown;
   try {
@@ -87,13 +90,18 @@ export function applyChains(
     const contextWindow = model.max_input_tokens ?? 131072;
     const maxTokens = model.max_output_tokens ?? 8192;
     const out: ChainedModel = { id: model.id, contextWindow, maxTokens, droppedIds: [] };
-    if (!rawChain) return out;
+    // Own-property lookup + shape guard: a proxy model literally named
+    // "toString" would otherwise read a FUNCTION off the prototype and
+    // crash the extension factory (r18-review P4.3, probe-verified).
+    if (!Object.hasOwn(chains, model.id)) return out;
+    if (!Array.isArray(rawChain)) return out;
 
-    const chain = rawChain.filter((id) => {
-      if (byId.has(id)) return true;
-      out.droppedIds.push(id);
-      return false;
-    });
+    const chain = [...new Set(rawChain)] // dedupe — a doubled id fails over to the same dead group twice
+      .filter((id) => {
+        if (id !== model.id && byId.has(id)) return true;
+        out.droppedIds.push(id);
+        return false;
+      });
     if (chain.length === 0) return out; // nothing usable — attach no key at all
 
     let cw = contextWindow;
@@ -104,7 +112,13 @@ export function applyChains(
       if (fb.max_output_tokens && fb.max_output_tokens < mt) mt = fb.max_output_tokens;
     }
     if (cw < contextWindow || mt < maxTokens) {
-      out.clampNote = `ctx ${contextWindow}→${cw} (fallback clamp)`;
+      // Report whichever dimension ACTUALLY clamped (r18-review P4.2: a
+      // maxTokens-only clamp logged "ctx A→A" — a clamp that did not
+      // happen, hiding the one that did).
+      const parts: string[] = [];
+      if (cw < contextWindow) parts.push(`ctx ${contextWindow}→${cw}`);
+      if (mt < maxTokens) parts.push(`maxTokens ${maxTokens}→${mt}`);
+      out.clampNote = `${parts.join(", ")} (fallback clamp)`;
       out.contextWindow = cw;
       out.maxTokens = mt;
     }

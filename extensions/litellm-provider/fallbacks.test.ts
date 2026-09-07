@@ -88,3 +88,56 @@ test("applyChains: a chain that filters to empty attaches nothing", () => {
   assert.deepEqual(flash.droppedIds, ["mtplx/gone"]);
   assert.equal(wired.length, 0);
 });
+
+test("applyChains: self-chain (a→a) is dropped entirely — no failing-over to the group that just failed", () => {
+  const { annotated, wired } = applyChains(models, {
+    "ali/anthropic/qwen3.8-flash": ["ali/anthropic/qwen3.8-flash"],
+  }, proxy);
+  const flash = annotated.find((m) => m.id === "ali/anthropic/qwen3.8-flash")!;
+  assert.equal(flash.samplingParams, undefined);
+  assert.deepEqual(flash.droppedIds, ["ali/anthropic/qwen3.8-flash"]);
+  assert.equal(wired.length, 0);
+});
+
+test("applyChains: duplicate fallback ids are deduped", () => {
+  const { annotated } = applyChains(models, {
+    "ali/anthropic/qwen3.8-flash": ["mtplx/qwen38-27b-optimized-quality-fp16", "mtplx/qwen38-27b-optimized-quality-fp16"],
+  }, proxy);
+  const flash = annotated.find((m) => m.id === "ali/anthropic/qwen3.8-flash")!;
+  assert.deepEqual(flash.samplingParams, { fallbacks: ["mtplx/qwen38-27b-optimized-quality-fp16"] });
+});
+
+test("applyChains: prototype-named models (toString) read own properties only", () => {
+  // A proxy model literally named "toString" with NO own chain entry must
+  // read `undefined` (own-property lookup), not the inherited function —
+  // r18-review P4.3: Array.isArray(function) is false, so the old code
+  // crashed rawChain.filter inside the factory and killed every agent run.
+  const models2 = [{ id: "toString", max_input_tokens: 1000 }];
+  const { annotated, wired } = applyChains(models2, {}, proxy);
+  assert.equal(annotated[0].samplingParams, undefined);
+  assert.equal(wired.length, 0);
+  // And an OWN "toString" chain still wires normally (own-key lookup wins).
+  const { annotated: own, wired: wiredOwn } = applyChains(models2, { toString: ["mtplx/qwen38-27b-optimized-quality-fp16"] }, proxy);
+  assert.deepEqual(own[0].samplingParams, { fallbacks: ["mtplx/qwen38-27b-optimized-quality-fp16"] });
+  assert.equal(wiredOwn.length, 1);
+});
+
+test("applyChains: maxTokens-only clamp is reported as such", () => {
+  const proxy2 = new Map([
+    ["ali/anthropic/qwen3.8-flash", { max_input_tokens: 1048576, max_output_tokens: 32768 }],
+    ["small-out", { max_input_tokens: 1048576, max_output_tokens: 4096 }],
+  ]);
+  const { annotated } = applyChains(models, {
+    "ali/anthropic/qwen3.8-flash": ["small-out"],
+  }, proxy2);
+  const flash = annotated.find((m) => m.id === "ali/anthropic/qwen3.8-flash")!;
+  assert.match(flash.clampNote!, /maxTokens 32768→4096/);
+  assert.doesNotMatch(flash.clampNote!, /ctx 1048576→1048576/);
+});
+
+test("resolveFallbackChains: the default does not leak by reference", () => {
+  const { chains } = resolveFallbackChains(undefined);
+  (chains as Record<string, unknown>)["injected"] = ["x"];
+  const { chains: again } = resolveFallbackChains(undefined);
+  assert.equal(Object.keys(again).length, Object.keys(DEFAULT_FALLBACKS).length);
+});

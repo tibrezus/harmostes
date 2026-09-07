@@ -55,5 +55,9 @@ immune to squash/merge-base drift):
 - `reapply <wd> <fork> <baseline.json>`  (self-heal dropped roots from the release)
 - `verify  <wd> <baseline.json>`         (gate: exit 0 green / 1 lost)
 
-Ships in the worker image (ADR-0011); the fork-sync engine uses it as the
-`prepare` baseline + a `verify` gate.
+Ships in the worker image (ADR-0011, registered as a built-in). Note the
+fork-sync engine still invokes its OWN mounted copy
+(`chart/fork-maintenance/scripts/` at /workspace/scripts) via `$SCRIPT_DIR` —
+the built-in registration makes `{name: divergence-track}` resolvable for
+graph-native workflows. Unifying the two invocation paths is a recorded
+follow-up. It serves as the sync's `prepare` baseline + a `verify` gate.

@@ -65,10 +65,20 @@ case "$SYNC_EXIT" in
   0)
     # Success — up to date, PR created/merged, or a self-hosted pointer
     # (mapping-table def: the plugin defers to the fork repo's sync.yml).
+    # `changed` is the plugin contract's core signal: derived from the sync
+    # output, never assumed. sync-fork.sh prints its unique no-op banner
+    # ("Already up to date") ONLY on the up-to-date path; every productive
+    # path ends in the "=== Sync complete ===" block. Reporting a no-op as
+    # changed:true made every fork sync look productive (r1 review, P4).
+    if grep -q "Already up to date" <<<"$SYNC_OUT"; then
+      CHANGED=false
+    else
+      CHANGED=true
+    fi
     # The plugin's own final line becomes the PluginResult message so the
     # UI run shows what actually happened, verbatim.
-    printf '{"changed":true,"artifact":"fork-sync-%s","message":%s}\n' \
-      "$FORK_NAME" "$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$SYNC_MSG")"
+    printf '{"changed":%s,"artifact":"fork-sync-%s","message":%s}\n' \
+      "$CHANGED" "$FORK_NAME" "$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$SYNC_MSG")"
     exit 0
     ;;
   2)

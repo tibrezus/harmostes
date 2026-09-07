@@ -70,6 +70,9 @@ forkMaintenance:
   resolver:
     enabled: false
     image: ghcr.io/tibrezus/llm-wiki-controller:0.3.0
+    # Must carry the litellm/ prefix — the provider comes from the mounted
+    # litellm-provider extension (unqualified ids are unreachable).
+    model: litellm/zai/glm-4.7
     resources:
       requests: { cpu: 200m, memory: 1Gi }
       limits: { cpu: "2", memory: 8Gi }

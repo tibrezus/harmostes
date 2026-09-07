@@ -152,10 +152,11 @@ spec:
             - name: fork-hooks
               mountPath: /workspace/post-merge-hooks
               readOnly: true
-            - name: fork-plugins
-              mountPath: /plugins/fork-maintenance-plugins
-              readOnly: true
             {{- end }}
+            # No /plugins/fork-maintenance-plugins mount: fork-sync is a
+            # worker-image built-in since ADR-0011; the engine payload rides at
+            # /workspace. A plugin ConfigMap here had no producer in the chart
+            # and was an instant CreateContainerConfigError (r1 review, P3).
             {{- range .Values.pluginConfigMaps }}
             - name: plugin-cm-{{ . }}
               mountPath: /plugins/{{ . }}
@@ -194,10 +195,6 @@ spec:
         - name: fork-hooks
           configMap:
             name: {{ .Values.forkMaintenance.hooksConfigMap }}
-            defaultMode: 0755
-        - name: fork-plugins
-          configMap:
-            name: fork-maintenance-plugins
             defaultMode: 0755
         {{- end }}
         {{- range .Values.pluginConfigMaps }}

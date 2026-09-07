@@ -25,11 +25,15 @@ metadata:
   labels:
     app.kubernetes.io/name: harmostes
     app.kubernetes.io/managed-by: {{ .Release.Service }}
+# Keys are DERIVED from the directory (Files.Glob), not enumerated — a new
+# source file (e.g. fallbacks.ts) rides along automatically; enumerating keys
+# here is exactly how the copy went stale-incomplete the first time (r1 review,
+# P2: index.ts imported fallbacks.ts that no .Files.Get ever rendered).
 data:
-  index.ts: |
-    {{- .Files.Get "files/litellm-provider/index.ts" | nindent 4 }}
-  package.json: |
-    {{- .Files.Get "files/litellm-provider/package.json" | nindent 4 }}
+  {{- range $path, $_ := .Files.Glob "files/litellm-provider/**" }}
+  {{ base $path }}: |
+    {{- $.Files.Get $path | nindent 4 }}
+  {{- end }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -66,6 +70,10 @@ spec:
               # the resolver image doesn't, so write it at startup.
               mkdir -p /root/.pi/agent &&
               printf '%s\n' '{"packages":["/extensions/litellm-provider"]}' > /root/.pi/agent/settings.json &&
+              # Note: the worker image additionally bakes npm:pi-searxng; the
+              # resolver image does not and startup `pi install` would add an
+              # npm-registry dependency at pod start. Conflict resolution is
+              # git surgery, not web research — no searxng here is deliberate.
               exec python3 /workspace/scripts/conflict-subscriber.py
           ports:
             - name: http
@@ -82,6 +90,12 @@ spec:
               value: python3 /usr/local/bin/harmostes.py
             - name: SKILL_PATH
               value: /workspace/skill/SKILL.md
+            # The model id MUST carry the litellm/ provider prefix — the
+            # provider is registered by the mounted litellm-provider extension;
+            # an unqualified default (the script's own fallback) is unreachable
+            # under these settings (r1 review, P4).
+            - name: RESOLVER_MODEL
+              value: {{ $r.model | quote }}
             - name: HOME
               value: /root
             # LiteLLM proxy (pi + litellm/* via litellm-provider extension)

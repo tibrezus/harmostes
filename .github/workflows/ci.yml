@@ -210,3 +210,74 @@ jobs:
       # references to undefined values before they reach a cluster.
       - name: helm template (render smoke test)
         run: helm template harmostes chart/ --set namespace=harmostes > /dev/null
+
+      # Declarative-layer render assertions (ADR-0011; r1 review P8 — the
+      # default render exercises NONE of the new templates, which is how four
+      # defects survived a green CI). Renders with the fork engine, resolver,
+      # fork defs and credentials ENABLED and asserts the artifacts are whole:
+      # engine scripts non-empty, the litellm extension's relative imports all
+      # resolve to rendered keys (incompleteness class), templates/tasks
+      # present, resolver model prefixed, no producer-less plugin volume.
+      - name: helm template (declarative layer assertions)
+        run: |
+          helm template harmostes chart/ --set namespace=harmostes \
+            --set forkMaintenance.enabled=true \
+            --set forkMaintenance.resolver.enabled=true \
+            --set 'forkMaintenance.defs.forgejo\.yaml=name: forgejo' \
+            --set credentials[0].name=ci-test \
+            --set credentials[0].template.type=Opaque \
+            --set credentials[0].data[0].secretKey=k \
+            --set credentials[0].data[0].remoteRef.key=K > /tmp/render.yaml
+          python3 - <<'PY'
+          import re, sys, yaml
+
+          docs = [d for d in yaml.safe_load_all(open("/tmp/render.yaml")) if d]
+          by_kind = lambda k: [d for d in docs if d.get("kind") == k]
+          cms = {d["metadata"]["name"]: d.get("data", {}) for d in by_kind("ConfigMap")}
+          fail = []
+
+          def check(cond, msg):
+              if not cond:
+                  fail.append(msg)
+
+          # Engine payload: every script key non-empty.
+          scripts = cms.get("fork-maintenance-scripts", {})
+          check(len(scripts) == 10, f"fork-maintenance-scripts: want 10 keys, got {len(scripts)}")
+          check(all(scripts.values()), "fork-maintenance-scripts has an empty key (silent .Files.Get?)")
+
+          # litellm extension: relative imports must resolve to rendered keys
+          # (the incompleteness class — index.ts importing fallbacks.ts that
+          # no .Files.Get rendered).
+          ext = cms.get("litellm-provider-extension", {})
+          check("index.ts" in ext and "package.json" in ext, "litellm-provider-extension missing index.ts/package.json")
+          for imp in re.findall(r'from\s+"\./(.*?)";', ext.get("index.ts", "")):
+              check(imp in ext, f"litellm-provider-extension: index.ts imports ./{imp} — NOT rendered")
+
+          # Declarative layer present.
+          wts = by_kind("WorkflowTemplate")
+          check({w["metadata"]["name"] for w in wts} >= {"wiki-lint", "pr-review", "fork-maintenance", "noop"},
+                f"WorkflowTemplates incomplete: {[w['metadata']['name'] for w in wts]}")
+          tasks = cms.get("harmostes-tasks", {})
+          check(tasks.get("pr-review.txt") and tasks.get("arch-sync.txt"), "harmostes-tasks prompts missing/empty")
+          check(cms.get("fork-maintenance-defs", {}).get("forgejo.yaml"), "fork-maintenance-defs: forgejo.yaml not rendered")
+
+          # Resolver: model env must be litellm/-prefixed (unreachable default class).
+          deps = [d for d in by_kind("Deployment") if d["metadata"]["name"] == "fork-conflict-resolver"]
+          check(len(deps) == 1, "fork-conflict-resolver Deployment not rendered")
+          if deps:
+              env = {e["name"]: e.get("value", "") for e in deps[0]["spec"]["template"]["spec"]["containers"][0]["env"]}
+              check(env.get("RESOLVER_MODEL", "").startswith("litellm/"), f"RESOLVER_MODEL not litellm-prefixed: {env.get('RESOLVER_MODEL')}")
+
+          # No producer-less plugin volume on the worker pool (P3 regression guard).
+          pools = [d for d in by_kind("Deployment") if d["metadata"]["name"] == "harmostes-worker-pool"]
+          if pools:
+              vols = [v["name"] for v in pools[0]["spec"]["template"]["spec"]["volumes"]]
+              check("fork-plugins" not in vols, "worker-pool still mounts the producer-less fork-plugins volume")
+
+          check(by_kind("ExternalSecret"), "ExternalSecret not rendered from values.credentials")
+
+          if fail:
+              print("RENDER ASSERTIONS FAILED:", *fail, sep="\n  - ", file=sys.stderr)
+              sys.exit(1)
+          print(f"declarative layer render assertions: green ({len(docs)} docs)")
+          PY

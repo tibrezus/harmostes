@@ -108,7 +108,7 @@ func (d GateDeps) wake(wf *v1alpha1.Workflow) *candidate {
 	// re-labeled: probed live, "" != HeadSHA reads as "the head moved" and
 	// supersedes a dispatched claim on no evidence — refuse the override
 	// (r16 pillar 4). The missing-revision case is logged above.
-	requestShaped := webhook.RequestShapedActions[d.Wake.Action] && d.Wake.Revision != ""
+	requestShaped := webhook.RequestShaped(d.Wake.Action) && d.Wake.Revision != ""
 	return &candidate{
 		repo: repo, pr: pr, pointer: fmt.Sprintf("%s#%d", repo, pr), sha: d.Wake.Revision,
 		request: requestShaped,

@@ -220,17 +220,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request, workflowNa
 
 // pullRequestWakeActions are the consolidated actions that wake the
 // Review-Ready Gate. Everything else (assigned, review_requested, …) is a
-// no-op: 200, no annotations.
-// RequestShapedActions are the label-touching actions: they may supersede a
-// live claim, and of them only "labeled" is the breaker's human override
-// (#328). Single source — review_gate's wake() reuses this set so the two
-// lists cannot drift (#357 r16 2.2).
-var RequestShapedActions = map[string]bool{
-	"labeled":       true,
-	"unlabeled":     true,
-	"label_updated": true,
-}
-
+// no-op: 200, no annotations. Forgejo's granular aliases are normalized
+// before this set is consulted — the set is GitHub-shaped on purpose
+// (single source; do not add aliases here).
 var pullRequestWakeActions = map[string]bool{
 	"labeled":          true, // a human or the skill set a label — arm
 	"unlabeled":        true, // label removed (also the post-review consume) — re-evaluate
@@ -245,6 +237,24 @@ var pullRequestWakeActions = map[string]bool{
 	// gate re-verifies state, so a wake is a wake):
 	"label_updated": true,
 	"synchronized":  true,
+}
+
+// requestShapedActions are the label-touching subset of the wake actions:
+// they may supersede a live claim, and of them only "labeled" is the
+// breaker's human override (#328). Single source — review_gate consults
+// RequestShaped so the two lists cannot drift (#357 r16 2.2). Unexported:
+// an exported mutable map hands a fleet-wide override flip to any stray
+// write, compile-clean and CI-green.
+var requestShapedActions = map[string]bool{
+	"labeled":       true,
+	"unlabeled":     true,
+	"label_updated": true,
+}
+
+// RequestShaped reports whether a webhook action is label-touching — the
+// request-shaped class that may supersede a live review claim.
+func RequestShaped(action string) bool {
+	return requestShapedActions[action]
 }
 
 // servePullRequest handles a consolidated pull_request event. The handler

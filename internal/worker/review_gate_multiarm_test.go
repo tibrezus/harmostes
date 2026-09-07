@@ -1590,6 +1590,11 @@ func TestGateWakeActionVocabulary(t *testing.T) {
 		wantLabeled bool
 	}{
 		{"labeled", true, true},
+		// A labeled wake WITHOUT a revision cannot name the head the human
+		// re-labeled ("" != HeadSHA reads as a moved head and supersedes a
+		// dispatched claim on no evidence) — the override is refused
+		// (r16 pillar 4). It is still the label being applied (labeled).
+		{"labeled-without-revision", false, true},
 		{"unlabeled", true, false},
 		{"label_updated", true, false},
 		{"synchronize", false, false},
@@ -1599,8 +1604,13 @@ func TestGateWakeActionVocabulary(t *testing.T) {
 		{"ready_for_review", false, false},
 	}
 	for _, tc := range cases {
+		rev := "deadbeef123"
+		action := tc.action
+		if action == "labeled-without-revision" {
+			action, rev = "labeled", ""
+		}
 		deps := GateDeps{Log: t.Logf, Wake: GateWake{
-			PR: "git.rezus.cloud/tibrez/rhesadox#99", Action: tc.action, Revision: "deadbeef123",
+			PR: "git.rezus.cloud/tibrez/rhesadox#99", Action: action, Revision: rev,
 		}}
 		c := deps.wake(wf)
 		if c == nil {
@@ -1616,4 +1626,55 @@ func TestGateWakeActionVocabulary(t *testing.T) {
 	// wake riding a live claim may supersede NOTHING and reset NOTHING —
 	// covered behaviorally by the !cand.request continue and ArmClaim's
 	// humanRequest gate; the table above is the seam's contract.
+}
+
+// TestRunGate_RevisionlessWakeCannotSupersedeDispatched (r17 must-fix — the
+// behavioral pin the vocabulary table cannot be): a labeled wake carrying NO
+// revision names no head; "" != HeadSHA reads as "the head moved", so the
+// drain would release a live, DISPATCHED review and burn its slot on no
+// evidence. The wake must arm nothing and leave the claim untouched.
+// Mutation-verified: dropping the Revision leg of requestShaped turns this
+// red (the claim is released and re-armed).
+func TestRunGate_RevisionlessWakeCannotSupersedeDispatched(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := greenPRServer(t)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	st := &fakeStatus{}
+	now := time.Now()
+	disp := now.Add(-5 * time.Minute)
+	claim := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#99", "deadbeef123", now.Add(-30*time.Minute), &disp)
+	claim.Status.Phase = v1alpha1.AttemptPhaseReconciling
+	// An observably ALIVE Job: pass C must HOLD the dispatched claim (the
+	// thing under test is the drain's supersede, not a dispatch-lost release).
+	liveJob := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "attempt-job-alive-revless", Namespace: wf.Namespace,
+			Labels: map[string]string{
+				"app.kubernetes.io/name": "harmostes",
+				"harmostes.dev/workflow": wf.Name,
+				v1alpha1.AttemptLabel:    claim.Name,
+			},
+		},
+	}
+	deps, ctx := gateEnv(t, wf, st, claim, liveJob)
+	// The wake IS delivered (labeled) but carries NO revision: the head the
+	// human re-labeled is unnameable, so the override must not engage.
+	deps.Wake = GateWake{PR: "git.rezus.cloud/tibrez/rhesadox#99", Action: "labeled", Revision: ""}
+
+	out, err := RunReviewGateSweep(ctx, deps, wf)
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if len(out) != 0 {
+		t.Fatalf("a revisionless labeled wake must not dispatch, got %d", len(out))
+	}
+	claims, err := attempt.LiveReviewClaims(ctx, deps.Client, wf)
+	if err != nil || len(claims) != 1 {
+		t.Fatalf("the dispatched claim must stay live, got %d (%v)", len(claims), err)
+	}
+	if claims[0].Name != claim.Name || claims[0].Status.Review.Released {
+		t.Fatalf("the dispatched claim must be untouched: %v", claims[0].Status.Review)
+	}
 }

@@ -7,10 +7,11 @@
  * of #359: valid JSON with a wrong shape is the accidental-value risk).
  */
 
-// The target is operator-chosen (#360: speed over quality — same 27b
-// optimized family, faster reviews; both live in the proxy key's scope).
+// Role split (platform decision): mtplx speed is the PRIMARY across the
+// workflows (ops 8c1fb609), so the default chain guards THE PRIMARY —
+// if speed fails over, reviews land on ali/anthropic/qwen3.8-flash.
 export const DEFAULT_FALLBACKS: Record<string, string[]> = {
-  "ali/anthropic/qwen3.8-flash": ["mtplx/qwen38-27b-optimized-speed-fp16"],
+  "mtplx/qwen38-27b-optimized-speed-fp16": ["ali/anthropic/qwen3.8-flash"],
 };
 
 /**

@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"fmt"
 	"time"
 
 	"context"
@@ -46,6 +47,10 @@ func (f fakeAgent) Run(_ context.Context, _ string, _ agent.Gate, _ int, _ agent
 }
 
 type fakeDapr struct{ published []string }
+
+func (f *fakeDapr) InvokeActor(ctx context.Context, actorType, actorID, method string, payload []byte) ([]byte, error) {
+	return nil, fmt.Errorf("actors not used in this test")
+}
 
 func (f *fakeDapr) GetState(_ context.Context, _, _ string) (string, error) { return "", nil }
 func (f *fakeDapr) SaveState(_ context.Context, _, _, _ string) error       { return nil }

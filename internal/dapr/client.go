@@ -27,6 +27,9 @@ import (
 
 // Client is the Dapr surface harmostes uses.
 type Client interface {
+	// InvokeActor calls a method on a Dapr actor via the sidecar; the
+	// sidecar serializes calls per actor id (turn-based access).
+	InvokeActor(ctx context.Context, actorType, actorID, method string, payload []byte) ([]byte, error)
 	// GetState returns the stored value ("" if absent). A missing key is not an
 	// error.
 	GetState(ctx context.Context, store, key string) (string, error)
@@ -104,6 +107,77 @@ func (c *HTTPClient) GetState(ctx context.Context, store, key string) (string, e
 		return v, nil
 	}
 	return strings.TrimSpace(string(b)), nil
+}
+
+// InvokeActor calls a method on a Dapr actor through the sidecar. The
+// sidecar routes via placement to the hosting app and serializes calls
+// per actor id (turn-based access — conflict-freedom by construction).
+func (c *HTTPClient) InvokeActor(ctx context.Context, actorType, actorID, method string, payload []byte) ([]byte, error) {
+	var body io.Reader
+	if payload != nil {
+		body = bytes.NewReader(payload)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut,
+		fmt.Sprintf("%s/v1.0/actors/%s/%s/method/%s", c.BaseURL, actorType, url.PathEscape(actorID), method), body)
+	if err != nil {
+		return nil, err
+	}
+	inject(ctx, req)
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("dapr invoke-actor %s/%s.%s: %s", actorType, actorID, method, resp.Status)
+	}
+	return io.ReadAll(resp.Body)
+}
+
+// GetActorState reads a key from the actor's isolated state partition.
+func (c *HTTPClient) GetActorState(ctx context.Context, actorType, actorID, key string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		fmt.Sprintf("%s/v1.0/actors/%s/%s/state/%s", c.BaseURL, actorType, url.PathEscape(actorID), key), nil)
+	if err != nil {
+		return nil, err
+	}
+	inject(ctx, req)
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("dapr get-actor-state: %s", resp.Status)
+	}
+	return io.ReadAll(resp.Body)
+}
+
+// SaveActorState writes a key into the actor's isolated state partition.
+// value must be JSON-serializable (the API stores it as-is).
+func (c *HTTPClient) SaveActorState(ctx context.Context, actorType, actorID, key string, value any) error {
+	b, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut,
+		fmt.Sprintf("%s/v1.0/actors/%s/%s/state/%s", c.BaseURL, actorType, url.PathEscape(actorID), key), bytes.NewReader(b))
+	if err != nil {
+		return err
+	}
+	inject(ctx, req)
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("dapr save-actor-state: %s", resp.Status)
+	}
+	return nil
 }
 
 func (c *HTTPClient) SaveState(ctx context.Context, store, key, value string) error {
@@ -281,6 +355,21 @@ func Tracing(c Client) Client {
 // a dapr.<op> client span with semantic attributes (rpc.system=dapr so the
 // backend's service-map / dependency views group Dapr calls) + error/status.
 type tracingClient struct{ inner Client }
+
+func (t *tracingClient) InvokeActor(ctx context.Context, actorType, actorID, method string, payload []byte) ([]byte, error) {
+	var v []byte
+	err := t.run(ctx, "actors.invoke", func(ctx context.Context) error {
+		var e error
+		v, e = t.inner.InvokeActor(ctx, actorType, actorID, method, payload)
+		return e
+	},
+		attribute.String("rpc.system", "dapr"),
+		attribute.String("rpc.method", "actors.invoke"),
+		attribute.String("dapr.actor.type", actorType),
+		attribute.String("dapr.actor.id", actorID),
+	)
+	return v, err
+}
 
 func (t *tracingClient) GetState(ctx context.Context, store, key string) (string, error) {
 	var v string

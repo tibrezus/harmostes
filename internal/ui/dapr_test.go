@@ -21,6 +21,10 @@ type mockDaprClient struct {
 	publishFunc     func(context.Context, string, string, string) error
 }
 
+func (m *mockDaprClient) InvokeActor(ctx context.Context, actorType, actorID, method string, payload []byte) ([]byte, error) {
+	return nil, fmt.Errorf("actors not used in this test")
+}
+
 func (m *mockDaprClient) GetState(ctx context.Context, store, key string) (string, error) {
 	if m.getStateFunc != nil {
 		return m.getStateFunc(ctx, store, key)

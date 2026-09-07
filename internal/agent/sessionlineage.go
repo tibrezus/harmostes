@@ -46,14 +46,6 @@ func SanitizePR(pr string) bool {
 	return true
 }
 
-// LineageKey is the Dapr-state key carrying the PR's session lineage —
-// the durable half of the association: Job pods are ephemeral, the state
-// store is not. Fetch at run start, materialize as the local session
-// file, resume; publish back after the run (r20 P1 blocker fix).
-func LineageKey(repo, pr string) string {
-	return fmt.Sprintf("pi-lineage/%s~%s", SanitizeRepo(repo), pr)
-}
-
 // LineageDir is the PR's session directory under root: readable, and
 // collision-proof across repos whose sanitized forms would coincide (the
 // repo hash disambiguates "a_b/c" from "a/b-c").

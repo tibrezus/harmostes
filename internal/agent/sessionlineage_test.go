@@ -69,9 +69,3 @@ func TestSanitizePRTraversalRefused(t *testing.T) {
 		t.Fatal("absurdly long pr refused")
 	}
 }
-
-func TestLineageKey(t *testing.T) {
-	if k := LineageKey("git.rezus.cloud/tibrez/rhesadox", "99"); k != "pi-lineage/git.rezus.cloud-tibrez-rhesadox~99" {
-		t.Fatalf("key: %q", k)
-	}
-}

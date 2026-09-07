@@ -42,6 +42,7 @@ import (
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
 	"github.com/tibrezus/harmostes/internal/agent"
+	"github.com/tibrezus/harmostes/internal/agentlineage"
 	"github.com/tibrezus/harmostes/internal/attempt"
 	"github.com/tibrezus/harmostes/internal/dapr"
 	"github.com/tibrezus/harmostes/internal/graph"
@@ -90,6 +91,21 @@ func main() {
 		logger = slog.Default().With("component", "harmostes-worker")
 		ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 		defer cancel()
+		// PRLineage actor host (ADR-0010): the pool is the long-lived app;
+		// Dapr routes actor calls here via the declared app-port. The
+		// sidecar serializes per-actor-id calls (turn-based) and stores
+		// actor state in the state store — isolation + durability + no
+		// fetch/publish races across concurrent reviews of one PR.
+		if envOr("HARMOSTES_ACTORS", "on") == "on" {
+			go func() {
+				addr := ":" + envOr("HARMOSTES_ACTOR_PORT", "8084")
+				srv := &http.Server{Addr: addr, Handler: &agentlineage.Host{Sidecar: dapr.New(envOr("DAPR_HTTP_ENDPOINT", ""))}}
+				logf("prlineage actor host on %s", addr)
+				if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+					logf("actor host stopped: %v", err)
+				}
+			}()
+		}
 		if err := worker.RunConsumer(ctx); err != nil {
 			fatal("consumer: %v", err)
 		}
@@ -315,22 +331,27 @@ func runOneShot() {
 	// rebuild. The delta note (HARMOSTES_SESSION_RESUME) is read by the
 	// graph agent executor; this process runs exactly one review, so the
 	// process env is the correct scope for it.
-	lineageDir, sessionID, lineageKey := "", "", ""
+	lineageDir, sessionID, actorID := "", "", ""
 	if piSessions != "" {
-		if dir, id, key, resume, err := sessionLineageForRun(piSessions); err != nil {
+		if dir, id, aid, resume, err := sessionLineageForRun(piSessions); err != nil {
 			logf("session lineage unavailable, per-run persistence: %v", err)
 		} else if dir != "" {
-			lineageDir, sessionID, lineageKey = dir, id, key
-			// Durable half (r20 P1): Job pods die with /tmp — fetch the
-			// lineage from the state store and materialize it as the local
-			// session file, so the stable id RESUMES the real conversation.
-			if data, err := deps.Dapr.GetState(ctx, deps.DaprStateStore, key); err == nil && data != "" {
-				if err := os.WriteFile(filepath.Join(dir, id+".jsonl"), []byte(data), 0o600); err != nil {
-					logf("session lineage materialize failed: %v", err)
-				} else {
-					resume = true
+			lineageDir, sessionID, actorID = dir, id, aid
+			// Durable half (r20 P1): Job pods die with /tmp — the PRLineage
+			// ACTOR owns the lineage (isolated + durable + turn-based);
+			// fetch it and materialize as the local session file, so the
+			// stable id RESUMES the real conversation (KV-cache economics).
+			if raw, err := deps.Dapr.InvokeActor(ctx, agentlineage.ActorType, aid, "fetch", nil); err == nil {
+				var sess agentlineage.Session
+				if json.Unmarshal(raw, &sess) == nil && sess.Session != "" {
+					if err := os.WriteFile(filepath.Join(dir, id+".jsonl"), []byte(sess.Session), 0o600); err != nil {
+						logf("session lineage materialize failed: %v", err)
+					} else {
+						resume = true
+						logf("session lineage: actor gen=%d lastHead=%s", sess.Generation, sess.LastHead)
+					}
 				}
-			} else if err != nil {
+			} else {
 				logf("session lineage fetch failed (fresh if absent): %v", err)
 			}
 			if resume {
@@ -384,14 +405,17 @@ func runOneShot() {
 		// Upload the forkable session alongside the transcript record —
 		// best-effort, the run already succeeded.
 		SessionFiles: func(fctx context.Context, files []string) {
-			// Durable half (r20 P1): publish the lineage session back to
-			// the state store so the NEXT round (fresh Job pod) resumes it.
-			if lineageDir != "" && lineageKey != "" {
+			// Durable half (r20 P1): publish back THROUGH the PRLineage
+			// actor — turn-based, so concurrent reviews of one PR
+			// serialize instead of racing; the actor owns the monotonic
+			// generation counter.
+			if lineageDir != "" && actorID != "" {
 				if b, err := os.ReadFile(filepath.Join(lineageDir, sessionID+".jsonl")); err == nil {
-					if err := deps.Dapr.SaveState(fctx, deps.DaprStateStore, lineageKey, string(b)); err != nil {
+					payload, _ := json.Marshal(agentlineage.Session{Session: string(b), LastHead: envOr("HARMOSTES_TRIGGER_SHA", "")})
+					if out, err := deps.Dapr.InvokeActor(fctx, agentlineage.ActorType, actorID, "publish", payload); err != nil {
 						logf("session lineage publish failed: %v", err)
 					} else {
-						logf("session lineage published (%d bytes)", len(b))
+						logf("session lineage published (%d bytes) %s", len(b), strings.TrimSpace(string(out)))
 					}
 				}
 			}
@@ -708,7 +732,11 @@ func sessionLineageForRun(root string) (dir, id, key string, resume bool, err er
 	if err != nil {
 		return "", "", "", false, err
 	}
-	return dir, id, agent.LineageKey(repo, num), resume, nil
+	aid, err := agentlineage.ActorID(repo, num)
+	if err != nil {
+		return "", "", "", false, err
+	}
+	return dir, id, aid, resume, nil
 }
 
 func envOr(key, def string) string {

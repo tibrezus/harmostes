@@ -234,20 +234,33 @@ func TestBuiltinPluginsParity(t *testing.T) {
 		t.Fatal("builtinPlugins() is empty")
 	}
 
-	// Dockerfile.worker: every COPY destination under the plugin dir.
-	dfBytes, err := os.ReadFile(filepath.Join("..", "..", "Dockerfile.worker"))
-	if err != nil {
-		t.Fatalf("read Dockerfile.worker: %v", err)
-	}
-	inImage := map[string]bool{}
-	for _, line := range strings.Split(string(dfBytes), "\n") {
-		if !strings.HasPrefix(strings.TrimSpace(line), "COPY ") {
-			continue
+	// BOTH worker Dockerfiles — the dev one AND the GoReleaser release one —
+	// must EACH copy every builtin. The r131 incident shipped an image whose
+	// binary registered the ADR-0011 builtins while
+	// .github/Dockerfile.worker.release (the one the release pipeline actually
+	// builds) omitted them: prepare fork/exec ENOENT fleet-wide. Per-file
+	// sets, not a union — a union cannot see a file missing from only one
+	// Dockerfile (mutation-probed both ways).
+	for _, df := range []string{"Dockerfile.worker", filepath.Join(".github", "Dockerfile.worker.release")} {
+		dfBytes, err := os.ReadFile(filepath.Join("..", "..", df))
+		if err != nil {
+			t.Fatalf("read %s: %v", df, err)
 		}
-		fields := strings.Fields(line)
-		dest := fields[len(fields)-1]
-		if strings.HasPrefix(dest, "/usr/local/lib/harmostes/plugins/") {
-			inImage[dest] = true
+		set := map[string]bool{}
+		for _, line := range strings.Split(string(dfBytes), "\n") {
+			if !strings.HasPrefix(strings.TrimSpace(line), "COPY ") {
+				continue
+			}
+			fields := strings.Fields(line)
+			dest := fields[len(fields)-1]
+			if strings.HasPrefix(dest, "/usr/local/lib/harmostes/plugins/") {
+				set[dest] = true
+			}
+		}
+		for name, path := range builtins {
+			if !set[path] {
+				t.Errorf("builtin %q → %s is NOT COPY-ed by %s — that image would resolve it but not contain it", name, path, df)
+			}
 		}
 	}
 
@@ -264,10 +277,7 @@ func TestBuiltinPluginsParity(t *testing.T) {
 		}
 	}
 
-	for name, path := range builtins {
-		if !inImage[path] {
-			t.Errorf("builtin %q → %s is NOT COPY-ed into Dockerfile.worker — the image would resolve it but not contain it", name, path)
-		}
+	for name := range builtins {
 		disk, ok := onDisk[name]
 		if !ok {
 			t.Errorf("builtin %q has no plugins/%s/%s.sh source file", name, name, name)

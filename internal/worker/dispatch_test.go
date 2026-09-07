@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tibrezus/harmostes/internal/attempt"
 	batchv1 "k8s.io/api/batch/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -47,25 +48,23 @@ func newTestDispatcher(t *testing.T, objects ...runtime.Object) (*Dispatcher, co
 	return d, context.Background()
 }
 
-// gatedDispatchWorkflow: the gate fixture with the durable wake on the CR —
-// the webhook annotates before publishing, so the in-process gate reads the
-// annotation (env is per-process and the dispatcher is shared).
+// gatedDispatchWorkflow: the gate fixture. The wake does NOT ride the CR —
+// the controller clears the trigger annotations at schedule time and the
+// env vars land on dispatched Job pods, so in the worker-pool topology the
+// event reaches the gate only through GateDeps.Wake* (#349); the fixture's
+// annotations are gone on purpose. The request pointer must stay in the
+// workflow's configured scope — an out-of-scope wake arms nothing.
 func gatedDispatchWorkflow() *v1alpha1.Workflow {
 	wf := gateWorkflow()
 	wf.Name = "pr-review-harmostes"
 	wf.Namespace = "default"
-	wf.Annotations = map[string]string{
-		"harmostes.dev/trigger-pr":       "git.rezus.cloud/tibrez/rhesadox#99",
-		"harmostes.dev/trigger-action":   "labeled",
-		"harmostes.dev/trigger-revision": "deadbeef123",
-	}
 	return wf
 }
 
 func dispatchRequest() RunRequest {
 	return RunRequest{
 		Workflow: "pr-review-harmostes", Namespace: "default",
-		Pr: "github.com/tibrezus/harmostes#99", Action: "labeled",
+		Pr: "git.rezus.cloud/tibrez/rhesadox#99", Action: "labeled",
 		Revision: "deadbeef123", PrTitle: "t",
 	}
 }
@@ -256,4 +255,56 @@ func TestJobCredentialEnv(t *testing.T) {
 	if strings.Contains(joined, "DAPR_") || strings.Contains(joined, "POD_NAME") || strings.Contains(joined, "VALKEY") {
 		t.Fatalf("pod-scoped noise must not cross the Job boundary: %q", joined)
 	}
+}
+
+// TestDispatchWakeSurvivesTheHop (#357 P2, r18 P8 rework): the
+// RunRequest → GateDeps.Wake hop is three values in one struct; a forgotten
+// member compiles clean and kills exactly one hop. The fixture is a
+// MOVED-HEAD claim (armed at oldhead000, PR now green at deadbeef123) so
+// the wake's Revision decides which attempt the Job runs: with Revision,
+// the supersede arms at deadbeef123's derived name; with Revision lost,
+// candSha collapses to "" and the arm derives a foreign objective — a
+// different attempt name on the Job. Dropping Action kills the override
+// outright (0 jobs). Both mutations verified red on this test.
+func TestDispatchWakeSurvivesTheHop(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := greenPRServer(t)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gatedDispatchWorkflow()
+	d, ctx := newTestDispatcher(t, wf)
+
+	req := dispatchRequest()
+	// A LIVE claim at the OLD head: the moved-head labeled wake (request-
+	// shaped) supersedes it and arms at the NEW head's identity.
+	armed := time.Now().Add(-5 * time.Minute)
+	claim := attemptAttemptFixture(t, ctx, d, wf, "git.rezus.cloud/tibrez/rhesadox#99", "oldhead000", armed)
+
+	if err := d.Dispatch(ctx, req); err != nil {
+		t.Fatalf("dispatch over a moved-head claim: %v", err)
+	}
+	var jobs batchv1.JobList
+	if err := d.cl.List(ctx, &jobs); err != nil {
+		t.Fatalf("list jobs: %v", err)
+	}
+	if len(jobs.Items) != 1 {
+		t.Fatalf("the threaded wake must supersede the moved-head claim and dispatch, got %d jobs", len(jobs.Items))
+	}
+	obj := attempt.DeriveObjective(wf, attempt.TriggerContext{Revision: "deadbeef123", Source: "webhook"})
+	want := attempt.AttemptName(wf.Name, attempt.Identity(obj))
+	if got := jobs.Items[0].Labels["harmostes.dev/attempt"]; got != want {
+		t.Fatalf("the Job must run the deadbeef123 identity (Revision decided it), got %q want %q", got, want)
+	}
+	_ = claim
+}
+
+// attemptAttemptFixture arms a live claim through the real path (the
+// dispatcher will supersede it).
+func attemptAttemptFixture(t *testing.T, ctx context.Context, d *Dispatcher, wf *v1alpha1.Workflow, pr, sha string, armed time.Time) string {
+	t.Helper()
+	at, err := attempt.ArmClaim(ctx, d.cl, d.scheme, wf, pr, sha, "needs-review", false)
+	if err != nil {
+		t.Fatalf("arm %s: %v", sha, err)
+	}
+	return at.Name
 }

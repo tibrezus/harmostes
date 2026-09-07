@@ -161,7 +161,10 @@ func runOneShot() {
 	// this Job for a claim — re-evaluating here would double-count API
 	// budget and risk diverging from the dispatch decision. Direct/manual
 	// runs (no marker) evaluate the gate in WAKE mode: the wake PR only,
-	// never a multi-dispatch fan-out.
+	// never a multi-dispatch fan-out. The wake is threaded from the process
+	// env below — the boundary is where scraping belongs; inside the gate
+	// it was unreachable state (#349/#357 P1: an unthreaded boundary left
+	// the wake-only sweep with an empty candidate list, a silent no-op).
 	dispatched := os.Getenv("HARMOSTES_DISPATCHED_ATTEMPT") != ""
 	if wf.Spec.ReviewReady != nil && !dispatched {
 		gateTL := timeline.NewGateWriter(dapr.Tracing(dapr.New(os.Getenv("DAPR_HTTP_ENDPOINT"))),
@@ -170,6 +173,7 @@ func runOneShot() {
 			Status: k8s.StatusPatcher{Client: cl, Namespace: namespace},
 			Client: cl, Scheme: scheme,
 			Log: logf, TL: gateTL,
+			Wake: wakeFromEnv(),
 		}
 		dispatches, err := worker.RunReviewGateWake(ctx, gateDeps, wf)
 		if err != nil {
@@ -620,6 +624,32 @@ func envReq(key string) string {
 		os.Exit(2)
 	}
 	return v
+}
+
+// wakeFromEnv reads the trigger event at the run command's process boundary.
+// This is the MANUAL-OPERATOR escape hatch, not the production seam: the
+// in-cluster producers either co-write HARMOSTES_DISPATCHED_ATTEMPT (the
+// dispatcher's dispatchEnv — which makes runOneShot SKIP this gate) or land
+// their env after the gate has already run (EnvelopeEnv). The production
+// wake path is consumer → dispatch.go's GateWake. What this boundary must
+// do is parse BOTH env shapes those producers emit, because a wrong model
+// of the input here has cost three review rounds (#357 r16 2.1, r18 P4):
+// dispatchEnv writes HARMOSTES_TRIGGER_PR as a FULL POINTER (req.Pr) and no
+// REPO; EnvelopeEnv writes a BARE NUMBER plus HARMOSTES_TRIGGER_REPO. SHA
+// wins over REVISION — each producer writes exactly one of the two names.
+// An operator running `harmostes-worker run` by hand can use either shape.
+func wakeFromEnv() worker.GateWake {
+	pr := os.Getenv("HARMOSTES_TRIGGER_PR")
+	if pr != "" && !strings.Contains(pr, "#") {
+		if repo := os.Getenv("HARMOSTES_TRIGGER_REPO"); repo != "" {
+			pr = repo + "#" + pr // bare number + repo → the gate's pointer form
+		}
+	}
+	return worker.GateWake{
+		PR:       pr,
+		Action:   os.Getenv("HARMOSTES_TRIGGER_ACTION"),
+		Revision: envOr("HARMOSTES_TRIGGER_SHA", os.Getenv("HARMOSTES_TRIGGER_REVISION")),
+	}
 }
 
 func envOr(key, def string) string {

@@ -27,6 +27,16 @@ for i,c in enumerate(comments):
         print(f"ERROR: comments[{i}] must have path+body",file=sys.stderr);sys.exit(1)
 review["decision"]=d
 # Skill output contract (v2): reviewed_sha must equal the PR head SHA and
+    # ── Divergence ledger (r18-r20 lessons) — check the CLASS, every round ──
+    # 1. Mutation-probe load-bearing tests (BOGUS the guarded value; red required).
+    # 2. One fact, one home: grep every home of any fact a fix touches.
+    # 3. Deployment claims must be falsified against job.go/chart/ops manifests,
+    #    never accepted from ADR prose (r20: /tmp lineage blocker).
+    # 4. Author==ADR-author ⇒ adversarial pass on the premise FIRST.
+    # ── Session continuity (ADR-0010): rounds are ONE lineage. If a prior
+    # verdict exists at an earlier head: previously-addressed findings stay
+    # addressed; review the DELTA between heads; carry this ledger forward. ──
+    # the body must END with the verdict trailer — the merge-currency token.
 # the body must END with the verdict trailer — the merge-currency token.
 sha=review.get("reviewed_sha","")
 ctx_path=os.path.join(os.path.dirname(path),"pr-context.json")

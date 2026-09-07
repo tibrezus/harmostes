@@ -98,6 +98,10 @@ COPY plugins/rig-emit/emit-rig.sh  /usr/local/lib/harmostes/plugins/emit-rig.sh
 COPY plugins/rig-emit/rig-to-c4.py /usr/local/lib/harmostes/plugins/rig-to-c4.py
 COPY plugins/wiki-lint/wiki-lint.sh /usr/local/lib/harmostes/plugins/wiki-lint.sh
 COPY plugins/git-push/git-push.sh   /usr/local/lib/harmostes/plugins/git-push.sh
+COPY plugins/workspace/workspace.sh   /usr/local/lib/harmostes/plugins/workspace.sh
+COPY plugins/pr-review/pr-review.sh   /usr/local/lib/harmostes/plugins/pr-review.sh
+COPY plugins/post-review/post-review.sh /usr/local/lib/harmostes/plugins/post-review.sh
+COPY plugins/fork-sync/fork-sync.sh   /usr/local/lib/harmostes/plugins/fork-sync.sh
 COPY plugins/workspace/workspace.sh      /usr/local/lib/harmostes/plugins/workspace.sh
 COPY plugins/pr-review/pr-review.sh      /usr/local/lib/harmostes/plugins/pr-review.sh
 COPY plugins/post-review/post-review.sh  /usr/local/lib/harmostes/plugins/post-review.sh

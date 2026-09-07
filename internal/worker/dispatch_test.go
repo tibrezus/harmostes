@@ -274,12 +274,14 @@ func TestDispatchWakeSurvivesTheHop(t *testing.T) {
 	d, ctx := newTestDispatcher(t, wf)
 
 	req := dispatchRequest()
+	claimName := ""
 	for i := 0; i < v1alpha1.MaxDeadDispatchesPerHead; i++ {
 		at, err := attempt.ArmClaim(ctx, d.cl, d.scheme, wf,
 			"git.rezus.cloud/tibrez/rhesadox#99", "deadbeef123", "needs-review", false)
 		if err != nil {
 			t.Fatalf("arm %d: %v", i+1, err)
 		}
+		claimName = at.Name
 		_ = attempt.MarkClaimDispatched(ctx, d.cl, wf.Namespace, at.Name)
 		_, _, _ = attempt.ReleaseClaimDead(ctx, d.cl, wf.Namespace, at.Name, "dispatch-lost")
 	}
@@ -293,5 +295,13 @@ func TestDispatchWakeSurvivesTheHop(t *testing.T) {
 	}
 	if len(jobs.Items) != 1 {
 		t.Fatalf("the threaded wake must break the breaker open and dispatch, got %d jobs", len(jobs.Items))
+	}
+	// Revision is the third member and the pin must FEEL it drop: with the
+	// revision, the labeled wake is the same-head human override — it re-arms
+	// the SAME attempt (objective identity derives from the head SHA). With
+	// Revision lost, candSha collapses to "" and the arm derives a foreign
+	// objective: a different attempt name on the Job. Assert the name.
+	if got := jobs.Items[0].Labels["harmostes.dev/attempt"]; got != claimName {
+		t.Fatalf("the wake must re-arm the same-head claim in place (override, not supersede): job attempt %q want %q", got, claimName)
 	}
 }

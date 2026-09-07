@@ -173,12 +173,7 @@ func runOneShot() {
 			Status: k8s.StatusPatcher{Client: cl, Namespace: namespace},
 			Client: cl, Scheme: scheme,
 			Log: logf, TL: gateTL,
-			// Same precedence the envelope export uses (SHA first).
-			Wake: worker.GateWake{
-				PR:       os.Getenv("HARMOSTES_TRIGGER_PR"),
-				Action:   os.Getenv("HARMOSTES_TRIGGER_ACTION"),
-				Revision: envOr("HARMOSTES_TRIGGER_SHA", os.Getenv("HARMOSTES_TRIGGER_REVISION")),
-			},
+			Wake: wakeFromEnv(),
 		}
 		dispatches, err := worker.RunReviewGateWake(ctx, gateDeps, wf)
 		if err != nil {
@@ -629,6 +624,18 @@ func envReq(key string) string {
 		os.Exit(2)
 	}
 	return v
+}
+
+// wakeFromEnv reads the trigger event at the run command's process boundary —
+// env is the only event source here (no RunRequest exists), and scraping
+// belongs at the boundary, not inside the gate (#349/#357). SHA wins over
+// REVISION, matching EnvelopeEnv's own precedence.
+func wakeFromEnv() worker.GateWake {
+	return worker.GateWake{
+		PR:       os.Getenv("HARMOSTES_TRIGGER_PR"),
+		Action:   os.Getenv("HARMOSTES_TRIGGER_ACTION"),
+		Revision: envOr("HARMOSTES_TRIGGER_SHA", os.Getenv("HARMOSTES_TRIGGER_REVISION")),
+	}
 }
 
 func envOr(key, def string) string {

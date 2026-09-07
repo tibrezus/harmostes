@@ -50,3 +50,28 @@ func TestResolveSessionFreshThenResume(t *testing.T) {
 		t.Fatalf("existing session must RESUME in place: dir=%q id=%q resume=%v err=%v", dir2, id2, resume2, err)
 	}
 }
+
+// r20 P4 blocker: the PR half must never carry path syntax — traversal
+// probe ("../../outside") must be refused, not joined.
+func TestSanitizePRTraversalRefused(t *testing.T) {
+	for _, evil := range []string{"../evil", "../../outside", "", "99/../x", "../../../etc"} {
+		if SanitizePR(evil) {
+			t.Fatalf("SanitizePR must refuse %q", evil)
+		}
+		if _, _, _, err := ResolveSession(t.TempDir(), "host/o/r", evil); err != ErrNotAPR {
+			t.Fatalf("ResolveSession must refuse %q with ErrNotAPR, got %v", evil, err)
+		}
+	}
+	if !SanitizePR("99") || !SanitizePR("12345678") {
+		t.Fatal("numeric PRs must pass")
+	}
+	if SanitizePR("123456789") {
+		t.Fatal("absurdly long pr refused")
+	}
+}
+
+func TestLineageKey(t *testing.T) {
+	if k := LineageKey("git.rezus.cloud/tibrez/rhesadox", "99"); k != "pi-lineage/git.rezus.cloud-tibrez-rhesadox~99" {
+		t.Fatalf("key: %q", k)
+	}
+}

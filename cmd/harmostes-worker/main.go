@@ -315,16 +315,28 @@ func runOneShot() {
 	// rebuild. The delta note (HARMOSTES_SESSION_RESUME) is read by the
 	// graph agent executor; this process runs exactly one review, so the
 	// process env is the correct scope for it.
-	lineageDir, sessionID := "", ""
+	lineageDir, sessionID, lineageKey := "", "", ""
 	if piSessions != "" {
-		if dir, id, resume, err := sessionLineageForRun(piSessions); err != nil {
+		if dir, id, key, resume, err := sessionLineageForRun(piSessions); err != nil {
 			logf("session lineage unavailable, per-run persistence: %v", err)
 		} else if dir != "" {
-			lineageDir, sessionID = dir, id
+			lineageDir, sessionID, lineageKey = dir, id, key
+			// Durable half (r20 P1): Job pods die with /tmp — fetch the
+			// lineage from the state store and materialize it as the local
+			// session file, so the stable id RESUMES the real conversation.
+			if data, err := deps.Dapr.GetState(ctx, deps.DaprStateStore, key); err == nil && data != "" {
+				if err := os.WriteFile(filepath.Join(dir, id+".jsonl"), []byte(data), 0o600); err != nil {
+					logf("session lineage materialize failed: %v", err)
+				} else {
+					resume = true
+				}
+			} else if err != nil {
+				logf("session lineage fetch failed (fresh if absent): %v", err)
+			}
 			if resume {
 				os.Setenv("HARMOSTES_SESSION_RESUME", "1")
 			}
-			logf("session lineage: resume=%v id=%s dir=%s", resume, id, dir)
+			logf("session lineage: resume=%v id=%s", resume, id)
 		}
 	}
 	// ADR-0009 freshness: prepare stamps /workspace/rig.db.sha with the
@@ -372,6 +384,17 @@ func runOneShot() {
 		// Upload the forkable session alongside the transcript record —
 		// best-effort, the run already succeeded.
 		SessionFiles: func(fctx context.Context, files []string) {
+			// Durable half (r20 P1): publish the lineage session back to
+			// the state store so the NEXT round (fresh Job pod) resumes it.
+			if lineageDir != "" && lineageKey != "" {
+				if b, err := os.ReadFile(filepath.Join(lineageDir, sessionID+".jsonl")); err == nil {
+					if err := deps.Dapr.SaveState(fctx, deps.DaprStateStore, lineageKey, string(b)); err != nil {
+						logf("session lineage publish failed: %v", err)
+					} else {
+						logf("session lineage published (%d bytes)", len(b))
+					}
+				}
+			}
 			if err := worker.SavePiSession(fctx, deps.Dapr, deps.DaprStateStore, workflow, runID, files); err != nil {
 				logfFn("pi session upload failed: %v", err)
 			}
@@ -675,13 +698,17 @@ func wakeFromEnv() worker.GateWake {
 // pipelines keep the per-run session dirs (#243): they have no
 // conversation worth resuming. Non-PR or malformed pointer → empty dir/id
 // (the caller falls back to per-run persistence).
-func sessionLineageForRun(root string) (dir, id string, resume bool, err error) {
+func sessionLineageForRun(root string) (dir, id, key string, resume bool, err error) {
 	pr := wakeFromEnv().PR
 	repo, num, ok := strings.Cut(pr, "#")
 	if pr == "" || !ok || repo == "" || num == "" {
-		return "", "", false, nil
+		return "", "", "", false, nil
 	}
-	return agent.ResolveSession(root, repo, num)
+	dir, id, resume, err = agent.ResolveSession(root, repo, num)
+	if err != nil {
+		return "", "", "", false, err
+	}
+	return dir, id, agent.LineageKey(repo, num), resume, nil
 }
 
 func envOr(key, def string) string {

@@ -27,6 +27,33 @@ func SanitizeRepo(repo string) string {
 	}, repo)
 }
 
+// ErrNotAPR marks a pointer whose PR half is not a plain number — the
+// run keeps per-run persistence (and no path derived from raw input).
+var ErrNotAPR = fmt.Errorf("pr pointer is not numeric")
+
+// SanitizePR accepts only digits: PR numbers are numeric everywhere we
+// consume them, so anything else ("../evil", empty, junk) structurally
+// cannot become a path segment (r20 P4 traversal blocker).
+func SanitizePR(pr string) bool {
+	if pr == "" || len(pr) > 8 {
+		return false
+	}
+	for _, r := range pr {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// LineageKey is the Dapr-state key carrying the PR's session lineage —
+// the durable half of the association: Job pods are ephemeral, the state
+// store is not. Fetch at run start, materialize as the local session
+// file, resume; publish back after the run (r20 P1 blocker fix).
+func LineageKey(repo, pr string) string {
+	return fmt.Sprintf("pi-lineage/%s~%s", SanitizeRepo(repo), pr)
+}
+
 // LineageDir is the PR's session directory under root: readable, and
 // collision-proof across repos whose sanitized forms would coincide (the
 // repo hash disambiguates "a_b/c" from "a/b-c").
@@ -41,6 +68,9 @@ func LineageDir(root, repo, pr string) string {
 // every later spawn, which is the entire mechanism: same dir + same id =
 // same conversation (ADR-0010).
 func ResolveSession(root, repo, pr string) (dir, id string, resume bool, err error) {
+	if !SanitizePR(pr) {
+		return "", "", false, ErrNotAPR
+	}
 	dir = LineageDir(root, repo, pr)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", "", false, err

@@ -137,7 +137,12 @@ spec:
                     releaseReason: { type: string }
                     deadDispatches: { type: integer, minimum: 0, description: Dispatched reviews of this claim that died without a verdict (#328 breaker) }
                     dispatchLostReleases: { type: integer, minimum: 0, description: Consecutive never-dispatched releases of this claim (#343 fix 3 — bounds era reuse and the auto re-arm) }
-                    dismissedAt: { type: string, format: date-time, description: When the horizon last dismissed this head — survives revival, cleared by a human request, expires after the horizon (r11) }
+                    # Flow-style one-liner: the description MUST stay quoted —
+                    # an unquoted comma ends the plain scalar and the rest
+                    # parses as unknown schema keys, which strict decoders
+                    # (Flux SSA, kubectl --dry-run=server) reject outright
+                    # (#354) while lenient ones accept it and CI stays green.
+                    dismissedAt: { type: string, format: date-time, description: "When the horizon last dismissed this head — survives revival; time is the only eraser (r11)" }
                 # NOTE: CRDs under chart/crds/ are installed by `helm install`
                 # but NOT upgraded by `helm upgrade` — re-apply this file with
                 # `kubectl apply -f chart/crds/` on upgrade or the API server

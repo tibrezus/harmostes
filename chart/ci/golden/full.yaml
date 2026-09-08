@@ -5427,7 +5427,7 @@ spec:
       plugin:
         name: pr-review
     maxFixes: 1
-    model: litellm/ali/anthropic/qwen3.8-flash
+    model: litellm/mtplx/qwen38-27b-optimized-speed-fp16
     skill: /skills/pr-review/SKILL.md
     taskTemplate:
       configMap: harmostes-tasks

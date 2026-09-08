@@ -186,13 +186,16 @@ func TestBuiltinDockerfilesShipGitHostLib(t *testing.T) {
 				continue
 			}
 			fields := strings.Fields(line)
-			if fields[1] == "plugins/lib/" {
+			// builtins are COPY-ed FLAT (…/plugins/workspace.sh), so the lib
+			// must land at …/lib/ — exactly what the source line
+			// $(dirname "$0")/../lib/git-host.sh resolves to in-image.
+			if fields[1] == "plugins/lib/" && fields[len(fields)-1] == "/usr/local/lib/harmostes/lib/" {
 				shipped = true
 				break
 			}
 		}
 		if !shipped {
-			t.Errorf("%s does not COPY plugins/lib/ — builtins sourcing lib/git-host.sh would fail at prepare (r131 class)", df)
+			t.Errorf("%s does not COPY plugins/lib/ to /usr/local/lib/harmostes/lib/ — builtins sourcing lib/git-host.sh would fail at prepare (r131 class)", df)
 		}
 	}
 }

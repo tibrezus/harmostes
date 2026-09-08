@@ -33,7 +33,6 @@ func (f *fakeDapr) SaveActorState(ctx context.Context, actorType, actorID, key s
 	return fmt.Errorf("actors not used in this test")
 }
 
-
 func (f *fakeDapr) GetState(_ context.Context, _, key string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

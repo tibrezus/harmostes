@@ -59,7 +59,6 @@ func (f *fakeDapr) SaveActorState(ctx context.Context, actorType, actorID, key s
 	return fmt.Errorf("actors not used in this test")
 }
 
-
 func (f *fakeDapr) GetState(_ context.Context, _, _ string) (string, error) { return "", nil }
 func (f *fakeDapr) SaveState(_ context.Context, _, _, _ string) error       { return nil }
 func (f *fakeDapr) SaveStateTTL(_ context.Context, _, _, _ string, _ time.Duration) error {

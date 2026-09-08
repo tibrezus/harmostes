@@ -32,7 +32,6 @@ func (m *mockDaprClient) SaveActorState(ctx context.Context, actorType, actorID,
 	return fmt.Errorf("actors not used in this test")
 }
 
-
 func (m *mockDaprClient) GetState(ctx context.Context, store, key string) (string, error) {
 	if m.getStateFunc != nil {
 		return m.getStateFunc(ctx, store, key)

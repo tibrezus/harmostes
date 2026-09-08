@@ -46,7 +46,6 @@ func (f *fakeDaprClient) SaveActorState(ctx context.Context, actorType, actorID,
 	return fmt.Errorf("actors not used in this test")
 }
 
-
 func (f *fakeDaprClient) GetState(_ context.Context, store, key string) (string, error) {
 	if f.getErr != nil {
 		return "", f.getErr

@@ -1,0 +1,64 @@
+# Golden-render fixture (#368-8) — a production-SHAPED but fictional values
+# file that exercises every gated template layer in one render:
+# fork-maintenance engine + defs + hooks, the conflict resolver (with its
+# checksum annotations), credentials, and the default-on declarative layer
+# (workflowTemplates, tasks).
+#
+# `make golden-update` renders this into chart/ci/golden/full.yaml; CI diffs
+# a fresh render against the committed golden, so any rendered-output change
+# — intended or accidental — shows up as a reviewable diff instead of a
+# 3 a.m. runtime surprise. The fixture is deliberately fictional (golden
+# upstream/fork hosts) so it can never be mistaken for a real fleet def.
+#
+# Chart-version labels (helm.sh/chart, app.kubernetes.io/version) are filtered
+# out of the golden — they change every release and carry no information.
+namespace: harmostes-ci
+
+forkMaintenance:
+  enabled: true
+  defs:
+    golden.yaml: |
+      # Golden fixture def — production-shaped, entirely fictional (#368-8).
+      name: golden
+      upstream:
+        url: https://example.com/upstream/golden.git
+        branch: main
+      fork:
+        url: https://example.com/forks/golden.git
+        default_branch: rezus/main
+        mirror_branch: main
+        platform: github
+      auto:
+        merge: true
+        release: false
+      validate:
+        - name: golden-build
+          command: make build
+      patches:
+        - path: README.golden.md
+          signature: golden-marker
+    silver.yaml: |
+      name: silver
+      upstream:
+        url: https://example.com/upstream/silver.git
+        branch: main
+      fork:
+        url: https://example.com/forks/silver.git
+        default_branch: rezus/main
+        mirror_branch: main
+        platform: forgejo
+  resolver:
+    enabled: true
+    model: litellm/zai/glm-4.7
+
+credentials:
+  - name: golden-token
+    template:
+      type: Opaque
+    data:
+      - secretKey: token
+        remoteRef:
+          key: GOLDEN_TOKEN
+      - secretKey: url
+        remoteRef:
+          key: GOLDEN_URL

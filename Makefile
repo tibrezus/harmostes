@@ -12,7 +12,7 @@ TAG           ?= dev
 BIN_DIR       := bin
 GO            := go
 
-.PHONY: all build test test-go test-ui vet tidy generate manifests controller-worker docker docker-push docker-ui test-extensions test-integration clean test-rig-emit
+.PHONY: all build test test-go test-ui vet tidy generate manifests controller-worker docker docker-push docker-ui test-extensions test-integration clean test-rig-emit golden-update
 
 
 all: test build
@@ -32,6 +32,17 @@ test: test-go test-extensions test-rig-emit
 test-go:
 	git submodule update --init --recursive
 	$(GO) test ./...
+
+## golden-update: regenerate the committed golden render (ADR-0011 #368-8).
+## Renders chart/ with the fictional production-shaped fixture
+## (chart/ci/golden-values.yaml) into chart/ci/golden/full.yaml. CI re-renders
+## and diffs — any rendered-output change, intended or accidental, shows up
+## as a reviewable diff instead of a runtime surprise. Chart-version labels
+## are filtered (they change every release; `make golden-update` after any
+## template or payload change).
+golden-update:
+	helm template harmostes chart/ -f chart/ci/golden-values.yaml \
+		| grep -vE '(helm\.sh/chart|app\.kubernetes\.io/version):' > chart/ci/golden/full.yaml
 
 ## test-extensions: the pi extensions' TypeScript (rig-query) — the query
 ## layer is pure TS over rig.db; its fixture suite runs under node --test

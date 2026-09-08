@@ -56,6 +56,25 @@ workerPool:
 # the ConfigMaps the worker pod mounts at /workspace/*. Only the fork
 # DEFINITIONS (declarative per-fork sync config consumed by sync-fork.sh) and
 # the enable flags are values. k8s-config carries no engine code.
+#
+# CHANGE SEMANTICS (#368-5) — two different rollout trains:
+#   • ENGINE change (anything under chart/fork-maintenance/, or the resolver
+#     image/model wiring): a CHART RELEASE — kernel PR → merge → GoReleaser
+#     publishes chart+images atomically; Flux picks up the new chart version.
+#     A values-only patch cannot ship engine code.
+#   • DEF change (defs below, enable flags): a HELMRELEASE VALUES PATCH in
+#     k8s-config (platform/harmostes/gitrepository.yaml) — Flux re-renders the
+#     same chart version with new values. No chart release needed.
+#
+# TRUST BOUNDARY (#368-4): the resolver runs an LLM agent (bash + file-edit
+# rights, a host PAT, and an inference key) over UNTRUSTED upstream code and
+# then pushes and PR-merges on your behalf. Therefore:
+#   • forkMaintenance.defs may only be edited via k8s-config (platform
+#     operator write access); `upstream:` pins must be repos you trust to
+#     attempt conflict-injection attacks — the agent works on their tree.
+#   • gate-resolved.sh (conflict-marker grep) is a safety net, not a proof;
+#     per-fork `validate:` contracts are the actual merge gate.
+#   See harmostes.wiki ADR-0011 and the skill's safeguards.md.
 forkMaintenance:
   enabled: false
   scriptsConfigMap: fork-maintenance-scripts
@@ -67,6 +86,12 @@ forkMaintenance:
   # Conflict resolver: always-on HTTP service receiving
   # fork.conflict.needs-resolution events; runs the pi-agent resolution
   # (resolve-conflict.sh + the fork-maintenance skill).
+  # The agent session transcript (RESOLVER_LOG_DIR) is EPHEMERAL by design
+  # (#368-2): it writes to container /tmp and dies with the pod on Recreate
+  # rolls. Durable evidence is the PR comment (verdict + resolution summary),
+  # the needs-fix payload, and the divergence manifest committed to the fork;
+  # the full transcript is diagnostic-only. Do not mount a PVC here without
+  # revisiting ADR-0011 — it would add storage coupling for debug data.
   resolver:
     enabled: false
     image: ghcr.io/tibrezus/llm-wiki-controller:0.3.0

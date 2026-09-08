@@ -176,9 +176,14 @@ workflowTemplates:
       plugin:
         name: workspace
     agent:
-      # qwen3.8-flash via the anthropic-compatible route — interim cost tier;
-      # see k8s-config#28 (live-verified 2026-09-03).
-      model: litellm/ali/anthropic/qwen3.8-flash
+      # Speed-primary role (user directive 2026-09-08): mtplx speed variant
+      # primary. Smoke-verified 2/2 completions pre-flip; rollback pin =
+      # litellm/ali/anthropic/qwen3.8-flash (the 21:2x incident pin, kept in
+      # the fallbacks chain). Tripwire: retry-storm signature (multi-attempt
+      # deaths, 0 cache) → roll back + diagnose router serving group.
+      model: litellm/mtplx/qwen38-27b-optimized-speed-fp16
+      # fallbacks chain lands with #364 (renderer not wired yet — a bare
+      # key here would be inert).
       skill: /skills/pr-review/SKILL.md
       tools: [read, bash, grep]
       taskTemplate:

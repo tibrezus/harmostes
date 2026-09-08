@@ -429,7 +429,9 @@ func runOneShot() {
 				// bound it like SavePiSession (OOM vector, r22 P5).
 				if file, raw, err := agent.FindLineageSession(lineageDir, sessionID); err == nil {
 					if len(raw) > maxLineageBytes {
-						logf("session lineage publish REFUSED: %s is %d bytes (cap %d) — fresh next round", filepath.Base(file), len(raw), maxLineageBytes)
+						// WARN-visible (r26 P4): continuity loss must be attributable
+						// from the run summary alone, not only from a log grep.
+						logf("WARN: session lineage publish REFUSED: %s is %d bytes (cap %d) — fresh next round", filepath.Base(file), len(raw), maxLineageBytes)
 					} else {
 						payload, _ := json.Marshal(agentlineage.Session{Session: worker.Redact(string(raw)), LastHead: envOr("HARMOSTES_TRIGGER_SHA", ""), File: filepath.Base(file)})
 						if out, err := deps.Dapr.InvokeActor(fctx, agentlineage.ActorType, actorID, "publish", payload); err != nil {

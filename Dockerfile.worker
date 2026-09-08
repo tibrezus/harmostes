@@ -85,6 +85,18 @@ RUN curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_$
 COPY --from=build /out/harmostes-worker /usr/local/bin/harmostes-worker
 COPY --from=build /out/harmostes-agent  /usr/local/bin/harmostes-agent
 
+
+# fj CLI — the rezuscloud fork's client, used by the review agents for
+# forgejo-hosted PR threads (comments/replies). Pinned to the fork's
+# release channel; the snippet-comment flag gap is tracked upstream
+# #109: explicit flags proposed; anchoring works natively via --body JSON.
+ARG TARGETARCH
+RUN curl -fsSL "https://github.com/rezuscloud/forgejo/releases/download/v16.0.3-rezus.1/fj-linux-${TARGETARCH}.tar.gz" \
+    -o /tmp/fj.tgz && mkdir -p /tmp/fjx && tar -xzf /tmp/fjx -f /tmp/fj.tgz -C /tmp/fjx \
+    && F="$(find /tmp/fjx -type f -name 'fj-linux-*')" && [ "$(printf '%s\n' "$F" | wc -l)" = "1" ] \
+    && install -m 0755 "$F" /usr/local/bin/fj \
+    && rm -rf /tmp/fjx /tmp/fj.tgz && fj --version
+
 # Built-in plugins shipped in the image (ConfigMap plugins mount under /plugins)
 # ADR-0011: every production plugin is a built-in — workspace/pr-review/
 # post-review (the pr-review pipeline) and fork-sync (the fork-maintenance

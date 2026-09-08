@@ -108,6 +108,22 @@ spec:
                 secretKeyRef:
                   name: harmostes-github-token
                   key: token
+            # CLI aliases — the review agents drive gh/fj/glab directly
+            # (inline review protocol); the CLIs read these exact names.
+            - name: GH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: harmostes-github-token
+                  key: token
+            - name: FORGEJO_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: harmostes-forgejo-token
+                  key: token
+            # PRE-REQ: harmostes-forgejo-token must exist out-of-band (ops-managed
+            # via ExternalSecret from BSM); the chart deliberately does not ship
+            # forge credentials. Without it the worker pool cannot post review
+            # events on git.rezus.cloud/Codeberg.
             - name: HARMOSTES_RZC_USERNAME
               valueFrom:
                 secretKeyRef:

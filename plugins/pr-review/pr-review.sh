@@ -36,6 +36,36 @@ review["decision"]=d
 # ── Session continuity (ADR-0010): rounds are ONE lineage. If a prior
 # verdict exists at an earlier head: previously-addressed findings stay
 # addressed; review the DELTA between heads; carry this ledger forward. ──
+# ── Inline review protocol — the merge currency, enforced by post-review:
+# a bullet list is NOT a review. EVERY finding goes in as a real inline
+# review comment anchored to the code, via the authenticated CLI:
+#   gh   (GitHub):  VERIFIED LIVE. Inline: gh api repos/{o}/{r}/pulls/$N/
+#        comments -f commit_id=$SHA -f path=F -F line=N -f body="…"
+#        reply: POST pulls/$N/comments -f body="…" -F in_reply_to=$ID
+#        (the /replies subpath 404s — use in_reply_to)
+#        resolve: gh api graphql -f query='mutation($t:ID!){…' -f t=<id>
+#        (ID! — String! fails); map databaseId → thread id via a
+#        reviewThreads query first
+#   fj   (Forgejo/Codeberg): NATIVE since v16.0.3-rezus.1 — create-pull-
+#        review takes the whole payload as --body JSON:
+#          fj api repo create-pull-review --owner O --repo R --index N \
+#            --body '{"body":"summary","event":"COMMENT","commit_id":"<sha>",
+#                     "comments":[{"path":"F","new_position":N,"body":"finding"}]}'
+#        THE LINE FIELD IS new_position (not new_line — server 500s on
+#        new_line: ReverseLineBlame -L 0). Reply via create-pull-review-
+#        comment --id <comment-id> --body '{"body":"…","new_position":N,
+#        "path":"F"}'. Resolution state is server-side on reviews.
+#   glab (GitLab): positioned discussions — fetch diff_refs from the MR
+#        first, then glab api projects/:id/merge_requests/$N/discussions
+#        -X POST with position{base_sha,start_sha,head_sha,new_path,
+#        old_path,new_line}; reply: …/discussions/$ID/notes;
+#        resolve: PUT …/discussions/$ID {"resolved":true}
+#
+# Rules: one thread per finding; the verdict body SUMMARIZES with thread
+# links/ids. On a re-review of an addressed round: verify the fix in the
+# diff, REPLY on the thread with the fixing SHA, then RESOLVE it. An
+# APPROVE is lawful ONLY when zero threads remain unresolved — post-review
+# downgrades an APPROVE issued over open prior threads. ──
 # the body must END with the verdict trailer — the merge-currency token.
 sha=review.get("reviewed_sha","")
 ctx_path=os.path.join(os.path.dirname(path),"pr-context.json")

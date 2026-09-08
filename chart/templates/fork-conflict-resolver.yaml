@@ -1,6 +1,9 @@
 {{- if and .Values.forkMaintenance.enabled .Values.forkMaintenance.resolver.enabled }}
 {{- $r := .Values.forkMaintenance.resolver }}
 {{- $sa := .Values.controller.serviceAccountName | default "harmostes-controller" }}
+{{- $extFiles := .Files.Glob "files/litellm-provider/**" }}
+{{- if not $extFiles }}{{- fail "files/litellm-provider/** payload missing — glob matched nothing (render-time guard, #368-3; the copy lives at chart/files/litellm-provider/, drift-guarded by make test-extensions)" }}{{- end }}
+{{- $extSum := "" }}{{- range $path, $_ := $extFiles }}{{- $extSum = print $extSum ($.Files.Get $path) }}{{- end }}
 # ── Fork conflict resolver (ADR-0011: chart-owned) ──────────────────────────
 # Always-on HTTP service for fork-sync conflicts: sync-fork.sh POSTs
 # fork.conflict.needs-resolution events to /events; the resolver spawns
@@ -30,9 +33,11 @@ metadata:
 # here is exactly how the copy went stale-incomplete the first time (r1 review,
 # P2: index.ts imported fallbacks.ts that no .Files.Get ever rendered).
 data:
-  {{- range $path, $_ := .Files.Glob "files/litellm-provider/**" }}
+  {{- range $path, $_ := $extFiles }}
+  {{- $content := $.Files.Get $path }}
+  {{- if not $content }}{{- fail (printf "litellm payload file empty: %s (render-time guard, #368-3)" $path) }}{{- end }}
   {{ base $path }}: |
-    {{- $.Files.Get $path | nindent 4 }}
+    {{- $content | nindent 4 }}
   {{- end }}
 ---
 apiVersion: apps/v1
@@ -54,6 +59,15 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/name: fork-conflict-resolver
+      annotations:
+        # ConfigMap-only changes must roll this pod too: it is Recreate with a
+        # fixed image tag, so a scripts/skill/defs/extension change would
+        # otherwise leave the old pod serving stale engine code forever
+        # (stale-pod-wins; #368-1). Checksums cover everything the pod mounts:
+        # the fork-maintenance.yaml template output (scripts/checks/defs/
+        # hooks/skill CMs) and the litellm extension payload.
+        checksum/fork-maintenance: {{ include (print $.Template.BasePath "/fork-maintenance.yaml") . | sha256sum }}
+        checksum/litellm-extension: {{ $extSum | sha256sum }}
     spec:
       imagePullSecrets:
         - name: {{ .Values.image.pullSecret }}

@@ -201,7 +201,11 @@ jobs:
       - name: Set up Helm
         uses: azure/setup-helm@v4
         with:
-          version: latest
+          # PINNED: the golden render is byte-sensitive to helm's whitespace
+          # behavior — a patch release changed trailing-newline emission
+          # (v4.2.2 vs v4.2.4). Bump this only together with regenerating the
+          # golden (`make golden-update`) under the same version (#368-8).
+          version: v4.2.4
 
       - name: helm lint
         run: helm lint chart/
@@ -267,6 +271,11 @@ jobs:
           if deps:
               env = {e["name"]: e.get("value", "") for e in deps[0]["spec"]["template"]["spec"]["containers"][0]["env"]}
               check(env.get("RESOLVER_MODEL", "").startswith("litellm/"), f"RESOLVER_MODEL not litellm-prefixed: {env.get('RESOLVER_MODEL')}")
+              # Checksum roll annotations (#368-1): ConfigMap-only changes must
+              # roll the Recreate/fixed-tag resolver pod.
+              ann = deps[0]["spec"]["template"]["metadata"].get("annotations", {})
+              check(ann.get("checksum/fork-maintenance"), "resolver pod missing checksum/fork-maintenance annotation")
+              check(ann.get("checksum/litellm-extension"), "resolver pod missing checksum/litellm-extension annotation")
 
           # No producer-less plugin volume on the worker pool (P3 regression guard).
           pools = [d for d in by_kind("Deployment") if d["metadata"]["name"] == "harmostes-worker-pool"]
@@ -281,3 +290,25 @@ jobs:
               sys.exit(1)
           print(f"declarative layer render assertions: green ({len(docs)} docs)")
           PY
+
+      # Golden render (#368-8): the byte-level invariant under every semantic
+      # assertion above. Renders with the committed fixture and diffs against
+      # the committed golden — any rendered-output change (template edit,
+      # engine payload drift, key reorder) surfaces as a reviewable diff.
+      # After ANY intentional render change: run `make golden-update`, commit
+      # the golden alongside it. Chart-version labels are filtered out.
+      # Also proves the #368-3 render guards: empty defs must FAIL the render.
+      - name: golden render + render-guard probes
+        run: |
+          helm template harmostes chart/ -f chart/ci/golden-values.yaml \
+            | grep -vE '(helm\.sh/chart|app\.kubernetes\.io/version):' > /tmp/golden-render.yaml
+          diff -u chart/ci/golden/full.yaml /tmp/golden-render.yaml || {
+            echo "::error::golden render drift — run 'make golden-update' and commit the golden with your change"
+            exit 1
+          }
+          if helm template harmostes chart/ -f chart/ci/golden-values.yaml \
+               --set forkMaintenance.defs=null > /dev/null 2>&1; then
+            echo "::error::empty-defs render guard did not fail (forkMaintenance.defs=null + enabled=true must fail)"
+            exit 1
+          fi
+          echo "golden render byte-identical; empty-defs guard fails as required"

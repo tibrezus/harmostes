@@ -57,3 +57,10 @@ host::clone_url() { # <host> <owner/name> → authenticated clone URL
     *)               echo "https://$1/$2.git";;
   esac
 }
+
+host::is_gitlab() { # <host> → "true"|"false" (GitLab-shaped API?)
+  case "$1" in
+    gitlab.com|*.gitlab.com) echo "true";;
+    *)                       echo "false";;
+  esac
+}

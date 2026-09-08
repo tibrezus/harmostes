@@ -5094,6 +5094,26 @@ spec:
                 secretKeyRef:
                   name: harmostes-github-token
                   key: token
+            # CLI aliases — the review agents drive gh/fj/glab directly
+            # (inline review protocol); the CLIs read these exact names.
+            - name: GH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: harmostes-github-token
+                  key: token
+            - name: FORGEJO_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: harmostes-forgejo-token
+                  key: token
+                  # OPTIONAL (r28): a GitHub-only install has no forge secret —
+                  # a hard ref would crash-loop the pool. Forge-hosted reviews
+                  # need it out-of-band (ops-managed via ExternalSecret from
+                  # BSM); without it review posting on git.rezus.cloud fails.
+                  optional: true
+            # GH_TOKEN deliberately aliases the same secret the dispatch path
+            # already mounts as HARMOSTES_GIT_TOKEN — the gh CLI wants its
+            # canonical name; one credential, one secret, two env spellings.
             - name: HARMOSTES_RZC_USERNAME
               valueFrom:
                 secretKeyRef:

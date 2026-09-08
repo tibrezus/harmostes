@@ -60,6 +60,47 @@ func TestPostReviewGateClassifier(t *testing.T) {
 		{"github: commit_id-less root never downgrades (C4)", ghNullCommit, "CUR", "APPROVE"},
 		{"null payload (fetch failed) fails open", `null`, "CUR", "APPROVE"},
 	}
+	// r29 P4-1 regression lock: the production invocation must feed the
+	// classifier its program via -c and the JSON via stdin. The old wiring
+	// (`python3 - <<EOF` heredoc) clobbered the pipe's stdin and crashed the
+	// gate on every APPROVE round while all stdin-wired goldens stayed green.
+	t.Run("production wiring: program via -c, JSON via stdin", func(t *testing.T) {
+		if _, err := exec.LookPath("python3"); err != nil {
+			if os.Getenv("CI") != "" {
+				t.Fatalf("python3 missing in CI — the gate classifier is the merge currency and must be tested")
+			}
+			t.Skip("python3 not available locally")
+		}
+		raw, err := os.ReadFile(filepath.Join("..", "..", "plugins", "post-review", "post-review.sh"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		script := string(raw)
+		// The CLASSIFIER line must pipe JSON into `python3 -c` — never into
+		// `python3 -` with a heredoc (the heredoc IS the program; the pipe's
+		// stdin would be clobbered — r29 P4-1). The fetch heredoc is fine:
+		// it reads the API, not stdin.
+		inv := `NEWDEC=$(printf '%s' "$CS_JSON" | python3 -c "$CLASSIFIER_PY")`
+		if !strings.Contains(script, inv) {
+			t.Fatalf("classifier invocation drifted from the safe wiring (%q) — re-check the stdin wiring", inv)
+		}
+		if strings.Contains(script, "$CS_JSON\" | python3 - <<") {
+			t.Fatal("classifier must not be invoked via a heredoc — the heredoc clobbers the piped stdin (r29 P4-1)")
+		}
+		cmd := exec.Command("bash", "-c",
+			`printf '%s' "$CS_JSON" | python3 -c "$(sed -n '/GATE-CLASSIFIER-START/,/GATE-CLASSIFIER-END/p' "$0")"`,
+			filepath.Join("..", "..", "plugins", "post-review", "post-review.sh"))
+		cmd.Stdin = strings.NewReader(ghOpenPrior)
+		cmd.Env = append(os.Environ(), "CS_JSON="+ghOpenPrior, "REVIEWED_SHA=CUR")
+		out, err := cmd.Output()
+		if err != nil {
+			t.Fatalf("production wiring crashed: %v — %s", err, out)
+		}
+		lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+		if lines[len(lines)-1] != "APPROVE" {
+			t.Errorf("production wiring decision = %q, want APPROVE", lines[len(lines)-1])
+		}
+	})
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			py, err := exec.LookPath("python3")

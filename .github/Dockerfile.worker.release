@@ -66,8 +66,11 @@ COPY ${TARGETPLATFORM}/harmostes-agent  /usr/local/bin/harmostes-agent
 
 # fj CLI — the rezuscloud fork's client, used by the review agents for
 # forgejo-hosted PR threads (comments/replies). Pinned to the fork's
-# release channel; the snippet-comment flag gap is tracked upstream
-# #109: explicit flags proposed; anchoring works natively via --body JSON.
+# release channel. rezus.2 ships typed single-comment flags
+# (`fj review create|comment|submit`, closes upstream #109); our batched
+# comments[] reviews intentionally stay on the raw --body path (array
+# kinds are out of the flag binder's scope by design).
+# KEEP IN SYNC: this block is duplicated in .github/Dockerfile.worker.release.
 ARG TARGETARCH
 RUN curl -fsSL "https://github.com/rezuscloud/forgejo/releases/download/v16.0.3-rezus.2/fj-linux-${TARGETARCH}.tar.gz" -o /tmp/fj.tgz \
     && curl -fsSL "https://github.com/rezuscloud/forgejo/releases/download/v16.0.3-rezus.2/checksums.txt" -o /tmp/fj.sha \

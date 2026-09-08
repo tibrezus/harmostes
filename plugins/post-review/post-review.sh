@@ -121,17 +121,23 @@ try:
         print(json.dumps(cs)); raise SystemExit
     cs=paged(f"/repos/{repo}/pulls/{pr}/comments")
     owner, name = repo.split("/", 1)
-    q={"query":'{ repository(owner: "%s", name: "%s") { pullRequest(number: %s) { reviewThreads(first: 100) { nodes { isResolved comments(first: 100) { nodes { databaseId } } } } } } }' % (owner, name, pr)}
-    req=urllib.request.Request(base+"/graphql", data=json.dumps(q).encode(),
-        headers={"authorization": f"bearer {tok}", "content-type": "application/json"})
-    nodes=(json.load(urllib.request.urlopen(req, timeout=30))
-           .get("data",{}).get("repository",{}).get("pullRequest",{})
-           .get("reviewThreads",{}).get("nodes") or [])
     resolved=set()
-    for t in nodes:
-        if t.get("isResolved"):
-            for cm in (t.get("comments",{}).get("nodes") or []):
-                if cm.get("databaseId") is not None: resolved.add(cm["databaseId"])
+    after=""
+    for _ in range(10):  # pageInfo-paginated (r29 P4-2): >100 threads truncate silently otherwise
+        q={"query":'{ repository(owner: "%s", name: "%s") { pullRequest(number: %s) { reviewThreads(first: 100%s) { pageInfo { hasNextPage endCursor } nodes { isResolved comments(first: 100) { nodes { databaseId } } } } } } }' % (owner, name, pr, (', after: "%s"' % after) if after else "")}
+        req=urllib.request.Request(base+"/graphql", data=json.dumps(q).encode(),
+            headers={"authorization": f"bearer {tok}", "content-type": "application/json"})
+        rt=(json.load(urllib.request.urlopen(req, timeout=30))
+            .get("data",{}).get("repository",{}).get("pullRequest",{})
+            .get("reviewThreads",{}) or {})
+        for t in (rt.get("nodes") or []):
+            if t.get("isResolved"):
+                for cm in (t.get("comments",{}).get("nodes") or []):
+                    if cm.get("databaseId") is not None: resolved.add(cm["databaseId"])
+        if rt.get("pageInfo",{}).get("hasNextPage"):
+            after = rt["pageInfo"]["endCursor"]
+        else:
+            break
     for c in cs: c["resolved"]=c["id"] in resolved
     print(json.dumps(cs))
 except SystemExit:
@@ -141,9 +147,15 @@ except Exception as e:
 PYEOF
 )
 GATE_STATUS="evaluated"; [ -s "$GATE_STATUS_FILE" ] && GATE_STATUS="$(cat "$GATE_STATUS_FILE")"; rm -f "$GATE_STATUS_FILE"
-NEWDEC=$(printf '%s' "$CS_JSON" | python3 - << 'PYEOF'
+# The classifier program lives verbatim between the GATE-CLASSIFIER markers
+# (the golden test extracts exactly these bytes). It is held in a QUOTED
+# heredoc so bash never parses it; do not unquote.
+CLASSIFIER_PY=$(cat << 'GATE_PYEOF'
 # GATE-CLASSIFIER-START (tested verbatim by TestPostReviewGateClassifier —
-# everything between the markers must be a self-contained script)
+# everything between the markers must be a self-contained script; the
+# invocation below extracts exactly this block via sed and feeds the
+# comments JSON on stdin — do NOT move the program into a heredoc: the
+# heredoc clobbers the pipe's stdin, r29 P4-1).
 import json, os, sys
 cs=json.load(sys.stdin)
 sha=os.environ.get("REVIEWED_SHA","")
@@ -172,8 +184,11 @@ if open_threads:
         print(f"[post-review] unresolved thread {c.get('path','?')}:{c.get('line','?')} id={c.get('id')} — reply+resolve required before APPROVE", file=sys.stderr)
 print(dec)
 # GATE-CLASSIFIER-END
-PYEOF
+GATE_PYEOF
 )
+
+NEWDEC=$(printf '%s' "$CS_JSON" | python3 -c "$CLASSIFIER_PY")
+
 if [ "$NEWDEC" != "$DEC" ]; then
   log "APPROVE downgraded: unresolved prior-round threads"
   DEC="$NEWDEC"

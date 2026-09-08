@@ -15,10 +15,11 @@ REPO=$(python3 -c "import json;print(json.load(open('$CONTEXT'))['repo'])")
 PR_NUM=$(python3 -c "import json;print(json.load(open('$CONTEXT'))['number'])")
 API_BASE=$(host::api_base "$HOST")
 IS_FJ=$(host::is_fj "$HOST")
+IS_GITLAB=$(host::is_gitlab "$HOST")
 # post-review always authenticates (POST comment, consume label) — fail fast
 # at resolve time rather than at curl time.
 TOKEN=$(host::token "$HOST" required)
-export API_BASE TOKEN HOST REPO PR_NUM REVIEW LABEL IS_FJ WORKDIR
+export API_BASE TOKEN HOST REPO PR_NUM REVIEW LABEL IS_FJ IS_GITLAB WORKDIR
 # ── Moved-head guard (ADR-0006): the verdict is only valid at the exact ──
 # reviewed SHA. If the PR head moved while the agent worked, do NOT post and
 # do NOT consume the label — the synchronize event has already re-armed the
@@ -62,52 +63,84 @@ DEC=$(python3 -c "import json;print(json.load(open('$REVIEW'))['decision'])")
 # must be addressed before an APPROVE is lawful. Any open prior thread
 # downgrades APPROVE → REQUEST_CHANGES; the reply+resolve protocol lives
 # in the pr-review skill.
+GATE_STATUS="not-evaluated"  # non-APPROVE verdicts skip the gate entirely
 if [ "$DEC" = "APPROVE" ]; then
 export REVIEWED_SHA="$(python3 -c "import json;print(json.load(open('$REVIEW'))['reviewed_sha'])")"
-# ── Thread listing is HOST-DIALECT (S2, r26): the three hosts serve review
+# ── Thread listing is HOST-DIALECT (S2/r26, r28): the hosts serve review
 # comments from different routes with different thread semantics.
 #   GitHub : GET /repos/{r}/pulls/{n}/comments — in_reply_to links replies.
 #   Forgejo: GET /repos/{r}/pulls/{n}/reviews → per-review comments
 #            (the flat /pulls/{n}/comments route 404s — verified live on
 #            git.rezus.cloud v16.0.3-rezus.1); replies also use in_reply_to.
-#   GitLab : GET /projects/:id/merge_requests/{n}/discussions — native
-#            resolvable/resolved flags; position.head_sha dates the thread.
+#   GitLab : DESCOPED (r28) — the dialect is not wired (no token chain, no
+#            glab in the image); gitlab.com hosts emit a structured skip.
+#            The classifier's GitLab branch ships tested for the follow-up.
+GATE_STATUS_FILE="$(mktemp)"; : > "$GATE_STATUS_FILE"; export GATE_STATUS_FILE
 CS_JSON=$(python3 - << 'PYEOF'
-import json, os, urllib.request, urllib.parse
+# Emits the unified comment list on stdout; each comment carries a boolean
+# "resolved": GitHub = GraphQL reviewThreads.isResolved mapped from
+# databaseId (REST never shows a GraphQL-side resolve, C1); Forgejo = always
+# false (closure is a closing reply); GitLab = native flag. On a listing
+# failure or an unwired dialect it emits `null` and writes the structured
+# skip reason to $GATE_STATUS_FILE (C3: a skip must be alarmable, never
+# silent) — the shell puts it in the run's event JSON.
+import json, os, urllib.request
 base=os.environ["API_BASE"]; tok=os.environ["TOKEN"]
 repo=os.environ["REPO"]; pr=os.environ["PR_NUM"]
 H={"authorization": f"token {tok}"}
 def get(path):
     req=urllib.request.Request(base+path, headers=H)
     return json.load(urllib.request.urlopen(req, timeout=30))
+def paged(path):
+    # per_page=100&page=N until a short page (C4: a page-1-only listing
+    # silently hid every thread past 30).
+    sep = "&" if "?" in path else "?"
+    out, page = [], 1
+    while True:
+        part = get(f"{path}{sep}per_page=100&page={page}")
+        out += part
+        if len(part) < 100:
+            return out
+        page += 1
+def fail(why):
+    import sys as _s
+    print(f"[post-review] WARN: thread gate skipped ({why})", file=_s.stderr)
+    with open(os.environ["GATE_STATUS_FILE"], "w") as f: f.write("skipped:"+why)
+    print(json.dumps(None))
+    raise SystemExit
 try:
-    if os.environ.get("HOST")=="gitlab":
-        proj=urllib.parse.quote(repo, safe="")
-        ds=get(f"/projects/{proj}/merge_requests/{pr}/discussions")
-        out=[]
-        for d in ds:
-            for n in d.get("notes",[]):
-                if n.get("position"):
-                    out.append({"id":n["id"], "path":n["position"].get("new_path","?"),
-                                "line":n["position"].get("new_line","?"),
-                                "commit_id":n["position"].get("head_sha",""),
-                                "in_reply_to":None,
-                                "resolvable":bool(n.get("resolvable")), "resolved":bool(n.get("resolved"))})
-        print(json.dumps(out)); raise SystemExit
+    if os.environ.get("IS_GITLAB")=="true":
+        # GitLab dialect not wired yet (token chain + glab land with the
+        # credential follow-up) — descoped from this PR, structured skip.
+        fail("gitlab-not-wired")
     if os.environ.get("IS_FJ")=="true":
         cs=[]
-        for r in get(f"/repos/{repo}/pulls/{pr}/reviews"):
-            cs+=get(f"/repos/{repo}/pulls/{pr}/reviews/{r['id']}/comments")
+        for r in paged(f"/repos/{repo}/pulls/{pr}/reviews"):
+            cs+=paged(f"/repos/{repo}/pulls/{pr}/reviews/{r['id']}/comments")
+        for c in cs: c["resolved"]=False  # Forgejo resolves by closing reply
         print(json.dumps(cs)); raise SystemExit
-    print(json.dumps(get(f"/repos/{repo}/pulls/{pr}/comments")))
+    cs=paged(f"/repos/{repo}/pulls/{pr}/comments")
+    owner, name = repo.split("/", 1)
+    q={"query":'{ repository(owner: "%s", name: "%s") { pullRequest(number: %s) { reviewThreads(first: 100) { nodes { isResolved comments(first: 100) { nodes { databaseId } } } } } } }' % (owner, name, pr)}
+    req=urllib.request.Request(base+"/graphql", data=json.dumps(q).encode(),
+        headers={"authorization": f"bearer {tok}", "content-type": "application/json"})
+    nodes=(json.load(urllib.request.urlopen(req, timeout=30))
+           .get("data",{}).get("repository",{}).get("pullRequest",{})
+           .get("reviewThreads",{}).get("nodes") or [])
+    resolved=set()
+    for t in nodes:
+        if t.get("isResolved"):
+            for cm in (t.get("comments",{}).get("nodes") or []):
+                if cm.get("databaseId") is not None: resolved.add(cm["databaseId"])
+    for c in cs: c["resolved"]=c["id"] in resolved
+    print(json.dumps(cs))
 except SystemExit:
     raise
 except Exception as e:
-    import sys as _s
-    print(f"[post-review] WARN: unresolved-thread check failed ({e}) — gate NOT evaluated", file=_s.stderr)
-    print(json.dumps(None))
+    fail(f"{type(e).__name__}: {e}"[:120])
 PYEOF
 )
+GATE_STATUS="evaluated"; [ -s "$GATE_STATUS_FILE" ] && GATE_STATUS="$(cat "$GATE_STATUS_FILE")"; rm -f "$GATE_STATUS_FILE"
 NEWDEC=$(printf '%s' "$CS_JSON" | python3 - << 'PYEOF'
 # GATE-CLASSIFIER-START (tested verbatim by TestPostReviewGateClassifier —
 # everything between the markers must be a self-contained script)
@@ -123,12 +156,16 @@ if cs and "resolvable" in cs[0]:
         if c["resolvable"] and not c["resolved"]
         and str(c.get("commit_id") or "")!=sha]
 else:
-    # GitHub/Forgejo dialect: replies link roots via in_reply_to.
+    # GitHub/Forgejo dialect: a thread is CLOSED by real resolve state
+    # (C1 — a GraphQL-side resolve leaves no reply) or by a reply.
     replied={c["in_reply_to"] for c in cs if c.get("in_reply_to")}
     open_threads=[c for c in cs
         if not c.get("in_reply_to")
         and c["id"] not in replied
-        and str(c.get("commit_id") or "")!=sha]
+        and not c.get("resolved")
+        # No commit_id → round unattributable: never downgrade on it (C4).
+        and c.get("commit_id") not in (None, "")
+        and str(c.get("commit_id"))!=sha]
 if open_threads:
     dec="REQUEST_CHANGES"
     for c in open_threads[:10]:
@@ -142,7 +179,8 @@ if [ "$NEWDEC" != "$DEC" ]; then
   DEC="$NEWDEC"
   # S1 (r26): the downgrade must rewrite the WHOLE verdict — decision field
   # AND the trailer in the body — or dw_wait_review keeps polling APPROVE
-  # and merges over open threads.
+  # and merges over open threads. The trailer shape is review.go:733's
+  # verdictTrailer (the contract's canonical home) — keep both in step.
   python3 - "$REVIEW" "$DEC" << 'PYEOF'
 import json,re,sys
 p,newdec=sys.argv[1],sys.argv[2]; r=json.load(open(p))
@@ -180,4 +218,4 @@ log "verdict comment posted to $REPO#$PR_NUM ($DEC)"
 log "removing label '$LABEL'…"
 curl -fsSL -X DELETE -H "authorization: token $TOKEN" -H "accept: application/json" \
   "$API_BASE/repos/$REPO/issues/$PR_NUM/labels/$LABEL" 2>/dev/null||log "WARN: could not remove label"
-echo "{\"artifact\":\"pr-$HOST-$REPO-$PR_NUM\",\"status\":\"ok\",\"event\":{\"host\":\"$HOST\",\"repo\":\"$REPO\",\"number\":$PR_NUM,\"decision\":\"$DEC\"}}"
+echo "{\"artifact\":\"pr-$HOST-$REPO-$PR_NUM\",\"status\":\"ok\",\"event\":{\"host\":\"$HOST\",\"repo\":\"$REPO\",\"number\":$PR_NUM,\"decision\":\"$DEC\",\"thread_gate\":\"$GATE_STATUS\"}}"

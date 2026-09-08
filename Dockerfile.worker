@@ -91,11 +91,13 @@ COPY --from=build /out/harmostes-agent  /usr/local/bin/harmostes-agent
 # release channel; the snippet-comment flag gap is tracked upstream
 # #109: explicit flags proposed; anchoring works natively via --body JSON.
 ARG TARGETARCH
-RUN curl -fsSL "https://github.com/rezuscloud/forgejo/releases/download/v16.0.3-rezus.2/fj-linux-${TARGETARCH}.tar.gz" \
-    -o /tmp/fj.tgz && mkdir -p /tmp/fjx && tar -xzf /tmp/fjx -f /tmp/fj.tgz -C /tmp/fjx \
+RUN curl -fsSL "https://github.com/rezuscloud/forgejo/releases/download/v16.0.3-rezus.2/fj-linux-${TARGETARCH}.tar.gz" -o /tmp/fj.tgz \
+    && curl -fsSL "https://github.com/rezuscloud/forgejo/releases/download/v16.0.3-rezus.2/checksums.txt" -o /tmp/fj.sha \
+    && grep "fj-linux-${TARGETARCH}.tar.gz$" /tmp/fj.sha | sed "s#  .*#  /tmp/fj.tgz#" | sha256sum -c - \
+    && mkdir -p /tmp/fjx && tar -xzf /tmp/fj.tgz -C /tmp/fjx \
     && F="$(find /tmp/fjx -type f -name 'fj-linux-*')" && [ "$(printf '%s\n' "$F" | wc -l)" = "1" ] \
     && install -m 0755 "$F" /usr/local/bin/fj \
-    && rm -rf /tmp/fjx /tmp/fj.tgz && fj --version
+    && rm -rf /tmp/fjx /tmp/fj.tgz /tmp/fj.sha && fj --version
 
 # Built-in plugins shipped in the image (ConfigMap plugins mount under /plugins)
 # ADR-0011: every production plugin is a built-in — workspace/pr-review/

@@ -5106,10 +5106,14 @@ spec:
                 secretKeyRef:
                   name: harmostes-forgejo-token
                   key: token
-            # PRE-REQ: harmostes-forgejo-token must exist out-of-band (ops-managed
-            # via ExternalSecret from BSM); the chart deliberately does not ship
-            # forge credentials. Without it the worker pool cannot post review
-            # events on git.rezus.cloud/Codeberg.
+                  # OPTIONAL (r28): a GitHub-only install has no forge secret —
+                  # a hard ref would crash-loop the pool. Forge-hosted reviews
+                  # need it out-of-band (ops-managed via ExternalSecret from
+                  # BSM); without it review posting on git.rezus.cloud fails.
+                  optional: true
+            # GH_TOKEN deliberately aliases the same secret the dispatch path
+            # already mounts as HARMOSTES_GIT_TOKEN — the gh CLI wants its
+            # canonical name; one credential, one secret, two env spellings.
             - name: HARMOSTES_RZC_USERNAME
               valueFrom:
                 secretKeyRef:

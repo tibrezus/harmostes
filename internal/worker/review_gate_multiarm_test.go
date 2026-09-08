@@ -3,7 +3,6 @@ package worker
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -406,7 +405,9 @@ func TestMultiArmCapacityHoldsQueue(t *testing.T) {
 }
 
 // ── Per-PR dedupe: a labeled candidate whose PR already has an armed-queued
-// claim is skipped (the labeled scan sees it every sweep). ──
+// claim re-evaluates THE EXISTING claim (r27 #379): when CI is green the
+// sweep completes the dispatch against the SAME attempt — it must never arm
+// a second attempt for a claimed pointer. ──
 func TestMultiArmLiveClaimSkipsCandidate(t *testing.T) {
 	clearTriggerEnv(t)
 	srv := greenPRServer(t)
@@ -422,8 +423,11 @@ func TestMultiArmLiveClaimSkipsCandidate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sweep: %v", err)
 	}
-	if len(out) != 0 {
-		t.Fatalf("the live claim owns the PR — no duplicate dispatch, got %d", len(out))
+	if len(out) != 1 {
+		t.Fatalf("the green queued claim must complete its dispatch, got %d", len(out))
+	}
+	if out[0].Attempt != claim.Name {
+		t.Fatalf("dispatch must reuse the existing attempt %s, got %s", claim.Name, out[0].Attempt)
 	}
 }
 
@@ -519,8 +523,9 @@ func TestMultiArmDispatchLostClaimRefilled(t *testing.T) {
 	}
 }
 
-// #279: a freshly armed claim (inside the grace) is left alone — its own
-// sweep's dispatch loop is still in flight.
+// #279/r27: a freshly armed claim whose CI is GREEN completes its dispatch
+// on the next sweep — same attempt, no re-arm (the createMu + live-Job
+// dedupe make a racing arming sweep safe). The claim stays live either way.
 func TestMultiArmFreshArmedClaimHoldsDuringGrace(t *testing.T) {
 	clearTriggerEnv(t)
 	srv := labeledListServer(t, 99)
@@ -535,15 +540,18 @@ func TestMultiArmFreshArmedClaimHoldsDuringGrace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sweep: %v", err)
 	}
-	if len(out) != 0 {
-		t.Fatalf("in-grace claim must not be re-dispatched, got %d", len(out))
+	if len(out) != 1 {
+		t.Fatalf("green queued claim must complete its dispatch, got %d", len(out))
+	}
+	if out[0].Attempt != claim.Name {
+		t.Fatalf("dispatch must reuse the existing attempt %s, got %s", claim.Name, out[0].Attempt)
 	}
 	var got v1alpha1.Attempt
 	if err := deps.Client.Get(ctx, client.ObjectKey{Namespace: wf.Namespace, Name: claim.Name}, &got); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
 	if got.Status.Review == nil || got.Status.Review.Released {
-		t.Fatalf("in-grace claim must stay live, got %+v", got.Status.Review)
+		t.Fatalf("dispatched claim must stay live, got %+v", got.Status.Review)
 	}
 }
 
@@ -1039,82 +1047,40 @@ func TestSweepDispatchTimeoutJobListFailureCountsDead(t *testing.T) {
 }
 
 // ── r6 P1: the aged never-dispatched release is DISPATCH-LOST, not horizon
-// — "we could not dispatch" must not set the ambiguity guard's clock ("we
-// stopped asking"). The cycle now converges through the COUNTER: each sweep
-// releases the never-dispatched era again (#1, #2), the third release arms
-// the guard (Max dispatch-lost releases), and a human re-request escapes
-// with a fresh clock (r6 P2). ──
-func TestMultiArmNeverDispatchedAgedClaimConvergesDispatchLost(t *testing.T) {
+// r27 #379: an aged queued claim converges through Evaluate's horizon
+// bound — the claim is released as HORIZON (the ambiguity dismissal), NOT
+// dispatch-lost: waiting for CI past the horizon is not a dispatch failure
+// and must not burn the churn budget. The churn counter converges at the
+// re-dispatch boundary instead
+// (TestSweepRefusalAttribution_ChurnRefusalReportsBudget).
+func TestMultiArmAgedQueuedClaimConvergesHorizon(t *testing.T) {
 	clearTriggerEnv(t)
 	srv := labeledListServer(t, 103)
 	t.Cleanup(srv.Close)
 	pinReviewAPI(t, srv, true)
 	wf := gateWorkflow() // horizon 6h
 	aged := time.Now().Add(-7 * time.Hour)
-	claim := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#103", "deadbeef777", aged, nil)
+	claim := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#103", "deadbeef123", aged, nil)
 	deps, ctx := gateEnv(t, wf, &fakeStatus{}, claim)
 
-	const pr = "git.rezus.cloud/tibrez/rhesadox#103"
-	const sha = "deadbeef777"
-	expectRelease := func(n int) {
-		t.Helper()
-		var got v1alpha1.Attempt
-		if err := deps.Client.Get(ctx, client.ObjectKey{Namespace: wf.Namespace, Name: claim.Name}, &got); err != nil {
-			t.Fatalf("get claim: %v", err)
-		}
-		if !got.Status.Review.Released || got.Status.Review.ReleaseReason != v1alpha1.ReleaseReasonDispatchLost {
-			t.Fatalf("aged never-dispatched claim must release as dispatch-lost #%d, got released=%v reason=%q",
-				n, got.Status.Review.Released, got.Status.Review.ReleaseReason)
-		}
-		if got.Status.Review.DispatchLostReleases != n {
-			t.Fatalf("dispatch-lost release #%d must bump the counter to %d, got %d", n, n, got.Status.Review.DispatchLostReleases)
-		}
-	}
-
-	if _, err := RunReviewGateSweep(ctx, deps, wf); err != nil {
-		t.Fatalf("sweep 1: %v", err)
-	}
-	expectRelease(1)
-	if _, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf, pr, sha, "needs-review", false); err != nil {
-		t.Fatalf("auto revival #1 (counter under max) must reuse the era: %v", err)
-	}
-
-	if _, err := RunReviewGateSweep(ctx, deps, wf); err != nil {
-		t.Fatalf("sweep 2: %v", err)
-	}
-	expectRelease(2)
-	if _, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf, pr, sha, "needs-review", false); err != nil {
-		t.Fatalf("auto revival #2: %v", err)
-	}
-
-	if _, err := RunReviewGateSweep(ctx, deps, wf); err != nil {
-		t.Fatalf("sweep 3: %v", err)
-	}
-	expectRelease(3)
-	// The guard: the next AUTOMATIC arm is refused — the cycle converged
-	// into a visible standdown, not an infinite loop.
-	if _, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf, pr, sha, "needs-review", false); !errors.Is(err, attempt.ErrChurnBudgetExhausted) {
-		t.Fatalf("exhausted counter must refuse the auto re-arm (as the BUDGET sentinel, not the horizon dismissal — r12 must-fix 2), got %v", err)
-	}
-	// r6 P2: the HUMAN override escapes — with a FRESH clock (the anchored
-	// one is already past the horizon and would re-release instantly).
-	at2, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf, pr, sha, "needs-review", true)
+	out, err := RunReviewGateSweep(ctx, deps, wf)
 	if err != nil {
-		t.Fatalf("human re-request must override the exhausted counter: %v", err)
+		t.Fatalf("sweep: %v", err)
+	}
+	if len(out) != 0 {
+		t.Fatalf("a horizon-expired queued claim must not dispatch, got %d", len(out))
 	}
 	var got v1alpha1.Attempt
-	if err := deps.Client.Get(ctx, client.ObjectKey{Namespace: wf.Namespace, Name: at2.Name}, &got); err != nil {
-		t.Fatal(err)
+	if err := deps.Client.Get(ctx, client.ObjectKey{Namespace: wf.Namespace, Name: claim.Name}, &got); err != nil {
+		t.Fatalf("get claim: %v", err)
 	}
-	r2 := got.Status.Review
-	if r2.Released {
-		t.Fatal("the overridden era must be live")
+	if !got.Status.Review.Released || got.Status.Review.ReleaseReason != v1alpha1.ReleaseReasonHorizon {
+		t.Fatalf("aged queued claim must release as horizon, got released=%v reason=%q",
+			got.Status.Review.Released, got.Status.Review.ReleaseReason)
 	}
-	if age := time.Since(r2.ArmedSince.Time); age > time.Minute {
-		t.Fatalf("human override must anchor a FRESH era clock, got age %v", age)
-	}
-	if r2.DispatchLostReleases != 0 {
-		t.Fatalf("human wake must reset the counter, got %d", r2.DispatchLostReleases)
+	if got.Status.Review.DispatchLostReleases != 0 {
+		t.Fatalf("a CI-wait expiry is not a dispatch failure — churn counter must stay 0, got %d",
+			got.Status.Review.DispatchLostReleases)
 	}
 }
 

@@ -231,12 +231,79 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 
 	// ── A. In-flight claims: consume / expiry / refresh — never dispatch. ──
 	liveDispatched := 0
-	liveOn := map[string]bool{} // normalized pointer → live claim present
+	liveOn := map[string]bool{}      // normalized pointer → live claim present
+	keepArmed := map[string]bool{}   // armed-queued claims re-evaluated this sweep as waiting/proceed (r27)
+	releasedInA := map[string]bool{} // claims section A already released — the release pass's snapshot is stale
+	var out []GateDispatch
 	for _, c := range claims {
 		r := c.Status.Review
 		liveOn[r.PR] = true
 		if r.DispatchedAt == nil {
-			continue // armed-queued: holds no capacity slot
+			// ARMED-QUEUED (r27, #379): DecisionWaiting arms to hold the
+			// pointer while CI runs. The claim must be re-evaluated every
+			// sweep — or it ages into the never-dispatched release below
+			// and burns the churn budget for a dispatch the gate simply
+			// had not green-lit yet (the r27 starvation: armed at "ci
+			// pending", released dispatch-lost ~9 min later, the breaker
+			// trips, and the PR starves until a human re-applies the label).
+			repo, pr, perr := parsePRPointer(r.PR)
+			if perr != nil {
+				releaseClaim(ctx, deps, c, "closed", log)
+				releasedInA[c.Name] = true
+				continue
+			}
+			p := review.Params{
+				Repo: repo, PR: pr, Label: r.Label,
+				Horizon: rr.HorizonDuration(), DispatchTimeout: rr.DispatchTimeoutDuration(),
+				ArmedSha: r.HeadSHA,
+				Now:      now,
+			}
+			if r.ArmedSince != nil {
+				p.ArmedAt = r.ArmedSince.Time
+			}
+			res := review.Evaluate(ctx, api, p)
+			// A request-shaped wake owns this pointer's outcome (supersede
+			// or skip in C) — leave the claim to it (r27: the breaker-
+			// override and moved-head tests both rely on the wake deciding).
+			if w := deps.wake(wf); w != nil && w.pointer == r.PR && w.request {
+				continue
+			}
+			switch res.Decision {
+			case review.DecisionProceed:
+				if res.Envelope.HeadSHA != r.HeadSHA {
+					// Head moved since the claim armed: the push wake will
+					// supersede and re-arm at the new head — dispatching the
+					// stale envelope here would review the wrong sha.
+					keepArmed[r.PR] = true
+					emitGate(ctx, deps.TL, liveAgg, res, repo, pr)
+					break
+				}
+				// Mirror ArmClaim's churn guard (r27): an aged queued claim
+				// whose never-dispatched releases burned the budget converges
+				// into the refusal surface — ArmClaim's guard catches a
+				// re-ARM, this catches the re-DISPATCH of an existing claim.
+				if r.DispatchLostReleases >= v1alpha1.MaxDispatchLostReleases {
+					standDown(ctx, deps, liveAgg, wf.Name,
+						candidate{repo: repo, pr: pr, pointer: r.PR},
+						fmt.Errorf("%w: %s — %d consecutive never-dispatched releases (max %d); re-apply the label to request a fresh review",
+							attempt.ErrChurnBudgetExhausted, r.HeadSHA, r.DispatchLostReleases, v1alpha1.MaxDispatchLostReleases),
+						log, &lastDecision, &lastReason, &heldRecorded)
+					break
+				}
+				// CI went green since the arming sweep: complete the
+				// dispatch against the EXISTING attempt. The createMu and
+				// live-Job dedupe make a racing wake re-arm safe.
+				out = append(out, GateDispatch{Envelope: res.Envelope, Attempt: c.Name})
+				keepArmed[r.PR] = true
+			case review.DecisionStanddown:
+				releaseClaim(ctx, deps, c, classifyRelease(res.Reason), log)
+				releasedInA[c.Name] = true
+				emitGate(ctx, deps.TL, liveAgg, res, repo, pr)
+			default: // waiting: the armed state is doing its job — shield it
+				keepArmed[r.PR] = true
+				emitGate(ctx, deps.TL, liveAgg, res, repo, pr)
+			}
+			continue
 		}
 		liveDispatched++
 		repo, pr, perr := parsePRPointer(r.PR)
@@ -337,6 +404,9 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 		log("review-ready: live-job list failed (%v) — skipping the never-dispatched release pass (release is destructive; unknown must fail closed)", jobListErr)
 	} else {
 		for _, c := range claims {
+			if releasedInA[c.Name] {
+				continue // section A already released it — the snapshot is stale (r27)
+			}
 			r := c.Status.Review
 			// DispatchedAt == nil means "nobody ran MarkClaimDispatched",
 			// NOT "no Job": the dispatcher can Create the Job and fail the
@@ -347,6 +417,9 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 			// and so does this one now.
 			if r.DispatchedAt != nil || jobAlive(c.Name) {
 				continue
+			}
+			if keepArmed[r.PR] {
+				continue // re-evaluated this sweep as waiting/proceed (r27 #379)
 			}
 			arm := time.Time{}
 			if r.ArmedSince != nil {
@@ -430,7 +503,6 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 	}
 
 	// ── C. Evaluate + drain-to-capacity. ──────────────────────────────────
-	var out []GateDispatch
 	for _, cand := range cands {
 		claimed := liveOn[cand.pointer]
 		if claimed {

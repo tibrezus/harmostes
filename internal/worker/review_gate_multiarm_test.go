@@ -1396,8 +1396,11 @@ func TestSweepNeverDispatchedPassFailsClosedOnJobListError(t *testing.T) {
 
 	// Armed far past reDispatchGrace, never marked dispatched: pass C's
 	// exact release shape — if it consulted the (broken) Job snapshot, it
-	// would see "no Job" and release.
-	claim := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#108", "deadbeef456", now.Add(-10*time.Minute), nil)
+	// would see "no Job" and release. The head MATCHES the served PR
+	// (r30): a moved-head queued claim is section A's superseded-release
+	// class — a liveness-independent head-currency decision — and would
+	// bypass the fail-closed contract this test pins.
+	claim := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#108", "deadbeef123", now.Add(-10*time.Minute), nil)
 	claim.Status.Review.DispatchLostReleases = 1
 
 	scheme := runtime.NewScheme()

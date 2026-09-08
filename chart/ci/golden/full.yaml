@@ -25,7 +25,6 @@ metadata:
 # but Jobs created by the dispatcher never did (#281).
 imagePullSecrets:
   - name: ghcr-pull
-
 ---
 # Source: harmostes/templates/ui-rbac.yaml
 apiVersion: v1
@@ -36,7 +35,6 @@ metadata:
   labels:
     app.kubernetes.io/name: harmostes
     app.kubernetes.io/component: ui
-
 ---
 # Source: harmostes/templates/fork-conflict-resolver.yaml
 apiVersion: v1
@@ -100,6 +98,7 @@ data:
     const proxy = new Map([
       ["ali/anthropic/qwen3.8-flash", { max_input_tokens: 1048576, max_output_tokens: 32768 }],
       ["mtplx/qwen38-27b-optimized-speed-fp16", { max_input_tokens: 262144, max_output_tokens: 32768 }],
+      ["zai/anthropic/glm-5.3-flash", { max_input_tokens: 131072, max_output_tokens: 8192 }],
     ]);
     const models = [
       { id: "ali/anthropic/qwen3.8-flash", max_input_tokens: 1048576, max_output_tokens: 32768 },
@@ -172,8 +171,8 @@ data:
       assert.equal(annotated[0].samplingParams, undefined);
       assert.equal(wired.length, 0);
       // And an OWN "toString" chain still wires normally (own-key lookup wins).
-      const { annotated: own, wired: wiredOwn } = applyChains(models2, { toString: ["mtplx/qwen38-27b-optimized-speed-fp16"] }, proxy);
-      assert.deepEqual(own[0].samplingParams, { fallbacks: ["mtplx/qwen38-27b-optimized-speed-fp16"] });
+      const { annotated: own, wired: wiredOwn } = applyChains(models2, { toString: ["zai/anthropic/glm-5.3-flash"] }, proxy);
+      assert.deepEqual(own[0].samplingParams, { fallbacks: ["zai/anthropic/glm-5.3-flash"] });
       assert.equal(wiredOwn.length, 1);
     });
     
@@ -207,10 +206,12 @@ data:
      * of #359: valid JSON with a wrong shape is the accidental-value risk).
      */
     
-    // The target is operator-chosen (#360: speed over quality — same 27b
-    // optimized family, faster reviews; both live in the proxy key's scope).
+    // The target is operator-chosen (2026-09-08: glm-5.3-flash via the
+    // anthropic-compatible route — the mtplx speed target stalled at long
+    // context, diagnosed in #373's rollback; glm smoke-verified 2/2).
+    // Both live in the proxy key's scope.
     export const DEFAULT_FALLBACKS: Record<string, string[]> = {
-      "ali/anthropic/qwen3.8-flash": ["mtplx/qwen38-27b-optimized-speed-fp16"],
+      "ali/anthropic/qwen3.8-flash": ["zai/anthropic/glm-5.3-flash"],
     };
     
     /**
@@ -505,8 +506,6 @@ data:
         ]
       }
     }
-    
-
 ---
 # Source: harmostes/templates/fork-maintenance.yaml
 apiVersion: v1
@@ -3080,8 +3079,6 @@ data:
     
       *) die "unknown command: $cmd (expected capture|reapply|verify)" ;;
     esac
-    
-
 ---
 # Source: harmostes/templates/fork-maintenance.yaml
 apiVersion: v1
@@ -3396,8 +3393,6 @@ data:
     
     echo "GATES GREEN (no markers + validation + signatures)"
     exit 0
-    
-
 ---
 # Source: harmostes/templates/fork-maintenance.yaml
 apiVersion: v1
@@ -3432,8 +3427,6 @@ data:
     echo "[signoz-hook] stripping ee/ (community-only build)"
     git rm -rf ee/ 2>/dev/null || true
     echo "[signoz-hook] done"
-    
-
 ---
 # Source: harmostes/templates/fork-maintenance.yaml
 apiVersion: v1
@@ -3476,8 +3469,6 @@ data:
       default_branch: rezus/main
       mirror_branch: main
       platform: forgejo
-    
-
 ---
 # Source: harmostes/templates/fork-maintenance.yaml
 apiVersion: v1
@@ -4567,7 +4558,6 @@ rules:
   - apiGroups: ["harmostes.dev"]
     resources: ["workflowtemplates"]
     verbs: ["get", "list", "watch"]
-
 ---
 # Source: harmostes/templates/ui-rbac.yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -4619,7 +4609,6 @@ rules:
   - apiGroups: ["external-secrets.io"]
     resources: ["externalsecrets"]
     verbs: ["get", "list", "create", "delete"]
-
 ---
 # Source: harmostes/templates/rbac.yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -4803,7 +4792,7 @@ spec:
         # the fork-maintenance.yaml template output (scripts/checks/defs/
         # hooks/skill CMs) and the litellm extension payload.
         checksum/fork-maintenance: 082d8c5472ee15b9beacfd112a46beff3f5121af68d95f1af2eadb6fd64372f4
-        checksum/litellm-extension: bde75691f7eff0829435b12fec613db080c399b8f6a8f7a44e5b4608590bf442
+        checksum/litellm-extension: 894305d7a7480e676a375b88b56f0259fd0e148a7bc88da19e7e630c03678378
     spec:
       imagePullSecrets:
         - name: ghcr-pull
@@ -4919,7 +4908,6 @@ spec:
             name: litellm-provider-extension
         - name: home
           emptyDir: {}
-
 ---
 # Source: harmostes/templates/ui.yaml
 apiVersion: apps/v1
@@ -4998,7 +4986,6 @@ spec:
         - name: platforms-config
           configMap:
             name: harmostes-ui-platforms
-
 ---
 # Source: harmostes/templates/worker-pool.yaml
 apiVersion: apps/v1
@@ -5024,6 +5011,7 @@ spec:
         dapr.io/app-id: "harmostes-worker-pool"
         dapr.io/app-port: "8084"
         dapr.io/config: harmostes-config
+        dapr.io/enable-actors: "true"
         dapr.io/sidecar-image: "ghcr.io/rezuscloud/daprd:otel-metrics-latest-amd64"
         dapr.io/env: "OTEL_EXPORTER_OTLP_INSECURE=true"
     spec:
@@ -5189,7 +5177,6 @@ spec:
 # same pattern as the rig-query fixture freshness check). The k8s-config
 # ConfigMap this replaces was exactly such a stale copy (#358 never reached
 # the resolver through it).
-
 ---
 # Source: harmostes/templates/fork-maintenance.yaml
 # ── Fork-maintenance engine payload (ADR-0011) ──────────────────────────────
@@ -5198,28 +5185,24 @@ spec:
 # declarative per-fork configuration. ConfigMap names match the worker-pool
 # mounts (forkMaintenance.*ConfigMap), so the worker pods see the same
 # /workspace layout the k8s-config kustomize generator used to produce.
-
 ---
 # Source: harmostes/templates/ui-platforms-configmap.yaml
 # Platform display configs (plug-and-play). This ConfigMap provides display
 # metadata (label, color, icon) for known git platforms. Any platform string
 # is accepted for token creation — this only enriches the UI. To add a new
 # platform, add an entry here (GitOps), no code change needed.
-
 ---
 # Source: harmostes/templates/ui-rbac.yaml
 # RBAC for harmostes-ui: read-only Workflows + Jobs (Phase A),
 # Secrets CRUD for per-user token management (Phase C).
 # Isolation is code-enforced: the UI filters by harmostes.dev/owner label.
 # Token VALUES are never returned to the browser (write-only secrets).
-
 ---
 # Source: harmostes/templates/ui.yaml
 # harmostes-ui: self-service web interface for managing Workflow CRs.
 # Authenticated via Authentik forward-auth (identity injected as headers).
 # The Go server reads X-Forwarded-Preferred-Username and filters all queries
 # by the harmostes.dev/owner label.
-
 ---
 # Source: harmostes/templates/dapr.yaml
 # Dapr components — the deterministic event-system application layer. State for
@@ -5250,7 +5233,6 @@ spec:
     # anyway.
     - name: keyPrefix
       value: "none"
-
 ---
 # Source: harmostes/templates/dapr.yaml
 apiVersion: dapr.io/v1alpha1
@@ -5271,7 +5253,6 @@ spec:
     # Per-namespace consumer isolation
     - name: consumerID
       value: harmostes
-
 ---
 # Source: harmostes/templates/dapr.yaml
 # Dapr secret store — wraps the cluster's k8s Secret backend so all apps (UI,
@@ -5290,7 +5271,6 @@ spec:
   metadata:
     - name: namespace
       value: harmostes-ci
-
 ---
 # Source: harmostes/templates/dapr.yaml
 # Dapr Configuration referenced by worker pods via dapr.io/config. The sentry
@@ -5386,7 +5366,6 @@ spec:
     kind: string
     label: Fork
     name: fork
-
 ---
 # Source: harmostes/templates/workflow-templates.yaml
 apiVersion: harmostes.dev/v1alpha1
@@ -5410,7 +5389,6 @@ spec:
   prepare:
     plugin:
       name: rig-emit
-
 ---
 # Source: harmostes/templates/workflow-templates.yaml
 apiVersion: harmostes.dev/v1alpha1
@@ -5462,7 +5440,6 @@ spec:
     kind: string
     label: Wiki repo
     name: wiki
-
 ---
 # Source: harmostes/templates/workflow-templates.yaml
 apiVersion: harmostes.dev/v1alpha1

@@ -1,6 +1,7 @@
 package v1alpha1
 
 import (
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"time"
 )
 
@@ -192,4 +193,11 @@ type ReviewReadyStatus struct {
 
 	// LastReason is the human-readable reason behind LastDecision.
 	LastReason string `json:"lastReason,omitempty"`
+
+	// LastSweepAbortAt is when a sweep last died before completing its
+	// arm→dispatch handoff (r30, #379 acceptance): claims stranded by an
+	// abort are released "sweep-aborted" — honest, and NOT a churn strike
+	// (only observed dispatches burn the budget). Cleared implicitly by
+	// age: the release pass trusts it for reDispatchGrace.
+	LastSweepAbortAt *metav1.Time `json:"lastSweepAbortAt,omitempty"`
 }

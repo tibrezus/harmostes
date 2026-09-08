@@ -1,6 +1,8 @@
 package attempt
 
 import (
+	"time"
+
 	"context"
 	"fmt"
 
@@ -418,4 +420,43 @@ func lastSlash(s string) int {
 		}
 	}
 	return -1
+}
+
+// ReapStuckAttempts finalizes attempts that have sat in phase=reconciling
+// past olderThan (r30, #376): a worker loss (pod OOM mid-run, node drain)
+// leaves the phase frozen forever — the run has no Job, no verdict, no
+// terminal state, and the attempt holds a claim slot if it carries one.
+// Claim-bearing attempts are RELEASED first ("closed" — terminal, no churn
+// strike), then the phase lands on failed with a message naming the reap.
+// Best-effort per attempt: one bad object must not block the rest.
+func ReapStuckAttempts(ctx context.Context, c client.Client, namespace, workflowName string, olderThan time.Duration) (int, error) {
+	var list v1alpha1.AttemptList
+	if err := c.List(ctx, &list, client.InNamespace(namespace),
+		client.MatchingLabels{"harmostes.dev/workflow": workflowName}); err != nil {
+		return 0, fmt.Errorf("list attempts: %w", err)
+	}
+	cutoff := time.Now().Add(-olderThan)
+	reaped := 0
+	for i := range list.Items {
+		at := &list.Items[i]
+		if at.Status.Phase != v1alpha1.AttemptPhaseReconciling ||
+			at.CreationTimestamp.IsZero() || // just-created (fake clients, server not yet stamped) — never reap
+			at.CreationTimestamp.Time.After(cutoff) {
+			continue
+		}
+		r := at.Status.Review
+		if r != nil && !r.Released {
+			if err := ReleaseClaim(ctx, c, namespace, at.Name, "closed"); err != nil {
+				continue // still reap the phase below if the release object survived
+			}
+		}
+		if err := patchAttemptStatus(ctx, c, namespace, at.Name, func(s *v1alpha1.AttemptStatus) {
+			s.Phase = v1alpha1.AttemptPhaseFailed
+			s.Message = fmt.Sprintf("reaped: stuck reconciling since %s (no terminal state; suspected worker loss)", at.CreationTimestamp.Time.UTC().Format(time.RFC3339))
+		}); err != nil {
+			continue
+		}
+		reaped++
+	}
+	return reaped, nil
 }

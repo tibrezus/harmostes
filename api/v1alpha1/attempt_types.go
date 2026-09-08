@@ -246,6 +246,14 @@ type ReviewClaimStatus struct {
 	// (MarkClaimDispatched), by a human request, or by a fresh claim.
 	DispatchLostReleases int `json:"dispatchLostReleases,omitempty"`
 
+	// LastDispatchLostAt is when this claim last released dispatch-lost
+	// (#376): the churn budget is only refusals WITHIN the horizon window
+	// of this instant — an exhausted budget whose last strike is older
+	// than the horizon self-clears on the next automatic arm (time is the
+	// second eraser, beside the human override; without it a webhook-less
+	// forge — no label event reaches the gate — has no operator exit).
+	LastDispatchLostAt *metav1.Time `json:"lastDispatchLostAt,omitempty"`
+
 	// DismissedAt persists the last horizon dismissal of this head (r11
 	// must-fix 1): Released/ReleaseReason are cleared by the very revival
 	// that answers them, so inferring "recently dismissed" from era state

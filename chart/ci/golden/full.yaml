@@ -5027,6 +5027,7 @@ spec:
         dapr.io/app-id: "harmostes-worker-pool"
         dapr.io/app-port: "8084"
         dapr.io/config: harmostes-config
+        dapr.io/enable-actors: "true"
         dapr.io/sidecar-image: "ghcr.io/rezuscloud/daprd:otel-metrics-latest-amd64"
         dapr.io/env: "OTEL_EXPORTER_OTLP_INSECURE=true"
     spec:

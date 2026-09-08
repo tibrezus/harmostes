@@ -222,6 +222,30 @@ func TestWakeFromEnvPrecedence(t *testing.T) {
 	}
 }
 
+// TestSessionLineageForRun (ADR-0010): PR-shaped runs resolve a stable
+// lineage; non-PR runs keep per-run persistence.
+func TestSessionLineageForRun(t *testing.T) {
+	for _, k := range []string{"HARMOSTES_TRIGGER_PR", "HARMOSTES_TRIGGER_REPO", "HARMOSTES_TRIGGER_ACTION", "HARMOSTES_TRIGGER_SHA", "HARMOSTES_TRIGGER_REVISION"} {
+		t.Setenv(k, "")
+	}
+	if dir, _, _, _, err := sessionLineageForRun(t.TempDir()); err != nil || dir != "" {
+		t.Fatalf("non-PR run must keep per-run persistence: dir=%q err=%v", dir, err)
+	}
+
+	t.Setenv("HARMOSTES_TRIGGER_PR", "git.rezus.cloud/tibrez/rhesadox#99")
+	root := t.TempDir()
+	dir, id, key, resume, err := sessionLineageForRun(root)
+	if err != nil || dir == "" || id != "harmostes-99" || key != "git.rezus.cloud-tibrez-rhesadox-d782cf64~99" || resume {
+		t.Fatalf("fresh lineage: dir=%q id=%q resume=%v err=%v", dir, id, resume, err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "s.jsonl"), []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, resume, err = sessionLineageForRun(root); err != nil || !resume {
+		t.Fatalf("existing session must resume: resume=%v err=%v", resume, err)
+	}
+}
+
 // TestBuiltinPluginsParity — the three-way parity guard (r1 review, P1/P8):
 // builtinPlugins() ↔ Dockerfile.worker COPY ↔ plugins/ on disk. Both slips
 // this PR made (workspace missing from one leg, divergence-track claimed but

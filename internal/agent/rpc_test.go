@@ -177,3 +177,59 @@ func TestRigRefused(t *testing.T) {
 		})
 	}
 }
+
+// TestRPCLineageResumeArgs (ADR-0010): LineageDir+SessionID must REPLACE
+// the per-run temp dir + timestamp id — the stub pi records its argv, and
+// two spawns on the same lineage must see IDENTICAL --session-dir/--session-id
+// (resume = same dir + same id), with SessionRoot's run-* machinery unused.
+func TestRPCLineageResumeArgs(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	root := t.TempDir()
+	argsFile := filepath.Join(t.TempDir(), "args")
+	stub := filepath.Join(t.TempDir(), "stubpi")
+	script := `#!/bin/bash
+read -r line
+printf '%s\n' "$@" > "$SESSION_ARGS_FILE"
+echo '{"type":"agent_end"}'
+`
+	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	run := func() string {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		rpc, err := NewRPC(ctx, RPCOptions{
+			PiPath: stub, Workdir: ".",
+			Env:         []string{"SESSION_ARGS_FILE=" + argsFile},
+			SessionRoot: root,
+			LineageDir:  filepath.Join(root, "lin"),
+			SessionID:   "harmostes-99",
+			Log:         func(Event) {},
+		})
+		if err != nil {
+			t.Fatalf("NewRPC: %v", err)
+		}
+		defer rpc.Abort(context.Background())
+		if _, _, _, _, err := rpc.Prompt(ctx, "task", "t1"); err != nil {
+			t.Fatalf("prompt: %v", err)
+		}
+		b, err := os.ReadFile(argsFile)
+		if err != nil {
+			t.Fatalf("args file: %v", err)
+		}
+		return string(b)
+	}
+	first := run()
+	if !strings.Contains(first, "--session-dir") || !strings.Contains(first, "harmostes-99") {
+		t.Fatalf("lineage args missing: %q", first)
+	}
+	second := run()
+	if first != second {
+		t.Fatalf("lineage args must be stable across spawns:\n1: %q\n2: %q", first, second)
+	}
+	if entries, _ := os.ReadDir(root); len(entries) != 1 {
+		t.Fatalf("SessionRoot must not gain a run-* dir when a lineage is set: %v", entries)
+	}
+}

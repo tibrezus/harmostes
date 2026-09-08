@@ -2,6 +2,7 @@ package timeline
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -19,6 +20,17 @@ type fakeDapr struct {
 
 func newFakeDapr() *fakeDapr {
 	return &fakeDapr{vals: map[string]string{}, ttls: map[string]time.Duration{}}
+}
+
+func (f *fakeDapr) InvokeActor(ctx context.Context, actorType, actorID, method string, payload []byte) ([]byte, error) {
+	return nil, fmt.Errorf("actors not used in this test")
+}
+func (f *fakeDapr) GetActorState(ctx context.Context, actorType, actorID, key string) ([]byte, error) {
+	return nil, fmt.Errorf("actors not used in this test")
+}
+
+func (f *fakeDapr) SaveActorState(ctx context.Context, actorType, actorID, key string, value any) error {
+	return fmt.Errorf("actors not used in this test")
 }
 
 func (f *fakeDapr) GetState(_ context.Context, _, key string) (string, error) {

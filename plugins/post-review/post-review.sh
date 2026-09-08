@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 log() { echo "[post-review] $*"; }
+. "$(dirname "$0")/../lib/git-host.sh"
 WORKDIR="${HARMOSTES_WORKDIR:-/workspace}"
 REVIEW="$WORKDIR/review.json"
 CONTEXT="$WORKDIR/pr-context.json"
@@ -12,12 +13,11 @@ if [ -n "$SPEC" ]; then LABEL=$(echo "$SPEC"|python3 -c "import sys,json;d=json.
 HOST=$(python3 -c "import json;print(json.load(open('$CONTEXT'))['host'])")
 REPO=$(python3 -c "import json;print(json.load(open('$CONTEXT'))['repo'])")
 PR_NUM=$(python3 -c "import json;print(json.load(open('$CONTEXT'))['number'])")
-case "$HOST" in
-  github.com) API_BASE="https://api.github.com"; TOKEN="${HARMOSTES_GIT_TOKEN:?}"; IS_FJ="false";;
-  codeberg.org) API_BASE="https://codeberg.org/api/v1"; TOKEN="${HARMOSTES_CODEBERG_TOKEN:-${LLM_WIKI_CODEBERG_TOKEN:-}}"; IS_FJ="true";;
-  git.rezus.cloud) API_BASE="https://git.rezus.cloud/api/v1"; TOKEN="${HARMOSTES_FORGEJO_TOKEN:-${HARMOSTES_RZC_PASSWORD:?}}"; IS_FJ="true";;
-  *) API_BASE="https://$HOST/api/v1"; TOKEN="${HARMOSTES_FORGEJO_TOKEN:-${HARMOSTES_GIT_TOKEN:-}}"; IS_FJ="true";;
-esac
+API_BASE=$(host::api_base "$HOST")
+IS_FJ=$(host::is_fj "$HOST")
+# post-review always authenticates (POST comment, consume label) — fail fast
+# at resolve time rather than at curl time.
+TOKEN=$(host::token "$HOST" required)
 export API_BASE TOKEN HOST REPO PR_NUM REVIEW LABEL IS_FJ WORKDIR
 # ── Moved-head guard (ADR-0006): the verdict is only valid at the exact ──
 # reviewed SHA. If the PR head moved while the agent worked, do NOT post and

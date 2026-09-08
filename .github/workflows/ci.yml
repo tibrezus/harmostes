@@ -289,6 +289,7 @@ jobs:
               print("RENDER ASSERTIONS FAILED:", *fail, sep="\n  - ", file=sys.stderr)
               sys.exit(1)
           print(f"declarative layer render assertions: green ({len(docs)} docs)")
+          PY
 
       # Golden render (#368-8): the byte-level invariant under every semantic
       # assertion above. Renders with the committed fixture and diffs against
@@ -311,4 +312,3 @@ jobs:
             exit 1
           fi
           echo "golden render byte-identical; empty-defs guard fails as required"
-          PY

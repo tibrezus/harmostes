@@ -91,7 +91,7 @@ COPY --from=build /out/harmostes-agent  /usr/local/bin/harmostes-agent
 # release channel; the snippet-comment flag gap is tracked upstream
 # #109: explicit flags proposed; anchoring works natively via --body JSON.
 ARG TARGETARCH
-RUN curl -fsSL "https://github.com/rezuscloud/forgejo/releases/download/v16.0.3-rezus.1/fj-linux-${TARGETARCH}.tar.gz" \
+RUN curl -fsSL "https://github.com/rezuscloud/forgejo/releases/download/v16.0.3-rezus.2/fj-linux-${TARGETARCH}.tar.gz" \
     -o /tmp/fj.tgz && mkdir -p /tmp/fjx && tar -xzf /tmp/fjx -f /tmp/fj.tgz -C /tmp/fjx \
     && F="$(find /tmp/fjx -type f -name 'fj-linux-*')" && [ "$(printf '%s\n' "$F" | wc -l)" = "1" ] \
     && install -m 0755 "$F" /usr/local/bin/fj \

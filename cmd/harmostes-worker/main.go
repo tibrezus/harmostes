@@ -91,23 +91,24 @@ func main() {
 		logger = slog.Default().With("component", "harmostes-worker")
 		ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 		defer cancel()
-		// PRLineage actor host (ADR-0010): the pool is the long-lived app;
-		// Dapr routes actor calls here via the declared app-port. The
-		// sidecar serializes per-actor-id calls (turn-based) and stores
-		// actor state in the state store — isolation + durability + no
-		// fetch/publish races across concurrent reviews of one PR.
+		// PRLineage actor host (ADR-0010): mounted on the CONSUMER's HTTP
+		// mux — one process, one app-port; a second ListenAndServe would
+		// race the consumer for 8084 and silently kill one half (r21 P4.3).
+		// The sidecar serializes per-actor-id calls (turn-based) and
+		// stores actor state in the state store — isolation + durability
+		// without any pod owning the lineage.
 		if envOr("HARMOSTES_ACTORS", "on") == "on" {
-			go func() {
-				addr := ":" + envOr("HARMOSTES_ACTOR_PORT", "8084")
-				srv := &http.Server{Addr: addr, Handler: &agentlineage.Host{Sidecar: dapr.New(envOr("DAPR_HTTP_ENDPOINT", ""))}}
-				logf("prlineage actor host on %s", addr)
-				if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-					logf("actor host stopped: %v", err)
-				}
-			}()
-		}
-		if err := worker.RunConsumer(ctx); err != nil {
-			fatal("consumer: %v", err)
+			host := &agentlineage.Host{Sidecar: dapr.New(envOr("DAPR_HTTP_ENDPOINT", ""))}
+			if err := worker.RunConsumer(ctx, func(mux *http.ServeMux) {
+				mux.Handle("/actors/", host)
+				mux.HandleFunc("/dapr/config", host.ServeHTTP)
+			}); err != nil {
+				fatal("consumer: %v", err)
+			}
+		} else {
+			if err := worker.RunConsumer(ctx); err != nil {
+				fatal("consumer: %v", err)
+			}
 		}
 	case "run":
 		runOneShot()
@@ -344,11 +345,18 @@ func runOneShot() {
 			if raw, err := deps.Dapr.InvokeActor(ctx, agentlineage.ActorType, aid, "fetch", nil); err == nil {
 				var sess agentlineage.Session
 				if json.Unmarshal(raw, &sess) == nil && sess.Session != "" {
-					if err := os.WriteFile(filepath.Join(dir, id+".jsonl"), []byte(sess.Session), 0o600); err != nil {
+					// Materialize under the pi-ADOPTABLE name: the stored
+					// filename if the actor has one, else a fresh timestamped
+					// name pi's --session-id resolution can decode.
+					name := sess.File
+					if name == "" {
+						name = filepath.Base(agent.LineageSessionPath(dir, id))
+					}
+					if err := os.WriteFile(filepath.Join(dir, name), []byte(sess.Session), 0o600); err != nil {
 						logf("session lineage materialize failed: %v", err)
 					} else {
 						resume = true
-						logf("session lineage: actor gen=%d lastHead=%s", sess.Generation, sess.LastHead)
+						logf("session lineage: actor gen=%d lastHead=%s file=%s", sess.Generation, sess.LastHead, name)
 					}
 				}
 			} else {
@@ -675,10 +683,15 @@ func (a taskResolverAdapter) Get(ctx context.Context, ref string) (string, error
 
 func builtinPlugins() map[string]string {
 	return map[string]string{
-		"noop":      "/usr/local/lib/harmostes/plugins/noop.sh",
-		"rig-emit":  "/usr/local/lib/harmostes/plugins/rig-emit.sh",
-		"wiki-lint": "/usr/local/lib/harmostes/plugins/wiki-lint.sh",
-		"git-push":  "/usr/local/lib/harmostes/plugins/git-push.sh",
+		"noop":             "/usr/local/lib/harmostes/plugins/noop.sh",
+		"rig-emit":         "/usr/local/lib/harmostes/plugins/rig-emit.sh",
+		"wiki-lint":        "/usr/local/lib/harmostes/plugins/wiki-lint.sh",
+		"git-push":         "/usr/local/lib/harmostes/plugins/git-push.sh",
+		"workspace":        "/usr/local/lib/harmostes/plugins/workspace.sh",
+		"pr-review":        "/usr/local/lib/harmostes/plugins/pr-review.sh",
+		"post-review":      "/usr/local/lib/harmostes/plugins/post-review.sh",
+		"fork-sync":        "/usr/local/lib/harmostes/plugins/fork-sync.sh",
+		"divergence-track": "/usr/local/lib/harmostes/plugins/divergence-track.sh",
 	}
 }
 

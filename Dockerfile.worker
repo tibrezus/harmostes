@@ -86,6 +86,10 @@ COPY --from=build /out/harmostes-worker /usr/local/bin/harmostes-worker
 COPY --from=build /out/harmostes-agent  /usr/local/bin/harmostes-agent
 
 # Built-in plugins shipped in the image (ConfigMap plugins mount under /plugins)
+# ADR-0011: every production plugin is a built-in — workspace/pr-review/
+# post-review (the pr-review pipeline) and fork-sync (the fork-maintenance
+# engine entry point; its payload rides in the chart as ConfigMaps mounted at
+# /workspace). k8s-config carries no plugin scripts.
 COPY plugins/noop/noop.sh      /usr/local/lib/harmostes/plugins/noop.sh
 COPY plugins/rig-emit/rig-emit.sh  /usr/local/lib/harmostes/plugins/rig-emit.sh
 COPY plugins/rig-emit/rig        /usr/local/lib/harmostes/plugins/rig
@@ -94,6 +98,11 @@ COPY plugins/rig-emit/emit-rig.sh  /usr/local/lib/harmostes/plugins/emit-rig.sh
 COPY plugins/rig-emit/rig-to-c4.py /usr/local/lib/harmostes/plugins/rig-to-c4.py
 COPY plugins/wiki-lint/wiki-lint.sh /usr/local/lib/harmostes/plugins/wiki-lint.sh
 COPY plugins/git-push/git-push.sh   /usr/local/lib/harmostes/plugins/git-push.sh
+COPY plugins/workspace/workspace.sh   /usr/local/lib/harmostes/plugins/workspace.sh
+COPY plugins/pr-review/pr-review.sh   /usr/local/lib/harmostes/plugins/pr-review.sh
+COPY plugins/post-review/post-review.sh /usr/local/lib/harmostes/plugins/post-review.sh
+COPY plugins/fork-sync/fork-sync.sh   /usr/local/lib/harmostes/plugins/fork-sync.sh
+COPY plugins/divergence-track/divergence-track.sh /usr/local/lib/harmostes/plugins/divergence-track.sh
 RUN chmod +x /usr/local/lib/harmostes/plugins/*.sh
 
 # Git identity — the agent commits its own work; this ensures every commit (the

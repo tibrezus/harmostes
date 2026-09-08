@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
+	"time"
 )
 
 // Session lineages (ADR-0010): one pi session per PR, resumed — never
@@ -59,6 +61,32 @@ func LineageDir(root, repo, pr string) string {
 // deterministic — pi creates the session on first use and reopens it on
 // every later spawn, which is the entire mechanism: same dir + same id =
 // same conversation (ADR-0010).
+// LineageSessionPath returns a pi-ADOPTABLE name for a fresh session
+// file. pi stores sessions as "<ISO-ms-timestamp>_<id>.jsonl" and resolves
+// --session-id by decoding the filename prefix — a bare "<id>.jsonl" is
+// invisible to it (r21 P4.1, verified against the pinned CLI).
+func LineageSessionPath(dir, id string) string {
+	name := time.Now().UTC().Format("2006-01-02T15-04-05-000Z") + "_" + id + ".jsonl"
+	return filepath.Join(dir, name)
+}
+
+// FindLineageSession locates the pi session file for id in dir: pi renames
+// an adopted/created file to its timestamped form after the first turn, so
+// the newest "<ts>_<id>.jsonl" is the live conversation.
+func FindLineageSession(dir, id string) (string, []byte, error) {
+	matches, err := filepath.Glob(filepath.Join(dir, "*_"+id+".jsonl"))
+	if err != nil {
+		return "", nil, err
+	}
+	if len(matches) == 0 {
+		return "", nil, os.ErrNotExist
+	}
+	sort.Strings(matches) // timestamp prefix sorts lexicographically
+	file := matches[len(matches)-1]
+	b, err := os.ReadFile(file)
+	return file, b, err
+}
+
 func ResolveSession(root, repo, pr string) (dir, id string, resume bool, err error) {
 	if !SanitizePR(pr) {
 		return "", "", false, ErrNotAPR

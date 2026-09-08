@@ -41,6 +41,10 @@ type Session struct {
 	Session    string `json:"session"`
 	LastHead   string `json:"lastHead"`
 	Generation int    `json:"generation"`
+	// File is the pi-side FILENAME of the live conversation (pi renames
+	// sessions to "<ts>_<id>.jsonl" after the first turn); fetch must
+	// materialize under the SAME name or pi cannot adopt it (r21 P4.1).
+	File string `json:"file,omitempty"`
 }
 
 // ActorID builds the entity id "<sanitized-repo>~<pr>". The PR half is

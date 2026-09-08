@@ -245,3 +245,75 @@ func TestSessionLineageForRun(t *testing.T) {
 		t.Fatalf("existing session must resume: resume=%v err=%v", resume, err)
 	}
 }
+
+// TestBuiltinPluginsParity — the three-way parity guard (r1 review, P1/P8):
+// builtinPlugins() ↔ Dockerfile.worker COPY ↔ plugins/ on disk. Both slips
+// this PR made (workspace missing from one leg, divergence-track claimed but
+// never shipped) were invisible because nothing compared the three sources.
+// Test lives in-package to call the unexported builtinPlugins(); repo-root
+// artifacts are reached via ../../.
+func TestBuiltinPluginsParity(t *testing.T) {
+	builtins := builtinPlugins()
+	if len(builtins) == 0 {
+		t.Fatal("builtinPlugins() is empty")
+	}
+
+	// BOTH worker Dockerfiles — the dev one AND the GoReleaser release one —
+	// must EACH copy every builtin. The r131 incident shipped an image whose
+	// binary registered the ADR-0011 builtins while
+	// .github/Dockerfile.worker.release (the one the release pipeline actually
+	// builds) omitted them: prepare fork/exec ENOENT fleet-wide. Per-file
+	// sets, not a union — a union cannot see a file missing from only one
+	// Dockerfile (mutation-probed both ways).
+	for _, df := range []string{"Dockerfile.worker", filepath.Join(".github", "Dockerfile.worker.release")} {
+		dfBytes, err := os.ReadFile(filepath.Join("..", "..", df))
+		if err != nil {
+			t.Fatalf("read %s: %v", df, err)
+		}
+		set := map[string]bool{}
+		for _, line := range strings.Split(string(dfBytes), "\n") {
+			if !strings.HasPrefix(strings.TrimSpace(line), "COPY ") {
+				continue
+			}
+			fields := strings.Fields(line)
+			dest := fields[len(fields)-1]
+			if strings.HasPrefix(dest, "/usr/local/lib/harmostes/plugins/") {
+				set[dest] = true
+			}
+		}
+		for name, path := range builtins {
+			if !set[path] {
+				t.Errorf("builtin %q → %s is NOT COPY-ed by %s — that image would resolve it but not contain it", name, path, df)
+			}
+		}
+	}
+
+	// plugins/ on disk: every <name>/<name>.sh pair.
+	onDisk := map[string]string{} // name → relative path
+	dirs, err := filepath.Glob(filepath.Join("..", "..", "plugins", "*", "*.sh"))
+	if err != nil {
+		t.Fatalf("glob plugins: %v", err)
+	}
+	for _, p := range dirs {
+		name := filepath.Base(filepath.Dir(p))
+		if filepath.Base(p) == name+".sh" {
+			onDisk[name] = p
+		}
+	}
+
+	for name := range builtins {
+		disk, ok := onDisk[name]
+		if !ok {
+			t.Errorf("builtin %q has no plugins/%s/%s.sh source file", name, name, name)
+			continue
+		}
+		if _, err := os.Stat(disk); err != nil {
+			t.Errorf("builtin %q source missing: %v", name, err)
+		}
+	}
+	for name := range onDisk {
+		if _, ok := builtins[name]; !ok {
+			t.Errorf("plugins/%s/%s.sh exists on disk but is NOT registered in builtinPlugins() — a silent third resolution path (the divergence-track slip)", name, name)
+		}
+	}
+}

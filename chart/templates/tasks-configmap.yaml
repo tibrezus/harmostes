@@ -1,0 +1,16 @@
+{{- if .Values.tasks }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: harmostes-tasks
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: harmostes
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+data:
+  {{- range $key, $content := .Values.tasks }}
+  {{ $key }}: |
+    {{- $content | nindent 4 }}
+  {{- end }}
+{{- end }}

@@ -1,0 +1,182 @@
+{{- if and .Values.forkMaintenance.enabled .Values.forkMaintenance.resolver.enabled }}
+{{- $r := .Values.forkMaintenance.resolver }}
+{{- $sa := .Values.controller.serviceAccountName | default "harmostes-controller" }}
+# ── Fork conflict resolver (ADR-0011: chart-owned) ──────────────────────────
+# Always-on HTTP service for fork-sync conflicts: sync-fork.sh POSTs
+# fork.conflict.needs-resolution events to /events; the resolver spawns
+# resolve-conflict.sh detached, which recreates the conflict, invokes pi with
+# the fork-maintenance skill, re-validates and deploys (or escalates).
+# Direct HTTP, not Dapr pub/sub (see conflict-subscriber.py header).
+#
+# The pi litellm-provider extension is a pinned copy of the kernel's
+# extensions/litellm-provider/ (the same source the worker image bakes in).
+# Helm's .Files cannot reach outside the chart directory, so the copy lives at
+# chart/files/litellm-provider/ — and `make test-extensions` FAILS ON DRIFT
+# against the canonical source, so the copy can never silently go stale (the
+# same pattern as the rig-query fixture freshness check). The k8s-config
+# ConfigMap this replaces was exactly such a stale copy (#358 never reached
+# the resolver through it).
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: litellm-provider-extension
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: harmostes
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+# Keys are DERIVED from the directory (Files.Glob), not enumerated — a new
+# source file (e.g. fallbacks.ts) rides along automatically; enumerating keys
+# here is exactly how the copy went stale-incomplete the first time (r1 review,
+# P2: index.ts imported fallbacks.ts that no .Files.Get ever rendered).
+data:
+  {{- range $path, $_ := .Files.Glob "files/litellm-provider/**" }}
+  {{ base $path }}: |
+    {{- $.Files.Get $path | nindent 4 }}
+  {{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fork-conflict-resolver
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: fork-conflict-resolver
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: fork-conflict-resolver
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: fork-conflict-resolver
+    spec:
+      imagePullSecrets:
+        - name: {{ .Values.image.pullSecret }}
+      containers:
+        - name: resolver
+          image: {{ $r.image | quote }}
+          imagePullPolicy: Always
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              # Register the litellm-provider pi extension (mounted at
+              # /extensions/litellm-provider) so resolve-conflict.sh's agent can
+              # use litellm/* models. The worker image bakes this into the image;
+              # the resolver image doesn't, so write it at startup.
+              mkdir -p /root/.pi/agent &&
+              printf '%s\n' '{"packages":["/extensions/litellm-provider"]}' > /root/.pi/agent/settings.json &&
+              # Note: the worker image additionally bakes npm:pi-searxng; the
+              # resolver image does not and startup `pi install` would add an
+              # npm-registry dependency at pod start. Conflict resolution is
+              # git surgery, not web research — no searxng here is deliberate.
+              exec python3 /workspace/scripts/conflict-subscriber.py
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: NAMESPACE
+              value: {{ .Values.namespace }}
+            - name: RESOLVER_SCRIPT
+              value: /workspace/scripts/resolve-conflict.sh
+            - name: MAINT_DIR
+              value: /workspace
+            # harmostes — the shared pi RPC orchestrator (downloaded on startup)
+            - name: HARMOSTES
+              value: python3 /usr/local/bin/harmostes.py
+            - name: SKILL_PATH
+              value: /workspace/skill/SKILL.md
+            # The model id MUST carry the litellm/ provider prefix — the
+            # provider is registered by the mounted litellm-provider extension;
+            # an unqualified default (the script's own fallback) is unreachable
+            # under these settings (r1 review, P4).
+            - name: RESOLVER_MODEL
+              value: {{ $r.model | quote }}
+            - name: HOME
+              value: /root
+            # LiteLLM proxy (pi + litellm/* via litellm-provider extension)
+            - name: LITELLM_URL
+              valueFrom:
+                secretKeyRef:
+                  name: harmostes-litellm-token
+                  key: url
+            - name: LITELLM_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: harmostes-litellm-token
+                  key: key
+            # Host PAT (git push/PR/merge)
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: harmostes-github-token
+                  key: token
+            # GH_TOKEN authenticates the `gh` CLI (read automatically by gh).
+            - name: GH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: harmostes-github-token
+                  key: token
+          resources:
+            {{- toYaml $r.resources | nindent 12 }}
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - { name: scripts, mountPath: /workspace/scripts, readOnly: true }
+            - { name: checks,  mountPath: /workspace/checks, readOnly: true }
+            - { name: defs,    mountPath: /workspace/forks, readOnly: true }
+            - { name: hooks,   mountPath: /workspace/post-merge-hooks, readOnly: true }
+            - { name: skill,   mountPath: /workspace/skill, readOnly: true }
+            - { name: litellm-ext, mountPath: /extensions/litellm-provider, readOnly: true }
+            - { name: manifests, mountPath: /workspace/manifests }
+            - { name: home,    mountPath: /root }
+      volumes:
+        - name: scripts
+          configMap: { name: {{ .Values.forkMaintenance.scriptsConfigMap }}, defaultMode: 0755 }
+        - name: checks
+          configMap: { name: {{ .Values.forkMaintenance.checksConfigMap }}, defaultMode: 0755 }
+        - name: defs
+          configMap: { name: {{ .Values.forkMaintenance.defsConfigMap }} }
+        - name: hooks
+          configMap: { name: {{ .Values.forkMaintenance.hooksConfigMap }}, defaultMode: 0755 }
+        - name: skill
+          configMap:
+            name: fork-maintenance-skill
+            items:
+              - { key: SKILL.md, path: SKILL.md }
+              - { key: conflict-resolution.md, path: references/conflict-resolution.md }
+              - { key: safeguards.md, path: references/safeguards.md }
+              - { key: architecture.md, path: references/architecture.md }
+        - name: manifests
+          emptyDir: {}
+        - name: litellm-ext
+          configMap:
+            name: litellm-provider-extension
+        - name: home
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fork-conflict-resolver
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: fork-conflict-resolver
+spec:
+  selector:
+    app.kubernetes.io/name: fork-conflict-resolver
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+{{- end }}

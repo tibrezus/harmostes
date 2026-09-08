@@ -71,6 +71,9 @@ type RunRequest struct {
 type Consumer struct {
 	cfg    ConsumerConfig
 	server *http.Server
+	// muxOpts mount extra routes (the PRLineage actor host) on the
+	// consumer's ServeMux — one process, one app-port.
+	muxOpts []func(*http.ServeMux)
 	// (The run-scoped single-flight mutex died with ADR-0007 phase 3:
 	// graphs run in Job pods; the Dispatcher's createMu dedupes creates.)
 }
@@ -98,6 +101,11 @@ func NewConsumer(cfg ConsumerConfig) *Consumer {
 //   - GET  /healthz        — liveness/readiness probe
 func (c *Consumer) Start(ctx context.Context) error {
 	mux := http.NewServeMux()
+	// Extra routes (the PRLineage actor host mounts /actors/ + /dapr/config
+	// on this mux — one process, one app-port; r21 P4.3).
+	for _, opt := range c.muxOpts {
+		opt(mux)
+	}
 	mux.HandleFunc("/dapr/subscribe", c.handleSubscribe)
 	mux.HandleFunc("/triggers", c.handleTrigger)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -230,7 +238,7 @@ type TriggerEvent struct {
 // each trigger is validated by the Review-Ready Gate in-process and accepted
 // runs dispatch as an Attempt + Job (milliseconds); the graphs run in the
 // Job pods, never here.
-func RunConsumer(ctx context.Context) error {
+func RunConsumer(ctx context.Context, muxOpts ...func(*http.ServeMux)) error {
 	logger := slog.Default().With("component", "harmostes-consumer")
 
 	dispatcher, err := DispatcherFromEnv(func(format string, args ...any) {
@@ -239,7 +247,6 @@ func RunConsumer(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("dispatcher: %w", err)
 	}
-
 	consumer := NewConsumer(ConsumerConfig{
 		HTTPPort:   envOr("HARMOSTES_CONSUMER_PORT", "8084"),
 		PubsubName: envOr("HARMOSTES_PUBSUB_NAME", "pubsub"),
@@ -247,6 +254,7 @@ func RunConsumer(ctx context.Context) error {
 		RunFunc:    dispatcher.Dispatch,
 		Logger:     logger,
 	})
+	consumer.muxOpts = muxOpts
 
 	return consumer.Start(ctx)
 }

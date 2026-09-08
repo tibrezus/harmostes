@@ -49,6 +49,19 @@ test-extensions:
 	@node --experimental-strip-types -e 'await import("./extensions/litellm-provider/index.ts")'
 	@echo "litellm-provider: import gate + fallback table green"
 	python3 extensions/rig-query/fixtures/freshness.py
+	@# Chart copy drift gate: the resolver's litellm-provider ConfigMap source
+	@# (chart/files/litellm-provider/) is a pinned copy of the canonical
+	@# extension — Helm .Files cannot reach outside chart/. Fail on drift so
+	@# the copy can never silently go stale (ADR-0011).
+	@for f in extensions/litellm-provider/*; do \
+	  n=$$(basename $$f); \
+	  cmp -s $$f chart/files/litellm-provider/$$n || { echo "DRIFT/MISSING: chart/files/litellm-provider/$$n vs extensions/litellm-provider/ — re-copy the canonical source" >&2; exit 1; }; \
+	done; \
+	for f in chart/files/litellm-provider/*; do \
+	  n=$$(basename $$f); \
+	  [ -e extensions/litellm-provider/$$n ] || { echo "EXTRA: chart/files/litellm-provider/$$n has no canonical counterpart — stale copy" >&2; exit 1; }; \
+	done; \
+	echo "litellm-provider chart copy: complete + in sync with extensions/litellm-provider/"
 
 ## test-rig-emit: the rig-emit plugin's Python validator — severity pin:
 ## circular deps WARN (the graph represents the codebase as it is; failing

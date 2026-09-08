@@ -147,7 +147,9 @@ func (c *HTTPClient) GetActorState(ctx context.Context, actorType, actorID, key 
 		return nil, err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusNotFound {
+	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusNoContent {
+		// 404 = unknown key; 204 = key exists but unset (daprd semantics
+		// for never-written actor state) — both mean "empty" (r21 P3).
 		return nil, nil
 	}
 	if resp.StatusCode != http.StatusOK {

@@ -66,6 +66,7 @@ metadata:
     app.kubernetes.io/managed-by: {{ $.Release.Service }}
 data:
   {{- range $file, $content := $fm.defs }}
+  {{- if not (trim $content) }}{{- fail (printf "forkMaintenance.defs.%s is empty — a def with no content renders a valid ConfigMap that fails inside sync-fork.sh (render-time guard, #368-3)" $file) }}{{- end }}
   {{ $file }}: |
     {{- $content | nindent 4 }}
   {{- end }}

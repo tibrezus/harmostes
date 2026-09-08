@@ -100,6 +100,7 @@ data:
     const proxy = new Map([
       ["ali/anthropic/qwen3.8-flash", { max_input_tokens: 1048576, max_output_tokens: 32768 }],
       ["mtplx/qwen38-27b-optimized-speed-fp16", { max_input_tokens: 262144, max_output_tokens: 32768 }],
+      ["zai/anthropic/glm-5.3-flash", { max_input_tokens: 131072, max_output_tokens: 8192 }],
     ]);
     const models = [
       { id: "ali/anthropic/qwen3.8-flash", max_input_tokens: 1048576, max_output_tokens: 32768 },
@@ -172,8 +173,8 @@ data:
       assert.equal(annotated[0].samplingParams, undefined);
       assert.equal(wired.length, 0);
       // And an OWN "toString" chain still wires normally (own-key lookup wins).
-      const { annotated: own, wired: wiredOwn } = applyChains(models2, { toString: ["mtplx/qwen38-27b-optimized-speed-fp16"] }, proxy);
-      assert.deepEqual(own[0].samplingParams, { fallbacks: ["mtplx/qwen38-27b-optimized-speed-fp16"] });
+      const { annotated: own, wired: wiredOwn } = applyChains(models2, { toString: ["zai/anthropic/glm-5.3-flash"] }, proxy);
+      assert.deepEqual(own[0].samplingParams, { fallbacks: ["zai/anthropic/glm-5.3-flash"] });
       assert.equal(wiredOwn.length, 1);
     });
     
@@ -207,10 +208,12 @@ data:
      * of #359: valid JSON with a wrong shape is the accidental-value risk).
      */
     
-    // The target is operator-chosen (#360: speed over quality — same 27b
-    // optimized family, faster reviews; both live in the proxy key's scope).
+    // The target is operator-chosen (2026-09-08: glm-5.3-flash via the
+    // anthropic-compatible route — the mtplx speed target stalled at long
+    // context, diagnosed in #373's rollback; glm smoke-verified 2/2).
+    // Both live in the proxy key's scope.
     export const DEFAULT_FALLBACKS: Record<string, string[]> = {
-      "ali/anthropic/qwen3.8-flash": ["mtplx/qwen38-27b-optimized-speed-fp16"],
+      "ali/anthropic/qwen3.8-flash": ["zai/anthropic/glm-5.3-flash"],
     };
     
     /**
@@ -4803,7 +4806,7 @@ spec:
         # the fork-maintenance.yaml template output (scripts/checks/defs/
         # hooks/skill CMs) and the litellm extension payload.
         checksum/fork-maintenance: 082d8c5472ee15b9beacfd112a46beff3f5121af68d95f1af2eadb6fd64372f4
-        checksum/litellm-extension: bde75691f7eff0829435b12fec613db080c399b8f6a8f7a44e5b4608590bf442
+        checksum/litellm-extension: 894305d7a7480e676a375b88b56f0259fd0e148a7bc88da19e7e630c03678378
     spec:
       imagePullSecrets:
         - name: ghcr-pull

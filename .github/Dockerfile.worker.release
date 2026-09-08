@@ -78,7 +78,7 @@ RUN curl -fsSL "https://github.com/rezuscloud/forgejo/releases/download/v16.0.3-
     && mkdir -p /tmp/fjx && tar -xzf /tmp/fj.tgz -C /tmp/fjx \
     && F="$(find /tmp/fjx -type f -name 'fj-linux-*')" && [ "$(printf '%s\n' "$F" | wc -l)" = "1" ] \
     && install -m 0755 "$F" /usr/local/bin/fj \
-    && rm -rf /tmp/fjx /tmp/fj.tgz /tmp/fj.sha && fj --version
+    && rm -rf /tmp/fjx /tmp/fj.tgz /tmp/fj.sha && fj version
 
 # Built-in plugins shipped in the image.
 COPY plugins/noop/noop.sh          /usr/local/lib/harmostes/plugins/noop.sh

@@ -293,6 +293,7 @@ spec:
                     capacity:     { type: integer }
                     lastDecision: { type: string, enum: [proceed, waiting, standdown, idle] }
                     lastReason:   { type: string }
+                    lastSweepAbortAt: { type: string, format: date-time, description: "When a sweep last died before completing arm-to-dispatch (#379) — claims stranded by an abort release as sweep-aborted, not dispatch-lost (no churn strike)" }
                 lastRunAt: { type: string }
                 message: { type: string }
                 conditions:

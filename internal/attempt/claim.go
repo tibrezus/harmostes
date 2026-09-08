@@ -93,6 +93,7 @@ func ArmClaim(ctx context.Context, c client.Client, scheme *runtime.Scheme, wf *
 	// MaxDispatchLostReleases consecutive never-dispatched releases (the
 	// release/revive cycle must stop, not flap). Human request overrides
 	// (re-apply the label / push + label).
+	var budgetExpiry bool
 	if !humanRequest && sameClaim {
 		// Horizon leg reads the PERSISTED dismissal (r11 must-fix 1), not
 		// era state: Released/ReleaseReason are cleared by the revival that
@@ -109,10 +110,21 @@ func ArmClaim(ctx context.Context, c client.Client, scheme *runtime.Scheme, wf *
 			return nil, fmt.Errorf("%w: %s — automatic re-arm refused; re-apply the label to request a fresh review",
 				ErrRecentlyDismissed, shortSHA(headSHA))
 		}
-		if r.DispatchLostReleases >= v1alpha1.MaxDispatchLostReleases {
-			return nil, fmt.Errorf("%w: %s — %d consecutive never-dispatched releases (max %d); re-apply the label to request a fresh review",
+		// The budget is a WINDOW, not a life sentence (#376 defect 2):
+		// three strikes within the horizon window refuse; strikes older
+		// than the horizon are stale evidence — self-clear below and let
+		// the automatic arm proceed. Without this a webhook-less forge
+		// (the label event never reaches the gate) had NO operator exit:
+		// the prescribed "re-apply the label" never arrived as a
+		// humanRequest arm, so the refusal stood forever.
+		budgetExpired := r.LastDispatchLostAt != nil &&
+			wf.Spec.ReviewReady != nil &&
+			time.Since(r.LastDispatchLostAt.Time) >= wf.Spec.ReviewReady.HorizonDuration()
+		if r.DispatchLostReleases >= v1alpha1.MaxDispatchLostReleases && !budgetExpired {
+			return nil, fmt.Errorf("%w: %s — %d consecutive never-dispatched releases within the horizon window (max %d); re-apply the label for a fresh review now, or wait out the horizon and the budget self-clears",
 				ErrChurnBudgetExhausted, shortSHA(headSHA), r.DispatchLostReleases, v1alpha1.MaxDispatchLostReleases)
 		}
+		budgetExpiry = budgetExpired && r.DispatchLostReleases > 0
 	}
 	// Reusable era: pointer-local now — the era IS this object, so "reuse"
 	// just means "the revival rules below decide what an arm of a released
@@ -211,7 +223,7 @@ func ArmClaim(ctx context.Context, c client.Client, scheme *runtime.Scheme, wf *
 		// "review this" — #343 fix 3; a pointer change must not inherit the
 		// first pointer's churn evidence — r7 P2: two pointers sharing one
 		// head resolve to this ONE attempt object).
-		if !sameClaim || humanRequest {
+		if !sameClaim || humanRequest || budgetExpiry {
 			r.DeadDispatches = 0
 			r.DispatchLostReleases = 0
 			// DismissedAt is deliberately NOT cleared here — not even by a
@@ -269,6 +281,8 @@ func ReleaseClaim(ctx context.Context, c client.Client, namespace, attemptName, 
 		// number, so two pointers share one attempt object, r7 P2).
 		if reason == v1alpha1.ReleaseReasonDispatchLost {
 			s.Review.DispatchLostReleases++
+			t := metav1.Now()
+			s.Review.LastDispatchLostAt = &t
 		}
 		if reason == v1alpha1.ReleaseReasonHorizon {
 			t := metav1.NewTime(time.Now())

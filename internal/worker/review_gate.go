@@ -1,6 +1,8 @@
 package worker
 
 import (
+	"log/slog"
+
 	"context"
 	"encoding/json"
 	"errors"
@@ -296,7 +298,9 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 				// whose never-dispatched releases burned the budget converges
 				// into the refusal surface — ArmClaim's guard catches a
 				// re-ARM, this catches the re-DISPATCH of an existing claim.
-				if r.DispatchLostReleases >= v1alpha1.MaxDispatchLostReleases {
+				budgetActive := r.LastDispatchLostAt == nil ||
+					time.Since(r.LastDispatchLostAt.Time) < rr.HorizonDuration()
+				if r.DispatchLostReleases >= v1alpha1.MaxDispatchLostReleases && budgetActive {
 					standDown(ctx, deps, liveAgg, wf.Name,
 						candidate{repo: repo, pr: pr, pointer: r.PR},
 						fmt.Errorf("%w: %s — %d consecutive never-dispatched releases (max %d); re-apply the label to request a fresh review",
@@ -316,6 +320,8 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 				// live-Job dedupe make a racing wake re-arm safe.
 				out = append(out, GateDispatch{Envelope: res.Envelope, Attempt: c.Name})
 				keepArmed[r.PR] = true
+				emitGate(ctx, deps.TL, liveAgg, res, repo, pr)
+				log("review-ready: re-dispatching queued claim %s at %s (CI green since arm)", c.Name, r.HeadSHA)
 			case review.DecisionStanddown:
 				releaseClaim(ctx, deps, c, classifyRelease(res.Reason), log)
 				releasedInA[c.Name] = true
@@ -461,6 +467,18 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 			// The counter bounds the cycle instead (reuse < Max, guard at
 			// Max), and ReleaseReasonHorizon stays reserved for genuine
 			// ambiguity (verdict-window expiry on dispatched claims).
+			// r30 #379 acceptance: a strand whose arm sweep DIED before the
+			// dispatch loop ran is infrastructure weather WITH a witness —
+			// the dead sweep stamped LastSweepAbortAt. Release it honestly
+			// ("sweep-aborted": terminal, no churn strike) instead of
+			// spending the budget on an abort the operator already owns.
+			abortRecent := liveAgg != nil && liveAgg.LastSweepAbortAt != nil &&
+				time.Since(liveAgg.LastSweepAbortAt.Time) <= reDispatchGrace
+			if abortRecent {
+				log("review-ready: claim %s (%s) never dispatched within a recorded sweep abort — releasing as sweep-aborted (no churn strike)", c.Name, r.PR)
+				releaseClaim(ctx, deps, c, "sweep-aborted", log)
+				continue
+			}
 			log("review-ready: claim %s (%s) never dispatched — releasing as dispatch-lost (release #%d, aged=%t)", c.Name, r.PR, r.DispatchLostReleases+1, !arm.IsZero() && time.Since(arm) > rr.HorizonDuration())
 			releaseClaim(ctx, deps, c, v1alpha1.ReleaseReasonDispatchLost, log)
 		}
@@ -512,8 +530,16 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 			if err != nil {
 				log("review-ready: labeled scan %s failed: %v", norm, err)
 				// "We could not check CI" must not be identical to
-				// "nothing was labeled" (r9 (d)).
+				// "nothing was labeled" (r9 (d)) — and the status must say
+				// so (r11 gap 2): "nothing to evaluate" on a broken scan is
+				// the exact lie that made the starvation invisible.
 				recordReviewGateReason(ctx, wf.Name, norm, "scan-error")
+				// Never clobber a stronger headline (the held promise, a
+				// standdown, a refusal): the scan error is the sweep's
+				// summary ONLY when nothing else spoke this cycle.
+				if !heldRecorded && lastReason == "nothing to evaluate this cycle" {
+					lastDecision, lastReason = "waiting", fmt.Sprintf("labeled scan %s failed: %v — labeled PRs unevaluated this sweep", norm, err)
+				}
 				continue
 			}
 			for _, pr := range pulls {
@@ -604,6 +630,7 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 				log("review-ready: arm claim %s failed: %v", cand.pointer, err)
 				recordReviewGate(ctx, wf.Name, cand.repo, err)
 			}
+			log("review-ready: armed %s at %s (waiting: %s)", cand.pointer, sha, res.Reason)
 			lastDecision, lastReason = string(res.Decision), res.Reason
 			emitGate(ctx, deps.TL, liveAgg, res, cand.repo, cand.pr)
 		case review.DecisionStanddown:
@@ -617,11 +644,15 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 	// an aborted sweep must still write its summary and its counters, or
 	// the failure mode this deadline exists for is invisible in it.
 	recordCtx := context.WithoutCancel(ctx)
+	var abortAt *metav1.Time
 	if ctx.Err() != nil {
 		// The abort itself is countable — the effect of this safeguard is
 		// falsifiable from telemetry, not only from a log grep. repo stays
 		// "" (r11 nit): "sweep" in a pointer-typed label breaks group-by-repo.
 		recordReviewGateReason(recordCtx, wf.Name, "", "sweep-abort")
+		t := metav1.Now()
+		abortAt = &t
+		log("review-ready: sweep aborted (%v) — the abort is stamped in status; claims stranded by it release as sweep-aborted, not dispatch-lost", ctx.Err())
 	}
 	if !heldRecorded {
 		// The status a human reads first must carry the real cause (r11
@@ -636,13 +667,28 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 	}
 	if err := deps.Status.PatchStatus(recordCtx, wf.Name, func(s *v1alpha1.WorkflowStatus) {
 		s.ReviewReady = &v1alpha1.ReviewReadyStatus{
-			LiveClaims:   liveDispatched,
-			Capacity:     capacity,
-			LastDecision: lastDecision,
-			LastReason:   lastReason,
+			LiveClaims:       liveDispatched,
+			Capacity:         capacity,
+			LastDecision:     lastDecision,
+			LastReason:       lastReason,
+			LastSweepAbortAt: abortAt,
 		}
 	}); err != nil {
 		log("review-ready: aggregates patch failed: %v", err)
+	}
+
+	// Janitor (r30, #376): attempts frozen in reconciling for days are
+	// worker-loss debris — they hold claim slots and clutter the fleet
+	// view. Best-effort, bounded, on the uncancellable ctx (a sweep abort
+	// must not abort the reap halfway is fine — ReapStuckAttempts is
+	// per-attempt best-effort and the NEXT sweep reaps the rest).
+	if reapCtx, rcancel := context.WithTimeout(recordCtx, 30*time.Second); rcancel != nil {
+		defer rcancel()
+		if n, err := attempt.ReapStuckAttempts(reapCtx, deps.Client, wf.Namespace, wf.Name, 7*24*time.Hour); err != nil {
+			log("review-ready: reap stuck attempts failed: %v", err)
+		} else if n > 0 {
+			log("review-ready: reaped %d attempt(s) stuck reconciling >7d", n)
+		}
 	}
 
 	return out, nil
@@ -745,10 +791,19 @@ func releaseDeadClaim(ctx context.Context, deps GateDeps, at v1alpha1.Attempt, r
 // emitGateTransition records state CHANGES only: a re-evaluation that repeats
 // the previous waiting decision+reason (the armed poll, ~every 5 min) is a
 // non-event.
+// tlWriteTimeout bounds every in-sweep timeline write (r30, #379): a
+// sidecar that accepts the connection but never answers must not own the
+// sweep deadline — the write is best-effort telemetry, the handoff
+// (arm→dispatch) is the product.
+var tlWriteTimeout = 5 * time.Second
+
 func emitGate(ctx context.Context, tl timeline.Writer, agg *v1alpha1.ReviewReadyStatus, result review.Result, repo string, pr int) {
 	if tl == nil {
 		return
 	}
+	wctx, cancel := context.WithTimeout(ctx, tlWriteTimeout)
+	defer cancel()
+	ctx = wctx
 	kind := ""
 	switch result.Decision {
 	case review.DecisionProceed:
@@ -764,7 +819,9 @@ func emitGate(ctx context.Context, tl timeline.Writer, agg *v1alpha1.ReviewReady
 	if kind == "" {
 		return
 	}
-	_ = tl.Emit(ctx, kind, "", map[string]any{"reason": result.Reason, "pr": pr, "repo": repo})
+	if err := tl.Emit(ctx, kind, "", map[string]any{"reason": result.Reason, "pr": pr, "repo": repo}); err != nil {
+		slog.Warn("review-ready: timeline emit failed (bounded, non-fatal)", "kind", kind, "error", err)
+	}
 }
 
 // normalizeRepoPointer qualifies a repo pointer to host/owner/name. A bare

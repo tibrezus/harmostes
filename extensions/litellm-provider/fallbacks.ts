@@ -7,10 +7,12 @@
  * of #359: valid JSON with a wrong shape is the accidental-value risk).
  */
 
-// The target is operator-chosen (#360: speed over quality — same 27b
-// optimized family, faster reviews; both live in the proxy key's scope).
+// The target is operator-chosen (2026-09-08: glm-5.3-flash via the
+// anthropic-compatible route — the mtplx speed target stalled at long
+// context, diagnosed in #373's rollback; glm smoke-verified 2/2).
+// Both live in the proxy key's scope.
 export const DEFAULT_FALLBACKS: Record<string, string[]> = {
-  "ali/anthropic/qwen3.8-flash": ["mtplx/qwen38-27b-optimized-speed-fp16"],
+  "ali/anthropic/qwen3.8-flash": ["zai/anthropic/glm-5.3-flash"],
 };
 
 /**

@@ -19,6 +19,14 @@ See the [Plugin Interface](https://github.com/tibrezus/harmostes/wiki/Plugin-Int
 | `git-push` | deploy | llm-wiki | rebase onto FETCH_HEAD + union-merge changelog + `git push HEAD:main` |
 | `fork-merge-deploy` | deploy | fork-maintenance | PR-merge sync branch into release (append-only) + tag `v…-rezus.N` |
 
+**Built-in plugins** (worker image, registered in `builtinPlugins()`, resolvable
+by bare name): `noop`, `rig-emit`, `wiki-lint`, `git-push`, `workspace`,
+`pr-review`, `post-review`, `fork-sync`. The remaining rows (`raw-copy`,
+`fork-maintenance`, `fork-merge-deploy`) and `divergence-track` (above) are
+**not** built-ins — they are delivered via the fork-maintenance engine
+ConfigMap mount (`/workspace/…`) or the legacy `pluginConfigMaps` path; a
+`{name: …}` plugin ref to them fails at resolve time.
+
 ## Adding a plugin
 
 1. Write a command that follows the [contract](https://github.com/tibrezus/harmostes/wiki/Plugin-Interface--legacy)
@@ -55,9 +63,11 @@ immune to squash/merge-base drift):
 - `reapply <wd> <fork> <baseline.json>`  (self-heal dropped roots from the release)
 - `verify  <wd> <baseline.json>`         (gate: exit 0 green / 1 lost)
 
-Ships in the worker image (ADR-0011, registered as a built-in). Note the
-fork-sync engine still invokes its OWN mounted copy
-(`chart/fork-maintenance/scripts/` at /workspace/scripts) via `$SCRIPT_DIR` —
-the built-in registration makes `{name: divergence-track}` resolvable for
-graph-native workflows. Unifying the two invocation paths is a recorded
-follow-up. It serves as the sync's `prepare` baseline + a `verify` gate.
+Deliberately **not** a worker-image built-in (ADR-0011 #368-6: the built-in
+copy had drifted stale from the engine source). The engine's mounted copy at
+`/workspace/scripts/divergence-track.sh` (rendered by the harmostes chart into
+the `fork-maintenance-scripts` ConfigMap) is the **only** path — invoked by
+`sync-fork.sh` via `$SCRIPT_DIR`; a graph-native workflow reaches it through
+that mount, not by bare plugin name (a `{name: divergence-track}` plugin ref
+fails at resolve time by design). It serves as the sync's `prepare` baseline +
+a `verify` gate.

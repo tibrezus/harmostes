@@ -1,5 +1,6 @@
 {{- if .Values.forkMaintenance.enabled }}
 {{- $fm := .Values.forkMaintenance }}
+{{- if not $fm.defs }}{{- fail "forkMaintenance.enabled=true requires forkMaintenance.defs — at least one forks/<name>.yaml definition (render-time guard, #368-3: an empty defs ConfigMap only fails deep inside sync-fork.sh at 3 a.m.)" }}{{- end }}
 # ── Fork-maintenance engine payload (ADR-0011) ──────────────────────────────
 # The sync engine is CODE and ships inside this chart (chart/fork-maintenance/).
 # Only the fork DEFINITIONS are values (forkMaintenance.defs) — they are the
@@ -16,26 +17,12 @@ metadata:
     app.kubernetes.io/name: harmostes
     app.kubernetes.io/managed-by: {{ $.Release.Service }}
 data:
-  sync-fork.sh: |
-    {{- $.Files.Get "fork-maintenance/scripts/sync-fork.sh" | nindent 4 }}
-  subtree-mode.sh: |
-    {{- $.Files.Get "fork-maintenance/scripts/subtree-mode.sh" | nindent 4 }}
-  mapping-mode.sh: |
-    {{- $.Files.Get "fork-maintenance/scripts/mapping-mode.sh" | nindent 4 }}
-  backport.sh: |
-    {{- $.Files.Get "fork-maintenance/scripts/backport.sh" | nindent 4 }}
-  git-host.sh: |
-    {{- $.Files.Get "fork-maintenance/scripts/git-host.sh" | nindent 4 }}
-  resolve-conflict.sh: |
-    {{- $.Files.Get "fork-maintenance/scripts/resolve-conflict.sh" | nindent 4 }}
-  conflict-subscriber.py: |
-    {{- $.Files.Get "fork-maintenance/scripts/conflict-subscriber.py" | nindent 4 }}
-  generate-manifest.sh: |
-    {{- $.Files.Get "fork-maintenance/scripts/generate-manifest.sh" | nindent 4 }}
-  verify-patches.sh: |
-    {{- $.Files.Get "fork-maintenance/scripts/verify-patches.sh" | nindent 4 }}
-  divergence-track.sh: |
-    {{- $.Files.Get "fork-maintenance/scripts/divergence-track.sh" | nindent 4 }}
+  {{- range $script := list "sync-fork.sh" "subtree-mode.sh" "mapping-mode.sh" "backport.sh" "git-host.sh" "resolve-conflict.sh" "conflict-subscriber.py" "generate-manifest.sh" "verify-patches.sh" "divergence-track.sh" }}
+  {{- $content := $.Files.Get (printf "fork-maintenance/scripts/%s" $script) }}
+  {{- if not $content }}{{- fail (printf "engine payload missing or empty: fork-maintenance/scripts/%s (render-time guard, #368-3)" $script) }}{{- end }}
+  {{ $script }}: |
+    {{- $content | nindent 4 }}
+  {{- end }}
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -46,10 +33,12 @@ metadata:
     app.kubernetes.io/name: harmostes
     app.kubernetes.io/managed-by: {{ $.Release.Service }}
 data:
-  validate-fork.sh: |
-    {{- $.Files.Get "fork-maintenance/checks/validate-fork.sh" | nindent 4 }}
-  gate-resolved.sh: |
-    {{- $.Files.Get "fork-maintenance/checks/gate-resolved.sh" | nindent 4 }}
+  {{- range $check := list "validate-fork.sh" "gate-resolved.sh" }}
+  {{- $content := $.Files.Get (printf "fork-maintenance/checks/%s" $check) }}
+  {{- if not $content }}{{- fail (printf "engine payload missing or empty: fork-maintenance/checks/%s (render-time guard, #368-3)" $check) }}{{- end }}
+  {{ $check }}: |
+    {{- $content | nindent 4 }}
+  {{- end }}
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -60,9 +49,11 @@ metadata:
     app.kubernetes.io/name: harmostes
     app.kubernetes.io/managed-by: {{ $.Release.Service }}
 data:
-  {{- range $name, $content := dict "signoz" "signoz.sh" "dapr" "dapr.sh" "llama-cpp" "llama-cpp.sh" }}
-  {{ $content }}: |
-    {{- $.Files.Get (printf "fork-maintenance/hooks/%s" $content) | nindent 4 }}
+  {{- range $hook := list "dapr.sh" "llama-cpp.sh" "signoz.sh" }}
+  {{- $content := $.Files.Get (printf "fork-maintenance/hooks/%s" $hook) }}
+  {{- if not $content }}{{- fail (printf "engine payload missing or empty: fork-maintenance/hooks/%s (render-time guard, #368-3)" $hook) }}{{- end }}
+  {{ $hook }}: |
+    {{- $content | nindent 4 }}
   {{- end }}
 ---
 apiVersion: v1
@@ -75,6 +66,7 @@ metadata:
     app.kubernetes.io/managed-by: {{ $.Release.Service }}
 data:
   {{- range $file, $content := $fm.defs }}
+  {{- if not (trim $content) }}{{- fail (printf "forkMaintenance.defs.%s is empty — a def with no content renders a valid ConfigMap that fails inside sync-fork.sh (render-time guard, #368-3)" $file) }}{{- end }}
   {{ $file }}: |
     {{- $content | nindent 4 }}
   {{- end }}
@@ -88,12 +80,10 @@ metadata:
     app.kubernetes.io/name: harmostes
     app.kubernetes.io/managed-by: {{ $.Release.Service }}
 data:
-  SKILL.md: |
-    {{- $.Files.Get "fork-maintenance/skill/SKILL.md" | nindent 4 }}
-  conflict-resolution.md: |
-    {{- $.Files.Get "fork-maintenance/skill/references/conflict-resolution.md" | nindent 4 }}
-  safeguards.md: |
-    {{- $.Files.Get "fork-maintenance/skill/references/safeguards.md" | nindent 4 }}
-  architecture.md: |
-    {{- $.Files.Get "fork-maintenance/skill/references/architecture.md" | nindent 4 }}
+  {{- range $key, $path := dict "SKILL.md" "fork-maintenance/skill/SKILL.md" "conflict-resolution.md" "fork-maintenance/skill/references/conflict-resolution.md" "safeguards.md" "fork-maintenance/skill/references/safeguards.md" "architecture.md" "fork-maintenance/skill/references/architecture.md" }}
+  {{- $content := $.Files.Get $path }}
+  {{- if not $content }}{{- fail (printf "engine payload missing or empty: %s (render-time guard, #368-3)" $path) }}{{- end }}
+  {{ $key }}: |
+    {{- $content | nindent 4 }}
+  {{- end }}
 {{- end }}

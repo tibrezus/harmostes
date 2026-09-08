@@ -698,15 +698,14 @@ func (a taskResolverAdapter) Get(ctx context.Context, ref string) (string, error
 
 func builtinPlugins() map[string]string {
 	return map[string]string{
-		"noop":             "/usr/local/lib/harmostes/plugins/noop.sh",
-		"rig-emit":         "/usr/local/lib/harmostes/plugins/rig-emit.sh",
-		"wiki-lint":        "/usr/local/lib/harmostes/plugins/wiki-lint.sh",
-		"git-push":         "/usr/local/lib/harmostes/plugins/git-push.sh",
-		"workspace":        "/usr/local/lib/harmostes/plugins/workspace.sh",
-		"pr-review":        "/usr/local/lib/harmostes/plugins/pr-review.sh",
-		"post-review":      "/usr/local/lib/harmostes/plugins/post-review.sh",
-		"fork-sync":        "/usr/local/lib/harmostes/plugins/fork-sync.sh",
-		"divergence-track": "/usr/local/lib/harmostes/plugins/divergence-track.sh",
+		"noop":        "/usr/local/lib/harmostes/plugins/noop.sh",
+		"rig-emit":    "/usr/local/lib/harmostes/plugins/rig-emit.sh",
+		"wiki-lint":   "/usr/local/lib/harmostes/plugins/wiki-lint.sh",
+		"git-push":    "/usr/local/lib/harmostes/plugins/git-push.sh",
+		"workspace":   "/usr/local/lib/harmostes/plugins/workspace.sh",
+		"pr-review":   "/usr/local/lib/harmostes/plugins/pr-review.sh",
+		"post-review": "/usr/local/lib/harmostes/plugins/post-review.sh",
+		"fork-sync":   "/usr/local/lib/harmostes/plugins/fork-sync.sh",
 	}
 }
 

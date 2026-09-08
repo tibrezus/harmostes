@@ -45,6 +45,7 @@ import { applyChains } from "./fallbacks.ts";
 const proxy = new Map([
   ["ali/anthropic/qwen3.8-flash", { max_input_tokens: 1048576, max_output_tokens: 32768 }],
   ["mtplx/qwen38-27b-optimized-speed-fp16", { max_input_tokens: 262144, max_output_tokens: 32768 }],
+  ["zai/anthropic/glm-5.3-flash", { max_input_tokens: 131072, max_output_tokens: 8192 }],
 ]);
 const models = [
   { id: "ali/anthropic/qwen3.8-flash", max_input_tokens: 1048576, max_output_tokens: 32768 },
@@ -117,8 +118,8 @@ test("applyChains: prototype-named models (toString) read own properties only", 
   assert.equal(annotated[0].samplingParams, undefined);
   assert.equal(wired.length, 0);
   // And an OWN "toString" chain still wires normally (own-key lookup wins).
-  const { annotated: own, wired: wiredOwn } = applyChains(models2, { toString: ["mtplx/qwen38-27b-optimized-speed-fp16"] }, proxy);
-  assert.deepEqual(own[0].samplingParams, { fallbacks: ["mtplx/qwen38-27b-optimized-speed-fp16"] });
+  const { annotated: own, wired: wiredOwn } = applyChains(models2, { toString: ["zai/anthropic/glm-5.3-flash"] }, proxy);
+  assert.deepEqual(own[0].samplingParams, { fallbacks: ["zai/anthropic/glm-5.3-flash"] });
   assert.equal(wiredOwn.length, 1);
 });
 

@@ -98,7 +98,7 @@ func main() {
 		// stores actor state in the state store — isolation + durability
 		// without any pod owning the lineage.
 		if envOr("HARMOSTES_ACTORS", "on") == "on" {
-			host := &agentlineage.Host{Sidecar: dapr.New(envOr("DAPR_HTTP_ENDPOINT", ""))}
+			host := &agentlineage.Host{Sidecar: dapr.Tracing(dapr.New(envOr("DAPR_HTTP_ENDPOINT", "")))}
 			if err := worker.RunConsumer(ctx, func(mux *http.ServeMux) {
 				mux.Handle("/actors/", host)
 				mux.HandleFunc("/dapr/config", host.ServeHTTP)
@@ -332,6 +332,7 @@ func runOneShot() {
 	// rebuild. The delta note (HARMOSTES_SESSION_RESUME) is read by the
 	// graph agent executor; this process runs exactly one review, so the
 	// process env is the correct scope for it.
+	maxLineageBytes := 20 << 20 // Lineage durability bound — mirrors SavePiSession (r22 P5)
 	lineageDir, sessionID, actorID := "", "", ""
 	if piSessions != "" {
 		if dir, id, aid, resume, err := sessionLineageForRun(piSessions); err != nil {
@@ -418,13 +419,24 @@ func runOneShot() {
 			// serialize instead of racing; the actor owns the monotonic
 			// generation counter.
 			if lineageDir != "" && actorID != "" {
-				if b, err := os.ReadFile(filepath.Join(lineageDir, sessionID+".jsonl")); err == nil {
-					payload, _ := json.Marshal(agentlineage.Session{Session: string(b), LastHead: envOr("HARMOSTES_TRIGGER_SHA", "")})
-					if out, err := deps.Dapr.InvokeActor(fctx, agentlineage.ActorType, actorID, "publish", payload); err != nil {
-						logf("session lineage publish failed: %v", err)
+				// The live conversation is the NEWEST <ts>_<id>.jsonl (pi
+				// renames after the first turn) — never the bare id (r22 P4.1:
+				// the bare read ENOENT'd every round, publishing nothing).
+				// Redact BEFORE it enters durable state (#115 class, r22 P5);
+				// bound it like SavePiSession (OOM vector, r22 P5).
+				if file, raw, err := agent.FindLineageSession(lineageDir, sessionID); err == nil {
+					if len(raw) > maxLineageBytes {
+						logf("session lineage publish REFUSED: %s is %d bytes (cap %d) — fresh next round", filepath.Base(file), len(raw), maxLineageBytes)
 					} else {
-						logf("session lineage published (%d bytes) %s", len(b), strings.TrimSpace(string(out)))
+						payload, _ := json.Marshal(agentlineage.Session{Session: worker.Redact(string(raw)), LastHead: envOr("HARMOSTES_TRIGGER_SHA", ""), File: filepath.Base(file)})
+						if out, err := deps.Dapr.InvokeActor(fctx, agentlineage.ActorType, actorID, "publish", payload); err != nil {
+							logf("session lineage publish failed: %v", err)
+						} else {
+							logf("session lineage published %s redacted (%d bytes) %s", filepath.Base(file), len(raw), strings.TrimSpace(string(out)))
+						}
 					}
+				} else {
+					logf("session lineage publish skipped (no session file): %v", err)
 				}
 			}
 			if err := worker.SavePiSession(fctx, deps.Dapr, deps.DaprStateStore, workflow, runID, files); err != nil {

@@ -60,7 +60,7 @@ func ActorID(repo, pr string) (string, error) {
 type Host struct {
 	// Sidecar is the in-pod Dapr HTTP client used for the actor's own
 	// state (actor-scoped endpoints — isolation is the sidecar's job).
-	Sidecar *dapr.HTTPClient
+	Sidecar dapr.Client
 }
 
 // Config is the GET /dapr/config payload. Idle actors deactivate after

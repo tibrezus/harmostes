@@ -30,6 +30,8 @@ type Client interface {
 	// InvokeActor calls a method on a Dapr actor via the sidecar; the
 	// sidecar serializes calls per actor id (turn-based access).
 	InvokeActor(ctx context.Context, actorType, actorID, method string, payload []byte) ([]byte, error)
+	GetActorState(ctx context.Context, actorType, actorID, key string) ([]byte, error)
+	SaveActorState(ctx context.Context, actorType, actorID, key string, value any) error
 	// GetState returns the stored value ("" if absent). A missing key is not an
 	// error.
 	GetState(ctx context.Context, store, key string) (string, error)
@@ -371,6 +373,36 @@ func (t *tracingClient) InvokeActor(ctx context.Context, actorType, actorID, met
 		attribute.String("dapr.actor.id", actorID),
 	)
 	return v, err
+}
+
+// GetActorState reads the actor's isolated state through the sidecar —
+// traced like every other Dapr op so the durability path is observable
+// (r22 P1: the trace died exactly where the durability claim lives).
+func (t *tracingClient) GetActorState(ctx context.Context, actorType, actorID, key string) ([]byte, error) {
+	var v []byte
+	err := t.run(ctx, "actors.state.get", func(ctx context.Context) error {
+		var e error
+		v, e = t.inner.GetActorState(ctx, actorType, actorID, key)
+		return e
+	},
+		attribute.String("rpc.system", "dapr"),
+		attribute.String("rpc.method", "actors.state.get"),
+		attribute.String("dapr.actor.type", actorType),
+		attribute.String("dapr.actor.id", actorID),
+	)
+	return v, err
+}
+
+// SaveActorState writes the actor's isolated state through the sidecar.
+func (t *tracingClient) SaveActorState(ctx context.Context, actorType, actorID, key string, value any) error {
+	return t.run(ctx, "actors.state.save", func(ctx context.Context) error {
+		return t.inner.SaveActorState(ctx, actorType, actorID, key, value)
+	},
+		attribute.String("rpc.system", "dapr"),
+		attribute.String("rpc.method", "actors.state.save"),
+		attribute.String("dapr.actor.type", actorType),
+		attribute.String("dapr.actor.id", actorID),
+	)
 }
 
 func (t *tracingClient) GetState(ctx context.Context, store, key string) (string, error) {

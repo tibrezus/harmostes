@@ -38,6 +38,14 @@ func (f *fakeDaprClient) stateKey(store, key string) string { return store + "/"
 func (f *fakeDaprClient) InvokeActor(ctx context.Context, actorType, actorID, method string, payload []byte) ([]byte, error) {
 	return nil, fmt.Errorf("actors not used in this test")
 }
+func (f *fakeDaprClient) GetActorState(ctx context.Context, actorType, actorID, key string) ([]byte, error) {
+	return nil, fmt.Errorf("actors not used in this test")
+}
+
+func (f *fakeDaprClient) SaveActorState(ctx context.Context, actorType, actorID, key string, value any) error {
+	return fmt.Errorf("actors not used in this test")
+}
+
 
 func (f *fakeDaprClient) GetState(_ context.Context, store, key string) (string, error) {
 	if f.getErr != nil {

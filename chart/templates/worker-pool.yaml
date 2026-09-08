@@ -22,6 +22,7 @@ spec:
         dapr.io/app-id: "harmostes-worker-pool"
         dapr.io/app-port: "8084"
         dapr.io/config: harmostes-config
+        dapr.io/enable-actors: "true"
         {{- if .Values.observability.daprdImage }}
         dapr.io/sidecar-image: {{ .Values.observability.daprdImage | quote }}
         dapr.io/env: "OTEL_EXPORTER_OTLP_INSECURE=true"

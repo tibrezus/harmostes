@@ -235,7 +235,7 @@ func TestSessionLineageForRun(t *testing.T) {
 	t.Setenv("HARMOSTES_TRIGGER_PR", "git.rezus.cloud/tibrez/rhesadox#99")
 	root := t.TempDir()
 	dir, id, key, resume, err := sessionLineageForRun(root)
-	if err != nil || dir == "" || id != "harmostes-99" || key != "git.rezus.cloud-tibrez-rhesadox~99" || resume {
+	if err != nil || dir == "" || id != "harmostes-99" || key != "git.rezus.cloud-tibrez-rhesadox-d782cf64~99" || resume {
 		t.Fatalf("fresh lineage: dir=%q id=%q resume=%v err=%v", dir, id, resume, err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "s.jsonl"), []byte("{}\n"), 0o600); err != nil {

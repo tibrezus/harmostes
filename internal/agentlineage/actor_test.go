@@ -118,7 +118,7 @@ func TestPRLineageActorHostileIDsRefused(t *testing.T) {
 }
 
 func TestActorIDAndConfig(t *testing.T) {
-	if id, err := ActorID("git.rezus.cloud/tibrez/rhesadox", "99"); err != nil || id != "git.rezus.cloud-tibrez-rhesadox~99" {
+	if id, err := ActorID("git.rezus.cloud/tibrez/rhesadox", "99"); err != nil || id != "git.rezus.cloud-tibrez-rhesadox-d782cf64~99" {
 		t.Fatalf("ActorID: %q %v", id, err)
 	}
 	if _, err := ActorID("host/o/r", "../evil"); err == nil {

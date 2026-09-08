@@ -349,8 +349,11 @@ func runOneShot() {
 					// Materialize under the pi-ADOPTABLE name: the stored
 					// filename if the actor has one, else a fresh timestamped
 					// name pi's --session-id resolution can decode.
-					name := sess.File
-					if name == "" {
+					// VALIDATED (r24 P4.1): File is client-settable state; a
+					// traversal string must never become a write path. Only a
+					// basename ending in "_"+id+".jsonl" is honored.
+					name := filepath.Base(sess.File)
+					if !strings.HasSuffix(name, "_"+id+".jsonl") {
 						name = filepath.Base(agent.LineageSessionPath(dir, id))
 					}
 					if err := os.WriteFile(filepath.Join(dir, name), []byte(sess.Session), 0o600); err != nil {

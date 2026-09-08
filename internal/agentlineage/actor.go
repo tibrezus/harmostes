@@ -20,6 +20,8 @@
 package agentlineage
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -53,7 +55,11 @@ func ActorID(repo, pr string) (string, error) {
 	if !agent.SanitizePR(pr) {
 		return "", agent.ErrNotAPR
 	}
-	return agent.SanitizeRepo(repo) + "~" + pr, nil
+	// The repo hash mirrors agent.LineageDir: sanitizer colliders
+	// (host/a_b/c vs host/a/b-c) must NOT share one durable entity —
+	// r24 P4.2 found the actor key dropping what the dir key kept.
+	sum := sha256.Sum256([]byte(repo))
+	return fmt.Sprintf("%s-%s~%s", agent.SanitizeRepo(repo), hex.EncodeToString(sum[:4]), pr), nil
 }
 
 // Host serves the Dapr actor contract on the pool's app port.

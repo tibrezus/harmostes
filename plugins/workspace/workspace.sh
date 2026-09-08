@@ -8,6 +8,7 @@
 # It performs NO decision logic — no label scanning, no polling.
 set -euo pipefail
 log() { echo "[workspace] $*"; }
+. "$(dirname "$0")/../lib/git-host.sh"
 WORKDIR="${HARMOSTES_WORKDIR:-/workspace}"
 
 # ── Trigger Envelope (set by the Go gate in the worker) ──────────────────
@@ -39,13 +40,11 @@ case "$TRIG_REPO" in
   */*) HOST="${TRIG_REPO%%/*}"; REPO="${TRIG_REPO#*/}";;
   *)   HOST="github.com"; REPO="$TRIG_REPO";;
 esac
-case "$HOST" in
-  github.com)      API_BASE="https://api.github.com"; IS_FJ="false";;
-  codeberg.org)    API_BASE="https://codeberg.org/api/v1"; IS_FJ="true";;
-  *)               API_BASE="https://$HOST/api/v1"; IS_FJ="true";;
-esac
+API_BASE=$(host::api_base "$HOST")
+IS_FJ=$(host::is_fj "$HOST")
 PR_NUM="$TRIG_PR"
-export HOST REPO PR_NUM HEAD_SHA API_BASE IS_FJ WIKI_URL TRIG_CONTEXTS WORKDIR
+GIT_HOST_TOKEN=$(host::token "$HOST")   # optional here: public repos clone/fetch anonymously
+export HOST REPO PR_NUM HEAD_SHA API_BASE IS_FJ WIKI_URL TRIG_CONTEXTS WORKDIR GIT_HOST_TOKEN
 # Clear known artifacts from previous runs in the shared WORKDIR — a
 # stale review.json/review-diff.patch from another repo's review
 # confuses the agent (observed live: reviewers disregarding foreign
@@ -60,11 +59,8 @@ host=os.environ["HOST"]; base=os.environ["API_BASE"]; repo=os.environ["REPO"]
 num=int(os.environ["PR_NUM"]); sha=os.environ["HEAD_SHA"]; ref=""
 workdir=os.environ["WORKDIR"]; wiki_url=os.environ.get("WIKI_URL","")
 is_fj=os.environ.get("IS_FJ","false")=="true"
+token=os.environ["GIT_HOST_TOKEN"]  # resolved above via host::token (mirrors review.go TokenEnvNames)
 gate_ctx=os.environ.get("TRIG_CONTEXTS","")  # the envelope (already verified green by the gate)
-if host=="github.com": token=os.environ.get("HARMOSTES_GIT_TOKEN","")
-elif host=="codeberg.org": token=os.environ.get("HARMOSTES_CODEBERG_TOKEN",os.environ.get("LLM_WIKI_CODEBERG_TOKEN",""))
-elif host=="git.rezus.cloud": token=os.environ.get("HARMOSTES_FORGEJO_TOKEN",os.environ.get("HARMOSTES_RZC_PASSWORD",""))
-else: token=os.environ.get("HARMOSTES_FORGEJO_TOKEN","")
 def api(path, accept="application/json"):
     # Bounded retry (3 attempts, 2s/4s backoff) around every fetch:
     # python resolves single-shot with no resolver retry, so one dropped
@@ -164,12 +160,7 @@ log "tools: $TOOLS"
 
 # ── Clone the repo at the reviewed head SHA ───────────────────────────────
 REPO_DIR="$WORKDIR/repo"; rm -rf "$REPO_DIR"
-case "$HOST" in
-  github.com) CLONE_URL="https://x-access-token:${HARMOSTES_GIT_TOKEN}@github.com/${REPO}.git";;
-  git.rezus.cloud) RZC_TOK="${HARMOSTES_FORGEJO_TOKEN:-${HARMOSTES_RZC_PASSWORD:-}}"; CLONE_URL="https://${HARMOSTES_RZC_USERNAME:-tibrez}:${RZC_TOK}@git.rezus.cloud/${REPO}.git";;
-  codeberg.org) CB="${HARMOSTES_CODEBERG_TOKEN:-${LLM_WIKI_CODEBERG_TOKEN:-}}"; CLONE_URL="https://${CB}@codeberg.org/${REPO}.git";;
-  *) CLONE_URL="https://${REPO}.git";;
-esac
+CLONE_URL=$(host::clone_url "$HOST" "$REPO")
 if [ -n "$HEAD_REF" ]; then
   git clone --quiet --depth 50 --branch "$HEAD_REF" "$CLONE_URL" "$REPO_DIR" 2>&1|tail -1 || {
     git clone --quiet --depth 50 "$CLONE_URL" "$REPO_DIR" 2>&1|tail -1; }
@@ -183,7 +174,7 @@ git config --global --add safe.directory '*' 2>/dev/null || true
 # ── Wiki + RIG (architecture graph for the Architect stance) ──────────────
 if [ -n "$WIKI_URL" ]; then
   WIKI_DIR="$WORKDIR/wiki"; rm -rf "$WIKI_DIR"
-  WC="$WIKI_URL"; case "$WIKI_URL" in https://github.com/*) WC="https://x-access-token:${HARMOSTES_GIT_TOKEN}@${WIKI_URL#https://}";; esac
+  WC="$WIKI_URL"; case "$WIKI_URL" in https://github.com/*) WC="https://x-access-token:$(host::token github.com)@${WIKI_URL#https://}";; esac
   git clone --quiet --depth 50 "$WC" "$WIKI_DIR" 2>&1|tail -1 || log "WARN: wiki clone failed"
 fi
 if [ -n "$WIKI_URL" ] && [ -d "$WORKDIR/wiki" ]; then

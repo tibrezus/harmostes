@@ -265,16 +265,30 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 			// A request-shaped wake owns this pointer's outcome (supersede
 			// or skip in C) — leave the claim to it (r27: the breaker-
 			// override and moved-head tests both rely on the wake deciding).
+			// r30 F2: the escape still SHIELDS the claim — when C declines
+			// to decide (same head, no override), this sweep's never-
+			// dispatched release pass would otherwise eat the now-unshielded
+			// claim as dispatch-lost and burn the churn budget: the exact
+			// class #379's acceptance forbids.
 			if w := deps.wake(wf); w != nil && w.pointer == r.PR && w.request {
+				keepArmed[r.PR] = true
+				emitGate(ctx, deps.TL, liveAgg, res, repo, pr)
 				continue
 			}
 			switch res.Decision {
 			case review.DecisionProceed:
 				if res.Envelope.HeadSHA != r.HeadSHA {
-					// Head moved since the claim armed: the push wake will
-					// supersede and re-arm at the new head — dispatching the
-					// stale envelope here would review the wrong sha.
-					keepArmed[r.PR] = true
+					// Head moved since the claim armed (r30 F1): dispatching
+					// the stale envelope would review the wrong sha. Release
+					// SUPERSEDED — a terminal reason that burns neither the
+					// churn budget nor a dismissal window — and let the
+					// re-list below re-arm at the new head the same sweep.
+					// (A synchronize wake is NOT request-shaped and section C
+					// skips non-request candidates for claimed pointers, so
+					// "hold and wait for the push wake" strands the claim on
+					// poll sweeps — the strand this branch shipped with.)
+					releaseClaim(ctx, deps, c, "superseded", log)
+					releasedInA[c.Name] = true
 					emitGate(ctx, deps.TL, liveAgg, res, repo, pr)
 					break
 				}
@@ -288,6 +302,13 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 						fmt.Errorf("%w: %s — %d consecutive never-dispatched releases (max %d); re-apply the label to request a fresh review",
 							attempt.ErrChurnBudgetExhausted, r.HeadSHA, r.DispatchLostReleases, v1alpha1.MaxDispatchLostReleases),
 						log, &lastDecision, &lastReason, &heldRecorded)
+					// r30 F3: record the claim as handled — without the
+					// shields the never-dispatched pass re-releases it
+					// dispatch-lost below, bumping the budget PAST the max
+					// the sweep just refused to spend (and again on every
+					// future poll sweep).
+					releasedInA[c.Name] = true
+					keepArmed[r.PR] = true
 					break
 				}
 				// CI went green since the arming sweep: complete the

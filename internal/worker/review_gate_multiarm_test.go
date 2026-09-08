@@ -1666,3 +1666,138 @@ func TestMultiArmHostilePrefixWakeIgnored(t *testing.T) {
 		t.Fatalf("hostile host prefix must not arm, got %d dispatches", len(out))
 	}
 }
+
+// ── r30 F1: a POLL sweep (no wake) whose queued claim armed at an older
+// head must release it SUPERSEDED and re-arm+dispatch at the new head in
+// the same sweep — holding the stale-head claim strands the PR (the
+// strand the moved-head branch's old comment promised a wake would fix). ──
+func TestMultiArmMovedHeadPollReleasesSupersededAndReArms(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := labeledListServer(t, 99) // PR 99 green at deadbeef123
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	st := &fakeStatus{}
+	armed := time.Now().Add(-6 * time.Minute)
+	claim := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#99", "oldhead000", armed, nil)
+	deps, ctx := gateEnv(t, wf, st, claim) // poll sweep: no wake
+
+	out, err := RunReviewGateSweep(ctx, deps, wf)
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("moved-head queued claim must release and re-dispatch at the new head, got %d dispatches", len(out))
+	}
+	if out[0].Attempt == claim.Name || out[0].Envelope.HeadSHA != "deadbeef123" {
+		t.Fatalf("dispatch must be the NEW-head claim, got attempt=%s head=%s", out[0].Attempt, out[0].Envelope.HeadSHA)
+	}
+	var re v1alpha1.Attempt
+	if err := deps.Client.Get(ctx, client.ObjectKey{Namespace: claim.Namespace, Name: claim.Name}, &re); err != nil {
+		t.Fatalf("re-list stale claim: %v", err)
+	}
+	if !re.Status.Review.Released || re.Status.Review.ReleaseReason != "superseded" {
+		t.Fatalf("stale-head claim must be released superseded, got released=%t reason=%q",
+			re.Status.Review.Released, re.Status.Review.ReleaseReason)
+	}
+	if re.Status.Review.DispatchLostReleases != 0 {
+		t.Fatalf("superseded release must not burn the churn budget, got %d strikes", re.Status.Review.DispatchLostReleases)
+	}
+}
+
+// ── r30 F2: a request-shaped wake on a queued claim's pointer escapes
+// section A — the SAME sweep's never-dispatched release pass must not eat
+// the claim when C declines to decide (same head, no override). An aged
+// claim is the sharp case: only the keepArmed shield saves it. The release
+// write is observed directly: a same-head wake REVIVES a released claim
+// (clearing Released and resetting the counter), so final state cannot
+// testify — the interceptor's count can. ──
+func TestMultiArmWakeEscapeShieldsQueuedClaimFromReleasePass(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := greenPRServer(t)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	st := &fakeStatus{}
+	armed := time.Now().Add(-6 * time.Minute)
+	claim := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#99", "deadbeef123", armed, nil)
+
+	scheme := runtime.NewScheme()
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("AddToScheme: %v", err)
+	}
+	if err := batchv1.AddToScheme(scheme); err != nil {
+		t.Fatalf("batchv1: %v", err)
+	}
+	lostWrites := 0
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&v1alpha1.Attempt{}).
+		WithRuntimeObjects(claim).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+				if at, ok := obj.(*v1alpha1.Attempt); ok && at.Status.Review != nil &&
+					at.Status.Review.Released && at.Status.Review.ReleaseReason == v1alpha1.ReleaseReasonDispatchLost {
+					lostWrites++
+				}
+				return c.Patch(ctx, obj, patch, opts...)
+			},
+		}).
+		Build()
+	deps := GateDeps{Status: st, Client: cl, Scheme: scheme, FleetMaxConcurrent: 3, Log: t.Logf}
+	deps.Wake = GateWake{PR: "git.rezus.cloud/tibrez/rhesadox#99", Action: "labeled", Revision: "deadbeef123"}
+	ctx := context.Background()
+
+	out, err := RunReviewGateSweep(ctx, deps, wf)
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	_ = out // C may skip (same head, no override) — the finding is the release pass
+	var re v1alpha1.Attempt
+	if err := deps.Client.Get(ctx, client.ObjectKey{Namespace: claim.Namespace, Name: claim.Name}, &re); err != nil {
+		t.Fatalf("re-list claim: %v", err)
+	}
+	if re.Status.Review.Released {
+		t.Fatalf("wake-escape must shield the queued claim, got released reason=%q", re.Status.Review.ReleaseReason)
+	}
+	if lostWrites != 0 {
+		t.Fatalf("the release pass must never write a dispatch-lost release for the shielded claim, saw %d", lostWrites)
+	}
+}
+
+// ── r30 F3: the churn-guard standdown must not be contradicted one pass
+// later — the never-dispatched release pass must not re-release the refused
+// claim and bump the counter PAST Max on every sweep. ──
+func TestMultiArmChurnGuardStanddownNotDoubleReleased(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := greenPRServer(t)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	st := &fakeStatus{}
+	armed := time.Now().Add(-6 * time.Minute)
+	claim := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#99", "deadbeef123", armed, nil)
+	claim.Status.Review.DispatchLostReleases = v1alpha1.MaxDispatchLostReleases
+	deps, ctx := gateEnv(t, wf, st, claim) // poll sweep: no wake
+
+	out, err := RunReviewGateSweep(ctx, deps, wf)
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if len(out) != 0 {
+		t.Fatalf("churn-refused claim must not dispatch, got %d", len(out))
+	}
+	if st.last.ReviewReady == nil || !strings.Contains(st.last.ReviewReady.LastReason, "consecutive never-dispatched releases") {
+		t.Fatalf("aggregates must record the churn refusal, got %+v", st.last.ReviewReady)
+	}
+	var re v1alpha1.Attempt
+	if err := deps.Client.Get(ctx, client.ObjectKey{Namespace: claim.Namespace, Name: claim.Name}, &re); err != nil {
+		t.Fatalf("re-list claim: %v", err)
+	}
+	if re.Status.Review.Released {
+		t.Fatalf("the refused claim must stay unreleased (no double release), got reason=%q", re.Status.Review.ReleaseReason)
+	}
+	if re.Status.Review.DispatchLostReleases != v1alpha1.MaxDispatchLostReleases {
+		t.Fatalf("the refusal must not increment the budget it refuses to spend, got %d", re.Status.Review.DispatchLostReleases)
+	}
+}

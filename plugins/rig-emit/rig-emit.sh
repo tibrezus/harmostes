@@ -17,6 +17,11 @@ set -euo pipefail
 log() { echo "[rig-emit] $*"; }
 
 SRC_URL="${HARMOSTES_SOURCE_URL:?HARMOSTES_SOURCE_URL required}"
+# Credential hygiene (#347): SRC_URL gains a PAT / basic-auth pair below, so
+# capture the display form BEFORE any injection. The authed URL is used only
+# for the clone; the clone's stderr is scrubbed too (git echoes the URL on
+# failure), so no credential can reach plugin stdout → Workflow status.
+SRC_URL_DISPLAY="$SRC_URL"
 SRC_BRANCH="${HARMOSTES_SOURCE_BRANCH:-main}"
 SRC_LANG="${HARMOSTES_SOURCE_LANGUAGE:-}"
 PROJECT="${HARMOSTES_WORKFLOW:?HARMOSTES_WORKFLOW required}"
@@ -45,8 +50,8 @@ fi
 SRC_DIR="$(mktemp -d)/source"
 RIG_FILE="$(mktemp -d)/rig.json"
 mkdir -p "$WS_DIR/.source" 2>/dev/null || true
-log "cloning source $SRC_URL ($SRC_BRANCH) into a temp dir (never inside the workspace repo)…"
-git clone --depth 100 --branch "$SRC_BRANCH" "$SRC_URL" "$SRC_DIR" 2>&1 | tail -1 || {
+log "cloning source $SRC_URL_DISPLAY ($SRC_BRANCH) into a temp dir (never inside the workspace repo)…"
+git clone --depth 100 --branch "$SRC_BRANCH" "$SRC_URL" "$SRC_DIR" 2>&1 | sed -E 's#(https?://)[^/@[:space:]]+@#\1REDACTED@#g' | tail -1 || {
   echo '{"changed":false,"status":"failed","event":{"error":"clone failed"}}'
   exit 1
 }

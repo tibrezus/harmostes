@@ -30,7 +30,7 @@ func TestReconcilePublishesTrigger(t *testing.T) {
 	var publishedBody string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		buf := make([]byte, r.ContentLength)
-		r.Body.Read(buf)
+		_, _ = r.Body.Read(buf)
 		publishedBody = string(buf)
 		w.WriteHeader(http.StatusNoContent)
 	}))

@@ -32,7 +32,7 @@ func fakeSidecar(t *testing.T) (*httptest.Server, *map[string]Session) {
 			w.WriteHeader(http.StatusNoContent)
 		case http.MethodPut:
 			var s Session
-			json.NewDecoder(r.Body).Decode(&s)
+			_ = json.NewDecoder(r.Body).Decode(&s)
 			store[actorID] = s
 			w.WriteHeader(http.StatusNoContent)
 		}
@@ -52,7 +52,7 @@ func TestPRLineageActorRoundtripAndIsolation(t *testing.T) {
 		t.Fatalf("fetch fresh: %d", rec.Code)
 	}
 	var s Session
-	json.Unmarshal(rec.Body.Bytes(), &s)
+	_ = json.Unmarshal(rec.Body.Bytes(), &s)
 	if s.Session != "" || s.Generation != 0 {
 		t.Fatalf("fresh fetch must be zero: %+v", s)
 	}
@@ -83,7 +83,7 @@ func TestPRLineageActorRoundtripAndIsolation(t *testing.T) {
 	// fetch returns the published bytes, generation preserved
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/actors/PRLineage/host-o-r~99/method/fetch", nil))
-	json.Unmarshal(rec.Body.Bytes(), &s)
+	_ = json.Unmarshal(rec.Body.Bytes(), &s)
 	if s.Session != "JSONL-host-o-r~99" || s.Generation != 2 || s.LastHead != "deadbeef" {
 		t.Fatalf("fetch after publish: %+v", s)
 	}

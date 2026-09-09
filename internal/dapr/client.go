@@ -92,7 +92,7 @@ func (c *HTTPClient) GetState(ctx context.Context, store, key string) (string, e
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }() // drain-and-close; the body was read to EOF or the error is already returned
 	if resp.StatusCode == http.StatusNotFound {
 		return "", nil
 	}
@@ -129,7 +129,7 @@ func (c *HTTPClient) InvokeActor(ctx context.Context, actorType, actorID, method
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("dapr invoke-actor %s/%s.%s: %s", actorType, actorID, method, resp.Status)
 	}
@@ -148,7 +148,7 @@ func (c *HTTPClient) GetActorState(ctx context.Context, actorType, actorID, key 
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusNoContent {
 		// 404 = unknown key; 204 = key exists but unset (daprd semantics
 		// for never-written actor state) — both mean "empty" (r21 P3).
@@ -177,7 +177,7 @@ func (c *HTTPClient) SaveActorState(ctx context.Context, actorType, actorID, key
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("dapr save-actor-state: %s", resp.Status)
 	}
@@ -212,7 +212,7 @@ func (c *HTTPClient) SaveStateTTL(ctx context.Context, store, key, value string,
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("dapr save-state: %s", resp.Status)
 	}
@@ -237,7 +237,7 @@ func (c *HTTPClient) GetBulkState(ctx context.Context, store string, keys []stri
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("dapr get-bulk-state: %s", resp.Status)
 	}
@@ -279,7 +279,7 @@ func (c *HTTPClient) DeleteState(ctx context.Context, store, key string) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	// 200/204 = deleted; 404 (already gone) is also success.
 	if resp.StatusCode > http.StatusNoContent {
 		return nil
@@ -300,7 +300,7 @@ func (c *HTTPClient) Publish(ctx context.Context, pubsub, topic, jsonPayload str
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("dapr publish %s/%s: %s", pubsub, topic, resp.Status)
 	}
@@ -321,7 +321,7 @@ func (c *HTTPClient) GetSecret(ctx context.Context, store, key string) (map[stri
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("dapr getsecret %s/%s: %s", store, key, resp.Status)
 	}

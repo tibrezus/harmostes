@@ -108,7 +108,7 @@ func TestRPCEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRPC: %v", err)
 	}
-	defer rpc.Abort(context.Background())
+	defer func() { _ = rpc.Abort(context.Background()) }()
 
 	// turn 1
 	ev, tools, _, _, err := rpc.Prompt(ctx, "do the task", "initial task")
@@ -211,7 +211,7 @@ echo '{"type":"agent_end"}'
 		if err != nil {
 			t.Fatalf("NewRPC: %v", err)
 		}
-		defer rpc.Abort(context.Background())
+		defer func() { _ = rpc.Abort(context.Background()) }()
 		if _, _, _, _, err := rpc.Prompt(ctx, "task", "t1"); err != nil {
 			t.Fatalf("prompt: %v", err)
 		}

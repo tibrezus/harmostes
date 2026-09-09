@@ -129,7 +129,7 @@ func serve(logger *slog.Logger, addr string, handler http.Handler, namespace str
 	go func() {
 		<-ctx.Done()
 		logger.Info("shutting down")
-		httpServer.Shutdown(context.Background())
+		_ = httpServer.Shutdown(context.Background())
 	}()
 
 	logger.Info("starting harmostes-ui", "addr", addr, "namespace", namespace, "fixture", fixtureMode)

@@ -79,13 +79,15 @@ func main() {
 			hlog("ERROR: open log: %v", err)
 			os.Exit(2)
 		}
-		defer logFile.Close()
+		defer func() { _ = logFile.Close() }() // nothing left to report a flush failure to
 	}
 	logger := func(ev agent.Event) {
 		hlog("  %s %s", ev.Type, toolSuffix(ev))
 		if logFile != nil {
 			b, _ := json.Marshal(ev)
-			logFile.Write(append(b, '\n'))
+			// best-effort mirror: the event log is diagnostic, the run proceeds
+			// regardless of the mirror
+			_, _ = logFile.Write(append(b, '\n'))
 		}
 	}
 

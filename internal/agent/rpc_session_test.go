@@ -44,7 +44,7 @@ func TestRPCSessionPersistenceArgs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rpc.Abort(context.Background())
+	defer func() { _ = rpc.Abort(context.Background()) }()
 	args := readArgv(t, argsOut)
 	if strings.Contains(args, "--no-session") {
 		t.Error("--no-session must never be passed when persisting sessions")
@@ -69,7 +69,7 @@ func TestRPCSessionPersistenceArgs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rpc2.Abort(context.Background())
+	defer func() { _ = rpc2.Abort(context.Background()) }()
 	if got := rpc2.SessionFiles(); got != nil {
 		t.Errorf("SessionFiles() without root = %v, want nil", got)
 	}
@@ -113,7 +113,7 @@ func TestRPCSessionDirErrorFallsBackToNoSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rpc.Abort(context.Background())
+	defer func() { _ = rpc.Abort(context.Background()) }()
 	args := readArgv(t, argsOut)
 	if !strings.Contains(args, "--no-session") {
 		t.Errorf("mkdir failure must pass --no-session (pi persists by default), got: %s", args)

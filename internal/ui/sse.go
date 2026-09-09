@@ -43,7 +43,7 @@ func (s *Server) streamFragments(w http.ResponseWriter, r *http.Request, sub *su
 		for _, line := range strings.Split(html, "\n") {
 			fmt.Fprintf(w, "data: %s\n", line)
 		}
-		fmt.Fprint(w, "\n")
+		_, _ = fmt.Fprint(w, "\n")
 		flusher.Flush()
 	}
 

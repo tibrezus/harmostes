@@ -61,7 +61,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			}
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			w.WriteHeader(http.StatusUnauthorized)
-			w.Write([]byte("401 Unauthorized — no Authentik identity headers\n"))
+			_, _ = w.Write([]byte("401 Unauthorized — no Authentik identity headers\n"))
 			return
 		}
 		ctx := context.WithValue(r.Context(), identityKey, id)

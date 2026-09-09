@@ -174,7 +174,7 @@ func (s *Server) Routes() http.Handler {
 	// Health check (no auth — kubelet probes don't send forward-auth headers)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ok"))
+		_, _ = w.Write([]byte("ok"))
 	})
 
 	// Dapr pub/sub subscription endpoints (no auth — daprd is a trusted in-pod
@@ -371,7 +371,7 @@ func makeLogFetchFunc(kubeClient kubernetes.Interface) logFetchFunc {
 		if err != nil {
 			return "", fmt.Errorf("open log stream: %w", err)
 		}
-		defer stream.Close()
+		defer func() { _ = stream.Close() }() // teardown path
 		var buf bytes.Buffer
 		if _, err := io.Copy(&buf, stream); err != nil {
 			return "", fmt.Errorf("read log stream: %w", err)

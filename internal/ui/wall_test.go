@@ -224,7 +224,7 @@ func TestWallSSEReRendersOnEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dapr event post: %v", err)
 	}
-	post.Body.Close()
+	_ = post.Body.Close()
 	if post.StatusCode != http.StatusOK {
 		t.Fatalf("dapr event status = %d", post.StatusCode)
 	}

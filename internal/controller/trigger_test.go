@@ -22,7 +22,7 @@ func TestPublishTrigger_PublishesRawTriggerEvent(t *testing.T) {
 	var pubsubName, topicName string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		buf := make([]byte, r.ContentLength)
-		r.Body.Read(buf)
+		_, _ = r.Body.Read(buf)
 		publishedBody = string(buf)
 		// Extract pubsub + topic from the URL path: /v1.0/publish/{pubsub}/{topic}
 		parts := strings.Split(r.URL.Path, "/")

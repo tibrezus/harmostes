@@ -521,7 +521,7 @@ func TestExecuteWorkflowContextInjectsSourceURL(t *testing.T) {
 		SourceURL:    "https://git.rezus.cloud/tibrez/rhesadox.git",
 		SourceBranch: "main",
 	}))
-	ge.Execute(context.Background(), graph, "test")
+	_, _ = ge.Execute(context.Background(), graph, "test") // assertions below carry the test
 
 	if capturedEnv.SourceURL != "https://git.rezus.cloud/tibrez/rhesadox.git" {
 		t.Errorf("SourceURL = %q, want the URL from WorkflowContext", capturedEnv.SourceURL)

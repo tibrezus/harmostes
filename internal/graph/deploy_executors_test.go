@@ -183,7 +183,8 @@ func TestVelaAppApply(t *testing.T) {
 func TestVelaAppDelete(t *testing.T) {
 	kube := newFakeKubeClient()
 	// Pre-create a resource.
-	kube.ApplyResource(context.Background(), velaAppAPIVersion, "Application", "my-app", "production", map[string]any{
+	// pre-create failure surfaces in the follow-up apply/delete assertions
+	_ = kube.ApplyResource(context.Background(), velaAppAPIVersion, "Application", "my-app", "production", map[string]any{
 		"components": []any{},
 	})
 
@@ -213,7 +214,8 @@ func TestVelaAppDelete(t *testing.T) {
 
 func TestVelaAppWaitReady(t *testing.T) {
 	kube := newFakeKubeClient()
-	kube.ApplyResource(context.Background(), velaAppAPIVersion, "Application", "my-app", "production", map[string]any{})
+	// pre-create failure surfaces in the follow-up apply/delete assertions
+	_ = kube.ApplyResource(context.Background(), velaAppAPIVersion, "Application", "my-app", "production", map[string]any{})
 	// Set Ready=True.
 	kube.setReady(velaAppAPIVersion, "Application", "production", "my-app", true)
 
@@ -237,7 +239,8 @@ func TestVelaAppWaitReady(t *testing.T) {
 
 func TestVelaAppWaitNotReady(t *testing.T) {
 	kube := newFakeKubeClient()
-	kube.ApplyResource(context.Background(), velaAppAPIVersion, "Application", "my-app", "production", map[string]any{})
+	// pre-create failure surfaces in the follow-up apply/delete assertions
+	_ = kube.ApplyResource(context.Background(), velaAppAPIVersion, "Application", "my-app", "production", map[string]any{})
 	// Leave Ready=False (default).
 
 	exec := NewVelaAppExecutor(kube)

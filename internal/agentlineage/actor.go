@@ -118,7 +118,10 @@ func (h *Host) invoke(w http.ResponseWriter, r *http.Request, id, method string)
 		var s Session
 		b, err := h.Sidecar.GetActorState(ctx, ActorType, id, "session")
 		if err == nil && len(b) > 0 {
-			json.Unmarshal(b, &s)
+			// lenient read: a corrupt blob serves as an empty session —
+			// fetch is a view, and refusing to render stale bytes beats
+			// failing the read entirely
+			_ = json.Unmarshal(b, &s)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(s)
@@ -138,7 +141,13 @@ func (h *Host) invoke(w http.ResponseWriter, r *http.Request, id, method string)
 		// race-free by construction — the property the actor buys us).
 		var cur Session
 		if b, err := h.Sidecar.GetActorState(ctx, ActorType, id, "session"); err == nil && len(b) > 0 {
-			json.Unmarshal(b, &cur)
+			if uerr := json.Unmarshal(b, &cur); uerr != nil {
+				// corrupt stored state must not silently reset Generation
+				// to 1 (the server-authoritative monotonic invariant);
+				// refuse the write rather than clobber the actor state
+				http.Error(w, "corrupt session state: "+uerr.Error(), http.StatusInternalServerError)
+				return
+			}
 		}
 		in.Generation = cur.Generation + 1
 		if err := h.Sidecar.SaveActorState(ctx, ActorType, id, "session", in); err != nil {
@@ -146,7 +155,7 @@ func (h *Host) invoke(w http.ResponseWriter, r *http.Request, id, method string)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"generation":%d}`, in.Generation)
+		_, _ = fmt.Fprintf(w, `{"generation":%d}`, in.Generation)
 	default:
 		http.NotFound(w, r)
 	}

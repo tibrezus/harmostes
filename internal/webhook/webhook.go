@@ -100,7 +100,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request, workflowNa
 		http.Error(w, "failed to read body", http.StatusBadRequest)
 		return
 	}
-	defer req.Body.Close()
+	defer func() { _ = req.Body.Close() }()
 
 	// Fetch the workflow
 	namespace := req.URL.Query().Get("namespace")
@@ -195,7 +195,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request, workflowNa
 		h.log.Info("push event branch does not match workflow spec",
 			"push-branch", branch, "workflow-branch", wf.Spec.Source.Branch)
 		w.WriteHeader(http.StatusAccepted) // Accept but don't trigger
-		fmt.Fprintf(w, "branch %s does not match workflow spec (wants %s)\n", branch, wf.Spec.Source.Branch)
+		_, _ = fmt.Fprintf(w, "branch %s does not match workflow spec (wants %s)\n", branch, wf.Spec.Source.Branch)
 		return
 	}
 
@@ -215,7 +215,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request, workflowNa
 
 	h.log.Info("webhook triggered workflow", "workflow", workflowName, "branch", branch, "revision", revision, "revision", revision)
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, "workflow %s triggered for revision %s\n", workflowName, revision)
+	_, _ = fmt.Fprintf(w, "workflow %s triggered for revision %s\n", workflowName, revision)
 }
 
 // servePullRequest handles a consolidated pull_request event. The handler
@@ -233,7 +233,7 @@ func (h *Handler) servePullRequest(w http.ResponseWriter, req *http.Request, wf 
 	}
 	if !v1alpha1.PullRequestWakeActions[pre.Action] {
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, "action %q ignored\n", pre.Action)
+		_, _ = fmt.Fprintf(w, "action %q ignored\n", pre.Action)
 		return
 	}
 	prNum := pre.Number

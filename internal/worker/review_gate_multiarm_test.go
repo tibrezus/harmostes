@@ -1482,7 +1482,7 @@ func TestSweepAbortSpeaksInTheAggregates(t *testing.T) {
 	// and counted, not an error to the caller) — the assertions below pin
 	// what must still be TRUE after it: aggregates written, cause recorded,
 	// no releases.
-	RunReviewGateSweep(deadlineCtx, deps, wf)
+	_, _ = RunReviewGateSweep(deadlineCtx, deps, wf)
 
 	if st.last.ReviewReady == nil {
 		t.Fatal("no aggregates recorded — durable records must survive the abort")

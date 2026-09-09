@@ -203,7 +203,7 @@ func TestRunGraphSSEStream(t *testing.T) {
 	if err != nil {
 		t.Fatalf("404 probe: %v", err)
 	}
-	resp404.Body.Close()
+	_ = resp404.Body.Close()
 	if resp404.StatusCode != http.StatusNotFound {
 		t.Errorf("unknown attempt status = %d, want 404", resp404.StatusCode)
 	}
@@ -250,7 +250,7 @@ func TestRunGraphSSEStream(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dapr post: %v", err)
 	}
-	post.Body.Close()
+	_ = post.Body.Close()
 	readUntilMarker := before + 1
 	deadline, _ := ctx.Deadline()
 	for time.Now().Before(deadline) {
@@ -391,7 +391,7 @@ func TestRunGraphSSEAttemptScopedWake(t *testing.T) {
 		if err != nil {
 			t.Fatalf("dapr post: %v", err)
 		}
-		post.Body.Close()
+		_ = post.Body.Close()
 	}
 	readUntilMarkers := func(n int) {
 		t.Helper()

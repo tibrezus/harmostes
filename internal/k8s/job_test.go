@@ -1,10 +1,12 @@
 package k8s
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -232,5 +234,96 @@ func TestBuildJobRunBoundDeadline(t *testing.T) {
 	job = BuildJob(base)
 	if got := *job.Spec.ActiveDeadlineSeconds; got != 1800 {
 		t.Fatalf("default ActiveDeadlineSeconds = %d, want 1800 (30m)", got)
+	}
+}
+
+// #336: the shared cache mounts per the workflow's declared spec — one RWX
+// PVC, SubPath-isolated per workflow, flag-gated tool env. Nil/PVC-less cache
+// renders a byte-identical Job (no volume, no env).
+func TestBuildJobCacheMounts(t *testing.T) {
+	envMap := func(job *batchv1.Job) map[string]string {
+		m := map[string]string{}
+		for _, e := range job.Spec.Template.Spec.Containers[0].Env {
+			m[e.Name] = e.Value
+		}
+		return m
+	}
+	hasVol := func(job *batchv1.Job, name string) *corev1.VolumeMount {
+		cms := job.Spec.Template.Spec.Containers[0].VolumeMounts
+		for i := range cms {
+			if cms[i].Name == name {
+				return &cms[i]
+			}
+		}
+		return nil
+	}
+	base := func(cache *v1alpha1.CacheSpec) *batchv1.Job {
+		return BuildJob(AttemptJobParams{Attempt: jobTestAttempt(), WorkflowName: "pr-review-harmostes", Namespace: "harmostes", Cache: cache})
+	}
+
+	// Declared cache: PVC volume + SubPath isolation + Go env.
+	job := base(&v1alpha1.CacheSpec{PVC: "harmostes-worker-cache", Go: true})
+	if m := hasVol(job, "cache"); m == nil {
+		t.Fatal("cache volume missing")
+	} else {
+		if m.SubPath != "pr-review-harmostes" {
+			t.Fatalf("cache SubPath must isolate per workflow, got %q", m.SubPath)
+		}
+		if m.MountPath != "/cache" {
+			t.Fatalf("cache MountPath = %q, want /cache", m.MountPath)
+		}
+	}
+	env := envMap(job)
+	if env["GOCACHE"] != "/cache/go/build" || env["GOMODCACHE"] != "/cache/go/mod" {
+		t.Fatalf("Go cache env missing: %v", env)
+	}
+
+	// npm + git flags gate their own env; go env absent when flag unset.
+	job = base(&v1alpha1.CacheSpec{PVC: "c", NPM: true, Git: true})
+	env = envMap(job)
+	if env["npm_config_cache"] != "/cache/npm" {
+		t.Fatalf("npm cache env missing: %v", env)
+	}
+	if env["XDG_CACHE_HOME"] != "/cache/xdg" {
+		t.Fatalf("git XDG env missing: %v", env)
+	}
+	if _, ok := env["GOCACHE"]; ok {
+		t.Fatalf("Go env must be flag-gated: %v", env)
+	}
+
+	// No cache, or PVC-less cache: byte-identical Job (no volume, no env).
+	for name, cache := range map[string]*v1alpha1.CacheSpec{"nil": nil, "pvc-less": {Go: true}} {
+		job = base(cache)
+		if hasVol(job, "cache") != nil {
+			t.Fatalf("%s: cache volume must not render", name)
+		}
+		if _, ok := envMap(job)["GOCACHE"]; ok {
+			t.Fatalf("%s: cache env must not render", name)
+		}
+	}
+}
+
+// #336: the agent-visible wall equals the Job wall — one source, so the run
+// can pace itself against exactly what will kill it.
+func TestBuildJobWallSecondsMatchesDeadline(t *testing.T) {
+	job := BuildJob(AttemptJobParams{Attempt: jobTestAttempt(), WorkflowName: "w", Namespace: "ns", RunBound: 45 * time.Minute})
+	var wall string
+	for _, e := range job.Spec.Template.Spec.Containers[0].Env {
+		if e.Name == "HARMOSTES_WALL_SECONDS" {
+			wall = e.Value
+		}
+	}
+	if wall == "" {
+		t.Fatal("HARMOSTES_WALL_SECONDS missing")
+	}
+	if ads := job.Spec.ActiveDeadlineSeconds; ads == nil || wall != strconv.FormatInt(*ads, 10) {
+		t.Fatalf("wall env %q must equal ActiveDeadlineSeconds %v", wall, *ads)
+	}
+	// Default bound (0) → OneShotRunBound, still consistent.
+	job = BuildJob(AttemptJobParams{Attempt: jobTestAttempt(), WorkflowName: "w", Namespace: "ns"})
+	for _, e := range job.Spec.Template.Spec.Containers[0].Env {
+		if e.Name == "HARMOSTES_WALL_SECONDS" && e.Value != strconv.FormatInt(int64(v1alpha1.OneShotRunBound/time.Second), 10) {
+			t.Fatalf("default wall = %s, want %d", e.Value, int64(v1alpha1.OneShotRunBound/time.Second))
+		}
 	}
 }

@@ -69,6 +69,13 @@ type WorkflowTemplateSpec struct {
 	// review (label ∧ merge-rule contexts green at the head SHA). Templates
 	// for pr-review workflows set this; instances inherit it.
 	ReviewReady *ReviewReadySpec `json:"reviewReady,omitempty"`
+
+	// Cache declares the shared PVC caches the per-Attempt Job mounts
+	// (#336): a warm GOCACHE/GOMODCACHE turns a cold `go test -race`
+	// (minutes: module downloads + full race rebuild) into ~1 min. The
+	// template is the natural home — a fleet's review workflows share one
+	// claim, and instances inherit it whole-struct like ReviewReady.
+	Cache *CacheSpec `json:"cache,omitempty"`
 }
 
 // ScopeParam is one instance-level configuration parameter.

@@ -2,6 +2,7 @@ package k8s
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"time"
 
@@ -66,6 +67,11 @@ type AttemptJobParams struct {
 	// trigger envelope (HARMOSTES_TRIGGER_*), as buildChildEnv passes to
 	// consumer children.
 	ExtraEnv []string
+
+	// Cache mounts the workflow's declared shared caches (#336): a PVC at
+	// /cache (SubPath per workflow — isolation on one RWX claim) and the
+	// flag-gated tool env. Nil or PVC-less = no cache, byte-identical Job.
+	Cache *v1alpha1.CacheSpec
 }
 
 // ConfigMapMount is one additional ConfigMap volume: name (the ConfigMap and
@@ -116,6 +122,12 @@ func BuildJob(p AttemptJobParams) *batchv1.Job {
 		{Name: "HARMOSTES_WORKFLOW", Value: p.WorkflowName},
 		{Name: "HARMOSTES_NAMESPACE", Value: p.Namespace},
 		{Name: "POD_NAME", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.name"}}},
+		// The wall the run paces against (#336): the SAME effective bound
+		// ActiveDeadlineSeconds enforces (one source — runBoundSeconds —
+		// so they cannot disagree). The task contract reads this so the
+		// agent can budget depth: "the review is written by minute 8"
+		// needs a visible clock.
+		{Name: "HARMOSTES_WALL_SECONDS", Value: strconv.FormatInt(int64(p.runBoundSeconds()/time.Second), 10)},
 	}
 	for _, kv := range p.ExtraEnv {
 		if k, v, ok := strings.Cut(kv, "="); ok {
@@ -125,6 +137,34 @@ func BuildJob(p AttemptJobParams) *batchv1.Job {
 
 	volumes := []corev1.Volume{{Name: "workspace", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}}
 	mounts := []corev1.VolumeMount{{Name: "workspace", MountPath: "/workspace"}}
+	// Shared caches (#336): one RWX PVC, SubPath per workflow — concurrent
+	// review Jobs of the same repo share a warm GOCACHE (go's cache is
+	// concurrency-safe), and workflows never thrash each other's dirs.
+	// The tools create their leaf dirs on demand; the claim must be
+	// writable by the pod (fsGroup / no root-squash is the claim owner's
+	// concern — the chart's worker.cache template renders it right).
+	if p.Cache != nil && p.Cache.PVC != "" {
+		volumes = append(volumes, corev1.Volume{
+			Name:         "cache",
+			VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: p.Cache.PVC}},
+		})
+		mounts = append(mounts, corev1.VolumeMount{Name: "cache", SubPath: p.WorkflowName, MountPath: "/cache"})
+		if p.Cache.Go {
+			env = append(env,
+				corev1.EnvVar{Name: "GOCACHE", Value: "/cache/go/build"},
+				corev1.EnvVar{Name: "GOMODCACHE", Value: "/cache/go/mod"},
+			)
+		}
+		if p.Cache.NPM {
+			env = append(env, corev1.EnvVar{Name: "npm_config_cache", Value: "/cache/npm"})
+		}
+		if p.Cache.Git {
+			// git has no dedicated object cache for plain clones; the XDG
+			// dir carries credential/socket/commit-graph state — cheap to
+			// mount, harmless when idle.
+			env = append(env, corev1.EnvVar{Name: "XDG_CACHE_HOME", Value: "/cache/xdg"})
+		}
+	}
 	for _, m := range p.ExtraConfigMapMounts {
 		mode := int32(0o755)
 		if m.Mode != nil {

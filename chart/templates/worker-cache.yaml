@@ -1,0 +1,23 @@
+{{- if .Values.worker.cache.enabled }}
+# Shared tool-cache claim (#336): mounted by per-Attempt Jobs (spec.cache.pvc:
+# harmostes-worker-cache) at /cache/<workflow-name> — SubPath-isolated per
+# workflow. ReadWriteMany: concurrent review Jobs of one repo share the warm
+# GOCACHE/GOMODCACHE (go's cache is concurrency-safe). The jobs run as the
+# worker image's user; with NFS root-squash the claim needs an fsGroup or
+# no_root_squash export — mounts succeed either way, writes fail loudly if not.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: harmostes-worker-cache
+  labels:
+    app.kubernetes.io/name: harmostes
+    app.kubernetes.io/component: worker-cache
+spec:
+  accessModes: ["ReadWriteMany"]
+  {{- with .Values.worker.cache.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.worker.cache.size | quote }}
+{{- end }}

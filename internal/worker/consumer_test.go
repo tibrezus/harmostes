@@ -224,7 +224,7 @@ func TestDispatcherFromEnvWiresExtraMounts(t *testing.T) {
 
 	// The seam's final hop: config → params → rendered Job.
 	at := &v1alpha1.Attempt{ObjectMeta: metav1.ObjectMeta{Name: "attempt-seam", Namespace: "default"}}
-	job := k8s.BuildJob(cfg.JobParams(at, "pr-review-harmostes", "default", 0, nil))
+	job := k8s.BuildJob(cfg.JobParams(at, "pr-review-harmostes", "default", 0, nil, nil))
 
 	var volNames []string
 	for _, v := range job.Spec.Template.Spec.Volumes {

@@ -58,6 +58,17 @@ jobs:
             exit 1
           fi
 
+      # #316: static tier deepening — the five-analyzer contract from the
+      # committed .golangci.yml. Zero findings is the baseline this PR
+      # established (79 cleared by fix-or-justification); a new finding
+      # fails the leg. The action installs the pinned lint version and
+      # honors the go.mod toolchain (same as every leg above).
+      - name: golangci-lint (zero-baseline)
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.6.2
+          args: --timeout 5m
+
       - name: go build (all packages)
         run: go build ./...
 

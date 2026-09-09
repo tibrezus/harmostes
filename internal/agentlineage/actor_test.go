@@ -1,6 +1,8 @@
 package agentlineage
 
 import (
+	"io"
+
 	"bytes"
 	"encoding/json"
 	"net/http"
@@ -13,9 +15,12 @@ import (
 
 // fakeSidecar stands in for the Dapr sidecar: actor-scoped state keyed by
 // the URL's actor id — per-entity isolation is visible as distinct maps.
-func fakeSidecar(t *testing.T) (*httptest.Server, *map[string]Session) {
+// The store holds RAW bytes: the handler serves what was PUT verbatim, so
+// a test can inject a corrupt blob — the exact shape the fail-closed publish
+// path (#316 sweep) and the lenient fetch path guard against.
+func fakeSidecar(t *testing.T) (*httptest.Server, *map[string][]byte) {
 	t.Helper()
-	store := map[string]Session{}
+	store := map[string][]byte{}
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// /v1.0/actors/PRLineage/{id}/state/session
 		if !strings.HasPrefix(r.URL.Path, "/v1.0/actors/PRLineage/") || !strings.HasSuffix(r.URL.Path, "/state/session") {
@@ -25,15 +30,14 @@ func fakeSidecar(t *testing.T) (*httptest.Server, *map[string]Session) {
 		actorID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1.0/actors/PRLineage/"), "/state/session")
 		switch r.Method {
 		case http.MethodGet:
-			if s, ok := store[actorID]; ok {
-				_ = json.NewEncoder(w).Encode(s)
+			if b, ok := store[actorID]; ok {
+				_, _ = w.Write(b)
 				return
 			}
 			w.WriteHeader(http.StatusNoContent)
 		case http.MethodPut:
-			var s Session
-			_ = json.NewDecoder(r.Body).Decode(&s)
-			store[actorID] = s
+			b, _ := io.ReadAll(r.Body)
+			store[actorID] = b
 			w.WriteHeader(http.StatusNoContent)
 		}
 	}))
@@ -87,8 +91,45 @@ func TestPRLineageActorRoundtripAndIsolation(t *testing.T) {
 	if s.Session != "JSONL-host-o-r~99" || s.Generation != 2 || s.LastHead != "deadbeef" {
 		t.Fatalf("fetch after publish: %+v", s)
 	}
-	if (*store)["host-o-r~99"].Generation != 2 || (*store)["host-o-r~100"].Generation != 1 {
-		t.Fatalf("store isolation broken: %+v", *store)
+	var s99, s100 Session
+	_ = json.Unmarshal((*store)["host-o-r~99"], &s99)
+	_ = json.Unmarshal((*store)["host-o-r~100"], &s100)
+	if s99.Generation != 2 || s100.Generation != 1 {
+		t.Fatalf("store isolation broken: %d / %d", s99.Generation, s100.Generation)
+	}
+}
+
+// The #316 sweep's flagship fix, pinned: a corrupt stored session blob must
+// not silently reset Generation — publish REFUSES (500, bytes not
+// overwritten), fetch stays lenient (200, empty shape). Recovery is manual:
+// delete the actor's session key (documented at the fail-closed site).
+func TestPRLineageActorCorruptState(t *testing.T) {
+	ts, store := fakeSidecar(t)
+	defer ts.Close()
+	h := &Host{Sidecar: dapr.New(ts.URL)}
+	(*store)["host-o-r~99"] = []byte("{not json")
+
+	// publish: refused, stored bytes untouched
+	rec := httptest.NewRecorder()
+	body, _ := json.Marshal(Session{Session: "JSONL-x", LastHead: "deadbeef"})
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/actors/PRLineage/host-o-r~99/method/publish", bytes.NewReader(body)))
+	if rec.Code != 500 {
+		t.Fatalf("publish over corrupt state must fail closed: %d", rec.Code)
+	}
+	if string((*store)["host-o-r~99"]) != "{not json" {
+		t.Fatalf("corrupt bytes must not be overwritten: %q", (*store)["host-o-r~99"])
+	}
+
+	// fetch: lenient — a view, empty shape, not an error
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/actors/PRLineage/host-o-r~99/method/fetch", nil))
+	if rec.Code != 200 {
+		t.Fatalf("fetch over corrupt state must stay lenient: %d", rec.Code)
+	}
+	var s Session
+	_ = json.Unmarshal(rec.Body.Bytes(), &s)
+	if s.Session != "" || s.Generation != 0 {
+		t.Fatalf("lenient fetch must serve the empty shape: %+v", s)
 	}
 }
 

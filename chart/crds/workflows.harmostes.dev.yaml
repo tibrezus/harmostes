@@ -194,8 +194,8 @@ spec:
                     label:   { type: string, default: needs-review }
                     horizon: { type: string, default: 6h }
                     dispatchTimeout: { type: string, default: 45m }
-                    # per-run Job wall clock (#348/#333): default 30m, capped at 2h
-                    runBound: { type: string, default: 30m }
+                    # per-run Job wall clock (#348/#333): default and MaxRunBound cap enforced in code (reviewready.go) — do not restate the literals here
+                    runBound: { type: string }
                     maxConcurrent: { type: integer, minimum: 1 }
 
                 # External System Bindings (ADR-0003). Optional — legacy

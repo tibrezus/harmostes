@@ -155,9 +155,9 @@ func TestReviewReadyRunBound(t *testing.T) {
 
 	// The margin invariant over the EFFECTIVE bound: runBound=45m raises
 	// the wall, so dispatchTimeout=45m (fine vs the old 30m default) is
-	// now INSIDE the margin → degrades to bound+15m=60m; 50m still has
-	// only 5m... wait, 50m−45m=5m = exactly MinDispatchMargin → honored;
-	// 49m (4m margin) → default.
+	// now INSIDE the margin → degrades to bound+15m=60m. 49m leaves a 4m
+	// margin (< MinDispatchMargin) → default; 50m leaves exactly 5m →
+	// honored at the floor.
 	const rb = "45m"
 	dt := func(cfg string) time.Duration {
 		return (&ReviewReadySpec{RunBound: rb, DispatchTimeout: cfg}).DispatchTimeoutDuration()

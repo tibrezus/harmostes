@@ -247,9 +247,16 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req RunRequest) error {
 	// runBound — r33 blocking finding). One resolution per dispatch; the
 	// gate's DispatchTimeout margin validates against this same effective
 	// bound, so the wall and the margin cannot disagree.
-	runBound := wf.Spec.ReviewReady.RunBoundDuration()
+	rr := wf.Spec.ReviewReady
+	runBound := rr.RunBoundDuration()
 	if runBound != v1alpha1.OneShotRunBound {
 		d.logf("dispatch: workflow %s raises the per-run wall to %s", req.Workflow, runBound)
+	} else if rr != nil && rr.RunBound != "" {
+		// Symmetric with the raise log (#311/#314 class — a config fact
+		// must not drop silently): a configured runBound that degraded to
+		// the default (unparsable / non-positive / over MaxRunBound) is
+		// indistinguishable from unset unless we say so.
+		d.logf("dispatch: workflow %s runBound %q invalid (unparsable, non-positive, or over the cap) — using the %s default", req.Workflow, rr.RunBound, v1alpha1.OneShotRunBound)
 	}
 
 	// ── Review-Ready Gate (ADR-0006): validate before dispatching. ──────

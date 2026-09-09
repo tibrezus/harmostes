@@ -11,6 +11,7 @@ import (
 
 	"github.com/tibrezus/harmostes/internal/attempt"
 	batchv1 "k8s.io/api/batch/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -323,5 +324,44 @@ func TestJobEnvAllowlistCarriesFallbacks(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("LITELLM_FALLBACKS must be in jobEnvAllowlist — without it the fallback override cannot reach attempt Jobs")
+	}
+}
+
+// r33 blocking finding (judge-required test): the per-run wall clock must
+// read the MERGED spec. A templateRef workflow whose TEMPLATE sets
+// runBound: 45m (the ops-prescribed shape — CRs put gate config on the
+// template; ApplyTemplateDefaults merges in memory and never materializes)
+// must dispatch a Job with ActiveDeadlineSeconds == 2700. A raw second Get
+// of the workflow CR — the bug this pins — would see the unmerged spec,
+// keep the 30m wall, and disagree with the gate's margin validation.
+func TestDispatchRunBoundFlowsFromTemplateDefaults(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := greenPRServer(t)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+
+	// The template carries the gate spec AND the raised wall.
+	tmpl := &v1alpha1.WorkflowTemplate{ObjectMeta: metav1.ObjectMeta{Name: "pr-review-tmpl", Namespace: "default"}}
+	tmpl.Spec.ReviewReady = &v1alpha1.ReviewReadySpec{
+		Label: "needs-review", Horizon: "6h",
+		RunBound: "45m", // the raised wall — TEMPLATE-side only
+	}
+	wf := gatedDispatchWorkflow()
+	wf.Spec.ReviewReady = nil // the instance: everything flows from the template
+	wf.Spec.TemplateRef = "pr-review-tmpl"
+
+	d, ctx := newTestDispatcher(t, wf, tmpl)
+	if err := d.Dispatch(ctx, dispatchRequest()); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	var jobs batchv1.JobList
+	if err := d.cl.List(ctx, &jobs); err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs.Items) != 1 {
+		t.Fatalf("exactly one Job must be dispatched, got %d", len(jobs.Items))
+	}
+	if got := *jobs.Items[0].Spec.ActiveDeadlineSeconds; got != 2700 {
+		t.Fatalf("template-set runBound must reach the Job wall: ActiveDeadlineSeconds = %d, want 2700 (45m)", got)
 	}
 }

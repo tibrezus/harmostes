@@ -62,6 +62,8 @@ spec:
             # ── Dispatcher knobs (ADR-0007 phase 3) ──
             - name: HARMOSTES_MAX_CONCURRENT
               value: {{ .Values.worker.job.maxConcurrent | default 3 | quote }}
+            - name: HARMOSTES_ATTEMPT_RETENTION
+              value: {{ .Values.worker.job.attemptRetention | default "720h" | quote }}
             - name: HARMOSTES_JOB_TTL_SECONDS
               value: {{ .Values.worker.job.ttlSecondsAfterFinished | default 3600 | quote }}
             - name: HARMOSTES_WORKER_IMAGE

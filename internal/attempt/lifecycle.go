@@ -422,6 +422,75 @@ func lastSlash(s string) int {
 	return -1
 }
 
+// leaves the phase frozen forever — the run has no Job, no verdict, no
+// terminal state, and the attempt holds a claim slot if it carries one.
+// Claim-bearing attempts are RELEASED first ("closed" — terminal, no churn
+// strike), then the phase lands on failed with a message naming the reap.
+// Best-effort per attempt: one bad object must not block the rest.
+//
+// The release-then-patch is INTENTIONALLY non-atomic (#390 finding 3): a
+// crash between the two writes leaves a released-but-reconciling attempt
+// that the next sweep reaps (the phase leg runs regardless) — do not
+// "fix" this into a transaction. The List is label-scoped, not
+// phase-scoped: CRD status fields are not server-side selectable, so the
+// per-sweep cost is all attempts of one workflow — bounded by live
+// attempts per workflow, fine at fleet width.
+// GCAttempts deletes attempts past the retention horizon (#385): terminal
+// attempts (validated / superseded / failed) and statusless attempts older
+// than olderThan. The status subresource drops Status at Create, so
+// "statusless" is a STABLE state — the 1,166-object twin population — not a
+// transient mint window; an object still statusless at 30d never progressed
+// past creation and is pure debris.
+//
+// Safety:
+//   - reconciling (the only phase a live claim can hold) is excluded.
+//   - a terminal attempt whose Status.Review holds an UNRELEASED claim is
+//     kept: RecordRunOutcome can land failed without releasing, and GC must
+//     not delete the object a live claim slot points at (zombie-slot class,
+//     #349/#351). Stranding it visibly beats stranding it invisibly.
+//   - zero CreationTimestamp (fake clients, unknown age) is never GC'd.
+//
+// Retention bounds the audit record: terminal attempts are the durable run
+// ledger (totals/compaction), so GC is the documented moment that ledger
+// ends — 30d of history, not forever (claim.go's "retained forever" note is
+// superseded by this horizon).
+//
+// Best-effort per attempt; if nothing was GC'd, the first per-object error
+// is returned (an RBAC-forbidden sweep must not read as a clean 0). The
+// List is label-scoped, same as ReapStuckAttempts: CRD status is not
+// server-side selectable.
+func GCAttempts(ctx context.Context, c client.Client, namespace, workflowName string, olderThan time.Duration) (int, error) {
+	var list v1alpha1.AttemptList
+	if err := c.List(ctx, &list, client.InNamespace(namespace),
+		client.MatchingLabels{"harmostes.dev/workflow": workflowName}); err != nil {
+		return 0, fmt.Errorf("list attempts: %w", err)
+	}
+	cutoff := time.Now().Add(-olderThan)
+	gc := 0
+	var firstErr error
+	for i := range list.Items {
+		at := &list.Items[i]
+		terminal := at.Status.Phase == v1alpha1.AttemptPhaseValidated ||
+			at.Status.Phase == v1alpha1.AttemptPhaseSuperseded ||
+			at.Status.Phase == v1alpha1.AttemptPhaseFailed ||
+			at.Status.Phase == "" // statusless: stable debris — never progressed past creation
+		if !terminal || at.CreationTimestamp.IsZero() || at.CreationTimestamp.Time.After(cutoff) {
+			continue
+		}
+		if r := at.Status.Review; r != nil && !r.Released {
+			continue // claim-bearing: never delete the object a live slot points at (#349/#351)
+		}
+		if err := c.Delete(ctx, at); err != nil && !apierrors.IsNotFound(err) {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		gc++
+	}
+	return gc, firstErr
+}
+
 // ReapStuckAttempts finalizes attempts that have sat in phase=reconciling
 // past olderThan (r30, #376): a worker loss (pod OOM mid-run, node drain)
 // leaves the phase frozen forever — the run has no Job, no verdict, no

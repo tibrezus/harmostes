@@ -58,8 +58,12 @@ type GateDeps struct {
 	// FleetMaxConcurrent is the chart default; spec.reviewReady.maxConcurrent
 	// overrides per workflow.
 	FleetMaxConcurrent int
-	Log                func(format string, args ...any)
-	TL                 timeline.Writer
+	// AttemptRetention is the GC horizon for terminal/statusless attempts
+	// (#385); 0 means the 720h default (chart: worker.job.attemptRetention;
+	// GC cannot be disabled).
+	AttemptRetention time.Duration
+	Log              func(format string, args ...any)
+	TL               timeline.Writer
 	// Wake carries the TRIGGER EVENT that scheduled this run (#349): the
 	// controller publishes it, the consumer hands it down with the run
 	// request, and the gate turns it into the labeled-scan's leading
@@ -710,6 +714,22 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 			log("review-ready: reap stuck attempts failed: %v", err)
 		} else if n > 0 {
 			log("review-ready: reaped %d attempt(s) stuck reconciling >7d", n)
+		}
+		// Retention GC (#385): terminal and statusless attempts past the
+		// horizon are pure CR accumulation (2,495 on one workflow and
+		// climbing) — delete them the same best-effort way. Terminal
+		// phase = finished work; statusless = never reconciled. Live work
+		// (reconciling, claim-bearing) is excluded by construction.
+		// Horizon is a chart value (HARMOSTES_ATTEMPT_RETENTION); 0
+		// means the 30d default — GC cannot be disabled.
+		retention := deps.AttemptRetention
+		if retention == 0 {
+			retention = 720 * time.Hour
+		}
+		if n, err := attempt.GCAttempts(reapCtx, deps.Client, wf.Namespace, wf.Name, retention); err != nil {
+			log("review-ready: attempt GC failed: %v", err)
+		} else if n > 0 {
+			log("review-ready: GC'd %d attempt(s) older than %s", n, retention)
 		}
 	}
 

@@ -174,7 +174,7 @@ func TestWallSSEReRendersOnEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sse connect: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.Header.Get("Content-Type") != "text/event-stream" {
 		t.Errorf("content-type = %q, want text/event-stream", resp.Header.Get("Content-Type"))
 	}
@@ -224,7 +224,7 @@ func TestWallSSEReRendersOnEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dapr event post: %v", err)
 	}
-	post.Body.Close()
+	_ = post.Body.Close()
 	if post.StatusCode != http.StatusOK {
 		t.Fatalf("dapr event status = %d", post.StatusCode)
 	}

@@ -67,10 +67,10 @@ func TestPatchStatusMutatesLiveState(t *testing.T) {
 func TestPatchStatusRetriesOnConflict(t *testing.T) {
 	wf := testWorkflow("w")
 	wf.Status.ReviewReady = &v1alpha1.ReviewReadyStatus{LiveClaims: 42}
-	cl := newTestClient(t, wf)
-
+	// (a plain client would satisfy the first read; the interceptor client
+	// below owns the whole lifecycle — conflict + retry + landing)
 	attempts := 0
-	cl = fake.NewClientBuilder().
+	cl := fake.NewClientBuilder().
 		WithScheme(Scheme()).
 		WithStatusSubresource(&v1alpha1.Workflow{}).
 		WithObjects(wf).

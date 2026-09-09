@@ -55,17 +55,17 @@ func greenPRServer(t *testing.T) *httptest.Server {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case strings.Contains(req.URL.Path, "/pulls/"):
-			json.NewEncoder(w).Encode(map[string]any{
+			_ = json.NewEncoder(w).Encode(map[string]any{
 				"state": "open", "head": map[string]string{"sha": "deadbeef123"},
 				"base":   map[string]string{"ref": "main"},
 				"labels": []map[string]string{{"name": "needs-review"}},
 			})
 		case strings.Contains(req.URL.Path, "/comments"):
-			json.NewEncoder(w).Encode([]any{}) // no verdict yet
+			_ = json.NewEncoder(w).Encode([]any{}) // no verdict yet
 		case strings.Contains(req.URL.Path, "/branch_protections/"):
-			json.NewEncoder(w).Encode(map[string]any{"status_check_contexts": []string{"ci / build-test (push)"}})
+			_ = json.NewEncoder(w).Encode(map[string]any{"status_check_contexts": []string{"ci / build-test (push)"}})
 		case strings.HasSuffix(req.URL.Path, "/statuses"):
-			json.NewEncoder(w).Encode([]map[string]string{
+			_ = json.NewEncoder(w).Encode([]map[string]string{
 				{"context": "ci / build-test (push)", "status": "success"},
 			})
 		default:
@@ -105,12 +105,5 @@ func TestParsePRPointer(t *testing.T) {
 }
 
 // testDeps builds the minimal Deps the gate needs (status patcher + log).
-
-func testDeps(st *fakeStatus) Deps {
-	return Deps{
-		Status: st,
-		Log:    func(format string, a ...any) {},
-	}
-}
 
 var _ = review.DecisionProceed // keep the review import for the envelope type assertions

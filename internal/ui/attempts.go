@@ -17,11 +17,6 @@ import (
 	"github.com/tibrezus/harmostes/internal/agent"
 )
 
-// attemptListData is the template data for the attempt list page.
-type attemptListData struct {
-	Attempts []attemptSummary
-}
-
 type attemptSummary struct {
 	Name           string
 	WorkflowRef    string
@@ -248,7 +243,7 @@ func groupAttempts(attempts []v1alpha1.Attempt, cutoff time.Time) []attemptGroup
 		g.Count++
 		lastRun := ""
 		if !a.Status.LastRunAt.IsZero() {
-			lastRun = a.Status.LastRunAt.Time.Format("2006-01-02 15:04")
+			lastRun = a.Status.LastRunAt.Format("2006-01-02 15:04")
 		}
 		g.Attempts = append(g.Attempts, attemptSummary{
 			Name:           a.Name,
@@ -403,14 +398,14 @@ func (s *Server) handleAttemptDetail(w http.ResponseWriter, r *http.Request) {
 		started := ""
 		ended := ""
 		if !run.StartedAt.IsZero() {
-			started = run.StartedAt.Time.Format("2006-01-02 15:04:05 MST")
+			started = run.StartedAt.Format("2006-01-02 15:04:05 MST")
 			if earliest.IsZero() || run.StartedAt.Time.Before(earliest) {
 				earliest = run.StartedAt.Time
 			}
 		}
 		if !run.EndedAt.IsZero() {
-			ended = run.EndedAt.Time.Format("2006-01-02 15:04:05 MST")
-			if run.EndedAt.Time.After(latest) {
+			ended = run.EndedAt.Format("2006-01-02 15:04:05 MST")
+			if run.EndedAt.After(latest) {
 				latest = run.EndedAt.Time
 			}
 		}
@@ -488,7 +483,7 @@ func formatMetaTime(t metav1.Time) string {
 	if t.IsZero() {
 		return ""
 	}
-	return t.Time.Format("2006-01-02 15:04:05 MST")
+	return t.Format("2006-01-02 15:04:05 MST")
 }
 
 func formatMetaTimePtr(t *metav1.Time) string {

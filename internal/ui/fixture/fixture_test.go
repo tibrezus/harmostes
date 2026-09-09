@@ -82,7 +82,7 @@ func TestFixture_NewServer_ServesWorld(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /runs: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("GET /runs = %d, want 200", resp.StatusCode)
 	}

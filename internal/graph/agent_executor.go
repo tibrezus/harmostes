@@ -161,9 +161,8 @@ func (e *AgentExecutor) Execute(ctx context.Context, node v1alpha1.NodeSpec, env
 		}
 		key := fmt.Sprintf("%s:%s:session", env.Workflow, runID)
 		sessionJSON, _ := json.Marshal(result.Session)
-		if err := e.dapr.SaveState(ctx, e.stateStore, key, string(sessionJSON)); err != nil {
-			// best-effort — don't fail the node over session persistence
-		}
+		// best-effort — don't fail the node over session persistence
+		_ = e.dapr.SaveState(ctx, e.stateStore, key, string(sessionJSON))
 	}
 
 	// Persist token usage summary to Dapr state so the UI/API can query
@@ -178,9 +177,8 @@ func (e *AgentExecutor) Execute(ctx context.Context, node v1alpha1.NodeSpec, env
 			"green":     result.Green,
 			"attempts":  result.Attempts,
 		})
-		if err := e.dapr.SaveState(ctx, e.stateStore, env.Workflow+":usage:last", string(usageJSON)); err != nil {
-			// best-effort — don't fail the node over usage persistence
-		}
+		// best-effort — don't fail the node over usage persistence
+		_ = e.dapr.SaveState(ctx, e.stateStore, env.Workflow+":usage:last", string(usageJSON))
 	}
 
 	return NodeResult{

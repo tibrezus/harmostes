@@ -240,7 +240,7 @@ func (r RPCAgentRunner) Run(ctx context.Context, task string, gate agent.Gate, m
 	if err != nil {
 		return agent.Result{}, err
 	}
-	defer rpc.Abort(ctx)
+	defer func() { _ = rpc.Abort(ctx) }()
 	// Merge runner-level session config with caller-provided options.
 	allOpts := []agent.TaskOption{agent.WithSessionMeta(r.SessionMeta)}
 	if r.SessionWriter != nil {

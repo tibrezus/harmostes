@@ -209,9 +209,9 @@ func runOneShot() {
 		// os.Setenv here flows to every plugin node.
 		for _, kv := range worker.EnvelopeEnv(env) {
 			k, v, _ := strings.Cut(kv, "=")
-			os.Setenv(k, v)
+			_ = os.Setenv(k, v) // constant keys; failure is not actionable here
 		}
-		os.Setenv("HARMOSTES_ATTEMPT", dispatches[0].Attempt)
+		_ = os.Setenv("HARMOSTES_ATTEMPT", dispatches[0].Attempt)
 		logf("review-ready: proceed pr=%d head=%s base=%s — provisioning workspace", env.PR, env.HeadSHA, env.Base)
 	}
 
@@ -278,7 +278,7 @@ func runOneShot() {
 		if runTL != nil {
 			for i := seenTurns; i < len(session.Turns); i++ {
 				t := session.Turns[i]
-				runTL.Emit(sctx, timeline.KindAgentTurn, "agent", map[string]any{
+				_ = runTL.Emit(sctx, timeline.KindAgentTurn, "agent", map[string]any{
 					"turn": i, "label": t.Label, "green": t.Gate != nil && t.Gate.Green,
 					"tokensIn": t.Usage.Input, "tokensOut": t.Usage.Output,
 				})
@@ -294,7 +294,7 @@ func runOneShot() {
 	}
 	toolPublisher := func(pctx context.Context, wfName, rid string, tool agent.ToolCall) {
 		if runTL != nil {
-			runTL.Emit(pctx, timeline.KindAgentTool, "agent", map[string]any{
+			_ = runTL.Emit(pctx, timeline.KindAgentTool, "agent", map[string]any{
 				"tool": tool.Name, "success": tool.Success,
 			})
 		}
@@ -367,7 +367,7 @@ func runOneShot() {
 				logf("session lineage fetch failed (fresh if absent): %v", err)
 			}
 			if resume {
-				os.Setenv("HARMOSTES_SESSION_RESUME", "1")
+				_ = os.Setenv("HARMOSTES_SESSION_RESUME", "1")
 			}
 			logf("session lineage: resume=%v id=%s", resume, id)
 		}
@@ -837,7 +837,7 @@ func shutdownDapr() {
 		logf("dapr shutdown: %v (continuing)", err)
 		return
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	logf("dapr shutdown: sent (status %s)", resp.Status)
 }
 
@@ -892,7 +892,7 @@ func waitForDapr(endpoint string) {
 	for i := 0; i < 30; i++ {
 		resp, err := http.Get(endpoint + "/v1.0/healthz")
 		if err == nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			if resp.StatusCode < 300 { // 200 (ready) or 204 (some Dapr versions)
 				return
 			}

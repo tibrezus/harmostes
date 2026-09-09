@@ -474,7 +474,7 @@ func GCAttempts(ctx context.Context, c client.Client, namespace, workflowName st
 			at.Status.Phase == v1alpha1.AttemptPhaseSuperseded ||
 			at.Status.Phase == v1alpha1.AttemptPhaseFailed ||
 			at.Status.Phase == "" // statusless: stable debris — never progressed past creation
-		if !terminal || at.CreationTimestamp.IsZero() || at.CreationTimestamp.Time.After(cutoff) {
+		if !terminal || at.CreationTimestamp.IsZero() || at.CreationTimestamp.After(cutoff) {
 			continue
 		}
 		if r := at.Status.Review; r != nil && !r.Released {
@@ -518,7 +518,7 @@ func ReapStuckAttempts(ctx context.Context, c client.Client, namespace, workflow
 		at := &list.Items[i]
 		if at.Status.Phase != v1alpha1.AttemptPhaseReconciling ||
 			at.CreationTimestamp.IsZero() || // just-created (fake clients, server not yet stamped) — never reap
-			at.CreationTimestamp.Time.After(cutoff) {
+			at.CreationTimestamp.After(cutoff) {
 			continue
 		}
 		r := at.Status.Review

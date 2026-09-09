@@ -96,7 +96,6 @@ type DaprWriter struct {
 	subject        Subject
 	ttl            time.Duration
 	seq            int
-	subjectSaved   bool
 	prefixOverride string // gate writer uses "gate/<workflow>" instead of the attempt name
 }
 

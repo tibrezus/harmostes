@@ -79,7 +79,7 @@ func TestFlushEmitsSpansBeforeShutdown(t *testing.T) {
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithBatcher(exp, sdktrace.WithBatchTimeout(time.Hour)),
 	)
-	defer tp.Shutdown(context.Background())
+	defer func() { _ = tp.Shutdown(context.Background()) }()
 
 	_, span := tp.Tracer("test").Start(context.Background(), "harmostes.worker.run")
 	span.End()
@@ -104,7 +104,7 @@ func TestLoggerInjectsTraceContext(t *testing.T) {
 	lg := NewLogger("harmostes-worker", &buf)
 
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSampler(sdktrace.AlwaysSample()))
-	defer tp.Shutdown(context.Background())
+	defer func() { _ = tp.Shutdown(context.Background()) }()
 	ctx, span := tp.Tracer("t").Start(context.Background(), "x")
 	defer span.End()
 

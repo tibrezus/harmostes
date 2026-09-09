@@ -43,14 +43,6 @@ func (r *recordingExecutor) visitCount() int {
 	return len(r.visits)
 }
 
-func (r *recordingExecutor) visitList() []string {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	cp := make([]string, len(r.visits))
-	copy(cp, r.visits)
-	return cp
-}
-
 // registryWith builds a registry from a map of type→executor.
 func registryWith(execs map[string]NodeExecutor) *Registry {
 	r := NewRegistry()
@@ -529,7 +521,7 @@ func TestExecuteWorkflowContextInjectsSourceURL(t *testing.T) {
 		SourceURL:    "https://git.rezus.cloud/tibrez/rhesadox.git",
 		SourceBranch: "main",
 	}))
-	ge.Execute(context.Background(), graph, "test")
+	_, _ = ge.Execute(context.Background(), graph, "test") // assertions below carry the test
 
 	if capturedEnv.SourceURL != "https://git.rezus.cloud/tibrez/rhesadox.git" {
 		t.Errorf("SourceURL = %q, want the URL from WorkflowContext", capturedEnv.SourceURL)
@@ -851,7 +843,7 @@ func TestCompileWorkflowMaxFixesDefault(t *testing.T) {
 	graph := CompileWorkflow(wf)
 
 	var agentCfg AgentNodeConfig
-	json.Unmarshal(graph.Nodes[1].Config, &agentCfg)
+	_ = json.Unmarshal(graph.Nodes[1].Config, &agentCfg)
 	if agentCfg.MaxFixes != 3 {
 		t.Errorf("maxFixes = %d, want 3 (default)", agentCfg.MaxFixes)
 	}

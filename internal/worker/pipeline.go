@@ -241,7 +241,9 @@ func Run(ctx context.Context, deps Deps, opts Options) (res Result, err error) {
 				"green":     agentRes.Green,
 				"attempts":  agentRes.Attempts,
 			})
-			deps.Dapr.SaveState(actx, deps.DaprStateStore, wf.Name+":usage:last", string(usageJSON))
+			// usage persistence is diagnostic best-effort (same convention as
+			// agent_executor): never fail the pipeline over it
+			_ = deps.Dapr.SaveState(actx, deps.DaprStateStore, wf.Name+":usage:last", string(usageJSON))
 		}
 		if !agentRes.Green {
 			msg := fmt.Sprintf("gate failed after %d evaluation(s)", agentRes.Attempts)

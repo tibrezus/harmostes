@@ -510,6 +510,6 @@ func LoadPiSession(payload string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer zr.Close()
+	defer func() { _ = zr.Close() }()
 	return io.ReadAll(io.LimitReader(zr, 20<<20))
 }

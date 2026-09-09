@@ -43,7 +43,7 @@ func spanContains(spans []tracetest.SpanStub, secret string) bool {
 			return true
 		}
 		for _, a := range s.Attributes {
-			if strings.Contains(a.Value.Emit(), secret) {
+			if strings.Contains(a.Value.String(), secret) {
 				return true
 			}
 		}
@@ -146,7 +146,7 @@ func TestTelemetryNeverLeaksBodies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rpc.Abort(context.Background())
+	defer func() { _ = rpc.Abort(context.Background()) }()
 
 	// maxFixes=1: turn 1 (task) → gate fails (secret feedback) → break → final gate passes.
 	// So all three secret surfaces are exercised: task message, gate feedback, tool args.
@@ -186,7 +186,7 @@ func dumpSpans(spans []tracetest.SpanStub) string {
 	for _, s := range spans {
 		b.WriteString(s.Name + " {")
 		for _, a := range s.Attributes {
-			b.WriteString(string(a.Key) + "=" + a.Value.Emit() + " ")
+			b.WriteString(string(a.Key) + "=" + a.Value.String() + " ")
 		}
 		b.WriteString("}\n")
 	}

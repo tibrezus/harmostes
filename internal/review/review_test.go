@@ -316,7 +316,7 @@ func Test403ProtectionMeansNoReadableContexts(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case strings.HasSuffix(req.URL.Path, "/pulls/1"):
-			json.NewEncoder(w).Encode(map[string]any{
+			_ = json.NewEncoder(w).Encode(map[string]any{
 				"state": "open", "head": map[string]string{"sha": "s1"},
 				"base":   map[string]string{"ref": "main"},
 				"labels": []map[string]string{{"name": "needs-review"}},
@@ -354,7 +354,7 @@ func TestRESTForgejoShapes(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		switch req.URL.Path {
 		case "/api/v1/repos/tibrez/rhesadox/pulls/1566":
-			json.NewEncoder(w).Encode(map[string]any{
+			_ = json.NewEncoder(w).Encode(map[string]any{
 				"state": "open",
 				"head":  map[string]string{"sha": "abc123"},
 				"base":  map[string]string{"ref": "main"},
@@ -363,11 +363,11 @@ func TestRESTForgejoShapes(t *testing.T) {
 				},
 			})
 		case "/api/v1/repos/tibrez/rhesadox/branch_protections/main":
-			json.NewEncoder(w).Encode(map[string]any{
+			_ = json.NewEncoder(w).Encode(map[string]any{
 				"status_check_contexts": []string{"ci / build-test (push)", "decode / decode (cuda) (pull_request)"},
 			})
 		case "/api/v1/repos/tibrez/rhesadox/commits/abc123/statuses":
-			json.NewEncoder(w).Encode([]map[string]string{
+			_ = json.NewEncoder(w).Encode([]map[string]string{
 				{"context": "ci / build-test (push)", "state": "success"},
 				{"context": "decode / decode (cuda) (pull_request)", "state": "pending"},
 			})
@@ -401,24 +401,24 @@ func TestRESTForgejoShapes(t *testing.T) {
 func TestRESTGitHubShapes(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		switch {
-		case req.URL.Path == "/repos/tibrezus/harmostes/pulls/10":
-			json.NewEncoder(w).Encode(map[string]any{
+		switch req.URL.Path {
+		case "/repos/tibrezus/harmostes/pulls/10":
+			_ = json.NewEncoder(w).Encode(map[string]any{
 				"state":  "open",
 				"head":   map[string]string{"sha": "def456"},
 				"base":   map[string]string{"ref": "main"},
 				"labels": []map[string]string{{"name": "needs-review"}},
 			})
-		case req.URL.Path == "/repos/tibrezus/harmostes/branches/main/protection":
-			json.NewEncoder(w).Encode(map[string]any{
+		case "/repos/tibrezus/harmostes/branches/main/protection":
+			_ = json.NewEncoder(w).Encode(map[string]any{
 				"required_status_checks": map[string]any{"contexts": []string{"build / test", "lint"}},
 			})
-		case req.URL.Path == "/repos/tibrezus/harmostes/commits/def456/status":
-			json.NewEncoder(w).Encode(map[string]any{
+		case "/repos/tibrezus/harmostes/commits/def456/status":
+			_ = json.NewEncoder(w).Encode(map[string]any{
 				"statuses": []map[string]string{{"context": "build / test", "state": "success"}},
 			})
-		case req.URL.Path == "/repos/tibrezus/harmostes/commits/def456/check-runs":
-			json.NewEncoder(w).Encode(map[string]any{
+		case "/repos/tibrezus/harmostes/commits/def456/check-runs":
+			_ = json.NewEncoder(w).Encode(map[string]any{
 				"check_runs": []map[string]string{{"name": "lint", "status": "completed", "conclusion": "success"}},
 			})
 		default:
@@ -524,7 +524,7 @@ func TestRESTListCommentsShapes(t *testing.T) {
 					out = append(out, map[string]string{"body": "review…\n<!-- pr-review: COMMENT @ abc1234 -->"})
 				}
 				w.Header().Set("Content-Type", "application/json")
-				json.NewEncoder(w).Encode(out)
+				_ = json.NewEncoder(w).Encode(out)
 			}))
 			defer srv.Close()
 			api := &RESTAPI{Client: srv.Client()}
@@ -576,7 +576,7 @@ func TestContextStatesNewestFirstWins(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case strings.HasSuffix(req.URL.Path, "/statuses"):
-			json.NewEncoder(w).Encode([]map[string]string{
+			_ = json.NewEncoder(w).Encode([]map[string]string{
 				{"context": "decode / decode (cuda) (pull_request)", "state": "success"}, // newest
 				{"context": "decode / decode (cuda) (pull_request)", "state": "pending"}, // superseded
 				{"context": "decode / decode (cuda) (pull_request)", "state": "pending"}, // superseded
@@ -608,7 +608,7 @@ func TestForgejoStatusFieldParsed(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case strings.HasSuffix(req.URL.Path, "/statuses"):
-			json.NewEncoder(w).Encode([]map[string]string{
+			_ = json.NewEncoder(w).Encode([]map[string]string{
 				{"context": "ci / build-test (push)", "status": "success"},
 			})
 		default:

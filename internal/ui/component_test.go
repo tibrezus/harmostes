@@ -53,7 +53,7 @@ func getAsFixtureUser(t *testing.T, ts *httptest.Server, path string) *goquery.D
 	if err != nil {
 		t.Fatalf("GET %s: %v", path, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("GET %s: status %d\n%s", path, resp.StatusCode, body)
@@ -244,7 +244,7 @@ func TestComponent_FixtureServer_Healthz(t *testing.T) {
 	if err != nil {
 		t.Fatalf("healthz: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("healthz = %d, want 200", resp.StatusCode)
 	}
@@ -278,7 +278,7 @@ func TestComponent_Routes_RejectsAnonymous(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /runs: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("anonymous GET /runs on bare Routes() = %d, want 401", resp.StatusCode)
 	}
@@ -300,7 +300,7 @@ func TestComponent_DevIdentity_ZeroSetup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET / = %d, want 200", resp.StatusCode)
 	}

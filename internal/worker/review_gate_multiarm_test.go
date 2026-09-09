@@ -118,13 +118,13 @@ func labeledListServer(t *testing.T, numbers ...int) *httptest.Server {
 					"labels": []map[string]string{{"name": "needs-review"}},
 				})
 			}
-			json.NewEncoder(w).Encode(pulls)
+			_ = json.NewEncoder(w).Encode(pulls)
 		case strings.Contains(req.URL.Path, "/pulls/"):
-			json.NewEncoder(w).Encode(greenPullBody())
+			_ = json.NewEncoder(w).Encode(greenPullBody())
 		case strings.Contains(req.URL.Path, "/branch_protections/"):
-			json.NewEncoder(w).Encode(map[string]any{"status_check_contexts": []string{"ci / build-test (push)"}})
+			_ = json.NewEncoder(w).Encode(map[string]any{"status_check_contexts": []string{"ci / build-test (push)"}})
 		case strings.HasSuffix(req.URL.Path, "/statuses"):
-			json.NewEncoder(w).Encode([]map[string]string{
+			_ = json.NewEncoder(w).Encode([]map[string]string{
 				{"context": "ci / build-test (push)", "status": "success"},
 			})
 		default:
@@ -141,23 +141,23 @@ func consumedServer(t *testing.T) *httptest.Server {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case strings.HasSuffix(req.URL.Path, "/pulls"):
-			json.NewEncoder(w).Encode([]map[string]any{{"number": 100, "updated_at": "2026-08-30T00:00:00Z", "labels": []map[string]string{{"name": "needs-review"}}}})
+			_ = json.NewEncoder(w).Encode([]map[string]any{{"number": 100, "updated_at": "2026-08-30T00:00:00Z", "labels": []map[string]string{{"name": "needs-review"}}}})
 		case strings.HasSuffix(req.URL.Path, "/pulls/99"):
-			json.NewEncoder(w).Encode(map[string]any{
+			_ = json.NewEncoder(w).Encode(map[string]any{
 				"state": "open", "head": map[string]string{"sha": "deadbeef123"},
 				"base":   map[string]string{"ref": "main"},
 				"labels": []map[string]string{},
 			})
 		case strings.Contains(req.URL.Path, "/pulls/100"):
-			json.NewEncoder(w).Encode(greenPullBody())
+			_ = json.NewEncoder(w).Encode(greenPullBody())
 		case strings.Contains(req.URL.Path, "/comments"):
-			json.NewEncoder(w).Encode([]map[string]string{
+			_ = json.NewEncoder(w).Encode([]map[string]string{
 				{"body": "review done\n<!-- pr-review: APPROVE @ deadbeef123 -->", "created_at": "2026-08-30T01:00:00Z"},
 			})
 		case strings.Contains(req.URL.Path, "/branch_protections/"):
-			json.NewEncoder(w).Encode(map[string]any{"status_check_contexts": []string{"ci / build-test (push)"}})
+			_ = json.NewEncoder(w).Encode(map[string]any{"status_check_contexts": []string{"ci / build-test (push)"}})
 		case strings.HasSuffix(req.URL.Path, "/statuses"):
-			json.NewEncoder(w).Encode([]map[string]string{
+			_ = json.NewEncoder(w).Encode([]map[string]string{
 				{"context": "ci / build-test (push)", "status": "success"},
 			})
 		default:
@@ -173,7 +173,7 @@ func noLabelServer(t *testing.T) *httptest.Server {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case strings.Contains(req.URL.Path, "/pulls/"):
-			json.NewEncoder(w).Encode(map[string]any{
+			_ = json.NewEncoder(w).Encode(map[string]any{
 				"state": "open", "head": map[string]string{"sha": "deadbeef123"},
 				"base":   map[string]string{"ref": "main"},
 				"labels": []map[string]string{},
@@ -744,17 +744,17 @@ func labeledGreenServer(t *testing.T) *httptest.Server {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case strings.HasSuffix(req.URL.Path, "/pulls"):
-			json.NewEncoder(w).Encode([]map[string]any{
+			_ = json.NewEncoder(w).Encode([]map[string]any{
 				{"number": 100, "updated_at": "2026-08-30T00:00:00Z", "labels": []map[string]string{{"name": "needs-review"}}},
 			})
 		case strings.Contains(req.URL.Path, "/pulls/100"):
-			json.NewEncoder(w).Encode(greenPullBody())
+			_ = json.NewEncoder(w).Encode(greenPullBody())
 		case strings.Contains(req.URL.Path, "/comments"):
-			json.NewEncoder(w).Encode([]any{})
+			_ = json.NewEncoder(w).Encode([]any{})
 		case strings.Contains(req.URL.Path, "/branch_protections/"):
-			json.NewEncoder(w).Encode(map[string]any{"status_check_contexts": []string{"ci / build-test (push)"}})
+			_ = json.NewEncoder(w).Encode(map[string]any{"status_check_contexts": []string{"ci / build-test (push)"}})
 		case strings.HasSuffix(req.URL.Path, "/statuses"):
-			json.NewEncoder(w).Encode([]map[string]string{
+			_ = json.NewEncoder(w).Encode([]map[string]string{
 				{"context": "ci / build-test (push)", "status": "success"},
 			})
 		default:
@@ -890,13 +890,13 @@ func noVerdictServer(t *testing.T) *httptest.Server {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case strings.Contains(req.URL.Path, "/pulls/"):
-			json.NewEncoder(w).Encode(map[string]any{
+			_ = json.NewEncoder(w).Encode(map[string]any{
 				"state": "open", "head": map[string]string{"sha": "deadbeef123"},
 				"base":   map[string]string{"ref": "main"},
 				"labels": []map[string]string{{"name": "needs-review"}},
 			})
 		case strings.Contains(req.URL.Path, "/comments"):
-			json.NewEncoder(w).Encode([]any{})
+			_ = json.NewEncoder(w).Encode([]any{})
 		default:
 			http.NotFound(w, req)
 		}
@@ -1239,20 +1239,20 @@ func TestSweepHeldReasonSurvivesLaterRefusal(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case strings.HasSuffix(req.URL.Path, "/pulls"):
-			json.NewEncoder(w).Encode([]map[string]any{
+			_ = json.NewEncoder(w).Encode([]map[string]any{
 				{"number": 106, "updated_at": "2026-08-30T00:00:00Z",
 					"labels": []map[string]string{{"name": "needs-review"}}},
 			})
 		case strings.Contains(req.URL.Path, "/comments"):
-			json.NewEncoder(w).Encode([]any{})
+			_ = json.NewEncoder(w).Encode([]any{})
 		case strings.Contains(req.URL.Path, "/branch_protections/"):
-			json.NewEncoder(w).Encode(map[string]any{"status_check_contexts": []string{"ci / build-test (push)"}})
+			_ = json.NewEncoder(w).Encode(map[string]any{"status_check_contexts": []string{"ci / build-test (push)"}})
 		case strings.HasSuffix(req.URL.Path, "/statuses"):
-			json.NewEncoder(w).Encode([]map[string]string{
+			_ = json.NewEncoder(w).Encode([]map[string]string{
 				{"context": "ci / build-test (push)", "status": "success"},
 			})
 		case strings.Contains(req.URL.Path, "/pulls/"):
-			json.NewEncoder(w).Encode(greenPullBody())
+			_ = json.NewEncoder(w).Encode(greenPullBody())
 		default:
 			http.NotFound(w, req)
 		}
@@ -1314,7 +1314,7 @@ func TestSweepHeldReasonSurvivesLaterRefusal(t *testing.T) {
 			for _, point := range dp.DataPoints {
 				total += point.Value
 				for _, kv := range point.Attributes.ToSlice() {
-					if kv.Key == attribute.Key("reason") && kv.Value.Emit() == "budget" {
+					if kv.Key == attribute.Key("reason") && kv.Value.String() == "budget" {
 						budget += point.Value
 					}
 				}
@@ -1482,7 +1482,7 @@ func TestSweepAbortSpeaksInTheAggregates(t *testing.T) {
 	// and counted, not an error to the caller) — the assertions below pin
 	// what must still be TRUE after it: aggregates written, cause recorded,
 	// no releases.
-	RunReviewGateSweep(deadlineCtx, deps, wf)
+	_, _ = RunReviewGateSweep(deadlineCtx, deps, wf)
 
 	if st.last.ReviewReady == nil {
 		t.Fatal("no aggregates recorded — durable records must survive the abort")
@@ -2151,13 +2151,6 @@ func liveJobFor(t *testing.T, wf *v1alpha1.Workflow, claim *v1alpha1.Attempt) *b
 			v1alpha1.AttemptLabel:    claim.Name,
 		},
 	}}
-}
-
-type captureTL struct{ b *strings.Builder }
-
-func (c *captureTL) Emit(ctx context.Context, kind, node string, payload any) error {
-	fmt.Fprintf(c.b, "TL[%s] %v\n", kind, payload)
-	return nil
 }
 
 // ── #352 finding 2: a claim with NO arm clock must never be released as

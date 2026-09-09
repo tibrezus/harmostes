@@ -1993,3 +1993,169 @@ func TestChurnBudgetSelfClearsAfterHorizon(t *testing.T) {
 		t.Fatalf("stale-exhausted budget must self-clear and dispatch, got %d dispatches (aggregates %+v)", len(out), st.last.ReviewReady)
 	}
 }
+
+// captureLog replaces t.Logf with a buffer so tests can assert on what the
+// sweep told the operator (#386: dropped candidates must name themselves).
+func captureLog() (func(string, ...any), *strings.Builder) {
+	var b strings.Builder
+	return func(f string, a ...any) { fmt.Fprintf(&b, f+"\n", a...) }, &b
+}
+
+// ── #390 finding 4, gate mirror: the section-A churn standdown reads the
+// SAME window predicate as ArmClaim — a stale-stamped budget must not
+// stand down a young claim whose arm is still inside the verdict window
+// (the two guards used to disagree on what expiry meant). The
+// unstamped-nil case is Evaluate-shadowed at the gate (an old CLAIM's arm
+// is itself expired) and is covered at the ArmClaim level in claim_test.
+func TestGateMirror_StaleBudgetDoesNotStandDownYoungClaim(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := greenPRServer(t)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	st := &fakeStatus{}
+	old := time.Now().Add(-8 * time.Hour) // claim older than the 6h horizon
+	claim := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#99", "deadbeef123", time.Now().Add(-30*time.Minute), nil)
+	claim.Status.Review.DispatchLostReleases = v1alpha1.MaxDispatchLostReleases
+	stale := metav1.NewTime(old) // newest strike 8h old — outside the 6h window
+	claim.Status.Review.LastDispatchLostAt = &stale
+	deps, ctx := gateEnv(t, wf, st, claim)
+
+	out, err := RunReviewGateSweep(ctx, deps, wf)
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("a stale-stamped budget must not stand the young claim down (dispatch), got %d", len(out))
+	}
+	var re v1alpha1.Attempt
+	if err := deps.Client.Get(ctx, client.ObjectKey{Namespace: claim.Namespace, Name: claim.Name}, &re); err != nil {
+		t.Fatal(err)
+	}
+	if re.Status.Review.Released {
+		t.Fatalf("the stale-budget claim must dispatch, not stand down (reason=%q)", re.Status.Review.ReleaseReason)
+	}
+}
+
+// ── #386: every dropped candidate names itself. Four drop sites. ──
+
+func TestSaturatedSweepSkipsScanWithLog(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := labeledListServer(t, 99, 100)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	wf.Spec.ReviewReady.MaxConcurrent = 1
+	st := &fakeStatus{}
+	disp := time.Now().Add(-2 * time.Minute)
+	live := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#42", "cafe1234567", time.Now().Add(-5*time.Minute), &disp)
+	logf, buf := captureLog()
+	deps, ctx := gateEnv(t, wf, st, live, liveJobFor(t, wf, live))
+	deps.Log = logf
+
+	out, err := RunReviewGateSweep(ctx, deps, wf)
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if len(out) != 0 {
+		t.Fatalf("a saturated sweep must not dispatch, got %d", len(out))
+	}
+	if !strings.Contains(buf.String(), "labeled scan skipped") {
+		t.Fatalf("saturation must speak in the log, got:\n%s", buf.String())
+	}
+}
+
+func TestStrandedCandidatesLoggedOnSaturation(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := labeledListServer(t, 99, 100)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	wf.Spec.ReviewReady.MaxConcurrent = 1
+	st := &fakeStatus{}
+	logf, buf := captureLog()
+	deps, ctx := gateEnv(t, wf, st)
+	deps.Log = logf
+
+	out, err := RunReviewGateSweep(ctx, deps, wf)
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("capacity 1 must dispatch exactly the first candidate, got %d", len(out))
+	}
+	if !strings.Contains(buf.String(), "stranded this sweep") || !strings.Contains(buf.String(), "rhesadox#100") {
+		t.Fatalf("the stranded candidate must name itself, got:\n%s", buf.String())
+	}
+}
+
+func TestClaimedCandidateDropLogged(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := labeledListServer(t, 99)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	st := &fakeStatus{}
+	disp := time.Now().Add(-2 * time.Minute)
+	live := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#99", "deadbeef123", time.Now().Add(-5*time.Minute), &disp)
+	logf, buf := captureLog()
+	deps, ctx := gateEnv(t, wf, st, live, liveJobFor(t, wf, live)) // poll sweep: the scan candidate hits the live claim
+	deps.Log = logf
+
+	out, err := RunReviewGateSweep(ctx, deps, wf)
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if len(out) != 0 {
+		t.Fatalf("a claimed PR must not re-dispatch from a scan candidate, got %d", len(out))
+	}
+	if !strings.Contains(buf.String(), "already claimed") || !strings.Contains(buf.String(), "rhesadox#99") {
+		t.Fatalf("the claimed drop must name the PR, got:\n%s", buf.String())
+	}
+}
+
+func TestSameHeadReRequestDropLogged(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := greenPRServer(t)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	st := &fakeStatus{}
+	live := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#99", "deadbeef123", time.Now().Add(-5*time.Minute), nil)
+	logf, buf := captureLog()
+	deps, ctx := gateEnvW(t, wf, st, "git.rezus.cloud/tibrez/rhesadox#99", "labeled", "deadbeef123", live)
+	deps.Log = logf
+
+	out, err := RunReviewGateSweep(ctx, deps, wf)
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if len(out) != 0 {
+		t.Fatalf("a same-head re-request with no dead dispatches must not re-dispatch, got %d", len(out))
+	}
+	if !strings.Contains(buf.String(), "same-head re-request") {
+		t.Fatalf("the same-head drop must speak, got:\n%s", buf.String())
+	}
+}
+
+// liveJobFor builds the Job a dispatched claim needs in the fake store to
+// count as alive — without it the dead-dispatch detector releases the claim
+// and frees the slot under test.
+func liveJobFor(t *testing.T, wf *v1alpha1.Workflow, claim *v1alpha1.Attempt) *batchv1.Job {
+	t.Helper()
+	return &batchv1.Job{ObjectMeta: metav1.ObjectMeta{
+		Name: "job-" + claim.Name, Namespace: wf.Namespace,
+		Labels: map[string]string{
+			"app.kubernetes.io/name": "harmostes",
+			"harmostes.dev/workflow": wf.Name,
+			v1alpha1.AttemptLabel:    claim.Name,
+		},
+	}}
+}
+
+type captureTL struct{ b *strings.Builder }
+
+func (c *captureTL) Emit(ctx context.Context, kind, node string, payload any) error {
+	fmt.Fprintf(c.b, "TL[%s] %v\n", kind, payload)
+	return nil
+}

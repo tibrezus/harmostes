@@ -59,6 +59,28 @@ var ErrChurnBudgetExhausted = errors.New("dispatch-lost churn budget exhausted")
 // already-armed head: it is the breaker's override — a human saying "retry
 // now" resets the dead-dispatch count and re-arms. Automatic sweeps pass
 // false and are refused once the breaker is open.
+// DispatchLostWindowOpen reports whether the churn-budget evidence is still
+// FRESH: the newest dispatch-lost strike sits inside the horizon window.
+// When the strike carries no stamp (claims released by pre-142 workers,
+// #391) the claim's own age is the fallback clock — an unstamped budget
+// must age out on SOME clock, or the "wait out the horizon" remedy in the
+// refusal message is a lie that stands forever. This is THE predicate for
+// budget recency: ArmClaim's refusal/reset here and the gate's section-A
+// standdown mirror (review_gate.go) both consult it — they used to
+// disagree on expiry semantics (r31 finding 4, #390), and a future reader
+// "unifying" one to match the other wrongly is the exact failure the
+// shared helper prevents.
+func DispatchLostWindowOpen(r *v1alpha1.ReviewClaimStatus, claimAge, horizon time.Duration) bool {
+	if r == nil {
+		return false
+	}
+	sinceNewest := claimAge // fallback: no stamp → the claim's own age speaks
+	if r.LastDispatchLostAt != nil {
+		sinceNewest = time.Since(r.LastDispatchLostAt.Time)
+	}
+	return sinceNewest < horizon
+}
+
 func ArmClaim(ctx context.Context, c client.Client, scheme *runtime.Scheme, wf *v1alpha1.Workflow, pr, headSHA, label string, humanRequest bool) (*v1alpha1.Attempt, error) {
 	// Pointer-local era read (r7 P1): attempt identity is (source repo,
 	// head SHA) — every era of this pointer IS this one object. The r6
@@ -117,14 +139,21 @@ func ArmClaim(ctx context.Context, c client.Client, scheme *runtime.Scheme, wf *
 		// (the label event never reaches the gate) had NO operator exit:
 		// the prescribed "re-apply the label" never arrived as a
 		// humanRequest arm, so the refusal stood forever.
-		budgetExpired := r.LastDispatchLostAt != nil &&
-			wf.Spec.ReviewReady != nil &&
-			time.Since(r.LastDispatchLostAt.Time) >= wf.Spec.ReviewReady.HorizonDuration()
-		if r.DispatchLostReleases >= v1alpha1.MaxDispatchLostReleases && !budgetExpired {
+		// Zero CreationTimestamp (never server-stamped — fake clients, or
+		// an API-server anomaly) reads as age 0: UNKNOWN age keeps the
+		// window OPEN (refuse) — the conservative reading.
+		claimAge := time.Since(at.CreationTimestamp.Time)
+		if at.CreationTimestamp.IsZero() {
+			claimAge = 0
+		}
+		budgetActive := r.DispatchLostReleases >= v1alpha1.MaxDispatchLostReleases &&
+			DispatchLostWindowOpen(r, claimAge, wf.Spec.ReviewReady.HorizonDuration())
+		if budgetActive {
 			return nil, fmt.Errorf("%w: %s — %d consecutive never-dispatched releases within the horizon window (max %d); re-apply the label for a fresh review now, or wait out the horizon and the budget self-clears",
 				ErrChurnBudgetExhausted, shortSHA(headSHA), r.DispatchLostReleases, v1alpha1.MaxDispatchLostReleases)
 		}
-		budgetExpiry = budgetExpired && r.DispatchLostReleases > 0
+		budgetExpiry = r.DispatchLostReleases > 0 &&
+			!DispatchLostWindowOpen(r, claimAge, wf.Spec.ReviewReady.HorizonDuration())
 	}
 	// Reusable era: pointer-local now — the era IS this object, so "reuse"
 	// just means "the revival rules below decide what an arm of a released

@@ -145,7 +145,7 @@ func BuildJob(p AttemptJobParams) *batchv1.Job {
 	// concern — the chart's worker.cache template renders it right).
 	if p.Cache != nil && p.Cache.PVC != "" {
 		volumes = append(volumes, corev1.Volume{
-			Name: "cache",
+			Name:         "cache",
 			VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: p.Cache.PVC}},
 		})
 		mounts = append(mounts, corev1.VolumeMount{Name: "cache", SubPath: p.WorkflowName, MountPath: "/cache"})

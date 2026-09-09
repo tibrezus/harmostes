@@ -711,6 +711,16 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 		} else if n > 0 {
 			log("review-ready: reaped %d attempt(s) stuck reconciling >7d", n)
 		}
+		// Retention GC (#385): terminal and statusless attempts past the
+		// horizon are pure CR accumulation (2,495 on one workflow and
+		// climbing) — delete them the same best-effort way. Terminal
+		// phase = finished work; statusless = never reconciled. Live work
+		// (reconciling, claim-bearing) is excluded by construction.
+		if n, err := attempt.GCAttempts(reapCtx, deps.Client, wf.Namespace, wf.Name, 30*24*time.Hour); err != nil {
+			log("review-ready: attempt GC failed: %v", err)
+		} else if n > 0 {
+			log("review-ready: GC'd %d attempt(s) older than 30d", n)
+		}
 	}
 
 	return out, nil

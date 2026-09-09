@@ -422,6 +422,54 @@ func lastSlash(s string) int {
 	return -1
 }
 
+// leaves the phase frozen forever — the run has no Job, no verdict, no
+// terminal state, and the attempt holds a claim slot if it carries one.
+// Claim-bearing attempts are RELEASED first ("closed" — terminal, no churn
+// strike), then the phase lands on failed with a message naming the reap.
+// Best-effort per attempt: one bad object must not block the rest.
+//
+// The release-then-patch is INTENTIONALLY non-atomic (#390 finding 3): a
+// crash between the two writes leaves a released-but-reconciling attempt
+// that the next sweep reaps (the phase leg runs regardless) — do not
+// "fix" this into a transaction. The List is label-scoped, not
+// phase-scoped: CRD status fields are not server-side selectable, so the
+// per-sweep cost is all attempts of one workflow — bounded by live
+// attempts per workflow, fine at fleet width.
+// GCAttempts deletes attempts past the retention horizon (#385): terminal
+// attempts (validated / superseded / failed) and statusless attempts —
+// created but never reconciled, the largest accumulation bucket — older
+// than olderThan. Live work is untouchable by construction: every phase a
+// claim can hold (reconciling) is excluded, and the horizon means an
+// in-flight status write is impossible. Zero CreationTimestamp (fake
+// clients, server not yet stamped) is never GC'd — unknown age errs on the
+// side of keeping. Best-effort per attempt: one bad object must not block
+// the rest. The List is label-scoped for the same reason as
+// ReapStuckAttempts: CRD status is not server-side selectable.
+func GCAttempts(ctx context.Context, c client.Client, namespace, workflowName string, olderThan time.Duration) (int, error) {
+	var list v1alpha1.AttemptList
+	if err := c.List(ctx, &list, client.InNamespace(namespace),
+		client.MatchingLabels{"harmostes.dev/workflow": workflowName}); err != nil {
+		return 0, fmt.Errorf("list attempts: %w", err)
+	}
+	cutoff := time.Now().Add(-olderThan)
+	gc := 0
+	for i := range list.Items {
+		at := &list.Items[i]
+		terminal := at.Status.Phase == v1alpha1.AttemptPhaseValidated ||
+			at.Status.Phase == v1alpha1.AttemptPhaseSuperseded ||
+			at.Status.Phase == v1alpha1.AttemptPhaseFailed ||
+			at.Status.Phase == "" // statusless: never reconciled — pure debris past the horizon
+		if !terminal || at.CreationTimestamp.IsZero() || at.CreationTimestamp.Time.After(cutoff) {
+			continue
+		}
+		if err := c.Delete(ctx, at); client.IgnoreNotFound(err) != nil {
+			continue
+		}
+		gc++
+	}
+	return gc, nil
+}
+
 // ReapStuckAttempts finalizes attempts that have sat in phase=reconciling
 // past olderThan (r30, #376): a worker loss (pod OOM mid-run, node drain)
 // leaves the phase frozen forever — the run has no Job, no verdict, no

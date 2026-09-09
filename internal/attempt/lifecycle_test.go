@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
@@ -266,5 +268,97 @@ func TestStatusCompactionRunsTailAndUpsertTotals(t *testing.T) {
 	// already-tailed run kept it in place (no reorder, no duplicate).
 	if s.Runs[0].Name != "run-25" || s.Runs[len(s.Runs)-1].Name != "run-424" {
 		t.Errorf("tail window wrong: first=%s last=%s", s.Runs[0].Name, s.Runs[len(s.Runs)-1].Name)
+	}
+}
+
+// ── #385 retention GC: terminal and statusless attempts past the horizon
+// are deleted; everything a live claim could hold (reconciling), anything
+// young, and anything with unknown age (zero CreationTimestamp) survives.
+func TestGCAttempts(t *testing.T) {
+	ctx := context.Background()
+	c := newFakeClient(t)
+	old := metav1.NewTime(time.Now().Add(-31 * 24 * time.Hour))
+	young := metav1.NewTime(time.Now().Add(-24 * time.Hour))
+	const ns = "default"
+
+	mk := func(name, phase string, ts metav1.Time) *v1alpha1.Attempt {
+		at := &v1alpha1.Attempt{ObjectMeta: metav1.ObjectMeta{
+			Name: name, Namespace: ns, CreationTimestamp: ts,
+			Labels: map[string]string{"harmostes.dev/workflow": "pr-review-rhesadox"},
+		}}
+		if phase != "" {
+			at.Status.Phase = phase
+		}
+		return at
+	}
+	for _, at := range []*v1alpha1.Attempt{
+		mk("old-failed", v1alpha1.AttemptPhaseFailed, old),
+		mk("old-validated", v1alpha1.AttemptPhaseValidated, old),
+		mk("old-superseded", v1alpha1.AttemptPhaseSuperseded, old),
+		mk("old-statusless", "", old),
+		mk("old-reconciling", v1alpha1.AttemptPhaseReconciling, old), // claim-bearing — untouchable
+		mk("young-failed", v1alpha1.AttemptPhaseFailed, young),
+		mk("zero-ts-failed", v1alpha1.AttemptPhaseFailed, metav1.Time{}), // unknown age — keep
+	} {
+		if err := c.Create(ctx, at); err != nil {
+			t.Fatalf("create %s: %v", at.Name, err)
+		}
+	}
+
+	n, err := GCAttempts(ctx, c, ns, "pr-review-rhesadox", 30*24*time.Hour)
+	if err != nil {
+		t.Fatalf("gc: %v", err)
+	}
+	if n != 4 {
+		t.Fatalf("GC'd %d attempts, want 4 (3 terminal old + 1 statusless old)", n)
+	}
+	var list v1alpha1.AttemptList
+	if err := c.List(ctx, &list, client.InNamespace(ns)); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, at := range list.Items {
+		got[at.Name] = true
+	}
+	for _, keep := range []string{"old-reconciling", "young-failed", "zero-ts-failed"} {
+		if !got[keep] {
+			t.Fatalf("attempt %s must survive GC, it was deleted (remaining: %v)", keep, got)
+		}
+	}
+	for _, gone := range []string{"old-failed", "old-validated", "old-superseded", "old-statusless"} {
+		if got[gone] {
+			t.Fatalf("attempt %s must be GC'd, it survived", gone)
+		}
+	}
+}
+
+// Coverage gap closed alongside #385: the r30 janitor shipped untested.
+// Old stuck reconciling → released+failed; young and unknown-age → kept.
+func TestReapStuckAttempts(t *testing.T) {
+	ctx := context.Background()
+	c := newFakeClient(t)
+	old := metav1.NewTime(time.Now().Add(-8 * 24 * time.Hour))
+	const ns = "default"
+	mk := func(name string, ts metav1.Time) *v1alpha1.Attempt {
+		return &v1alpha1.Attempt{ObjectMeta: metav1.ObjectMeta{
+			Name: name, Namespace: ns, CreationTimestamp: ts,
+			Labels: map[string]string{"harmostes.dev/workflow": "wf"},
+		}, Status: v1alpha1.AttemptStatus{Phase: v1alpha1.AttemptPhaseReconciling}}
+	}
+	for _, at := range []*v1alpha1.Attempt{mk("stuck", old), mk("young", metav1.NewTime(time.Now())), mk("zero-ts", metav1.Time{})} {
+		if err := c.Create(ctx, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	n, err := ReapStuckAttempts(ctx, c, ns, "wf", 7*24*time.Hour)
+	if err != nil || n != 1 {
+		t.Fatalf("reaped %d (err %v), want 1", n, err)
+	}
+	var after v1alpha1.Attempt
+	if err := c.Get(ctx, client.ObjectKey{Namespace: ns, Name: "stuck"}, &after); err != nil {
+		t.Fatal(err)
+	}
+	if after.Status.Phase != v1alpha1.AttemptPhaseFailed || !strings.Contains(after.Status.Message, "reaped") {
+		t.Fatalf("stuck attempt must land failed with a reap message, got phase=%s msg=%q", after.Status.Phase, after.Status.Message)
 	}
 }

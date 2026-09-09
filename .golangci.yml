@@ -1,0 +1,22 @@
+# golangci-lint v2 config (#316) — the five analyzers CI enforces.
+# Zero findings on main is the baseline; a new finding fails the build.
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  # No default set: exactly these five, nothing ambient. govet's plain
+  # `go vet` subset already runs in the build leg; this adds the rest.
+  default: none
+  enable:
+    - errcheck      # unchecked errors — every deliberate ignore is explicit (`_ =` + reason)
+    - staticcheck   # SA/QF: deprecated APIs, dead branches, simplifications
+    - ineffassign   # writes nothing can read
+    - unused        # dead declarations (the milestone-① prune class)
+    - govet         # the fuller vet set beyond `go vet`'s defaults
+
+formatters:
+  # gofmt is already a hard CI gate (its own step); exclusions keep the
+  # two tools from fighting over the same files.
+  enable: []

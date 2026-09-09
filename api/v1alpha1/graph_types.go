@@ -57,7 +57,11 @@ type NodeSpec struct {
 	When string `json:"when,omitempty"`
 
 	// Timeout is the maximum duration this node is allowed to run before being
-	// killed (circuit breaker). Format is a Go duration string: "30s", "5m",
+	// killed (circuit breaker) — the node's INTERNAL budget, enforced inside
+	// the run. It is not the Job's wall clock: the wall is the workflow's
+	// reviewReady.runBound (default OneShotRunBound), and a node timeout
+	// larger than the wall is an authoring error the wall enforces (#348).
+	// Format is a Go duration string: "30s", "5m",
 	// "1h". Empty means no timeout (inherits the pipeline's overall deadline).
 	//+optional
 	Timeout string `json:"timeout,omitempty"`

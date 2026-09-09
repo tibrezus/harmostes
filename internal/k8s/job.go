@@ -36,6 +36,11 @@ type AttemptJobParams struct {
 	Image          string
 	ServiceAccount string
 
+	// RunBound is the Job's ActiveDeadlineSeconds source (#348/#333):
+	// the workflow's reviewReady.runBound. Zero means OneShotRunBound —
+	// the fleet default the wall keeps when no workflow raises it.
+	RunBound time.Duration
+
 	// TTLSecondsAfterFinished self-cleans finished Jobs (nil = cluster
 	// default / none — set from chart values by the dispatcher).
 	TTLSecondsAfterFinished *int32
@@ -80,6 +85,15 @@ type ConfigMapMount struct {
 // role); restartPolicy Never + backoffLimit 0 (retries are the dispatcher's
 // re-arm, never kubelet's); ttlSecondsAfterFinished so finished Jobs and
 // their pods self-clean.
+// runBoundSeconds resolves the Job's wall clock: the workflow-configured
+// bound, or the fleet default when unset.
+func (p AttemptJobParams) runBoundSeconds() time.Duration {
+	if p.RunBound > 0 {
+		return p.RunBound
+	}
+	return v1alpha1.OneShotRunBound
+}
+
 func BuildJob(p AttemptJobParams) *batchv1.Job {
 	attemptName := p.Attempt.Name
 	labels := map[string]string{
@@ -155,8 +169,13 @@ func BuildJob(p AttemptJobParams) *batchv1.Job {
 		Spec: batchv1.JobSpec{
 			BackoffLimit: new(int32), // 0: retries are the dispatcher's re-arm
 			// The wall-clock bound follows the run out of the pool pod
-			// (was the consumer's run context; OneShotRunBound unchanged).
-			ActiveDeadlineSeconds:   ptr.To(int64(v1alpha1.OneShotRunBound / time.Second)),
+			// (was the consumer's run context). The workflow's runBound
+			// (#348/#333) raises it for reviews whose methodology honestly
+			// exceeds the fleet default; 0 falls back to OneShotRunBound —
+			// and the gate's DispatchTimeout margin is validated over the
+			// SAME effective bound (reviewready.go), so exactly-once holds
+			// for every configured wall.
+			ActiveDeadlineSeconds:   ptr.To(int64(p.runBoundSeconds() / time.Second)),
 			TTLSecondsAfterFinished: p.TTLSecondsAfterFinished,
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: labels, Annotations: annotations},

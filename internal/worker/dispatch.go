@@ -157,11 +157,25 @@ func (c DispatchConfig) Validate() error {
 // so a config fact cannot be dropped at a struct-copy hop (#311/#314):
 // callers supply only the per-run fields (attempt, workflow, namespace,
 // extraEnv).
-func (c DispatchConfig) JobParams(at *v1alpha1.Attempt, workflow, namespace string, extraEnv []string) k8s.AttemptJobParams {
+// workflowRunBound resolves the per-run wall clock from the Workflow CR's
+// reviewReady.runBound (#348/#333). Errors degrade to the fleet default
+// (OneShotRunBound) — a missing workflow must not block dispatch; the next
+// reconcile is the retry. One read per dispatched claim, cached per call by
+// (the loop already Gets each attempt; capacity-bounded).
+func workflowRunBound(ctx context.Context, c client.Client, namespace, workflow string) time.Duration {
+	var wf v1alpha1.Workflow
+	if err := c.Get(ctx, client.ObjectKey{Namespace: namespace, Name: workflow}, &wf); err != nil {
+		return 0 // JobParams falls back to OneShotRunBound
+	}
+	return wf.Spec.ReviewReady.RunBoundDuration()
+}
+
+func (c DispatchConfig) JobParams(at *v1alpha1.Attempt, workflow, namespace string, runBound time.Duration, extraEnv []string) k8s.AttemptJobParams {
 	return k8s.AttemptJobParams{
 		Attempt:                 at,
 		WorkflowName:            workflow,
 		Namespace:               namespace,
+		RunBound:                runBound,
 		Image:                   c.JobImage,
 		ServiceAccount:          c.ServiceAccount,
 		TTLSecondsAfterFinished: c.JobTTLSeconds,
@@ -305,7 +319,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req RunRequest) error {
 		if err := d.cl.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: g.Attempt}, &at); err != nil {
 			return fmt.Errorf("get claim attempt %s: %w", g.Attempt, err)
 		}
-		job := k8s.BuildJob(d.cfg.JobParams(&at, req.Workflow, req.Namespace,
+		job := k8s.BuildJob(d.cfg.JobParams(&at, req.Workflow, req.Namespace, workflowRunBound(ctx, d.cl, req.Namespace, req.Workflow),
 			append(jobCredentialEnv(), dispatchEnv(req, &at, g.Envelope)...)))
 		if err := d.cl.Create(ctx, job); err != nil {
 			if errors.IsAlreadyExists(err) {

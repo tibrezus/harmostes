@@ -122,6 +122,8 @@ spec:
                     label:   { type: string, default: needs-review }
                     horizon: { type: string, default: 6h }
                     dispatchTimeout: { type: string, default: 45m }
+                    # per-run Job wall clock (#348/#333): default 30m, capped at 2h
+                    runBound: { type: string, default: 30m }
                     maxConcurrent: { type: integer, minimum: 1 }
 
             status:

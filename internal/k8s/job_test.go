@@ -3,6 +3,7 @@ package k8s
 import (
 	"strings"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -205,5 +206,31 @@ func TestBuildJobExtraConfigMapMounts(t *testing.T) {
 	}
 	if modes["extra-cm-fork-defs"] != 0o644 {
 		t.Errorf("fork-defs mode = %o, want 644 (must match the pool's mount)", modes["extra-cm-fork-defs"])
+	}
+}
+
+// The Job wall clock follows the workflow's runBound (#348/#333): a
+// configured bound reaches ActiveDeadlineSeconds; zero falls back to the
+// fleet default — the deadline the gate's DispatchTimeout margin is
+// validated against.
+func TestBuildJobRunBoundDeadline(t *testing.T) {
+	at := &v1alpha1.Attempt{ObjectMeta: metav1.ObjectMeta{Name: "attempt-w", Namespace: "default"}}
+	base := AttemptJobParams{Attempt: at, WorkflowName: "wf", Namespace: "default", Image: "img"}
+
+	if got := base.runBoundSeconds(); got != v1alpha1.OneShotRunBound {
+		t.Fatalf("zero runBound must fall back to OneShotRunBound, got %s", got)
+	}
+	p := base
+	p.RunBound = 45 * time.Minute
+	if got := p.runBoundSeconds(); got != 45*time.Minute {
+		t.Fatalf("configured runBound must reach the deadline, got %s", got)
+	}
+	job := BuildJob(p)
+	if got := *job.Spec.ActiveDeadlineSeconds; got != 2700 {
+		t.Fatalf("ActiveDeadlineSeconds = %d, want 2700 (45m)", got)
+	}
+	job = BuildJob(base)
+	if got := *job.Spec.ActiveDeadlineSeconds; got != 1800 {
+		t.Fatalf("default ActiveDeadlineSeconds = %d, want 1800 (30m)", got)
 	}
 }

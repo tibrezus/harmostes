@@ -195,7 +195,13 @@ func (r *WorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 const webhookMinTriggerInterval = 10 * time.Second
 
 // errTriggerCooldown: the slot was claimed within the cooldown — the caller
-// must not publish (another reconcile already did, or the poll just ran).
+// must NOT claim the publish (another reconcile already did, or the poll
+// just ran — a false return with a nil error is the normal losing path, not
+// an error path). Note the losing reconcile still holds its slot until
+// PollInterval even if the winner's publish fails, and a nil DaprClient
+// turns the publish itself into a no-op AFTER the slot was consumed —
+// both edges are accepted (bounded by PollInterval; the slot now owns the
+// outcome) rather than fixed with extra coordination.
 var errTriggerCooldown = errors.New("trigger slot on cooldown")
 
 // claimTriggerSlot atomically advances LastRunAt when it is at least

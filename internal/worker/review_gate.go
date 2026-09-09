@@ -458,10 +458,16 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 			if keepArmed[r.PR] {
 				continue // re-evaluated this sweep as waiting/proceed (r27 #379)
 			}
-			arm := time.Time{}
-			if r.ArmedSince != nil {
-				arm = r.ArmedSince.Time
+			// #352 finding 2: no clock, no release — a nil ArmedSince would
+			// read as the zero time (age ≈ forever) and spend a churn unit
+			// on a claim whose age we cannot know. ArmClaim always stamps
+			// the clock, so this is edge-object hygiene, but it is explicit:
+			// skip, visibly.
+			if r.ArmedSince == nil {
+				log("review-ready: claim %s has no arm clock — skipping the never-dispatched pass rather than guessing its age", c.Name)
+				continue
 			}
+			arm := r.ArmedSince.Time
 			if time.Since(arm) <= reDispatchGrace {
 				continue // fresh arm: its sweep's dispatch loop is still in flight
 			}

@@ -214,6 +214,14 @@ func ArmClaim(ctx context.Context, c client.Client, scheme *runtime.Scheme, wf *
 		}
 		r := s.Review
 		sameClaim := r.PR == pr && r.HeadSHA == headSHA
+		// Reachability note (#352 finding 3): a RELEASED claim never
+		// re-enters LiveReviewClaims — the marker is the list bound — so
+		// every gate-driven reset below refreshes a LIVE claim. The
+		// released-claim reset path is reachable only via ArmClaim itself
+		// (a labeled wake or scan arm); the tests exercise it directly for
+		// exactly that reason. A stale DispatchedAt can only originate from
+		// a failed markClaimLive, which aborts before the status commit.
+		//
 		// Revival rules SPLIT BY RELEASE REASON (r3 P4 — the r2 blanket reset
 		// re-opened the #343 churn): a dispatch-lost release is a
 		// never-consummated era — revival KEEPS the era clock, so the verdict

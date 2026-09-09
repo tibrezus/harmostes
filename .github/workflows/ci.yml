@@ -166,7 +166,15 @@ jobs:
         run: cd e2e && npm ci
 
       - name: Install Playwright browsers
-        run: cd e2e && npx playwright install --with-deps chromium
+        run: |
+          # The runner image preinstalls Google's chrome-stable apt source;
+          # when that upstream repo is mid-rollout its Packages.gz hash
+          # mismatches and apt-get update (run by --with-deps) exits 100 —
+          # blocking every PR on a third-party outage (observed 3× in a
+          # row, 2026-09-09). We test chromium, not chrome: drop the
+          # source; ubuntu's own repos carry everything --with-deps needs.
+          sudo rm -f /etc/apt/sources.list.d/google-chrome*.list /etc/apt/sources.list.d/google*.list
+          cd e2e && npx playwright install --with-deps chromium
 
       # The webServer hook in playwright.config.ts boots the fixture UI
       # itself (go run) and waits for /healthz — one command runs the tier.

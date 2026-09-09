@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
 	"github.com/tibrezus/harmostes/internal/observability"
 	"github.com/tibrezus/harmostes/internal/timeline"
 )
@@ -314,6 +315,37 @@ func TestBuiltinPluginsParity(t *testing.T) {
 	for name := range onDisk {
 		if _, ok := builtins[name]; !ok {
 			t.Errorf("plugins/%s/%s.sh exists on disk but is NOT registered in builtinPlugins() — a silent third resolution path (the divergence-track slip)", name, name)
+		}
+	}
+}
+
+// r33 round-2 P1: the worker's in-process wall composes with the workflow's
+// runBound — the process can never die BEFORE the raised Job wall (that was
+// #348's failure mode through the twin knob: fatal() at the 1800s default
+// while ActiveDeadlineSeconds said 45m).
+func TestRunTimeoutFloorsAtRunBound(t *testing.T) {
+	mk := func(agentSecs int, runBound string) *v1alpha1.Workflow {
+		wf := &v1alpha1.Workflow{}
+		wf.Spec.Agent.Timeout = agentSecs
+		if runBound != "" {
+			wf.Spec.ReviewReady = &v1alpha1.ReviewReadySpec{RunBound: runBound}
+		}
+		return wf
+	}
+	cases := []struct {
+		name string
+		wf   *v1alpha1.Workflow
+		want time.Duration
+	}{
+		{"default", mk(0, ""), 1800 * time.Second},
+		{"raised wall, no agent timeout — the P1 case", mk(0, "45m"), 45 * time.Minute},
+		{"explicit agent timeout above the wall", mk(3600, "45m"), 3600 * time.Second},
+		{"agent timeout below the wall — floored", mk(600, "45m"), 45 * time.Minute},
+		{"invalid runBound degrades, agent default holds", mk(0, "999h"), 1800 * time.Second},
+	}
+	for _, c := range cases {
+		if got := runTimeout(c.wf); got != c.want {
+			t.Errorf("%s: runTimeout = %s, want %s", c.name, got, c.want)
 		}
 	}
 }

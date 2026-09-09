@@ -127,3 +127,52 @@ func TestReviewReadyDispatchTimeoutFloor(t *testing.T) {
 		t.Errorf("nil spec = %s, want %s", got, def)
 	}
 }
+
+// The per-workflow wall clock (#348/#333): RunBound parsing + the enforced
+// margin interplay — DispatchTimeout must leave MinDispatchMargin over the
+// EFFECTIVE bound, not just the fleet default, or the gate would
+// re-dispatch while a raised-wall run may still be alive.
+func TestReviewReadyRunBound(t *testing.T) {
+	cases := []struct {
+		cfg  string
+		want time.Duration
+	}{
+		{"", OneShotRunBound},                                   // unset → fleet default
+		{"garbage", OneShotRunBound},                            // unparsable → default
+		{"0s", OneShotRunBound},                                 // non-positive → default
+		{"-5m", OneShotRunBound},                                // negative → default
+		{"31m", 31 * time.Minute},                               // above default → honored
+		{"45m", 45 * time.Minute},                               // the #333 pr-review recommendation
+		{MaxRunBound.String(), MaxRunBound},                     // at the cap → honored
+		{(MaxRunBound + time.Minute).String(), OneShotRunBound}, // above cap → default
+	}
+	for _, c := range cases {
+		got := (&ReviewReadySpec{RunBound: c.cfg}).RunBoundDuration()
+		if got != c.want {
+			t.Errorf("RunBoundDuration(%q) = %s, want %s", c.cfg, got, c.want)
+		}
+	}
+
+	// The margin invariant over the EFFECTIVE bound: runBound=45m raises
+	// the wall, so dispatchTimeout=45m (fine vs the old 30m default) is
+	// now INSIDE the margin → degrades to bound+15m=60m. 49m leaves a 4m
+	// margin (< MinDispatchMargin) → default; 50m leaves exactly 5m →
+	// honored at the floor.
+	const rb = "45m"
+	dt := func(cfg string) time.Duration {
+		return (&ReviewReadySpec{RunBound: rb, DispatchTimeout: cfg}).DispatchTimeoutDuration()
+	}
+	if got, want := dt("45m"), 60*time.Minute; got != want {
+		t.Errorf("dispatchTimeout=runBound (zero margin) = %s, want default %s", got, want)
+	}
+	if got, want := dt("49m"), 60*time.Minute; got != want {
+		t.Errorf("dispatchTimeout=49m (4m margin < 5m) = %s, want default %s", got, want)
+	}
+	if got, want := dt("50m"), 50*time.Minute; got != want {
+		t.Errorf("dispatchTimeout=50m (exactly the margin floor) = %s, want honored %s", got, want)
+	}
+	// Unset dispatchTimeout with a raised wall → default follows the wall.
+	if got, want := dt(""), 60*time.Minute; got != want {
+		t.Errorf("unset dispatchTimeout with 45m wall = %s, want wall+15m %s", got, want)
+	}
+}

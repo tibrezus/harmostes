@@ -193,7 +193,8 @@ func (c *Consumer) handleTrigger(w http.ResponseWriter, r *http.Request) {
 	// No run-scoped single-flight: dispatch is milliseconds and graphs run
 	// in Job pods (ADR-0007). The gate + capacity check + create-section
 	// dedupe in the Dispatcher make redelivery idempotent; the Job's
-	// activeDeadlineSeconds (OneShotRunBound) carries the wall-clock bound
+	// activeDeadlineSeconds carries the wall-clock bound (reviewReady.runBound,
+	// #348/#333, default OneShotRunBound)
 	// that used to live here.
 	runCtx := r.Context()
 

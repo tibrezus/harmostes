@@ -128,6 +128,36 @@ type ReviewReadySpec struct {
 	// capacity queue — the gate's armed marker is the durable queue and
 	// sweeps dispatch as slots free.
 	MaxConcurrent int `json:"maxConcurrent,omitempty"`
+
+	// RunBound is this workflow's per-run Job wall clock (#348/#333): the
+	// ActiveDeadlineSeconds every dispatched run Job carries. Reviews whose
+	// honest methodology exceeds OneShotRunBound (observed live: 3/3 wall
+	// deaths on a focused diff, #333) raise it here without raising the
+	// fleet-wide bound — a dead run burns runBound × MaxDeadDispatchesPerHead
+	// before the breaker stands the head down, so the cap is deliberate.
+	// Per-node agent timeouts (graph nodes' timeout) govern the node's
+	// internal budget and are NOT this wall: a node timeout larger than
+	// RunBound is an authoring error the wall will enforce.
+	RunBound string `json:"runBound,omitempty"` // duration string; default "" → OneShotRunBound (30m)
+}
+
+// MaxRunBound caps a configured RunBound: beyond it a dead run burns more
+// than 6h of slot time before the breaker trips (runBound ×
+// MaxDeadDispatchesPerHead) — a review that needs more than 2h wall needs
+// methodology work (#336), not a bigger wall.
+const MaxRunBound = 2 * time.Hour
+
+// RunBoundDuration parses RunBound with the default applied. Invalid
+// (unparsable, non-positive, above MaxRunBound) degrades to
+// OneShotRunBound — same fail-closed style as DispatchTimeoutDuration.
+func (r *ReviewReadySpec) RunBoundDuration() time.Duration {
+	if r == nil || r.RunBound == "" {
+		return OneShotRunBound
+	}
+	if d, err := time.ParseDuration(r.RunBound); err == nil && d > 0 && d <= MaxRunBound {
+		return d
+	}
+	return OneShotRunBound
 }
 
 // EffectiveMaxConcurrent resolves the live-claim capacity: the spec override
@@ -152,17 +182,21 @@ func (r *ReviewReadySpec) HorizonDuration() time.Duration {
 }
 
 // DispatchTimeoutDuration parses DispatchTimeout with the default applied
-// (OneShotRunBound + 15m delivery/queue margin). A configured value must
-// leave a margin of at least MinDispatchMargin over OneShotRunBound;
-// anything else (unparsable, non-positive, or inside the margin) degrades
-// to the default — honoring it would let the gate re-dispatch while a run
-// is still alive, silently breaking exactly-once (#255).
+// (the EFFECTIVE run bound + 15m delivery/queue margin). A configured value
+// must leave a margin of at least MinDispatchMargin over the effective run
+// bound — OneShotRunBound, or RunBound when this workflow raises the wall
+// (#348/#333: a 45m wall with a 45m dispatch timeout would re-dispatch
+// while the run may still be alive). Anything else (unparsable,
+// non-positive, or inside the margin) degrades to the default — honoring it
+// would let the gate re-dispatch while a run is still alive, silently
+// breaking exactly-once (#255). Enforced, not documented.
 func (r *ReviewReadySpec) DispatchTimeoutDuration() time.Duration {
-	def := OneShotRunBound + 15*time.Minute
+	bound := r.RunBoundDuration()
+	def := bound + 15*time.Minute
 	if r == nil || r.DispatchTimeout == "" {
 		return def
 	}
-	if d, err := time.ParseDuration(r.DispatchTimeout); err == nil && d >= OneShotRunBound+MinDispatchMargin {
+	if d, err := time.ParseDuration(r.DispatchTimeout); err == nil && d >= bound+MinDispatchMargin {
 		return d
 	}
 	return def

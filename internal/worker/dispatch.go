@@ -157,11 +157,12 @@ func (c DispatchConfig) Validate() error {
 // so a config fact cannot be dropped at a struct-copy hop (#311/#314):
 // callers supply only the per-run fields (attempt, workflow, namespace,
 // extraEnv).
-func (c DispatchConfig) JobParams(at *v1alpha1.Attempt, workflow, namespace string, extraEnv []string) k8s.AttemptJobParams {
+func (c DispatchConfig) JobParams(at *v1alpha1.Attempt, workflow, namespace string, runBound time.Duration, extraEnv []string) k8s.AttemptJobParams {
 	return k8s.AttemptJobParams{
 		Attempt:                 at,
 		WorkflowName:            workflow,
 		Namespace:               namespace,
+		RunBound:                runBound,
 		Image:                   c.JobImage,
 		ServiceAccount:          c.ServiceAccount,
 		TTLSecondsAfterFinished: c.JobTTLSeconds,
@@ -239,6 +240,24 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req RunRequest) error {
 	if err != nil {
 		return fmt.Errorf("fetch workflow: %w", err)
 	}
+	// The per-run wall clock (#348/#333) reads the MERGED spec — the same
+	// FetchWorkflow seam every trigger path funnels through (template
+	// defaults are applied in memory, never materialized to the CR; a raw
+	// Get here would see the unmerged spec and silently drop a template-set
+	// runBound — r33 blocking finding). One resolution per dispatch; the
+	// gate's DispatchTimeout margin validates against this same effective
+	// bound, so the wall and the margin cannot disagree.
+	rr := wf.Spec.ReviewReady
+	runBound := rr.RunBoundDuration()
+	if runBound != v1alpha1.OneShotRunBound {
+		d.logf("dispatch: workflow %s raises the per-run wall to %s", req.Workflow, runBound)
+	} else if rr != nil && rr.RunBound != "" {
+		// Symmetric with the raise log (#311/#314 class — a config fact
+		// must not drop silently): a configured runBound that degraded to
+		// the default (unparsable / non-positive / over MaxRunBound) is
+		// indistinguishable from unset unless we say so.
+		d.logf("dispatch: workflow %s runBound %q invalid (unparsable, non-positive, or over the cap) — using the %s default", req.Workflow, rr.RunBound, v1alpha1.OneShotRunBound)
+	}
 
 	// ── Review-Ready Gate (ADR-0006): validate before dispatching. ──────
 	// Only workflows with reviewReady gate; every other class dispatches
@@ -305,7 +324,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req RunRequest) error {
 		if err := d.cl.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: g.Attempt}, &at); err != nil {
 			return fmt.Errorf("get claim attempt %s: %w", g.Attempt, err)
 		}
-		job := k8s.BuildJob(d.cfg.JobParams(&at, req.Workflow, req.Namespace,
+		job := k8s.BuildJob(d.cfg.JobParams(&at, req.Workflow, req.Namespace, runBound,
 			append(jobCredentialEnv(), dispatchEnv(req, &at, g.Envelope)...)))
 		if err := d.cl.Create(ctx, job); err != nil {
 			if errors.IsAlreadyExists(err) {

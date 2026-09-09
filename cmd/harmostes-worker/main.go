@@ -677,7 +677,18 @@ func runTimeout(wf *v1alpha1.Workflow) time.Duration {
 	if secs <= 0 {
 		secs = 1800
 	}
-	return time.Duration(secs) * time.Second
+	t := time.Duration(secs) * time.Second
+	// The process wall floors at the workflow's effective run bound
+	// (r33 P1): the Job's ActiveDeadlineSeconds is runBound — a raised
+	// wall with the 1800s process default here would fatal() the agent at
+	// 30m BEFORE the wall could do its job, and the breaker would count
+	// the death the wall was raised to prevent (#348's failure mode
+	// through the twin knob). An explicit agent.timeout ABOVE the bound
+	// still applies (the Job wall caps it anyway).
+	if bound := wf.Spec.ReviewReady.RunBoundDuration(); bound > t {
+		t = bound
+	}
+	return t
 }
 
 // builtinPlugins maps plugin names to executable paths shipped in the worker

@@ -58,7 +58,8 @@ type Dispatcher struct {
 type DispatchConfig struct {
 	FleetMaxConcurrent int
 	// AttemptRetention GCs terminal/statusless attempts past this age
-	// (#385). Zero disables GC.
+	// (#385). 0 means the 720h default; GC cannot be disabled — the knob
+	// tunes the horizon, it does not turn accumulation back on.
 	AttemptRetention     time.Duration
 	JobImage             string
 	ServiceAccount       string
@@ -101,15 +102,17 @@ func DispatchConfigFromEnv(logf func(string, ...any)) (DispatchConfig, error) {
 		}
 		cfg.FleetMaxConcurrent = n
 	}
-	// Retention GC horizon (#385): Go duration, 0 = disabled.
+	// Retention GC horizon (#385): Go duration; 0/empty/unset → the 720h
+	// default. GC cannot be disabled (the knob tunes the horizon).
+	cfg.AttemptRetention = 720 * time.Hour
 	if v := os.Getenv("HARMOSTES_ATTEMPT_RETENTION"); v != "" {
 		d, err := time.ParseDuration(v)
 		if err != nil || d < 0 {
 			return cfg, fmt.Errorf("HARMOSTES_ATTEMPT_RETENTION=%q: must be a non-negative duration", v)
 		}
-		cfg.AttemptRetention = d
-	} else {
-		cfg.AttemptRetention = 720 * time.Hour // chart default mirrors values.yaml
+		if d > 0 {
+			cfg.AttemptRetention = d
+		}
 	}
 	ttl := int32(3600)
 	if v := os.Getenv("HARMOSTES_JOB_TTL_SECONDS"); v != "" {

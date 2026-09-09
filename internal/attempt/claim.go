@@ -454,7 +454,8 @@ func LiveReviewClaims(ctx context.Context, c client.Client, wf *v1alpha1.Workflo
 	var list v1alpha1.AttemptList
 	// Server-side bounded (r7 P1, r8 rework): (workflow=X, review-claim
 	// DoesNotExist) — the released era history (one attempt per reviewed
-	// head, retained forever, full status with run ledgers) never crosses
+	// head, retained until the #385 GC horizon, full status with run
+	// ledgers) never crosses
 	// the wire. ABSENCE of the marker means live, so pre-upgrade claims
 	// (unlabeled, holding real slots) are visible to the first sweep — the
 	// rollout cannot over-dispatch past them. The Released re-check is

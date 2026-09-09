@@ -38,7 +38,7 @@ worker:
     enabled: false
   job:                     # per-Attempt Job pods (ADR-0007)
     maxConcurrent: 3       # fleet default; spec.reviewReady.maxConcurrent overrides per Workflow
-    attemptRetention: 720h # GC attempts terminal/statusless older than this (#385); 0 disables
+    attemptRetention: 720h # GC attempts terminal/statusless older than this (#385); 0 means the default — GC cannot be disabled. Bounds the per-attempt audit ledger.
     ttlSecondsAfterFinished: 3600
 
 # workerPool: event-driven worker pool (Dapr pub/sub consumer).

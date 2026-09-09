@@ -59,7 +59,8 @@ type GateDeps struct {
 	// overrides per workflow.
 	FleetMaxConcurrent int
 	// AttemptRetention is the GC horizon for terminal/statusless attempts
-	// (#385); 0 means the 30d default (chart: worker.job.attemptRetention).
+	// (#385); 0 means the 720h default (chart: worker.job.attemptRetention;
+	// GC cannot be disabled).
 	AttemptRetention time.Duration
 	Log              func(format string, args ...any)
 	TL               timeline.Writer
@@ -720,7 +721,7 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 		// phase = finished work; statusless = never reconciled. Live work
 		// (reconciling, claim-bearing) is excluded by construction.
 		// Horizon is a chart value (HARMOSTES_ATTEMPT_RETENTION); 0
-		// disables. Direct constructions (tests) get the 30d default.
+		// means the 30d default — GC cannot be disabled.
 		retention := deps.AttemptRetention
 		if retention == 0 {
 			retention = 720 * time.Hour
@@ -728,7 +729,7 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 		if n, err := attempt.GCAttempts(reapCtx, deps.Client, wf.Namespace, wf.Name, retention); err != nil {
 			log("review-ready: attempt GC failed: %v", err)
 		} else if n > 0 {
-			log("review-ready: GC'd %d attempt(s) older than 30d", n)
+			log("review-ready: GC'd %d attempt(s) older than %s", n, retention)
 		}
 	}
 

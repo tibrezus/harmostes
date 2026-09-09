@@ -297,6 +297,12 @@ func TestGCAttempts(t *testing.T) {
 		mk("old-superseded", v1alpha1.AttemptPhaseSuperseded, old),
 		mk("old-statusless", "", old),
 		mk("old-reconciling", v1alpha1.AttemptPhaseReconciling, old), // claim-bearing — untouchable
+		func() *v1alpha1.Attempt { // r32 finding 4b: failed but claim UNRELEASED — keep
+			at := mk("failed-unreleased-claim", v1alpha1.AttemptPhaseFailed, old)
+			at.Status.Review = &v1alpha1.ReviewClaimStatus{Released: false}
+			return at
+		}(),
+
 		mk("young-failed", v1alpha1.AttemptPhaseFailed, young),
 		mk("zero-ts-failed", v1alpha1.AttemptPhaseFailed, metav1.Time{}), // unknown age — keep
 	} {
@@ -312,6 +318,13 @@ func TestGCAttempts(t *testing.T) {
 	if n != 4 {
 		t.Fatalf("GC'd %d attempts, want 4 (3 terminal old + 1 statusless old)", n)
 	}
+	{ // the unreleased-claim survivor is still present
+		var after v1alpha1.Attempt
+		if err := c.Get(ctx, client.ObjectKey{Namespace: ns, Name: "failed-unreleased-claim"}, &after); err != nil {
+			t.Fatalf("failed attempt with an unreleased claim must survive GC: %v", err)
+		}
+	}
+
 	var list v1alpha1.AttemptList
 	if err := c.List(ctx, &list, client.InNamespace(ns)); err != nil {
 		t.Fatal(err)

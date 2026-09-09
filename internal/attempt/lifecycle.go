@@ -429,6 +429,14 @@ func lastSlash(s string) int {
 // Claim-bearing attempts are RELEASED first ("closed" — terminal, no churn
 // strike), then the phase lands on failed with a message naming the reap.
 // Best-effort per attempt: one bad object must not block the rest.
+//
+// The release-then-patch is INTENTIONALLY non-atomic (#390 finding 3): a
+// crash between the two writes leaves a released-but-reconciling attempt
+// that the next sweep reaps (the phase leg runs regardless) — do not
+// "fix" this into a transaction. The List is label-scoped, not
+// phase-scoped: CRD status fields are not server-side selectable, so the
+// per-sweep cost is all attempts of one workflow — bounded by live
+// attempts per workflow, fine at fleet width.
 func ReapStuckAttempts(ctx context.Context, c client.Client, namespace, workflowName string, olderThan time.Duration) (int, error) {
 	var list v1alpha1.AttemptList
 	if err := c.List(ctx, &list, client.InNamespace(namespace),

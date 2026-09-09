@@ -915,3 +915,63 @@ func TestArmClaim_CreateRaceLoserDoesNotInheritEvidence(t *testing.T) {
 		t.Fatalf("pointer change must reset the release counter, got %d", got)
 	}
 }
+
+// ── #391: an UNSTAMPED budget must age out on the claim's own clock.
+// Pre-142 workers released dispatch-lost without stamping
+// LastDispatchLostAt; with nil the refusal stood forever and the message's
+// "wait out the horizon" remedy was a lie (verified live on rhesadox#2028).
+func TestArmClaim_UnstampedBudgetAgesOutWithClaim(t *testing.T) {
+	ctx := context.Background()
+	c := newFakeClient(t)
+	wf := wikiWorkflow()
+	const pr = "git.rezus.cloud/tibrez/rhesadox#2028"
+	const sha = "371be9d900002028"
+
+	if _, err := armFor(t, ctx, c, wf, pr, sha, "needs-review", false); err != nil {
+		t.Fatalf("arm: %v", err)
+	}
+	// Forge the pre-142 shape: strikes present, stamp absent, claim YOUNG
+	// (CreationTimestamp is fresh from the arm — recency without a stamp is
+	// presumed from the claim's age).
+	a, err := resolveForTest(t, ctx, c, wf, sha)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	a.Status.Review.DispatchLostReleases = v1alpha1.MaxDispatchLostReleases
+	a.Status.Review.LastDispatchLostAt = nil
+	if err := c.Status().Update(ctx, a); err != nil { // status subresource: plain Update drops .Status
+		t.Fatalf("forge pre-142 strikes: %v", err)
+	}
+	a, err = resolveForTest(t, ctx, c, wf, sha) // fresh RV for the metadata write
+	if err != nil {
+		t.Fatalf("resolve after strike forge: %v", err)
+	}
+	a.CreationTimestamp = metav1.NewTime(time.Now()) // fake client leaves it zero — the fallback clock needs a real age
+	if err := c.Update(ctx, a); err != nil {
+		t.Fatalf("forge claim age: %v", err)
+	}
+	if _, err := armFor(t, ctx, c, wf, pr, sha, "needs-review", false); !errors.Is(err, ErrChurnBudgetExhausted) {
+		t.Fatalf("young unstamped budget must still refuse, got %v", err)
+	}
+
+	// Age the CLAIM (the fallback clock): the horizon passes → the budget
+	// self-clears and the automatic arm proceeds.
+	a, err = resolveForTest(t, ctx, c, wf, sha)
+	if err != nil {
+		t.Fatalf("resolve 2: %v", err)
+	}
+	a.CreationTimestamp = metav1.NewTime(time.Now().Add(-8 * time.Hour))
+	if err := c.Update(ctx, a); err != nil {
+		t.Fatalf("backdate claim: %v", err)
+	}
+	if _, err := armFor(t, ctx, c, wf, pr, sha, "needs-review", false); err != nil {
+		t.Fatalf("unstamped budget must age out with the claim, got %v", err)
+	}
+	a, err = resolveForTest(t, ctx, c, wf, sha)
+	if err != nil {
+		t.Fatalf("resolve after arm: %v", err)
+	}
+	if a.Status.Review.DispatchLostReleases != 0 {
+		t.Fatalf("the arm must reset the stale budget, got %d", a.Status.Review.DispatchLostReleases)
+	}
+}

@@ -298,9 +298,15 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 				// whose never-dispatched releases burned the budget converges
 				// into the refusal surface — ArmClaim's guard catches a
 				// re-ARM, this catches the re-DISPATCH of an existing claim.
-				budgetActive := r.LastDispatchLostAt == nil ||
-					time.Since(r.LastDispatchLostAt.Time) < rr.HorizonDuration()
-				if r.DispatchLostReleases >= v1alpha1.MaxDispatchLostReleases && budgetActive {
+				// Recency comes from the SHARED predicate (r31 finding 4,
+				// #390): the two guards once disagreed on what expiry meant,
+				// which invited a wrong unification later.
+				claimAge := time.Since(c.CreationTimestamp.Time)
+				if c.CreationTimestamp.IsZero() {
+					claimAge = 0 // unknown age keeps the window open (conservative)
+				}
+				if r.DispatchLostReleases >= v1alpha1.MaxDispatchLostReleases &&
+					attempt.DispatchLostWindowOpen(r, claimAge, rr.HorizonDuration()) {
 					standDown(ctx, deps, liveAgg, wf.Name,
 						candidate{repo: repo, pr: pr, pointer: r.PR},
 						fmt.Errorf("%w: %s — %d consecutive never-dispatched releases (max %d); re-apply the label to request a fresh review",
@@ -522,6 +528,10 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 	// fires on a saturated sweep, so this is the site that must speak.
 	if !wakeOnly && free <= 0 {
 		capacityFull = true
+		// #386: saturation must speak in the LOG a human tails, not only in
+		// Workflow CR status — at least once per saturation window (each
+		// sweep re-states it while it holds).
+		log("review-ready: capacity full (%d/%d dispatched) — labeled scan skipped; labeled PRs wait for a free slot", liveDispatched, capacity)
 	}
 	if !wakeOnly && free > 0 {
 		for _, repo := range scopeRepos(wf) {
@@ -550,13 +560,16 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 	}
 
 	// ── C. Evaluate + drain-to-capacity. ──────────────────────────────────
-	for _, cand := range cands {
+	for i, cand := range cands {
 		claimed := liveOn[cand.pointer]
 		if claimed {
 			// Request-shaped wakes may supersede (head moved since the
 			// claim armed — an explicit human re-request); push-shaped and
 			// scan candidates leave the in-flight claim alone (r5).
 			if !cand.request {
+				// #386: a dropped candidate names itself — parity with the
+				// wake-path logging standard (#357).
+				log("review-ready: candidate %s dropped: already claimed (an in-flight claim owns this PR)", cand.pointer)
 				continue
 			}
 			claimFor := findClaim(claims, cand.pointer)
@@ -567,6 +580,7 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 				// supersede below is uncounted; the re-arm resets the
 				// counter and spends a fresh dispatch.
 				if !(cand.labeled && claimFor.Status.Review.DeadDispatches > 0) {
+					log("review-ready: candidate %s dropped: same-head re-request with no dead dispatches — nothing to do", cand.pointer)
 					continue
 				}
 			}
@@ -587,6 +601,14 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 			// "why is this labeled PR not being reviewed?" must answer
 			// "capacity full", and section D writes what we record here.
 			capacityFull = true
+			// #386: the break strands the REMAINING candidates — name them,
+			// or the operator tailing logs sees dispatches stop with no
+			// suspect list (parity with #357).
+			stranded := make([]string, 0, len(cands)-i)
+			for _, rest := range cands[i:] {
+				stranded = append(stranded, rest.pointer)
+			}
+			log("review-ready: capacity full — %d candidate(s) stranded this sweep: %s", len(stranded), strings.Join(stranded, ", "))
 			break // durable queue: the labeled set re-fills on the next sweep
 		}
 
@@ -795,7 +817,7 @@ func releaseDeadClaim(ctx context.Context, deps GateDeps, at v1alpha1.Attempt, r
 // sidecar that accepts the connection but never answers must not own the
 // sweep deadline — the write is best-effort telemetry, the handoff
 // (arm→dispatch) is the product.
-var tlWriteTimeout = 5 * time.Second
+var tlWriteTimeout = 5 * time.Second // mutated only by TestSweepTLWriteBoundedNonFatal — tests in this file are SERIAL; a t.Parallel() would race on this package global (pass it via GateDeps instead if parallelism ever lands)
 
 func emitGate(ctx context.Context, tl timeline.Writer, agg *v1alpha1.ReviewReadyStatus, result review.Result, repo string, pr int) {
 	if tl == nil {

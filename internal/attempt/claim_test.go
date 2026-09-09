@@ -601,94 +601,10 @@ func TestArmClaim_PointerChangeResetsDispatchLostCounter(t *testing.T) {
 	}
 }
 
-// ── r4 P2: the era tie-break is TOTAL — a live claim beats a released one
-// at the same clock, so a tie never resurrects a just-released claim. ──
-func TestArmClaim_TieBreakPrefersLiveEra(t *testing.T) {
-	ctx := context.Background()
-	c := newFakeClient(t)
-	wf := wikiWorkflow()
-	const pr = "git.rezus.cloud/tibrez/rhesadox#2002"
-	const sha = "5472b055cafe2002"
-
-	name, err := armFor(t, ctx, c, wf, pr, sha, "needs-review", false)
-	if err != nil {
-		t.Fatalf("arm: %v", err)
-	}
-	// Release it, then re-arm: the revival is the SAME (now live) object.
-	if err := ReleaseClaim(ctx, c, "harmostes", name, v1alpha1.ReleaseReasonDispatchLost); err != nil {
-		t.Fatalf("release: %v", err)
-	}
-	revived, err := armFor(t, ctx, c, wf, pr, sha, "needs-review", false)
-	if err != nil {
-		t.Fatalf("revive: %v", err)
-	}
-	if revived != name {
-		t.Fatalf("tie must resolve to the one same-head era, got %s", revived)
-	}
-	a, _ := resolveForTest(t, ctx, c, wf, sha)
-	if a.Status.Review.Released {
-		t.Fatal("the surviving era must be LIVE — a tie must not resurrect the released object")
-	}
-}
-
-// ── r8 P1/P4.1: the release marker is ADDITIVE and ABSENCE MEANS LIVE. ──
-
-// TestLiveReviewClaims_SeesUnlabeledLiveClaims pins the upgrade contract: a
-// claim predating the marker (unlabeled) that is holding a real slot —
-// armed, even dispatched — MUST be visible to the gate's live list on the
-// first post-deploy sweep. The alternative (filter on a "live" value)
-// made every rollout over-dispatch a full fleet width past the claims in
-// flight (r7 review, pillar 4.1, probe-verified).
-func TestLiveReviewClaims_SeesUnlabeledLiveClaims(t *testing.T) {
-	ctx := context.Background()
-	c := newFakeClient(t)
-	wf := wikiWorkflow()
-	const pr = "git.rezus.cloud/tibrez/rhesadox#2200"
-	const sha = "5472b055cafe2200"
-
-	// Arm through the real path, then strip the marker to simulate a
-	// pre-upgrade object.
-	name, err := armFor(t, ctx, c, wf, pr, sha, "needs-review", false)
-	if err != nil {
-		t.Fatalf("arm: %v", err)
-	}
-	a, err := resolveForTest(t, ctx, c, wf, sha)
-	if err != nil {
-		t.Fatalf("resolve: %v", err)
-	}
-	base := a.DeepCopy()
-	delete(a.Labels, v1alpha1.ReviewClaimLabel)
-	if err := c.Patch(ctx, a, client.MergeFrom(base)); err != nil {
-		t.Fatalf("strip marker: %v", err)
-	}
-
-	claims, err := LiveReviewClaims(ctx, c, wf)
-	if err != nil {
-		t.Fatalf("list: %v", err)
-	}
-	if len(claims) != 1 || claims[0].Name != name {
-		t.Fatalf("unlabeled live claim must be visible (upgrade shape), got %d claim(s)", len(claims))
-	}
-
-	// And the marker side: a released claim must drop OUT of the list.
-	if err := ReleaseClaim(ctx, c, "harmostes", name, v1alpha1.ReleaseReasonDispatchLost); err != nil {
-		t.Fatalf("release: %v", err)
-	}
-	claims, err = LiveReviewClaims(ctx, c, wf)
-	if err != nil {
-		t.Fatalf("list after release: %v", err)
-	}
-	if len(claims) != 0 {
-		t.Fatalf("released claim must leave the live list, got %d", len(claims))
-	}
-	var got v1alpha1.Attempt
-	if err := c.Get(ctx, client.ObjectKey{Namespace: "harmostes", Name: name}, &got); err != nil {
-		t.Fatal(err)
-	}
-	if got.Labels[v1alpha1.ReviewClaimLabel] != v1alpha1.ReviewClaimReleased {
-		t.Fatalf("release must SET the marker, got %q", got.Labels[v1alpha1.ReviewClaimLabel])
-	}
-}
+// (#353 finding 2) TestArmClaim_TieBreakPrefersLiveEra was removed: with
+// pointer-local identity there is only ever one object per head, so no era
+// tie-break exists to test — the release→revive-into-the-same-attempt
+// shape it actually pinned is covered by TestArmClaim_ReusesSameHeadEra.
 
 // TestLiveReviewClaims_ExcludesWrongKindAndLabelless pins the kind filter's
 // EXCLUSION side (r11 pillar 8): the objective-kind leg is client-side by
@@ -795,14 +711,15 @@ func (f *labelFailClient) Patch(ctx context.Context, obj client.Object, patch cl
 	return errors.New("label write forced-failure (r8 P1 test)")
 }
 
-// TestMarkClaimReleased_DoesNotStompRevival (r12 must-fix 1, direction A —
-// the probe-verified blocker): ReleaseClaim commits status Released=true,
-// THEN stamps the marker. A concurrent revival can commit Released=false in
-// that gap; stamping the marker then makes the live claim invisible to
-// LiveReviewClaims forever (liveDispatched undercounts → over-dispatch).
-// The marker write must be conditional on the committed status: the revival
-// wins.
-func TestMarkClaimReleased_DoesNotStompRevival(t *testing.T) {
+// TestMarkClaimReleased_SkipsLiveStatus (#353 finding 1): ReleaseClaim
+// commits status Released=true, THEN stamps the marker. The marker write
+// must be conditional on a FRESH status read — stamping a claim whose
+// status was revived (Released=false) between the two writes would make a
+// live claim invisible to LiveReviewClaims forever (liveDispatched
+// undercounts → over-dispatch). This test drives the conditional directly
+// (live status, marker absent); it does NOT reproduce the interleaving
+// itself.
+func TestMarkClaimReleased_SkipsLiveStatus(t *testing.T) {
 	ctx := context.Background()
 	c := newFakeClient(t)
 	wf := wikiWorkflow()
@@ -813,17 +730,20 @@ func TestMarkClaimReleased_DoesNotStompRevival(t *testing.T) {
 	if err != nil {
 		t.Fatalf("arm: %v", err)
 	}
-	a, err := resolveForTest(t, ctx, c, wf, sha)
-	if err != nil {
-		t.Fatal(err)
-	}
 
 	// The race shape: the revival already committed (status live, marker
 	// absent) when the delayed release's marker write runs.
 	if err := markClaimReleased(ctx, c, "harmostes", name); err != nil {
 		t.Fatalf("markClaimReleased: %v", err)
 	}
-	if got := a.Labels[v1alpha1.ReviewClaimLabel]; got != "" {
+	// Re-Get AFTER the call: a pre-call snapshot would make the label
+	// assertion true regardless of what markClaimReleased does (#353
+	// finding 1 — the old tautology).
+	var fresh v1alpha1.Attempt
+	if err := c.Get(ctx, client.ObjectKey{Namespace: "harmostes", Name: name}, &fresh); err != nil {
+		t.Fatal(err)
+	}
+	if got := fresh.Labels[v1alpha1.ReviewClaimLabel]; got != "" {
 		t.Fatalf("a live-status claim must not gain the release marker, got %q", got)
 	}
 	claims, err := LiveReviewClaims(ctx, c, wf)

@@ -23,27 +23,26 @@ const (
 	// ReviewClaimLabel marks a review-claim Attempt as RELEASED. The label
 	// is the gate's list bound: LiveReviewClaims selects (workflow=X,
 	// review-claim DoesNotExist) server-side, so the released history — one
-	// attempt per reviewed head, retained forever, full status with run
-	// ledgers — never crosses the wire again (r7 P1).
+	// attempt per reviewed head, retained until the retention-GC horizon
+	// (#385), full status with run ledgers — never crosses the wire again.
 	//
-	// ABSENCE MEANS LIVE, deliberately (r8 P1/P4.1): the marker is
-	// subtractive on the live side, so the pre-upgrade truth (no label) is
-	// the live truth — legacy claims holding real slots are visible to the
-	// first post-deploy sweep with zero backfill, and no rollout can
-	// over-dispatch past them. Transition points: ReleaseClaim and
-	// ReleaseClaimDead SET the marker (additive, RV-preconditioned — the
-	// write that commits release visibility); ArmClaim REMOVES it
-	// (subtractive, RV-preconditioned, BEFORE the status patch — a failed
-	// removal aborts the arm pre-commit and self-heals on the next sweep).
-	// The two state machines CAN transiently disagree (two writers, two
-	// resources — r12 must-fix 1), and both directions are guarded, not
-	// assumed away: a claim whose status says Released but which still
-	// lists as live is skipped client-side by the Released re-check; a
-	// claim whose status says LIVE but whose delayed release marker write
-	// lands after a concurrent revival is protected by markClaimReleased's
-	// conditional — it stamps only when the freshly-read status still says
-	// Released, so a revival can never be marked out of the live list.
-	// TestMarkClaimReleased_DoesNotStompRevival pins the probe shape.
+	// ABSENCE MEANS LIVE, deliberately: the marker is subtractive on the
+	// live side, so the pre-upgrade truth (no label) is the live truth —
+	// legacy claims holding real slots are visible to the first post-deploy
+	// sweep with zero backfill, and no rollout can over-dispatch past them.
+	//
+	// Invariants (probe-verified; the history lives in the PRs, not here):
+	//   - exactly two writers SET the marker (ReleaseClaim,
+	//     ReleaseClaimDead), both RV-preconditioned;
+	//   - ArmClaim REMOVES it RV-preconditioned BEFORE the status patch —
+	//     a failed removal aborts the arm pre-commit and self-heals next
+	//     sweep;
+	//   - label and status are two resources and CAN transiently disagree;
+	//     both divergence directions are guarded client-side: status-
+	//     released-but-listed-live is skipped by the Released re-check, and
+	//     markClaimReleased stamps the marker only when a FRESH status read
+	//     still says Released, so a concurrent revival can never be marked
+	//     out of the live list.
 	ReviewClaimLabel = "harmostes.dev/review-claim"
 
 	// ReviewClaimReleased is the ReviewClaimLabel value; it is the only

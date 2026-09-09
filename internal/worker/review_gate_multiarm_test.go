@@ -2159,3 +2159,42 @@ func (c *captureTL) Emit(ctx context.Context, kind, node string, payload any) er
 	fmt.Fprintf(c.b, "TL[%s] %v\n", kind, payload)
 	return nil
 }
+
+// ── #352 finding 2: a claim with NO arm clock must never be released as
+// dispatch-lost by the never-dispatched pass (a nil ArmedSince would read
+// as the zero time — age ≈ forever — and spend a churn unit on an
+// un-ageable object). Post-r30 the observable path is section A's
+// re-evaluation healing the object (green CI → re-dispatch, no release, no
+// churn); the pass-level nil guard is defense-in-depth for the exotic
+// interleavings where the pass still sees a claim section A did not cover
+// (e.g. mid-sweep list changes) — its check sits before the age read.
+func TestNilArmClockClaimConvergesWithoutChurn(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := noVerdictServer(t)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	st := &fakeStatus{}
+
+	claim := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#107", "deadbeef123", time.Now().Add(-10*time.Minute), nil)
+	claim.Status.Review.ArmedSince = nil // the edge object: no clock
+	deps, ctx := gateEnv(t, wf, st, claim)
+
+	out, err := RunReviewGateSweep(ctx, deps, wf)
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	var re v1alpha1.Attempt
+	if err := deps.Client.Get(ctx, client.ObjectKey{Namespace: claim.Namespace, Name: claim.Name}, &re); err != nil {
+		t.Fatal(err)
+	}
+	if re.Status.Review.Released {
+		t.Fatalf("a nil-clock claim must not be released (reason=%q)", re.Status.Review.ReleaseReason)
+	}
+	if re.Status.Review.DispatchLostReleases != 0 {
+		t.Fatalf("a nil-clock claim must not spend a churn unit, counter=%d", re.Status.Review.DispatchLostReleases)
+	}
+	if len(out) != 1 || out[0].Attempt != claim.Name {
+		t.Fatalf("a nil-clock claim with green CI must converge via re-dispatch, got %d envelopes", len(out))
+	}
+}

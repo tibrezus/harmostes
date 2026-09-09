@@ -939,14 +939,6 @@ func parsePRPointer(s string) (string, int, error) {
 	return repo, n, nil
 }
 
-func metaTime(t *time.Time) *metav1.Time {
-	if t == nil {
-		return nil
-	}
-	m := metav1.NewTime(*t)
-	return &m
-}
-
 // jsonUnmarshalScope indirection keeps encoding/json out of the gate's hot
 // imports (single use).
 func jsonUnmarshalScope(b []byte, v any) error {

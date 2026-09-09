@@ -17,11 +17,6 @@ import (
 	"github.com/tibrezus/harmostes/internal/agent"
 )
 
-// attemptListData is the template data for the attempt list page.
-type attemptListData struct {
-	Attempts []attemptSummary
-}
-
 type attemptSummary struct {
 	Name           string
 	WorkflowRef    string

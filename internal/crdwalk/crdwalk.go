@@ -335,15 +335,6 @@ func firstMapValue(m reflect.Value) reflect.Value {
 	return m.MapIndex(keys[0])
 }
 
-// firstMapKey returns the alphabetically-first key (deterministic pick).
-func firstMapKey(m reflect.Value) reflect.Value {
-	keys := m.MapKeys()
-	sort.Slice(keys, func(i, j int) bool {
-		return fmt.Sprint(keys[i].Interface()) < fmt.Sprint(keys[j].Interface())
-	})
-	return keys[0]
-}
-
 // setWellKnown populates a well-known leaf (through pointer fields too).
 func setWellKnown(t reflect.Type, rv reflect.Value) {
 	if !rv.IsValid() {

@@ -12,7 +12,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
@@ -481,14 +480,4 @@ func errNoKubeClient(span trace.Span) (NodeResult, error) {
 	err := fmt.Errorf("deployment node executed without a KubeClient — wire KubeClient in Dependencies")
 	span.SetStatus(codes.Error, err.Error())
 	return NodeResult{Status: StatusFailed, Feedback: err.Error()}, err
-}
-
-// gvrFromAPIVersionKind derives a GroupVersionResource from apiVersion + kind.
-// Used by the production KubeClient's RESTMapper.
-func gvrFromAPIVersionKind(apiVersion, kind string) (schema.GroupVersionResource, error) {
-	gv, err := schema.ParseGroupVersion(apiVersion)
-	if err != nil {
-		return schema.GroupVersionResource{}, fmt.Errorf("parse apiVersion %q: %w", apiVersion, err)
-	}
-	return gv.WithResource(strings.ToLower(kind) + "s"), nil
 }

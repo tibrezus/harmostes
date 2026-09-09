@@ -360,19 +360,6 @@ func (s *Server) listJobs(r *http.Request, workflow, owner string) ([]batchv1.Jo
 	return jobList.Items, nil
 }
 
-// listPodsForJob returns pods created by a Job (filtered by the job-name label
-// that the batch controller sets automatically).
-func (s *Server) listPodsForJob(r *http.Request, jobName string) ([]corev1.Pod, error) {
-	var podList corev1.PodList
-	if err := s.k8sClient.List(r.Context(), &podList,
-		client.InNamespace(s.namespace),
-		client.MatchingLabels{"job-name": jobName},
-	); err != nil {
-		return nil, fmt.Errorf("list pods for job %s: %w", jobName, err)
-	}
-	return podList.Items, nil
-}
-
 // makeLogFetchFunc returns a logFetchFunc backed by a kubernetes clientset. It
 // streams the worker container's logs and returns them as a string.
 func makeLogFetchFunc(kubeClient kubernetes.Interface) logFetchFunc {

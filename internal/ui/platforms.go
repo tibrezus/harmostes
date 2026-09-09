@@ -1,12 +1,8 @@
 package ui
 
 import (
-	"crypto/md5"
-	"encoding/hex"
 	"encoding/json"
 	"os"
-	"regexp"
-	"sort"
 )
 
 // PlatformConfig holds optional display metadata for a git platform. Platforms
@@ -20,9 +16,6 @@ type PlatformConfig struct {
 	Color string `json:"color"` // hex color for badges (auto-generated if empty)
 	Icon  string `json:"icon"`  // optional URL to an icon/SVG
 }
-
-// platformIDRe restricts platform identifiers to DNS-safe lowercase strings.
-var platformIDRe = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 
 // DefaultPlatformConfigs provides display metadata for commonly-known git
 // hosts. These are NOT required — they just make the UI prettier for platforms
@@ -72,68 +65,4 @@ func newPlatformRegistry(configs []PlatformConfig) *platformRegistry {
 		r.known[c.ID] = c
 	}
 	return r
-}
-
-// get returns the config for a platform ID. For unknown platforms, it
-// auto-generates display metadata (Title-case label, hash-based color).
-func (r *platformRegistry) get(id string) PlatformConfig {
-	if c, ok := r.known[id]; ok {
-		return c
-	}
-	// Auto-generate for unknown platforms.
-	return PlatformConfig{
-		ID:    id,
-		Label: titleCase(id),
-		Color: hashColor(id),
-	}
-}
-
-// allKnown returns the operator-configured platforms in a stable order.
-func (r *platformRegistry) allKnown() []PlatformConfig {
-	result := make([]PlatformConfig, 0, len(r.known))
-	for _, c := range r.known {
-		result = append(result, c)
-	}
-	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
-	return result
-}
-
-// mergeDiscovered returns all known platforms plus any platforms discovered
-// from existing tokens that aren't in the known list. This is the full
-// platform catalog for display.
-func (r *platformRegistry) mergeDiscovered(discoveredIDs []string) []PlatformConfig {
-	seen := make(map[string]bool, len(r.known))
-	result := r.allKnown()
-	for _, c := range result {
-		seen[c.ID] = true
-	}
-	for _, id := range discoveredIDs {
-		if !seen[id] && isValidPlatformID(id) {
-			result = append(result, r.get(id))
-			seen[id] = true
-		}
-	}
-	return result
-}
-
-// isValidPlatformID checks that a platform identifier is a DNS-safe lowercase
-// string. Any such string is accepted — platforms are NOT a fixed enum.
-func isValidPlatformID(id string) bool {
-	return platformIDRe.MatchString(id) && len(id) <= 63
-}
-
-// titleCase capitalizes the first letter, lowercasing the rest.
-func titleCase(s string) string {
-	if s == "" {
-		return s
-	}
-	return string(s[0]-32) + s[1:]
-}
-
-// hashColor generates a stable hex color from a string. Used for unknown
-// platforms that don't have a configured color.
-func hashColor(s string) string {
-	h := md5.Sum([]byte(s))
-	hashStr := hex.EncodeToString(h[:3])
-	return "#" + hashStr
 }

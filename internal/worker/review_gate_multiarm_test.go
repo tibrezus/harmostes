@@ -2153,13 +2153,6 @@ func liveJobFor(t *testing.T, wf *v1alpha1.Workflow, claim *v1alpha1.Attempt) *b
 	}}
 }
 
-type captureTL struct{ b *strings.Builder }
-
-func (c *captureTL) Emit(ctx context.Context, kind, node string, payload any) error {
-	fmt.Fprintf(c.b, "TL[%s] %v\n", kind, payload)
-	return nil
-}
-
 // ── #352 finding 2: a claim with NO arm clock must never be released as
 // dispatch-lost by the never-dispatched pass (a nil ArmedSince would read
 // as the zero time — age ≈ forever — and spend a churn unit on an

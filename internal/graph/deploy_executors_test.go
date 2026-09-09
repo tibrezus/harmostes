@@ -25,10 +25,6 @@ type fakeKubeClient struct {
 	annotateErr error
 }
 
-type kubeResourceKey struct {
-	apiVersion, kind, namespace, name string
-}
-
 func newFakeKubeClient() *fakeKubeClient {
 	return &fakeKubeClient{
 		resources:   make(map[string]map[string]any),

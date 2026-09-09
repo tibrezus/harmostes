@@ -43,14 +43,6 @@ func (r *recordingExecutor) visitCount() int {
 	return len(r.visits)
 }
 
-func (r *recordingExecutor) visitList() []string {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	cp := make([]string, len(r.visits))
-	copy(cp, r.visits)
-	return cp
-}
-
 // registryWith builds a registry from a map of type→executor.
 func registryWith(execs map[string]NodeExecutor) *Registry {
 	r := NewRegistry()

@@ -106,11 +106,4 @@ func TestParsePRPointer(t *testing.T) {
 
 // testDeps builds the minimal Deps the gate needs (status patcher + log).
 
-func testDeps(st *fakeStatus) Deps {
-	return Deps{
-		Status: st,
-		Log:    func(format string, a ...any) {},
-	}
-}
-
 var _ = review.DecisionProceed // keep the review import for the envelope type assertions

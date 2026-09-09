@@ -51,7 +51,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			if strings.Contains(r.Header.Get("Accept"), "text/html") {
 				w.Header().Set("Content-Type", "text/html; charset=utf-8")
 				w.WriteHeader(http.StatusUnauthorized)
-				fmt.Fprintf(w, `<!DOCTYPE html>
+				_, _ = fmt.Fprintf(w, `<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><title>harmostes — sign in</title>
 <style>body{font-family:system-ui,sans-serif;display:grid;place-items:center;min-height:90vh;margin:0}main{text-align:center}a{color:teal}</style></head>
 <body><main><h1>harmostes</h1><p>Your session has ended or was not established.</p>

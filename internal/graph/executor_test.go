@@ -843,7 +843,7 @@ func TestCompileWorkflowMaxFixesDefault(t *testing.T) {
 	graph := CompileWorkflow(wf)
 
 	var agentCfg AgentNodeConfig
-	json.Unmarshal(graph.Nodes[1].Config, &agentCfg)
+	_ = json.Unmarshal(graph.Nodes[1].Config, &agentCfg)
 	if agentCfg.MaxFixes != 3 {
 		t.Errorf("maxFixes = %d, want 3 (default)", agentCfg.MaxFixes)
 	}

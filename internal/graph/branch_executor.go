@@ -36,7 +36,7 @@ func (e *BranchExecutor) Deterministic() bool    { return true }
 func (e *BranchExecutor) ExecutionClass() string { return ExecutionClassPureOrchestration }
 
 func (e *BranchExecutor) Execute(ctx context.Context, node v1alpha1.NodeSpec, env NodeEnv) (NodeResult, error) {
-	ctx, span := observability.Tracer().Start(ctx, "graph.node.branch")
+	_, span := observability.Tracer().Start(ctx, "graph.node.branch") // span records; the derived ctx has no downstream consumer here
 	defer span.End()
 	span.SetAttributes(
 		attribute.String("harmostes.node.id", node.ID),

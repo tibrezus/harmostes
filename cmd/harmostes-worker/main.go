@@ -837,7 +837,7 @@ func shutdownDapr() {
 		logf("dapr shutdown: %v (continuing)", err)
 		return
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	logf("dapr shutdown: sent (status %s)", resp.Status)
 }
 
@@ -892,7 +892,7 @@ func waitForDapr(endpoint string) {
 	for i := 0; i < 30; i++ {
 		resp, err := http.Get(endpoint + "/v1.0/healthz")
 		if err == nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			if resp.StatusCode < 300 { // 200 (ready) or 204 (some Dapr versions)
 				return
 			}

@@ -39,9 +39,9 @@ func (s *Server) streamFragments(w http.ResponseWriter, r *http.Request, sub *su
 			s.logger.Error("sse render", "event", eventName, "err", err)
 			return // keep the stream alive; the next event retries
 		}
-		fmt.Fprintf(w, "event: %s\n", eventName)
+		_, _ = fmt.Fprintf(w, "event: %s\n", eventName)
 		for _, line := range strings.Split(html, "\n") {
-			fmt.Fprintf(w, "data: %s\n", line)
+			_, _ = fmt.Fprintf(w, "data: %s\n", line)
 		}
 		_, _ = fmt.Fprint(w, "\n")
 		flusher.Flush()
@@ -75,7 +75,7 @@ func (s *Server) streamFragments(w http.ResponseWriter, r *http.Request, sub *su
 		case <-r.Context().Done():
 			return
 		case <-heartbeat.C:
-			fmt.Fprintf(w, ": heartbeat\n\n")
+			_, _ = fmt.Fprintf(w, ": heartbeat\n\n")
 			flusher.Flush()
 		case <-tickerC:
 			if isDone != nil && isDone() {

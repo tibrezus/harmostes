@@ -121,7 +121,7 @@ func main() {
 		hlog("ERROR: start pi: %v", err)
 		finish(2)
 	}
-	defer rpc.Abort(context.Background())
+	defer func() { _ = rpc.Abort(context.Background()) }()
 
 	g := agent.CmdGate{Command: *gate, Dir: *workdir}
 	res, err := agent.Task(ctx, rpc, g, task, *maxFixes, logger)

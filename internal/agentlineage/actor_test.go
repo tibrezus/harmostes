@@ -26,7 +26,7 @@ func fakeSidecar(t *testing.T) (*httptest.Server, *map[string]Session) {
 		switch r.Method {
 		case http.MethodGet:
 			if s, ok := store[actorID]; ok {
-				json.NewEncoder(w).Encode(s)
+				_ = json.NewEncoder(w).Encode(s)
 				return
 			}
 			w.WriteHeader(http.StatusNoContent)
@@ -66,7 +66,7 @@ func TestPRLineageActorRoundtripAndIsolation(t *testing.T) {
 			t.Fatalf("publish %s: %d %s", id, rec.Code, rec.Body.String())
 		}
 		var out struct{ Generation int }
-		json.Unmarshal(rec.Body.Bytes(), &out)
+		_ = json.Unmarshal(rec.Body.Bytes(), &out)
 		return out.Generation
 	}
 	if g := pub("host-o-r~99"); g != 1 {

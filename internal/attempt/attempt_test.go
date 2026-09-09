@@ -248,7 +248,7 @@ func TestAttemptName_DNSSafeAndDeterministic(t *testing.T) {
 		t.Errorf("name too long (%d): %s", len(name), name)
 	}
 	for _, r := range name {
-		if !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-') {
+		if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '-' {
 			t.Errorf("name %q contains non-DNS char %q", name, r)
 		}
 	}

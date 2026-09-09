@@ -248,7 +248,7 @@ func TestHandlePipelineSSE(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect SSE: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.Header.Get("Content-Type") != "text/event-stream" {
 		t.Errorf("Content-Type = %q, want text/event-stream", resp.Header.Get("Content-Type"))
@@ -283,7 +283,7 @@ func TestHandlePipelineSSEDeliversEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect SSE: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// Wait for subscriber registration.
 	waitFor(t, func() bool {
@@ -335,7 +335,7 @@ func TestHandlePipelineSSENoName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	// Without auth headers, we get 401 before reaching the handler.
 	// This verifies the SSE endpoint is behind the auth middleware.
 	if resp.StatusCode != http.StatusUnauthorized {

@@ -277,7 +277,7 @@ func (h *Handler) servePullRequest(w http.ResponseWriter, req *http.Request, wf 
 	}
 	h.log.Info("webhook armed workflow (pull_request)", "workflow", wf.Name, "pr", prNum, "action", pre.Action, "head", headShort)
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, "workflow %s armed for %s#%d (%s)\n", wf.Name, repo, prNum, pre.Action)
+	_, _ = fmt.Fprintf(w, "workflow %s armed for %s#%d (%s)\n", wf.Name, repo, prNum, pre.Action)
 }
 
 // normalizeRepo turns the payload's html_url + full_name into the platform

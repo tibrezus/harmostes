@@ -216,7 +216,7 @@ func TestRunGraphSSEStream(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sse connect: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	reader := bufio.NewReader(resp.Body)
 	var buf bytes.Buffer
@@ -333,7 +333,7 @@ func TestAttemptScopeForeignUser404(t *testing.T) {
 			t.Fatalf("bob probe %s: %v", path, err)
 		}
 		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if resp.StatusCode != http.StatusNotFound {
 			t.Errorf("bob %s: status = %d, want 404 (existence leak)", path, resp.StatusCode)
 		}
@@ -349,7 +349,7 @@ func TestAttemptScopeForeignUser404(t *testing.T) {
 	if err != nil {
 		t.Fatalf("alice probe: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("alice graph stream status = %d, want 200", resp.StatusCode)
 	}
@@ -377,7 +377,7 @@ func TestRunGraphSSEAttemptScopedWake(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sse connect: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	reader := bufio.NewReader(resp.Body)
 	var buf bytes.Buffer
@@ -463,7 +463,7 @@ func TestRunDetailTimingWaterfall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("page: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
 		t.Fatalf("read: %v", err)

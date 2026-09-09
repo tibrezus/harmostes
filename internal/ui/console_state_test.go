@@ -94,10 +94,10 @@ func TestWallState_MatchesGroupState(t *testing.T) {
 }
 
 func TestStateRank_FailedFirst(t *testing.T) {
-	if !(stateRank("failed") < stateRank("in flight") &&
-		stateRank("dispatch lost") < stateRank("reconciling") &&
-		stateRank("reconciling") < stateRank("verdict") &&
-		stateRank("verdict") < stateRank("superseded")) {
+	if stateRank("failed") >= stateRank("in flight") ||
+		stateRank("dispatch lost") >= stateRank("reconciling") ||
+		stateRank("reconciling") >= stateRank("verdict") ||
+		stateRank("verdict") >= stateRank("superseded") {
 		t.Error("rank order must be: failed < in-flight < verdict < history")
 	}
 }

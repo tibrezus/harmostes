@@ -31,9 +31,7 @@ func TestBuildTemplatePipelineView_StandardGate(t *testing.T) {
 	if pv.Nodes[1].Label != "AGENT" {
 		t.Errorf("node 1 label = %q, want AGENT", pv.Nodes[1].Label)
 	}
-	if pv.Nodes[1].Sublabel != "" {
-		// Model is empty in this template
-	}
+	// pv.Nodes[1].Sublabel: Model is empty in this template — nothing to assert
 	if pv.Nodes[2].Label != "DEPLOY" {
 		t.Errorf("node 2 label = %q, want DEPLOY", pv.Nodes[2].Label)
 	}

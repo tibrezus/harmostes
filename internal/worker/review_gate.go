@@ -589,7 +589,7 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 				// a head that has recorded dead dispatches (#328). The
 				// supersede below is uncounted; the re-arm resets the
 				// counter and spends a fresh dispatch.
-				if !(cand.labeled && claimFor.Status.Review.DeadDispatches > 0) {
+				if !cand.labeled || claimFor.Status.Review.DeadDispatches == 0 {
 					log("review-ready: candidate %s dropped: same-head re-request with no dead dispatches — nothing to do", cand.pointer)
 					continue
 				}

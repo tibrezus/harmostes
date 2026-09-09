@@ -324,7 +324,8 @@ func TestVelaAppNamespaceFromEnv(t *testing.T) {
 func TestFluxReconcileAnnotate(t *testing.T) {
 	kube := newFakeKubeClient()
 	// Pre-create a HelmRelease.
-	kube.ApplyResource(context.Background(), "helm.toolkit.fluxcd.io/v2", "HelmRelease", "my-release", "production", map[string]any{})
+	// pre-create failure surfaces in the follow-up assertions
+	_ = kube.ApplyResource(context.Background(), "helm.toolkit.fluxcd.io/v2", "HelmRelease", "my-release", "production", map[string]any{})
 
 	exec := NewFluxReconcileExecutor(kube)
 	cfg := FluxReconcileConfig{
@@ -360,7 +361,8 @@ func TestFluxReconcileAnnotate(t *testing.T) {
 
 func TestFluxReconcileWaitReady(t *testing.T) {
 	kube := newFakeKubeClient()
-	kube.ApplyResource(context.Background(), "helm.toolkit.fluxcd.io/v2", "HelmRelease", "my-release", "production", map[string]any{})
+	// pre-create failure surfaces in the follow-up assertions
+	_ = kube.ApplyResource(context.Background(), "helm.toolkit.fluxcd.io/v2", "HelmRelease", "my-release", "production", map[string]any{})
 	kube.setReady("helm.toolkit.fluxcd.io/v2", "HelmRelease", "production", "my-release", true)
 
 	exec := NewFluxReconcileExecutor(kube)
@@ -388,7 +390,8 @@ func TestFluxReconcileWaitReady(t *testing.T) {
 
 func TestFluxReconcileWaitNotReady(t *testing.T) {
 	kube := newFakeKubeClient()
-	kube.ApplyResource(context.Background(), "kustomize.toolkit.fluxcd.io/v1", "Kustomization", "my-kust", "default", map[string]any{})
+	// pre-create failure surfaces in the follow-up assertions
+	_ = kube.ApplyResource(context.Background(), "kustomize.toolkit.fluxcd.io/v1", "Kustomization", "my-kust", "default", map[string]any{})
 	// Leave Ready=False.
 
 	exec := NewFluxReconcileExecutor(kube)
@@ -409,7 +412,8 @@ func TestFluxReconcileWaitNotReady(t *testing.T) {
 
 func TestFluxReconcileGitRepository(t *testing.T) {
 	kube := newFakeKubeClient()
-	kube.ApplyResource(context.Background(), "source.toolkit.fluxcd.io/v1", "GitRepository", "my-source", "flux-system", map[string]any{})
+	// pre-create failure surfaces in the follow-up assertions
+	_ = kube.ApplyResource(context.Background(), "source.toolkit.fluxcd.io/v1", "GitRepository", "my-source", "flux-system", map[string]any{})
 	kube.setReady("source.toolkit.fluxcd.io/v1", "GitRepository", "flux-system", "my-source", true)
 
 	exec := NewFluxReconcileExecutor(kube)
@@ -583,7 +587,7 @@ func TestIntegrationDeployPipeline(t *testing.T) {
 	registry.Register(fluxExec)
 
 	// Pre-create the HelmRelease (simulating Flux being installed).
-	kube.ApplyResource(context.Background(), "helm.toolkit.fluxcd.io/v2", "HelmRelease", "my-service", "production", map[string]any{})
+	_ = kube.ApplyResource(context.Background(), "helm.toolkit.fluxcd.io/v2", "HelmRelease", "my-service", "production", map[string]any{})
 	kube.setReady("helm.toolkit.fluxcd.io/v2", "HelmRelease", "production", "my-service", true)
 
 	velaCfg, _ := json.Marshal(VelaAppConfig{

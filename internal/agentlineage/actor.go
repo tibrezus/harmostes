@@ -85,7 +85,7 @@ func (h *Host) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == http.MethodGet && r.URL.Path == "/dapr/config":
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(h.Config())
+		_ = json.NewEncoder(w).Encode(h.Config())
 		return
 	case r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/actors/"):
 		// /actors/{type}/{id}/method/{name}
@@ -124,7 +124,7 @@ func (h *Host) invoke(w http.ResponseWriter, r *http.Request, id, method string)
 			_ = json.Unmarshal(b, &s)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(s)
+		_ = json.NewEncoder(w).Encode(s)
 	case "publish":
 		body, err := io.ReadAll(r.Body)
 		if err != nil {

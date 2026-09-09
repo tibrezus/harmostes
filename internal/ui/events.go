@@ -252,7 +252,7 @@ func (s *Server) handlePipelineSSE(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	// Send initial connection confirmation.
-	fmt.Fprintf(w, ": connected to pipeline %s\n\n", name)
+	_, _ = fmt.Fprintf(w, ": connected to pipeline %s\n\n", name)
 	flusher.Flush()
 
 	// Heartbeat ticker — keeps the connection alive through proxies/load balancers.
@@ -275,11 +275,11 @@ func (s *Server) handlePipelineSSE(w http.ResponseWriter, r *http.Request) {
 				s.logger.Error("sse marshal event", "err", err)
 				continue
 			}
-			fmt.Fprintf(w, "data: %s\n\n", data)
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
 			flusher.Flush()
 
 		case <-heartbeat.C:
-			fmt.Fprintf(w, ": heartbeat\n\n")
+			_, _ = fmt.Fprintf(w, ": heartbeat\n\n")
 			flusher.Flush()
 		}
 	}

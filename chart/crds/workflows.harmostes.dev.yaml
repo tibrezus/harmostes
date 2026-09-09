@@ -169,12 +169,14 @@ spec:
                     onFailed: { type: string }
                     onDeployed: { type: string }
 
+                # shared caches the per-Attempt Job mounts (#336): one RWX PVC,
+                # SubPath-isolated per workflow; go/npm/git flag-gate the tool env
                 cache:
                   type: object
                   properties:
                     pvc: { type: string }
                     git: { type: boolean }
-                    go: { type: boolean }
+                    go:  { type: boolean }
                     npm: { type: boolean }
 
                 scaling:

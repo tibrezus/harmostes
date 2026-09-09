@@ -157,7 +157,7 @@ func (c DispatchConfig) Validate() error {
 // so a config fact cannot be dropped at a struct-copy hop (#311/#314):
 // callers supply only the per-run fields (attempt, workflow, namespace,
 // extraEnv).
-func (c DispatchConfig) JobParams(at *v1alpha1.Attempt, workflow, namespace string, runBound time.Duration, extraEnv []string) k8s.AttemptJobParams {
+func (c DispatchConfig) JobParams(at *v1alpha1.Attempt, workflow, namespace string, runBound time.Duration, cache *v1alpha1.CacheSpec, extraEnv []string) k8s.AttemptJobParams {
 	return k8s.AttemptJobParams{
 		Attempt:                 at,
 		WorkflowName:            workflow,
@@ -170,6 +170,7 @@ func (c DispatchConfig) JobParams(at *v1alpha1.Attempt, workflow, namespace stri
 		PluginConfigMaps:        c.PluginConfigMaps,
 		ExtraConfigMapMounts:    c.ExtraConfigMapMounts,
 		ExtraEnv:                extraEnv,
+		Cache:                   cache,
 	}
 }
 
@@ -249,6 +250,10 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req RunRequest) error {
 	// bound, so the wall and the margin cannot disagree.
 	rr := wf.Spec.ReviewReady
 	runBound := rr.RunBoundDuration()
+	// Cache (#336) resolves at the same merged-spec seam: templates carry
+	// it for whole fleets of review workflows (one claim, SubPath-
+	// isolated per workflow by the builder).
+	cache := wf.Spec.Cache
 	if runBound != v1alpha1.OneShotRunBound {
 		d.logf("dispatch: workflow %s raises the per-run wall to %s", req.Workflow, runBound)
 	} else if rr != nil && rr.RunBound != "" {
@@ -324,7 +329,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req RunRequest) error {
 		if err := d.cl.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: g.Attempt}, &at); err != nil {
 			return fmt.Errorf("get claim attempt %s: %w", g.Attempt, err)
 		}
-		job := k8s.BuildJob(d.cfg.JobParams(&at, req.Workflow, req.Namespace, runBound,
+		job := k8s.BuildJob(d.cfg.JobParams(&at, req.Workflow, req.Namespace, runBound, cache,
 			append(jobCredentialEnv(), dispatchEnv(req, &at, g.Envelope)...)))
 		if err := d.cl.Create(ctx, job); err != nil {
 			if errors.IsAlreadyExists(err) {

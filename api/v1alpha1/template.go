@@ -73,6 +73,13 @@ func ApplyTemplateDefaults(wf *Workflow, tmpl *WorkflowTemplate) {
 		s.ReviewReady = t.ReviewReady
 	}
 
+	// Cache: whole-struct inherit, same semantics as ReviewReady — the
+	// flags (git/go/npm) are one coherent mount config, not per-instance
+	// knobs an instance would partially override.
+	if s.Cache == nil {
+		s.Cache = t.Cache
+	}
+
 	// Instance scope wins: spec.config overrides whatever prepare.config
 	// holds after the template overlay.
 	if len(s.Config) > 0 {

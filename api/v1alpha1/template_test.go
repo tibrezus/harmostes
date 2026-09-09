@@ -176,3 +176,24 @@ func TestReviewReadyRunBound(t *testing.T) {
 		t.Errorf("unset dispatchTimeout with 45m wall = %s, want wall+15m %s", got, want)
 	}
 }
+
+// #336: cache inherits whole-struct from the template (same semantics as
+// reviewReady) — the flags are one coherent mount config, and the template
+// is the natural home for a fleet's review workflows.
+func TestApplyTemplateDefaultsCacheInherit(t *testing.T) {
+	tmpl := &WorkflowTemplate{}
+	tmpl.Spec.Cache = &CacheSpec{PVC: "harmostes-worker-cache", Go: true}
+
+	wf := &Workflow{} // instance sets nothing → inherits whole
+	ApplyTemplateDefaults(wf, tmpl)
+	if wf.Spec.Cache == nil || wf.Spec.Cache.PVC != "harmostes-worker-cache" || !wf.Spec.Cache.Go {
+		t.Fatalf("cache must inherit whole-struct from template, got %+v", wf.Spec.Cache)
+	}
+
+	own := &Workflow{}
+	own.Spec.Cache = &CacheSpec{PVC: "other-claim"} // instance wins
+	ApplyTemplateDefaults(own, tmpl)
+	if own.Spec.Cache.PVC != "other-claim" {
+		t.Fatalf("instance-set cache must win, got %+v", own.Spec.Cache)
+	}
+}

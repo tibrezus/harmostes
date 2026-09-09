@@ -126,6 +126,16 @@ spec:
                     runBound: { type: string }
                     maxConcurrent: { type: integer, minimum: 1 }
 
+                # shared caches the per-Attempt Job mounts (#336): one RWX PVC,
+                # SubPath-isolated per workflow; go/npm/git flag-gate the tool env
+                cache:
+                  type: object
+                  properties:
+                    pvc: { type: string }
+                    git: { type: boolean }
+                    go:  { type: boolean }
+                    npm: { type: boolean }
+
             status:
               type: object
               x-kubernetes-preserve-unknown-fields: true

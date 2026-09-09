@@ -11,6 +11,7 @@ import (
 
 	"github.com/tibrezus/harmostes/internal/attempt"
 	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -363,5 +364,58 @@ func TestDispatchRunBoundFlowsFromTemplateDefaults(t *testing.T) {
 	}
 	if got := *jobs.Items[0].Spec.ActiveDeadlineSeconds; got != 2700 {
 		t.Fatalf("template-set runBound must reach the Job wall: ActiveDeadlineSeconds = %d, want 2700 (45m)", got)
+	}
+}
+
+// #336 (r33 lesson applied): template-set cache reaches the dispatched Job
+// through the SAME merged-spec seam as runBound — a raw second Get would see
+// the unmerged spec and silently mount nothing.
+func TestDispatchCacheFlowsFromTemplateDefaults(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := greenPRServer(t)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+
+	tmpl := &v1alpha1.WorkflowTemplate{ObjectMeta: metav1.ObjectMeta{Name: "pr-review-tmpl", Namespace: "default"}}
+	tmpl.Spec.ReviewReady = &v1alpha1.ReviewReadySpec{Label: "needs-review", Horizon: "6h"}
+	tmpl.Spec.Cache = &v1alpha1.CacheSpec{PVC: "harmostes-worker-cache", Go: true} // TEMPLATE-side only
+
+	wf := gatedDispatchWorkflow()
+	wf.Spec.ReviewReady = nil
+	wf.Spec.TemplateRef = "pr-review-tmpl"
+
+	d, ctx := newTestDispatcher(t, wf, tmpl)
+	if err := d.Dispatch(ctx, dispatchRequest()); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	var jobs batchv1.JobList
+	if err := d.cl.List(ctx, &jobs); err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs.Items) != 1 {
+		t.Fatalf("exactly one Job must be dispatched, got %d", len(jobs.Items))
+	}
+	job := jobs.Items[0]
+	var mount *corev1.VolumeMount
+	for i := range job.Spec.Template.Spec.Containers[0].VolumeMounts {
+		if job.Spec.Template.Spec.Containers[0].VolumeMounts[i].Name == "cache" {
+			mount = &job.Spec.Template.Spec.Containers[0].VolumeMounts[i]
+		}
+	}
+	if mount == nil {
+		t.Fatal("template-set cache must reach the Job volume")
+	}
+	if mount.SubPath != "pr-review-harmostes" {
+		t.Fatalf("cache SubPath = %q, want the workflow name", mount.SubPath)
+	}
+	env := map[string]string{}
+	for _, e := range job.Spec.Template.Spec.Containers[0].Env {
+		env[e.Name] = e.Value
+	}
+	if env["GOCACHE"] != "/cache/go/build" {
+		t.Fatalf("GOCACHE must flow from the template cache flags: %v", env)
+	}
+	if env["HARMOSTES_WALL_SECONDS"] == "" {
+		t.Fatal("HARMOSTES_WALL_SECONDS must be visible to the run")
 	}
 }

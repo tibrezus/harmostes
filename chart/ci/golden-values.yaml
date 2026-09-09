@@ -62,3 +62,11 @@ credentials:
       - secretKey: url
         remoteRef:
           key: GOLDEN_URL
+
+# worker.cache (#336): exercised so the golden locks the PVC template's shape
+# (RWX, size, conditional storageClass) — the disabled render is byte-stable
+# by construction (the template renders nothing).
+worker:
+  cache:
+    enabled: true
+    size: 5Gi

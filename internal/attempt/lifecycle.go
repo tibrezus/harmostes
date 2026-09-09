@@ -438,13 +438,21 @@ func lastSlash(s string) int {
 // GCAttempts deletes attempts past the retention horizon (#385): terminal
 // attempts (validated / superseded / failed) and statusless attempts —
 // created but never reconciled, the largest accumulation bucket — older
-// than olderThan. Live work is untouchable by construction: every phase a
-// claim can hold (reconciling) is excluded, and the horizon means an
-// in-flight status write is impossible. Zero CreationTimestamp (fake
-// clients, server not yet stamped) is never GC'd — unknown age errs on the
-// side of keeping. Best-effort per attempt: one bad object must not block
-// the rest. The List is label-scoped for the same reason as
-// ReapStuckAttempts: CRD status is not server-side selectable.
+// than olderThan.
+//
+// Live work is untouchable by construction: reconciling (the only phase a
+// claim can hold) is excluded, and the horizon (30d) is orders of magnitude
+// past the seconds-wide window in which a freshly minted attempt is
+// transiently statusless (ResolveOrCreate mints directly into reconciling;
+// the first patchAttemptStatus lands immediately) — so a just-created,
+// claim-bearing object can never be inside the deleted set. Zero
+// CreationTimestamp (fake clients, server not yet stamped) is never GC'd:
+// unknown age errs on the side of keeping.
+//
+// Best-effort per attempt: one bad object must not block the rest. A
+// NotFound on Delete (a double-sweep race) is not an error and not counted.
+// The List is label-scoped for the same reason as ReapStuckAttempts: CRD
+// status is not server-side selectable.
 func GCAttempts(ctx context.Context, c client.Client, namespace, workflowName string, olderThan time.Duration) (int, error) {
 	var list v1alpha1.AttemptList
 	if err := c.List(ctx, &list, client.InNamespace(namespace),
@@ -462,7 +470,10 @@ func GCAttempts(ctx context.Context, c client.Client, namespace, workflowName st
 		if !terminal || at.CreationTimestamp.IsZero() || at.CreationTimestamp.Time.After(cutoff) {
 			continue
 		}
-		if err := c.Delete(ctx, at); client.IgnoreNotFound(err) != nil {
+		if err := c.Delete(ctx, at); err != nil {
+			if apierrors.IsNotFound(err) { // double-sweep race: already gone — not an error, not a count
+				continue
+			}
 			continue
 		}
 		gc++

@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -55,7 +56,10 @@ type Dispatcher struct {
 // (DispatcherFromEnv accepted the extra-mount parameter and silently never
 // copied it into this struct) were all the same failure mode at this seam.
 type DispatchConfig struct {
-	FleetMaxConcurrent   int
+	FleetMaxConcurrent int
+	// AttemptRetention GCs terminal/statusless attempts past this age
+	// (#385). Zero disables GC.
+	AttemptRetention     time.Duration
 	JobImage             string
 	ServiceAccount       string
 	JobTTLSeconds        *int32
@@ -96,6 +100,16 @@ func DispatchConfigFromEnv(logf func(string, ...any)) (DispatchConfig, error) {
 			return cfg, fmt.Errorf("HARMOSTES_MAX_CONCURRENT=%q: must be a positive integer", v)
 		}
 		cfg.FleetMaxConcurrent = n
+	}
+	// Retention GC horizon (#385): Go duration, 0 = disabled.
+	if v := os.Getenv("HARMOSTES_ATTEMPT_RETENTION"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d < 0 {
+			return cfg, fmt.Errorf("HARMOSTES_ATTEMPT_RETENTION=%q: must be a non-negative duration", v)
+		}
+		cfg.AttemptRetention = d
+	} else {
+		cfg.AttemptRetention = 720 * time.Hour // chart default mirrors values.yaml
 	}
 	ttl := int32(3600)
 	if v := os.Getenv("HARMOSTES_JOB_TTL_SECONDS"); v != "" {
@@ -232,6 +246,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req RunRequest) error {
 		Client:             d.cl,
 		Scheme:             d.scheme,
 		FleetMaxConcurrent: d.cfg.FleetMaxConcurrent,
+		AttemptRetention:   d.cfg.AttemptRetention,
 		Log:                d.logf,
 		Wake:               GateWake{PR: req.Pr, Action: req.Action, Revision: req.Revision},
 		TL: timeline.NewGateWriter(dapr.Tracing(dapr.New(os.Getenv("DAPR_HTTP_ENDPOINT"))),

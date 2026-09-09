@@ -36,7 +36,7 @@ rules:
   # status; Attempts are GC'd via owner refs (no delete needed).
   - apiGroups: ["harmostes.dev"]
     resources: ["attempts", "attempts/status", "attempts/finalizers"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"] # delete: retention GC (#385)
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"] # delete: retention GC (#385; replaces the old owner-refs-only story)
   - apiGroups: ["batch"]
     resources: ["jobs"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]

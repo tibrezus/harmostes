@@ -81,34 +81,60 @@ data:
       assert.match(warning!, /not valid JSON/);
     });
     
-    // #363: the DEFAULT chain's CONTENT is a platform decision (ops template
-    // primary = mtplx speed, k8s-config 8c1fb609) and must match the
-    // extension's direction — speed → qwen3.8-flash. The resolveFallbackChains
-    // tests above only compare against the DEFAULT_FALLBACKS export itself
-    // (they flip silently with any edit); this pin goes red if the content
-    // moves without a deliberate platform decision behind it. The index.ts
-    // header drifted exactly this way once (said flash→speed while the code
-    // said flash→glm) — comments are not a pin.
-    test("default chain content is the #363 platform decision: speed → flash", () => {
+    // #363: the DEFAULT table's CONTENT is load-bearing (ops review templates
+    // flipped to speed primary, k8s-config 8c1fb609; this chart's values.yaml
+    // default still runs flash) — the resolveFallbackChains tests above only
+    // compare against the DEFAULT_FALLBACKS export itself (they flip silently
+    // with any edit). The invariant is COMPOSITION, not count: every LIVE
+    // primary direction must have an entry, because a chain keyed by any other
+    // primary is inert (applyChains never reaches it). The index.ts header
+    // drifted exactly this way once (said flash→speed while the code said
+    // flash→glm) — comments are not a pin.
+    test("default chain composition covers both live primaries (#363)", () => {
       assert.deepEqual(DEFAULT_FALLBACKS, {
         "mtplx/qwen38-27b-optimized-speed-fp16": ["ali/anthropic/qwen3.8-flash"],
+        "ali/anthropic/qwen3.8-flash": ["zai/anthropic/glm-5.3-flash"],
       });
-      // And it wires over a proxy exposing exactly the three known groups:
-      // speed's registered window stays its own 256 KiB (min(256 Ki, 1 Mi)),
-      // i.e. the flip carries NO clamp-induced early-compaction cost, and
-      // flash/glm (unchained) carry no samplingParams at all.
+      // And BOTH wire over a proxy exposing exactly the three known groups:
+      // speed keeps its own 256 KiB window (fallback is LARGER — no clamp, no
+      // early compaction); flash pays the documented fallback clamp down to
+      // glm (128 Ki ctx / 8k out) — the pre-#363 shape, retained on purpose.
       const proxy = new Map([
         ["mtplx/qwen38-27b-optimized-speed-fp16", { max_input_tokens: 262144, max_output_tokens: 32768 }],
         ["ali/anthropic/qwen3.8-flash", { max_input_tokens: 1048576, max_output_tokens: 32768 }],
         ["zai/anthropic/glm-5.3-flash", { max_input_tokens: 131072, max_output_tokens: 8192 }],
       ]);
       const models = [...proxy.entries()].map(([id, m]) => ({ id, ...m }));
-      const { annotated, wired } = applyChains(models, DEFAULT_FALLBACKS, proxy);
+      const { annotated, wired, unwiredChains } = applyChains(models, DEFAULT_FALLBACKS, proxy);
       const speed = annotated.find((m) => m.id === "mtplx/qwen38-27b-optimized-speed-fp16")!;
       assert.deepEqual(speed.samplingParams, { fallbacks: ["ali/anthropic/qwen3.8-flash"] });
       assert.equal(speed.contextWindow, 262144); // min(262144, 1048576) = own window
       assert.equal(speed.clampNote, undefined); // no ctx/maxTokens clamp, no early compaction
-      assert.deepEqual(wired, ["mtplx/qwen38-27b-optimized-speed-fp16 → ali/anthropic/qwen3.8-flash"]); // wired entries are primary→fallback summaries
+      const flash = annotated.find((m) => m.id === "ali/anthropic/qwen3.8-flash")!;
+      assert.deepEqual(flash.samplingParams, { fallbacks: ["zai/anthropic/glm-5.3-flash"] });
+      assert.equal(flash.contextWindow, 131072); // clamped to glm — the retained #373 chain's cost
+      assert.match(flash.clampNote!, /ctx 1048576→131072/);
+      assert.deepEqual(wired.sort(), [
+        "ali/anthropic/qwen3.8-flash → zai/anthropic/glm-5.3-flash", // wired entries are primary→fallback summaries
+        "mtplx/qwen38-27b-optimized-speed-fp16 → ali/anthropic/qwen3.8-flash",
+      ]);
+      assert.deepEqual(unwiredChains, []); // every default key is a served primary
+    });
+    
+    // A chain keyed by a primary the proxy does not serve must SURFACE, not
+    // vanish silently into "no fallbacks wired" (#401 review, pillar 7).
+    test("applyChains: chain keys with an undiscovered primary are reported inert", () => {
+      const served = new Map([
+        ["mtplx/qwen38-27b-optimized-speed-fp16", { max_input_tokens: 262144, max_output_tokens: 32768 }],
+        ["ali/anthropic/qwen3.8-flash", { max_input_tokens: 1048576, max_output_tokens: 32768 }],
+      ]);
+      const servedModels = [...served.entries()].map(([id, m]) => ({ id, ...m }));
+      const { wired, unwiredChains } = applyChains(servedModels, {
+        "mtplx/qwen38-27b-optimized-speed-fp16": ["ali/anthropic/qwen3.8-flash"],
+        "ghost/group": ["mtplx/qwen38-27b-optimized-speed-fp16"],
+      }, served);
+      assert.deepEqual(unwiredChains, ["ghost/group"]); // the proxy does not serve it
+      assert.deepEqual(wired, ["mtplx/qwen38-27b-optimized-speed-fp16 → ali/anthropic/qwen3.8-flash"]);
     });
     
     test("JSON array (not object) degrades to the default", () => {
@@ -226,6 +252,19 @@ data:
       (chains as Record<string, unknown>)["injected"] = ["x"];
       const { chains: again } = resolveFallbackChains(undefined);
       assert.equal(Object.keys(again).length, Object.keys(DEFAULT_FALLBACKS).length);
+      // And on the WARNING paths too (#401 review, pillar 8): they returned
+      // DEFAULT_FALLBACKS itself, so an in-place normalisation could grow the
+      // exported platform decision. Mutate a value ARRAY, not just a key —
+      // the shallow copy must cover the map, values are read-only by contract.
+      const { chains: degraded } = resolveFallbackChains("{not json");
+      (degraded["mtplx/qwen38-27b-optimized-speed-fp16"] as string[]).push("injected");
+      const { chains: after } = resolveFallbackChains("{not json");
+      // Compare against the EXPECTED literal, not the export: with the leak,
+      // `after` IS the mutated export and deepEqual(x, x) is trivially true.
+      assert.deepEqual(after, {
+        "mtplx/qwen38-27b-optimized-speed-fp16": ["ali/anthropic/qwen3.8-flash"],
+        "ali/anthropic/qwen3.8-flash": ["zai/anthropic/glm-5.3-flash"],
+      });
     });
     
   fallbacks.ts: |
@@ -239,16 +278,24 @@ data:
      */
     
     // Platform decision (#363): the review primary is the mtplx speed target
-    // and the extension default chain follows — speed → qwen3.8-flash. History:
-    // speed was demoted 2026-09-08 (#373's rollback — it stalled at long
-    // context) and glm-5.3-flash served as primary-then-fallback since; the
-    // platform re-promoted it as PRIMARY with the lean-context contract (the
-    // review run bound keeps context well inside speed's 256 KiB window, so
-    // the stall regime is contractually out of reach — the min-window clamp
-    // below registers exactly that window). All ids live in the proxy key's
-    // scope. ops-side template flip: k8s-config 8c1fb609.
+    // (ops template flip, k8s-config 8c1fb609) — speed → qwen3.8-flash.
+    // History: speed was demoted 2026-09-08 (#373's rollback — it STALLED at
+    // long context: an HTTP-level stall at ~20k tokens, nowhere near a window
+    // boundary, so no window arithmetic prevents it; the honest justification
+    // for re-promotion is the platform's call that the provider defect is
+    // resolved — and if it recurs, this chain turns the stall into a mid-run
+    // failover to flash instead of a dead stream).
+    //
+    // The flash → glm entry (#373's chain) is retained deliberately: chains
+    // are keyed by PRIMARY model id, so a single-entry table silently strips
+    // failover from every other primary — and this chart's own default
+    // (chart/values.yaml pr-review) still runs flash. Both live directions
+    // ship; a key whose primary this proxy does not serve is inert and is
+    // reported at startup (unwiredChains, below). All ids live in the proxy
+    // key's scope.
     export const DEFAULT_FALLBACKS: Record<string, string[]> = {
       "mtplx/qwen38-27b-optimized-speed-fp16": ["ali/anthropic/qwen3.8-flash"],
+      "ali/anthropic/qwen3.8-flash": ["zai/anthropic/glm-5.3-flash"],
     };
     
     /**
@@ -258,29 +305,34 @@ data:
      * arrays, non-string members — degrades to the default with a reason string
      * (logged by the caller).
      */
+    // The default must not leak by reference into callers that might normalise
+    // in place (r18-review P2: a key mutation reached the exported const; the
+    // #401 review extended it to VALUES — a shallow copy still shares the
+    // chain arrays, so a push() grew the platform decision). Clone one level
+    // down: fresh map, fresh arrays.
+    const copyDefaultChains = (): Record<string, string[]> =>
+      Object.fromEntries(Object.entries(DEFAULT_FALLBACKS).map(([k, v]) => [k, [...v]]));
+    
     export function resolveFallbackChains(
       raw: string | undefined,
     ): { chains: Record<string, string[]>; warning?: string } {
       if (raw === undefined || raw.trim() === "") {
-        // Shallow copy: the default must not leak by reference into callers
-        // that might normalize in place (r18-review P2 probe — a mutation of
-        // the returned map reached the exported const).
-        return { chains: { ...DEFAULT_FALLBACKS } };
+        return { chains: copyDefaultChains() };
       }
       let parsed: unknown;
       try {
         parsed = JSON.parse(raw);
       } catch {
-        return { chains: DEFAULT_FALLBACKS, warning: "LITELLM_FALLBACKS is not valid JSON — keeping default chains" };
+        return { chains: copyDefaultChains(), warning: "LITELLM_FALLBACKS is not valid JSON — keeping default chains" };
       }
       if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-        return { chains: DEFAULT_FALLBACKS, warning: "LITELLM_FALLBACKS is not a JSON object — keeping default chains" };
+        return { chains: copyDefaultChains(), warning: "LITELLM_FALLBACKS is not a JSON object — keeping default chains" };
       }
       const chains: Record<string, string[]> = {};
       for (const [model, chain] of Object.entries(parsed as Record<string, unknown>)) {
         if (!Array.isArray(chain) || chain.length === 0 || !chain.every((id) => typeof id === "string" && id.trim() !== "")) {
           return {
-            chains: DEFAULT_FALLBACKS,
+            chains: copyDefaultChains(),
             warning: `LITELLM_FALLBACKS["${model}"] is not a non-empty array of model ids — keeping default chains`,
           };
         }
@@ -290,6 +342,7 @@ data:
     }
     
     /** One model's registration-relevant fields after chain application. */
+    
     export interface ChainedModel {
       id: string;
       contextWindow: number;
@@ -323,8 +376,13 @@ data:
       models: Array<{ id: string; max_input_tokens?: number; max_output_tokens?: number }>,
       chains: Record<string, string[]>,
       byId: Map<string, { max_input_tokens?: number; max_output_tokens?: number }>,
-    ): { wired: string[]; annotated: ChainedModel[] } {
+    ): { wired: string[]; annotated: ChainedModel[]; unwiredChains: string[] } {
       const wired: string[] = [];
+      // A chain keyed by a primary this proxy does not serve is INERT — the
+      // per-model loop below never reaches it (no droppedIds, no clampNote, no
+      // warning). Surface it: "the platform decision's chain is inert on this
+      // proxy" must be a log line, not a reading exercise (#401 review).
+      const unwiredChains = Object.keys(chains).filter((id) => !byId.has(id));
       const annotated = models.map((model) => {
         const rawChain = chains[model.id];
         const contextWindow = model.max_input_tokens ?? 131072;
@@ -366,7 +424,7 @@ data:
         wired.push(`${model.id} → ${chain.join(", ")}`);
         return out;
       });
-      return { wired, annotated };
+      return { wired, annotated, unwiredChains };
     }
     
   index.ts: |
@@ -395,8 +453,10 @@ data:
      * request-level `fallbacks` param (via Model.samplingParams) — when the
      * primary model group fails mid-run, the proxy's router fails over to the
      * fallback group and the agent's stream continues instead of dying. Default
-     * chain: mtplx/qwen38-27b-optimized-speed-fp16 → ali/anthropic/qwen3.8-flash
-     * (both live on the proxy; the platform decision, #363). Override with
+     * chains: mtplx/qwen38-27b-optimized-speed-fp16 → ali/anthropic/qwen3.8-flash
+     * and ali/anthropic/qwen3.8-flash → zai/anthropic/glm-5.3-flash (every live
+     * primary direction carries an entry — chains are keyed by primary, and an
+     * entry for any other primary would be inert; #363, #401 review). Override with
      * LITELLM_FALLBACKS, a JSON object
      * mapping model id → array of fallback ids — resolved by fallbacks.ts, which
      * degrades to the default chain on any semantically-bad value. NOTE the
@@ -423,7 +483,10 @@ data:
      * early compaction for a dead stream exactly when the primary is already
      * down. (4) The clamp
      * is not transitive: a proxy-side chain hanging off the fallback group is
-     * invisible here. (5) A failover moves the whole review context to a
+     * invisible here. Chains are keyed by PRIMARY model id: an entry for a
+     * model this proxy does not serve is inert (reported at startup,
+     * unwiredChains) — which is why the default table carries every live
+     * primary direction. (5) A failover moves the whole review context to a
      * DIFFERENT upstream group — chains are Deployment-env-settable, so the
      * trust boundary for review payloads is whoever can edit that Deployment.
      */
@@ -481,7 +544,10 @@ data:
       }
       const byId = new Map(models.map((m) => [m.id, m]));
     
-      const { wired, annotated } = applyChains(models, fallbacks, byId);
+      const { wired, annotated, unwiredChains } = applyChains(models, fallbacks, byId);
+      if (unwiredChains.length > 0) {
+        console.error(`[litellm-provider] fallback chains keyed by primaries this proxy does not serve (inert): ${unwiredChains.join(", ")}`);
+      }
     
       _pi.registerProvider("litellm", {
         name: "LiteLLM Proxy",
@@ -4867,7 +4933,7 @@ spec:
         # the fork-maintenance.yaml template output (scripts/checks/defs/
         # hooks/skill CMs) and the litellm extension payload.
         checksum/fork-maintenance: 082d8c5472ee15b9beacfd112a46beff3f5121af68d95f1af2eadb6fd64372f4
-        checksum/litellm-extension: a83bcf3707c8e696cbb013de7127c96466d52b2fe727a217f8cfdca7c75a818b
+        checksum/litellm-extension: afd5e855c8f1190f1e09581349c01759d664cc4ffd1f35bce19a0c31b8279122
     spec:
       imagePullSecrets:
         - name: ghcr-pull

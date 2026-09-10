@@ -23,8 +23,10 @@
  * request-level `fallbacks` param (via Model.samplingParams) — when the
  * primary model group fails mid-run, the proxy's router fails over to the
  * fallback group and the agent's stream continues instead of dying. Default
- * chain: mtplx/qwen38-27b-optimized-speed-fp16 → ali/anthropic/qwen3.8-flash
- * (both live on the proxy; the platform decision, #363). Override with
+ * chains: mtplx/qwen38-27b-optimized-speed-fp16 → ali/anthropic/qwen3.8-flash
+ * and ali/anthropic/qwen3.8-flash → zai/anthropic/glm-5.3-flash (every live
+ * primary direction carries an entry — chains are keyed by primary, and an
+ * entry for any other primary would be inert; #363, #401 review). Override with
  * LITELLM_FALLBACKS, a JSON object
  * mapping model id → array of fallback ids — resolved by fallbacks.ts, which
  * degrades to the default chain on any semantically-bad value. NOTE the
@@ -51,7 +53,10 @@
  * early compaction for a dead stream exactly when the primary is already
  * down. (4) The clamp
  * is not transitive: a proxy-side chain hanging off the fallback group is
- * invisible here. (5) A failover moves the whole review context to a
+ * invisible here. Chains are keyed by PRIMARY model id: an entry for a
+ * model this proxy does not serve is inert (reported at startup,
+ * unwiredChains) — which is why the default table carries every live
+ * primary direction. (5) A failover moves the whole review context to a
  * DIFFERENT upstream group — chains are Deployment-env-settable, so the
  * trust boundary for review payloads is whoever can edit that Deployment.
  */
@@ -109,7 +114,10 @@ export default async function (_pi: ExtensionAPI) {
   }
   const byId = new Map(models.map((m) => [m.id, m]));
 
-  const { wired, annotated } = applyChains(models, fallbacks, byId);
+  const { wired, annotated, unwiredChains } = applyChains(models, fallbacks, byId);
+  if (unwiredChains.length > 0) {
+    console.error(`[litellm-provider] fallback chains keyed by primaries this proxy does not serve (inert): ${unwiredChains.join(", ")}`);
+  }
 
   _pi.registerProvider("litellm", {
     name: "LiteLLM Proxy",

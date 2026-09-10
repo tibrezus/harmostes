@@ -26,34 +26,60 @@ test("unparsable JSON degrades loudly to the default", () => {
   assert.match(warning!, /not valid JSON/);
 });
 
-// #363: the DEFAULT chain's CONTENT is a platform decision (ops template
-// primary = mtplx speed, k8s-config 8c1fb609) and must match the
-// extension's direction — speed → qwen3.8-flash. The resolveFallbackChains
-// tests above only compare against the DEFAULT_FALLBACKS export itself
-// (they flip silently with any edit); this pin goes red if the content
-// moves without a deliberate platform decision behind it. The index.ts
-// header drifted exactly this way once (said flash→speed while the code
-// said flash→glm) — comments are not a pin.
-test("default chain content is the #363 platform decision: speed → flash", () => {
+// #363: the DEFAULT table's CONTENT is load-bearing (ops review templates
+// flipped to speed primary, k8s-config 8c1fb609; this chart's values.yaml
+// default still runs flash) — the resolveFallbackChains tests above only
+// compare against the DEFAULT_FALLBACKS export itself (they flip silently
+// with any edit). The invariant is COMPOSITION, not count: every LIVE
+// primary direction must have an entry, because a chain keyed by any other
+// primary is inert (applyChains never reaches it). The index.ts header
+// drifted exactly this way once (said flash→speed while the code said
+// flash→glm) — comments are not a pin.
+test("default chain composition covers both live primaries (#363)", () => {
   assert.deepEqual(DEFAULT_FALLBACKS, {
     "mtplx/qwen38-27b-optimized-speed-fp16": ["ali/anthropic/qwen3.8-flash"],
+    "ali/anthropic/qwen3.8-flash": ["zai/anthropic/glm-5.3-flash"],
   });
-  // And it wires over a proxy exposing exactly the three known groups:
-  // speed's registered window stays its own 256 KiB (min(256 Ki, 1 Mi)),
-  // i.e. the flip carries NO clamp-induced early-compaction cost, and
-  // flash/glm (unchained) carry no samplingParams at all.
+  // And BOTH wire over a proxy exposing exactly the three known groups:
+  // speed keeps its own 256 KiB window (fallback is LARGER — no clamp, no
+  // early compaction); flash pays the documented fallback clamp down to
+  // glm (128 Ki ctx / 8k out) — the pre-#363 shape, retained on purpose.
   const proxy = new Map([
     ["mtplx/qwen38-27b-optimized-speed-fp16", { max_input_tokens: 262144, max_output_tokens: 32768 }],
     ["ali/anthropic/qwen3.8-flash", { max_input_tokens: 1048576, max_output_tokens: 32768 }],
     ["zai/anthropic/glm-5.3-flash", { max_input_tokens: 131072, max_output_tokens: 8192 }],
   ]);
   const models = [...proxy.entries()].map(([id, m]) => ({ id, ...m }));
-  const { annotated, wired } = applyChains(models, DEFAULT_FALLBACKS, proxy);
+  const { annotated, wired, unwiredChains } = applyChains(models, DEFAULT_FALLBACKS, proxy);
   const speed = annotated.find((m) => m.id === "mtplx/qwen38-27b-optimized-speed-fp16")!;
   assert.deepEqual(speed.samplingParams, { fallbacks: ["ali/anthropic/qwen3.8-flash"] });
   assert.equal(speed.contextWindow, 262144); // min(262144, 1048576) = own window
   assert.equal(speed.clampNote, undefined); // no ctx/maxTokens clamp, no early compaction
-  assert.deepEqual(wired, ["mtplx/qwen38-27b-optimized-speed-fp16 → ali/anthropic/qwen3.8-flash"]); // wired entries are primary→fallback summaries
+  const flash = annotated.find((m) => m.id === "ali/anthropic/qwen3.8-flash")!;
+  assert.deepEqual(flash.samplingParams, { fallbacks: ["zai/anthropic/glm-5.3-flash"] });
+  assert.equal(flash.contextWindow, 131072); // clamped to glm — the retained #373 chain's cost
+  assert.match(flash.clampNote!, /ctx 1048576→131072/);
+  assert.deepEqual(wired.sort(), [
+    "ali/anthropic/qwen3.8-flash → zai/anthropic/glm-5.3-flash", // wired entries are primary→fallback summaries
+    "mtplx/qwen38-27b-optimized-speed-fp16 → ali/anthropic/qwen3.8-flash",
+  ]);
+  assert.deepEqual(unwiredChains, []); // every default key is a served primary
+});
+
+// A chain keyed by a primary the proxy does not serve must SURFACE, not
+// vanish silently into "no fallbacks wired" (#401 review, pillar 7).
+test("applyChains: chain keys with an undiscovered primary are reported inert", () => {
+  const served = new Map([
+    ["mtplx/qwen38-27b-optimized-speed-fp16", { max_input_tokens: 262144, max_output_tokens: 32768 }],
+    ["ali/anthropic/qwen3.8-flash", { max_input_tokens: 1048576, max_output_tokens: 32768 }],
+  ]);
+  const servedModels = [...served.entries()].map(([id, m]) => ({ id, ...m }));
+  const { wired, unwiredChains } = applyChains(servedModels, {
+    "mtplx/qwen38-27b-optimized-speed-fp16": ["ali/anthropic/qwen3.8-flash"],
+    "ghost/group": ["mtplx/qwen38-27b-optimized-speed-fp16"],
+  }, served);
+  assert.deepEqual(unwiredChains, ["ghost/group"]); // the proxy does not serve it
+  assert.deepEqual(wired, ["mtplx/qwen38-27b-optimized-speed-fp16 → ali/anthropic/qwen3.8-flash"]);
 });
 
 test("JSON array (not object) degrades to the default", () => {
@@ -171,4 +197,17 @@ test("resolveFallbackChains: the default does not leak by reference", () => {
   (chains as Record<string, unknown>)["injected"] = ["x"];
   const { chains: again } = resolveFallbackChains(undefined);
   assert.equal(Object.keys(again).length, Object.keys(DEFAULT_FALLBACKS).length);
+  // And on the WARNING paths too (#401 review, pillar 8): they returned
+  // DEFAULT_FALLBACKS itself, so an in-place normalisation could grow the
+  // exported platform decision. Mutate a value ARRAY, not just a key —
+  // the shallow copy must cover the map, values are read-only by contract.
+  const { chains: degraded } = resolveFallbackChains("{not json");
+  (degraded["mtplx/qwen38-27b-optimized-speed-fp16"] as string[]).push("injected");
+  const { chains: after } = resolveFallbackChains("{not json");
+  // Compare against the EXPECTED literal, not the export: with the leak,
+  // `after` IS the mutated export and deepEqual(x, x) is trivially true.
+  assert.deepEqual(after, {
+    "mtplx/qwen38-27b-optimized-speed-fp16": ["ali/anthropic/qwen3.8-flash"],
+    "ali/anthropic/qwen3.8-flash": ["zai/anthropic/glm-5.3-flash"],
+  });
 });

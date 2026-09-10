@@ -225,8 +225,9 @@ workflowTemplates:
       # UPDATE #363: the platform re-promoted speed as the OPS review
       # templates' primary (k8s-config 8c1fb609) — provider serving judged
       # fixed. This chart default stays flash for now; the extension default
-      # chains BOTH directions (speed→flash, flash→glm), so either primary
-      # keeps failover wherever it runs.
+      # carries an entry for every live primary (speed→flash, flash→glm,
+      # glm→flash), so whichever primary runs keeps failover. NOTE a
+      # LITELLM_FALLBACKS override REPLACES the whole map ('{}' = off).
       model: litellm/ali/anthropic/qwen3.8-flash
       # fallbacks chain lands with #364 (renderer not wired yet — a bare
       # key here would be inert).

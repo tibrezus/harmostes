@@ -90,15 +90,21 @@ data:
     // primary is inert (applyChains never reaches it). The index.ts header
     // drifted exactly this way once (said flash→speed while the code said
     // flash→glm) — comments are not a pin.
-    test("default chain composition covers both live primaries (#363)", () => {
+    test("default chain composition covers every live primary (#363, #401 r2)", () => {
+      // Three live primaries in this repo: speed (ops review templates),
+      // flash (this chart's values.yaml default), glm (cmd/harmostes-agent +
+      // harmostes.py --model default). A live primary with no entry would
+      // attach no failover at all — the condition #363 was filed to fix.
       assert.deepEqual(DEFAULT_FALLBACKS, {
         "mtplx/qwen38-27b-optimized-speed-fp16": ["ali/anthropic/qwen3.8-flash"],
         "ali/anthropic/qwen3.8-flash": ["zai/anthropic/glm-5.3-flash"],
+        "zai/anthropic/glm-5.3-flash": ["ali/anthropic/qwen3.8-flash"],
       });
-      // And BOTH wire over a proxy exposing exactly the three known groups:
-      // speed keeps its own 256 KiB window (fallback is LARGER — no clamp, no
-      // early compaction); flash pays the documented fallback clamp down to
-      // glm (128 Ki ctx / 8k out) — the pre-#363 shape, retained on purpose.
+      // And ALL THREE wire over a proxy exposing exactly the three known
+      // groups: speed keeps its own 256 KiB window (fallback LARGER — no
+      // clamp, no early compaction); flash pays the documented fallback clamp
+      // down to glm (128 Ki ctx / 8k out) — the pre-#363 shape, retained on
+      // purpose; glm clamps nothing (flash is larger in both dimensions).
       const proxy = new Map([
         ["mtplx/qwen38-27b-optimized-speed-fp16", { max_input_tokens: 262144, max_output_tokens: 32768 }],
         ["ali/anthropic/qwen3.8-flash", { max_input_tokens: 1048576, max_output_tokens: 32768 }],
@@ -114,11 +120,27 @@ data:
       assert.deepEqual(flash.samplingParams, { fallbacks: ["zai/anthropic/glm-5.3-flash"] });
       assert.equal(flash.contextWindow, 131072); // clamped to glm — the retained #373 chain's cost
       assert.match(flash.clampNote!, /ctx 1048576→131072/);
+      const glm = annotated.find((m) => m.id === "zai/anthropic/glm-5.3-flash")!;
+      assert.deepEqual(glm.samplingParams, { fallbacks: ["ali/anthropic/qwen3.8-flash"] });
+      assert.equal(glm.contextWindow, 131072); // own window — flash is larger, no clamp
+      assert.equal(glm.clampNote, undefined);
       assert.deepEqual(wired.sort(), [
         "ali/anthropic/qwen3.8-flash → zai/anthropic/glm-5.3-flash", // wired entries are primary→fallback summaries
         "mtplx/qwen38-27b-optimized-speed-fp16 → ali/anthropic/qwen3.8-flash",
+        "zai/anthropic/glm-5.3-flash → ali/anthropic/qwen3.8-flash",
       ]);
       assert.deepEqual(unwiredChains, []); // every default key is a served primary
+    });
+    
+    // The documented off-switch, pinned (#401 review r2: it had no test at any
+    // layer, while a PARTIAL override silently strips the platform decision —
+    // whole-map substitution is the documented semantics, so the protection
+    // for it is the composition pin above plus the summary log in index.ts
+    // that distinguishes "none configured" from "configured but none wired").
+    test("resolveFallbackChains: '{}' is the off-switch — empty chains, no warning", () => {
+      const { chains, warning } = resolveFallbackChains("{}");
+      assert.deepEqual(chains, {});
+      assert.equal(warning, undefined);
     });
     
     // A chain keyed by a primary the proxy does not serve must SURFACE, not
@@ -264,6 +286,7 @@ data:
       assert.deepEqual(after, {
         "mtplx/qwen38-27b-optimized-speed-fp16": ["ali/anthropic/qwen3.8-flash"],
         "ali/anthropic/qwen3.8-flash": ["zai/anthropic/glm-5.3-flash"],
+        "zai/anthropic/glm-5.3-flash": ["ali/anthropic/qwen3.8-flash"],
       });
     });
     
@@ -296,6 +319,11 @@ data:
     export const DEFAULT_FALLBACKS: Record<string, string[]> = {
       "mtplx/qwen38-27b-optimized-speed-fp16": ["ali/anthropic/qwen3.8-flash"],
       "ali/anthropic/qwen3.8-flash": ["zai/anthropic/glm-5.3-flash"],
+      // glm is a live primary too — the --model default of cmd/harmostes-agent
+      // and harmostes.py (#401 review r2): without an entry a glm-primary run
+      // attaches no failover at all. flash is LARGER in both dimensions, so
+      // this entry clamps nothing.
+      "zai/anthropic/glm-5.3-flash": ["ali/anthropic/qwen3.8-flash"],
     };
     
     /**
@@ -366,8 +394,9 @@ data:
      * - a chained model's ids are filtered to DISCOVERED groups (a router
      *   cannot fail over to a group it does not know); dropped ids surface in
      *   `droppedIds` for the warning log;
-     * - a chain that filters to empty attaches nothing (and is reported
-     *   unwired);
+     * - a chain that filters to empty attaches nothing (invisible in
+     *   `wired` — the caller's summary log distinguishes "none configured"
+     *   from "configured but none wired");
      * - chained models register min(primary, fallback) windows so the
      *   post-failover replay fits the fallback group (with a clampNote for
      *   the log).
@@ -378,10 +407,13 @@ data:
       byId: Map<string, { max_input_tokens?: number; max_output_tokens?: number }>,
     ): { wired: string[]; annotated: ChainedModel[]; unwiredChains: string[] } {
       const wired: string[] = [];
-      // A chain keyed by a primary this proxy does not serve is INERT — the
-      // per-model loop below never reaches it (no droppedIds, no clampNote, no
-      // warning). Surface it: "the platform decision's chain is inert on this
-      // proxy" must be a log line, not a reading exercise (#401 review).
+      // Chains keyed by a primary this proxy does not serve are INERT — the
+      // per-model loop below never reaches them (no droppedIds, no clampNote,
+      // no warning). Surface exactly that: keys with NO DISCOVERED PRIMARY.
+      // This does NOT cover every inert shape — undiscovered FALLBACK ids
+      // surface per-model via droppedIds, an empty-filtering chain attaches
+      // nothing, and a served primary with no entry here is invisible to this
+      // field (the caller's summary log covers the last two) (#401 review r2).
       const unwiredChains = Object.keys(chains).filter((id) => !byId.has(id));
       const annotated = models.map((model) => {
         const rawChain = chains[model.id];
@@ -485,8 +517,12 @@ data:
      * is not transitive: a proxy-side chain hanging off the fallback group is
      * invisible here. Chains are keyed by PRIMARY model id: an entry for a
      * model this proxy does not serve is inert (reported at startup,
-     * unwiredChains) — which is why the default table carries every live
-     * primary direction. (5) A failover moves the whole review context to a
+     * unwiredChains = keys with no discovered primary; undiscovered fallback
+     * ids and empty-filtering chains surface via droppedIds / the wiring
+     * summary instead). The default table carries an entry for every live
+     * primary direction (speed, flash, glm); a LITELLM_FALLBACKS override
+     * REPLACES the whole map — '{}' is the off-switch. (5) A failover moves
+     * the whole review context to a
      * DIFFERENT upstream group — chains are Deployment-env-settable, so the
      * trust boundary for review payloads is whoever can edit that Deployment.
      */
@@ -590,9 +626,19 @@ data:
       // Honest wiring log: applyChains reports the chains actually ATTACHED —
       // fully-resolved (primary known, every fallback id a discovered group)
       // and non-empty. Anything else is "no fallbacks wired" for that model.
+      // Distinguish "nothing configured" (the '{}' off-switch) from
+      // "configured but nothing usable" (typo'd/partial override, group
+      // dropped mid-rollout) — the worst-case symptom (a dead stream with no
+      // failover) becomes a one-glance diagnosis (#401 review r2).
+      const configuredKeys = Object.keys(fallbacks);
+      const unwiredSummary = wired.length
+        ? ` | fallbacks wired: ${wired.join("; ")}`
+        : configuredKeys.length
+          ? ` | no fallbacks wired — chains configured for: ${configuredKeys.join(", ")}`
+          : " | no fallbacks wired — none configured (LITELLM_FALLBACKS='{}' disables all chains)";
       console.error(
         `[litellm-provider] registered ${models.length} model(s): ${models.map((m) => m.id).join(", ")}` +
-          (wired.length ? ` | fallbacks wired: ${wired.join("; ")}` : " | no fallbacks wired"),
+          unwiredSummary,
       );
     }
     
@@ -4933,7 +4979,7 @@ spec:
         # the fork-maintenance.yaml template output (scripts/checks/defs/
         # hooks/skill CMs) and the litellm extension payload.
         checksum/fork-maintenance: 082d8c5472ee15b9beacfd112a46beff3f5121af68d95f1af2eadb6fd64372f4
-        checksum/litellm-extension: afd5e855c8f1190f1e09581349c01759d664cc4ffd1f35bce19a0c31b8279122
+        checksum/litellm-extension: 3bad7fa6f1768b993ae4cd49586a188e94f8e8f2aa1185fdf4f4d15ce4fd0a4c
     spec:
       imagePullSecrets:
         - name: ghcr-pull

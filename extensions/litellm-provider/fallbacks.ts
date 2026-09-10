@@ -26,6 +26,11 @@
 export const DEFAULT_FALLBACKS: Record<string, string[]> = {
   "mtplx/qwen38-27b-optimized-speed-fp16": ["ali/anthropic/qwen3.8-flash"],
   "ali/anthropic/qwen3.8-flash": ["zai/anthropic/glm-5.3-flash"],
+  // glm is a live primary too — the --model default of cmd/harmostes-agent
+  // and harmostes.py (#401 review r2): without an entry a glm-primary run
+  // attaches no failover at all. flash is LARGER in both dimensions, so
+  // this entry clamps nothing.
+  "zai/anthropic/glm-5.3-flash": ["ali/anthropic/qwen3.8-flash"],
 };
 
 /**
@@ -96,8 +101,9 @@ export interface ChainedModel {
  * - a chained model's ids are filtered to DISCOVERED groups (a router
  *   cannot fail over to a group it does not know); dropped ids surface in
  *   `droppedIds` for the warning log;
- * - a chain that filters to empty attaches nothing (and is reported
- *   unwired);
+ * - a chain that filters to empty attaches nothing (invisible in
+ *   `wired` — the caller's summary log distinguishes "none configured"
+ *   from "configured but none wired");
  * - chained models register min(primary, fallback) windows so the
  *   post-failover replay fits the fallback group (with a clampNote for
  *   the log).
@@ -108,10 +114,13 @@ export function applyChains(
   byId: Map<string, { max_input_tokens?: number; max_output_tokens?: number }>,
 ): { wired: string[]; annotated: ChainedModel[]; unwiredChains: string[] } {
   const wired: string[] = [];
-  // A chain keyed by a primary this proxy does not serve is INERT — the
-  // per-model loop below never reaches it (no droppedIds, no clampNote, no
-  // warning). Surface it: "the platform decision's chain is inert on this
-  // proxy" must be a log line, not a reading exercise (#401 review).
+  // Chains keyed by a primary this proxy does not serve are INERT — the
+  // per-model loop below never reaches them (no droppedIds, no clampNote,
+  // no warning). Surface exactly that: keys with NO DISCOVERED PRIMARY.
+  // This does NOT cover every inert shape — undiscovered FALLBACK ids
+  // surface per-model via droppedIds, an empty-filtering chain attaches
+  // nothing, and a served primary with no entry here is invisible to this
+  // field (the caller's summary log covers the last two) (#401 review r2).
   const unwiredChains = Object.keys(chains).filter((id) => !byId.has(id));
   const annotated = models.map((model) => {
     const rawChain = chains[model.id];

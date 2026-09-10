@@ -35,15 +35,21 @@ test("unparsable JSON degrades loudly to the default", () => {
 // primary is inert (applyChains never reaches it). The index.ts header
 // drifted exactly this way once (said flash→speed while the code said
 // flash→glm) — comments are not a pin.
-test("default chain composition covers both live primaries (#363)", () => {
+test("default chain composition covers every live primary (#363, #401 r2)", () => {
+  // Three live primaries in this repo: speed (ops review templates),
+  // flash (this chart's values.yaml default), glm (cmd/harmostes-agent +
+  // harmostes.py --model default). A live primary with no entry would
+  // attach no failover at all — the condition #363 was filed to fix.
   assert.deepEqual(DEFAULT_FALLBACKS, {
     "mtplx/qwen38-27b-optimized-speed-fp16": ["ali/anthropic/qwen3.8-flash"],
     "ali/anthropic/qwen3.8-flash": ["zai/anthropic/glm-5.3-flash"],
+    "zai/anthropic/glm-5.3-flash": ["ali/anthropic/qwen3.8-flash"],
   });
-  // And BOTH wire over a proxy exposing exactly the three known groups:
-  // speed keeps its own 256 KiB window (fallback is LARGER — no clamp, no
-  // early compaction); flash pays the documented fallback clamp down to
-  // glm (128 Ki ctx / 8k out) — the pre-#363 shape, retained on purpose.
+  // And ALL THREE wire over a proxy exposing exactly the three known
+  // groups: speed keeps its own 256 KiB window (fallback LARGER — no
+  // clamp, no early compaction); flash pays the documented fallback clamp
+  // down to glm (128 Ki ctx / 8k out) — the pre-#363 shape, retained on
+  // purpose; glm clamps nothing (flash is larger in both dimensions).
   const proxy = new Map([
     ["mtplx/qwen38-27b-optimized-speed-fp16", { max_input_tokens: 262144, max_output_tokens: 32768 }],
     ["ali/anthropic/qwen3.8-flash", { max_input_tokens: 1048576, max_output_tokens: 32768 }],
@@ -59,11 +65,27 @@ test("default chain composition covers both live primaries (#363)", () => {
   assert.deepEqual(flash.samplingParams, { fallbacks: ["zai/anthropic/glm-5.3-flash"] });
   assert.equal(flash.contextWindow, 131072); // clamped to glm — the retained #373 chain's cost
   assert.match(flash.clampNote!, /ctx 1048576→131072/);
+  const glm = annotated.find((m) => m.id === "zai/anthropic/glm-5.3-flash")!;
+  assert.deepEqual(glm.samplingParams, { fallbacks: ["ali/anthropic/qwen3.8-flash"] });
+  assert.equal(glm.contextWindow, 131072); // own window — flash is larger, no clamp
+  assert.equal(glm.clampNote, undefined);
   assert.deepEqual(wired.sort(), [
     "ali/anthropic/qwen3.8-flash → zai/anthropic/glm-5.3-flash", // wired entries are primary→fallback summaries
     "mtplx/qwen38-27b-optimized-speed-fp16 → ali/anthropic/qwen3.8-flash",
+    "zai/anthropic/glm-5.3-flash → ali/anthropic/qwen3.8-flash",
   ]);
   assert.deepEqual(unwiredChains, []); // every default key is a served primary
+});
+
+// The documented off-switch, pinned (#401 review r2: it had no test at any
+// layer, while a PARTIAL override silently strips the platform decision —
+// whole-map substitution is the documented semantics, so the protection
+// for it is the composition pin above plus the summary log in index.ts
+// that distinguishes "none configured" from "configured but none wired").
+test("resolveFallbackChains: '{}' is the off-switch — empty chains, no warning", () => {
+  const { chains, warning } = resolveFallbackChains("{}");
+  assert.deepEqual(chains, {});
+  assert.equal(warning, undefined);
 });
 
 // A chain keyed by a primary the proxy does not serve must SURFACE, not
@@ -209,5 +231,6 @@ test("resolveFallbackChains: the default does not leak by reference", () => {
   assert.deepEqual(after, {
     "mtplx/qwen38-27b-optimized-speed-fp16": ["ali/anthropic/qwen3.8-flash"],
     "ali/anthropic/qwen3.8-flash": ["zai/anthropic/glm-5.3-flash"],
+    "zai/anthropic/glm-5.3-flash": ["ali/anthropic/qwen3.8-flash"],
   });
 });

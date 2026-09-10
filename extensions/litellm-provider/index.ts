@@ -55,8 +55,12 @@
  * is not transitive: a proxy-side chain hanging off the fallback group is
  * invisible here. Chains are keyed by PRIMARY model id: an entry for a
  * model this proxy does not serve is inert (reported at startup,
- * unwiredChains) — which is why the default table carries every live
- * primary direction. (5) A failover moves the whole review context to a
+ * unwiredChains = keys with no discovered primary; undiscovered fallback
+ * ids and empty-filtering chains surface via droppedIds / the wiring
+ * summary instead). The default table carries an entry for every live
+ * primary direction (speed, flash, glm); a LITELLM_FALLBACKS override
+ * REPLACES the whole map — '{}' is the off-switch. (5) A failover moves
+ * the whole review context to a
  * DIFFERENT upstream group — chains are Deployment-env-settable, so the
  * trust boundary for review payloads is whoever can edit that Deployment.
  */
@@ -160,8 +164,18 @@ export default async function (_pi: ExtensionAPI) {
   // Honest wiring log: applyChains reports the chains actually ATTACHED —
   // fully-resolved (primary known, every fallback id a discovered group)
   // and non-empty. Anything else is "no fallbacks wired" for that model.
+  // Distinguish "nothing configured" (the '{}' off-switch) from
+  // "configured but nothing usable" (typo'd/partial override, group
+  // dropped mid-rollout) — the worst-case symptom (a dead stream with no
+  // failover) becomes a one-glance diagnosis (#401 review r2).
+  const configuredKeys = Object.keys(fallbacks);
+  const unwiredSummary = wired.length
+    ? ` | fallbacks wired: ${wired.join("; ")}`
+    : configuredKeys.length
+      ? ` | no fallbacks wired — chains configured for: ${configuredKeys.join(", ")}`
+      : " | no fallbacks wired — none configured (LITELLM_FALLBACKS='{}' disables all chains)";
   console.error(
     `[litellm-provider] registered ${models.length} model(s): ${models.map((m) => m.id).join(", ")}` +
-      (wired.length ? ` | fallbacks wired: ${wired.join("; ")}` : " | no fallbacks wired"),
+      unwiredSummary,
   );
 }

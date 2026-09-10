@@ -24,7 +24,8 @@
  * primary model group fails mid-run, the proxy's router fails over to the
  * fallback group and the agent's stream continues instead of dying. Default
  * chain: mtplx/qwen38-27b-optimized-speed-fp16 → ali/anthropic/qwen3.8-flash
- * (both live on the proxy; the platform decision, #363). Override with LITELLM_FALLBACKS, a JSON object
+ * (both live on the proxy; the platform decision, #363). Override with
+ * LITELLM_FALLBACKS, a JSON object
  * mapping model id → array of fallback ids — resolved by fallbacks.ts, which
  * degrades to the default chain on any semantically-bad value. NOTE the
  * naming boundary: on the proxy, ids are BARE group names (mtplx/...);

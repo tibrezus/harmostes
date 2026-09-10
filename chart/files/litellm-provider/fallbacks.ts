@@ -7,12 +7,17 @@
  * of #359: valid JSON with a wrong shape is the accidental-value risk).
  */
 
-// The target is operator-chosen (2026-09-08: glm-5.3-flash via the
-// anthropic-compatible route — the mtplx speed target stalled at long
-// context, diagnosed in #373's rollback; glm smoke-verified 2/2).
-// Both live in the proxy key's scope.
+// Platform decision (#363): the review primary is the mtplx speed target
+// and the extension default chain follows — speed → qwen3.8-flash. History:
+// speed was demoted 2026-09-08 (#373's rollback — it stalled at long
+// context) and glm-5.3-flash served as primary-then-fallback since; the
+// platform re-promoted it as PRIMARY with the lean-context contract (the
+// review run bound keeps context well inside speed's 256 KiB window, so
+// the stall regime is contractually out of reach — the min-window clamp
+// below registers exactly that window). All ids live in the proxy key's
+// scope. ops-side template flip: k8s-config 8c1fb609.
 export const DEFAULT_FALLBACKS: Record<string, string[]> = {
-  "ali/anthropic/qwen3.8-flash": ["zai/anthropic/glm-5.3-flash"],
+  "mtplx/qwen38-27b-optimized-speed-fp16": ["ali/anthropic/qwen3.8-flash"],
 };
 
 /**

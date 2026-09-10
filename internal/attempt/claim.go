@@ -396,6 +396,42 @@ func ReleaseClaimDead(ctx context.Context, c client.Client, namespace, attemptNa
 	return recorded, deadDispatches, err
 }
 
+// FinalizeCancelledClaim finalizes a claim the gate released as superseded or
+// closed while its review Job was still running (#402): the cancel-on-supersede
+// pass deleted the Job, and this records the cancellation in the ledger —
+// run records still "running" are failed (the worker may have been SIGTERMed
+// before it could write its own outcome — the gate is the death observer, the
+// same convention ReleaseClaimDead established), and the phase reaches a
+// terminal state instead of a forever-reconciling husk.
+//
+// Unlike ReleaseClaimDead, NO breaker counter moves: the dispatch did not die
+// unluckily — the gate decided the work is obsolete. Cancelling must never
+// spend the churn budget or the dead-dispatch budget (the released claim is
+// off the live list either way; this is pure ledger hygiene).
+//
+// IDEMPOTENT by construction: the patch only touches non-terminal phases and
+// run records, and a worker-written terminal outcome is preserved verbatim.
+// The release reason is re-checked and never modified.
+func FinalizeCancelledClaim(ctx context.Context, c client.Client, namespace, attemptName, reason string) error {
+	return patchAttemptStatus(ctx, c, namespace, attemptName, func(s *v1alpha1.AttemptStatus) {
+		now := metav1.NewTime(time.Now())
+		for i := range s.Runs {
+			if s.Runs[i].Phase == "" || s.Runs[i].Phase == "running" {
+				s.Runs[i].Phase = "failed"
+				s.Runs[i].EndedAt = now
+			}
+		}
+		if s.Phase == "" || s.Phase == v1alpha1.AttemptPhaseReconciling {
+			if reason == "superseded" {
+				s.Phase = v1alpha1.AttemptPhaseSuperseded
+			} else {
+				s.Phase = v1alpha1.AttemptPhaseFailed
+			}
+			s.Message = fmt.Sprintf("review cancelled (%s) — Job deleted before the run bound; no verdict could land", reason)
+		}
+	})
+}
+
 // markClaimReleased / markClaimLive maintain the release marker (see
 // ReviewClaimLabel) under the SAME write discipline as the status ledger
 // (#257): Get → RV-preconditioned MergeFromWithOptimisticLock inside

@@ -31,6 +31,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -213,11 +214,22 @@ func runOneShot() {
 	if wf.Spec.ReviewReady != nil && !dispatched {
 		gateTL := timeline.NewGateWriter(dapr.Tracing(dapr.New(os.Getenv("DAPR_HTTP_ENDPOINT"))),
 			envOr("HARMOSTES_STATE_STORE", "statestore"), wf.Name, os.Getenv("HARMOSTES_ATTEMPT"), subjectFromEnv())
+		// Cancel-on-supersede (#402): default ON, malformed value fails fast —
+		// same convention as the consumer's DispatchConfigFromEnv parse.
+		cancelOnSupersede := true
+		if v := os.Getenv("HARMOSTES_CANCEL_ON_SUPERSEDE"); v != "" {
+			b, err := strconv.ParseBool(v)
+			if err != nil {
+				fatal("HARMOSTES_CANCEL_ON_SUPERSEDE=%q: must be a boolean", v)
+			}
+			cancelOnSupersede = b
+		}
 		gateDeps := worker.GateDeps{
 			Status: k8s.StatusPatcher{Client: cl, Namespace: namespace},
 			Client: cl, Scheme: scheme,
 			Log: logf, TL: gateTL,
-			Wake: wakeFromEnv(),
+			Wake:              wakeFromEnv(),
+			CancelOnSupersede: cancelOnSupersede,
 		}
 		dispatches, err := worker.RunReviewGateWake(ctx, gateDeps, wf)
 		if err != nil {

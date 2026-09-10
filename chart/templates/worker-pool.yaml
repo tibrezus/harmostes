@@ -64,6 +64,8 @@ spec:
               value: {{ .Values.worker.job.maxConcurrent | default 3 | quote }}
             - name: HARMOSTES_ATTEMPT_RETENTION
               value: {{ .Values.worker.job.attemptRetention | default "720h" | quote }}
+            - name: HARMOSTES_CANCEL_ON_SUPERSEDE
+              value: {{ .Values.worker.job.cancelOnSupersede | default true | quote }}
             - name: HARMOSTES_JOB_TTL_SECONDS
               value: {{ .Values.worker.job.ttlSecondsAfterFinished | default 3600 | quote }}
             - name: HARMOSTES_WORKER_IMAGE

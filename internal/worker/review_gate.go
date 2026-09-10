@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	kapierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -62,8 +63,14 @@ type GateDeps struct {
 	// (#385); 0 means the 720h default (chart: worker.job.attemptRetention;
 	// GC cannot be disabled).
 	AttemptRetention time.Duration
-	Log              func(format string, args ...any)
-	TL               timeline.Writer
+	// CancelOnSupersede deletes the review Job of a claim the gate released
+	// as superseded/closed (#402): the dead-head review otherwise burns the
+	// full run bound before the moved-head guard discards its verdict —
+	// pure token loss. Default on (chart: worker.job.cancelOnSupersede);
+	// the pass never cancels a live claim and never moves a breaker counter.
+	CancelOnSupersede bool
+	Log               func(format string, args ...any)
+	TL                timeline.Writer
 	// Wake carries the TRIGGER EVENT that scheduled this run (#349): the
 	// controller publishes it, the consumer hands it down with the run
 	// request, and the gate turns it into the labeled-scan's leading
@@ -668,6 +675,47 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 		case review.DecisionStanddown:
 			lastDecision, lastReason = string(res.Decision), res.Reason
 			emitGate(ctx, deps.TL, liveAgg, res, cand.repo, cand.pr)
+		}
+	}
+
+	// ── Cancel-on-supersede (#402): a claim the gate released as superseded
+	// or closed leaves its review Job RUNNING — nothing else deletes it, so
+	// the dead-head review burns the full run bound and the moved-head guard
+	// then discards the verdict. Pure token loss, recurring on every push
+	// during a review window. This pass pairs the one job snapshot with the
+	// CURRENT attempt state: Released with a cancellation reason → delete the
+	// Job and finalize the ledger. Live claims never match (their attempt
+	// reads Released=false — a same-head revival re-arms before this read),
+	// and horizon releases are excluded on purpose: that verdict may still be
+	// valid at the pinned head (ADR-0006 lets it post; the gate consumes it).
+	// No counter moves — cancelling a decided-obsolete run is not a dead
+	// dispatch. Fail-closed on the same polarity as the release passes: an
+	// aborted sweep or a failed job list is an unreliable observer and must
+	// not delete; the next healthy sweep converges (≤ one sweep of tail waste).
+	if deps.CancelOnSupersede && ctx.Err() == nil && jobsKnown() {
+		for _, j := range activeJobs() {
+			name := j.Labels[v1alpha1.AttemptLabel]
+			if name == "" {
+				continue
+			}
+			var at v1alpha1.Attempt
+			if err := deps.Client.Get(ctx, client.ObjectKey{Namespace: wf.Namespace, Name: name}, &at); err != nil {
+				log("review-ready: cancel pass: get attempt %s: %v", name, err)
+				continue
+			}
+			r := at.Status.Review
+			if r == nil || !r.Released ||
+				(r.ReleaseReason != "superseded" && r.ReleaseReason != "closed") {
+				continue // live (or revived) claim, or a non-cancellation release
+			}
+			if err := k8s.DeleteJob(ctx, deps.Client, wf.Namespace, j.Name); err != nil && !kapierrors.IsNotFound(err) {
+				log("review-ready: cancel %s (%s): delete job %s failed: %v", r.PR, r.HeadSHA, j.Name, err)
+				continue
+			}
+			if err := attempt.FinalizeCancelledClaim(ctx, deps.Client, wf.Namespace, name, r.ReleaseReason); err != nil {
+				log("review-ready: finalize cancelled attempt %s failed: %v", name, err)
+			}
+			log("review-ready: cancelled job %s for %s claim %s at %s — dead-head review stopped before the run bound (#402)", j.Name, r.ReleaseReason, name, r.HeadSHA)
 		}
 	}
 

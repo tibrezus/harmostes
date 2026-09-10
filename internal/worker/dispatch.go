@@ -60,7 +60,12 @@ type DispatchConfig struct {
 	// AttemptRetention GCs terminal/statusless attempts past this age
 	// (#385). 0 means the 720h default; GC cannot be disabled — the knob
 	// tunes the horizon, it does not turn accumulation back on.
-	AttemptRetention     time.Duration
+	AttemptRetention time.Duration
+	// CancelOnSupersede deletes the review Job of a claim released as
+	// superseded/closed (#402) — the dead-head review otherwise burns the
+	// full run bound before the moved-head guard discards its verdict.
+	// Default on; HARMOSTES_CANCEL_ON_SUPERSEDE=false turns it off.
+	CancelOnSupersede    bool
 	JobImage             string
 	ServiceAccount       string
 	JobTTLSeconds        *int32
@@ -113,6 +118,16 @@ func DispatchConfigFromEnv(logf func(string, ...any)) (DispatchConfig, error) {
 		if d > 0 {
 			cfg.AttemptRetention = d
 		}
+	}
+	// Cancel-on-supersede (#402): default ON — the waste is pure loss. A
+	// malformed value is an error, not a silent default (#311 convention).
+	cfg.CancelOnSupersede = true
+	if v := os.Getenv("HARMOSTES_CANCEL_ON_SUPERSEDE"); v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return cfg, fmt.Errorf("HARMOSTES_CANCEL_ON_SUPERSEDE=%q: must be a boolean", v)
+		}
+		cfg.CancelOnSupersede = b
 	}
 	ttl := int32(3600)
 	if v := os.Getenv("HARMOSTES_JOB_TTL_SECONDS"); v != "" {
@@ -274,6 +289,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req RunRequest) error {
 		Scheme:             d.scheme,
 		FleetMaxConcurrent: d.cfg.FleetMaxConcurrent,
 		AttemptRetention:   d.cfg.AttemptRetention,
+		CancelOnSupersede:  d.cfg.CancelOnSupersede,
 		Log:                d.logf,
 		Wake:               GateWake{PR: req.Pr, Action: req.Action, Revision: req.Revision},
 		TL: timeline.NewGateWriter(dapr.Tracing(dapr.New(os.Getenv("DAPR_HTTP_ENDPOINT"))),

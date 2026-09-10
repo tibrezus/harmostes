@@ -5293,6 +5293,8 @@ spec:
               value: "3"
             - name: HARMOSTES_ATTEMPT_RETENTION
               value: "720h"
+            - name: HARMOSTES_CANCEL_ON_SUPERSEDE
+              value: "true"
             - name: HARMOSTES_JOB_TTL_SECONDS
               value: "3600"
             - name: HARMOSTES_WORKER_IMAGE

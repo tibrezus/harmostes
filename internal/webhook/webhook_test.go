@@ -380,3 +380,31 @@ func TestUnsignedRejectedWhenSecretConfigured(t *testing.T) {
 		t.Fatalf("unsigned + secret configured must fail closed (401), got %d", rec.Code)
 	}
 }
+
+// TestPullRequestEventCICompletedAnnotates pins the CI-notify wake (#r33):
+// a repo's own CI pipeline POSTs a pull_request-shaped payload with
+// action=ci_completed when a run finishes (Forgejo Actions emits no
+// run-completion webhook). The handler stays dumb — verify → parse →
+// annotate; the gate re-verifies label ∧ CI at the head itself, so the
+// notification carries no authority.
+func TestPullRequestEventCICompletedAnnotates(t *testing.T) {
+	wf, sec := prWorkflow("w-ci", "", "")
+	h := newTestHandler(sec, wf)
+
+	body := prEventBody("ci_completed", 42, "abc123def4567890", "tibrez/rhesadox", "https://git.rezus.cloud/tibrez/rhesadox")
+	req := httptest.NewRequest(http.MethodPost, "/webhook/w-ci?namespace=harmostes", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req, "w-ci")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+	var got v1alpha1.Workflow
+	_ = h.Get(context.Background(), types.NamespacedName{Namespace: "harmostes", Name: "w-ci"}, &got)
+	if got.Annotations[TriggerRevisionAnnotation] != "abc123def4567890" {
+		t.Errorf("trigger-revision = %q", got.Annotations[TriggerRevisionAnnotation])
+	}
+	if got.Annotations[TriggerActionAnnotation] != "ci_completed" {
+		t.Errorf("trigger-action = %q", got.Annotations[TriggerActionAnnotation])
+	}
+}

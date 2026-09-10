@@ -213,11 +213,20 @@ func runOneShot() {
 	if wf.Spec.ReviewReady != nil && !dispatched {
 		gateTL := timeline.NewGateWriter(dapr.Tracing(dapr.New(os.Getenv("DAPR_HTTP_ENDPOINT"))),
 			envOr("HARMOSTES_STATE_STORE", "statestore"), wf.Name, os.Getenv("HARMOSTES_ATTEMPT"), subjectFromEnv())
+		// Cancel-on-supersede (#402): shared parse with the consumer's config
+		// path (one default, one error surface) — a divergent Job-vs-pool
+		// behavior here would make cancellation depend on which process
+		// happened to run the sweep.
+		cancelOnSupersede, cerr := worker.CancelOnSupersedeFromEnv()
+		if cerr != nil {
+			fatal("review-ready: %v", cerr)
+		}
 		gateDeps := worker.GateDeps{
 			Status: k8s.StatusPatcher{Client: cl, Namespace: namespace},
 			Client: cl, Scheme: scheme,
 			Log: logf, TL: gateTL,
-			Wake: wakeFromEnv(),
+			Wake:                     wakeFromEnv(),
+			DisableCancelOnSupersede: !cancelOnSupersede,
 		}
 		dispatches, err := worker.RunReviewGateWake(ctx, gateDeps, wf)
 		if err != nil {

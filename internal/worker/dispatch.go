@@ -60,13 +60,18 @@ type DispatchConfig struct {
 	// AttemptRetention GCs terminal/statusless attempts past this age
 	// (#385). 0 means the 720h default; GC cannot be disabled — the knob
 	// tunes the horizon, it does not turn accumulation back on.
-	AttemptRetention     time.Duration
-	JobImage             string
-	ServiceAccount       string
-	JobTTLSeconds        *int32
-	DaprdImage           string
-	PluginConfigMaps     []string
-	ExtraConfigMapMounts []k8s.ConfigMapMount
+	AttemptRetention time.Duration
+	// DisableCancelOnSupersede turns the #402 cancellation pass off
+	// superseded/closed (#402) — the dead-head review otherwise burns the
+	// full run bound before the moved-head guard discards its verdict.
+	// Default on; HARMOSTES_CANCEL_ON_SUPERSEDE=false turns it off.
+	DisableCancelOnSupersede bool
+	JobImage                 string
+	ServiceAccount           string
+	JobTTLSeconds            *int32
+	DaprdImage               string
+	PluginConfigMaps         []string
+	ExtraConfigMapMounts     []k8s.ConfigMapMount
 }
 
 // DispatchConfigFromEnv resolves the fleet-level dispatch configuration
@@ -76,6 +81,34 @@ type DispatchConfig struct {
 // (default 3600), HARMOSTES_PLUGIN_CONFIGMAPS, HARMOSTES_EXTRA_CONFIGMAP_MOUNTS,
 // and the optional HARMOSTES_DAPRD_IMAGE pin.
 //
+// CancelOnSupersedeFromEnv resolves the cancel-on-supersede knob (#402):
+// default ON — the waste is pure loss — malformed values fail fast (#311
+// convention). ONE parse for BOTH boundaries (the consumer's
+// DispatchConfigFromEnv and the one-shot run's gate deps): two sites
+// encoding one default is the exact shape DispatchConfigFromEnv exists to
+// kill (#311/#314), and a divergent default here would make the Job path
+// and the pool path disagree on whether dead-head reviews get cancelled.
+func CancelOnSupersedeFromEnv() (bool, error) {
+	v := os.Getenv("HARMOSTES_CANCEL_ON_SUPERSEDE")
+	if v == "" {
+		return true, nil
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		return false, fmt.Errorf("HARMOSTES_CANCEL_ON_SUPERSEDE=%q: must be a boolean", v)
+	}
+	return b, nil
+}
+
+// cancelOnSupersedeDisabledFromEnv is the DispatchConfig polarity: the Go
+// zero value must equal the shipping behavior (OFF), so the struct carries
+// the negation (#403 r4 P3 — a missing feature must be invisible, a missing
+// safety knob must not be).
+func cancelOnSupersedeDisabledFromEnv() (bool, error) {
+	on, err := CancelOnSupersedeFromEnv()
+	return !on, err
+}
+
 // Malformed values are ERRORS, not warnings-with-fallback: a chart typo that
 // silently drops a mount or silently keeps a default is the #311 failure
 // mode — fail-fast at boot turns it into an immediate, visible crash-loop.
@@ -113,6 +146,12 @@ func DispatchConfigFromEnv(logf func(string, ...any)) (DispatchConfig, error) {
 		if d > 0 {
 			cfg.AttemptRetention = d
 		}
+	}
+	// Cancel-on-supersede (#402): default ON — the waste is pure loss. A
+	// malformed value is an error, not a silent default (#311 convention).
+	// Shared with the one-shot gate path via CancelOnSupersedeFromEnv.
+	if cfg.DisableCancelOnSupersede, err = cancelOnSupersedeDisabledFromEnv(); err != nil {
+		return cfg, err
 	}
 	ttl := int32(3600)
 	if v := os.Getenv("HARMOSTES_JOB_TTL_SECONDS"); v != "" {
@@ -269,13 +308,14 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req RunRequest) error {
 	// straight through (every class is Job-per-run, ADR-0007). The gate
 	// drains to capacity: one sweep accepts every free slot.
 	gateDeps := GateDeps{
-		Status:             k8s.StatusPatcher{Client: d.cl, Namespace: req.Namespace},
-		Client:             d.cl,
-		Scheme:             d.scheme,
-		FleetMaxConcurrent: d.cfg.FleetMaxConcurrent,
-		AttemptRetention:   d.cfg.AttemptRetention,
-		Log:                d.logf,
-		Wake:               GateWake{PR: req.Pr, Action: req.Action, Revision: req.Revision},
+		Status:                   k8s.StatusPatcher{Client: d.cl, Namespace: req.Namespace},
+		Client:                   d.cl,
+		Scheme:                   d.scheme,
+		FleetMaxConcurrent:       d.cfg.FleetMaxConcurrent,
+		AttemptRetention:         d.cfg.AttemptRetention,
+		DisableCancelOnSupersede: !!d.cfg.DisableCancelOnSupersede,
+		Log:                      d.logf,
+		Wake:                     GateWake{PR: req.Pr, Action: req.Action, Revision: req.Revision},
 		TL: timeline.NewGateWriter(dapr.Tracing(dapr.New(os.Getenv("DAPR_HTTP_ENDPOINT"))),
 			envOr("HARMOSTES_STATE_STORE", "statestore"), wf.Name, "", triggerSubject(req)),
 	}

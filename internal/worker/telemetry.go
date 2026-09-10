@@ -42,7 +42,8 @@ func recordReviewGateReason(ctx context.Context, workflow, repo, reason string) 
 	c, _ := observability.Meter().Int64Counter("harmostes_review_gate_total",
 		metric.WithDescription("Review-gate arm refusals and sweep degradations per workflow "+
 			"(dismissed = horizon guard, budget = dispatch-lost churn budget, breaker = dead-dispatch guard, "+
-			"arm-error = ctx-bound arm, scan-error = labeled scan failed, sweep-abort = sweep deadline cancelled it)."))
+			"arm-error = ctx-bound arm, scan-error = labeled scan failed, sweep-abort = sweep deadline cancelled it, "+
+			"cancel = superseded/closed review Job deleted, #402)."))
 	c.Add(ctx, 1, metric.WithAttributes(
 		attribute.String("workflow", workflow),
 		attribute.String("repo", repo),

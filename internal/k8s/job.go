@@ -257,6 +257,18 @@ func ListActiveJobs(ctx context.Context, cl client.Client, namespace, workflow s
 	return live, nil
 }
 
+// DeleteJob deletes a per-attempt review Job by name (#402). Used by the
+// gate's cancel-on-supersede pass: a claim released as superseded/closed
+// leaves its Job running — nothing else deletes it, so the dead-head review
+// would burn the full run bound before the moved-head guard discards the
+// verdict. Deleting uses default (foreground-adjacent) propagation: the
+// running pod is SIGTERMed, which IS the mechanism — the ctx-cancelled run
+// never reaches post-review, so no verdict can land for the dead head.
+func DeleteJob(ctx context.Context, cl client.Client, namespace, name string) error {
+	j := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name}}
+	return cl.Delete(ctx, j)
+}
+
 // jobFailed reports whether the Job reached its failed condition
 // (backoffLimit 0 → one pod failure finishes it).
 func jobFailed(j *batchv1.Job) bool {

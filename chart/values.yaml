@@ -39,6 +39,7 @@ worker:
   job:                     # per-Attempt Job pods (ADR-0007)
     maxConcurrent: 3       # fleet default; spec.reviewReady.maxConcurrent overrides per Workflow
     attemptRetention: 720h # GC attempts terminal/statusless older than this (#385); 0 means the default — GC cannot be disabled. Bounds the per-attempt audit ledger.
+    cancelOnSupersede: true # delete the review Job of a claim released superseded/closed (#402); false = let dead-head reviews burn the run bound (pre-#402 behavior)
     ttlSecondsAfterFinished: 3600
 
   # cache (#336): renders a shared RWX PVC the per-Attempt Jobs mount at

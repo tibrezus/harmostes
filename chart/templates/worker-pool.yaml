@@ -64,6 +64,15 @@ spec:
               value: {{ .Values.worker.job.maxConcurrent | default 3 | quote }}
             - name: HARMOSTES_ATTEMPT_RETENTION
               value: {{ .Values.worker.job.attemptRetention | default "720h" | quote }}
+            - name: HARMOSTES_CANCEL_ON_SUPERSEDE
+              {{- /* hasKey, not `| default true`: Helm treats false as empty,
+                   so the default filter would render "true" for an explicit
+                   false — the documented off-switch must stay reachable. */}}
+              {{- if hasKey .Values.worker.job "cancelOnSupersede" }}
+              value: {{ .Values.worker.job.cancelOnSupersede | quote }}
+              {{- else }}
+              value: "true"
+              {{- end }}
             - name: HARMOSTES_JOB_TTL_SECONDS
               value: {{ .Values.worker.job.ttlSecondsAfterFinished | default 3600 | quote }}
             - name: HARMOSTES_WORKER_IMAGE

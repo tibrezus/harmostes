@@ -234,6 +234,26 @@ jobs:
       - name: helm template (render smoke test)
         run: helm template harmostes chart/ --set namespace=harmostes > /dev/null
 
+      # Cancel-on-supersede knob reachability (#402 r2 P3): the template must
+      # use hasKey, not `| default true` — Helm treats false as empty, so the
+      # default filter would render "true" even for an explicit false and the
+      # documented off-switch would be unreachable from values. All three
+      # paths (explicit false, explicit true, unset) must render their
+      # documented env value.
+      - name: helm template (cancel-on-supersede knob paths)
+        run: |
+          set -e
+          for case in "false:false" "true:true" "unset:true"; do
+            set_val="${case%%:*}"; want="${case##*:}"
+            if [ "$set_val" = unset ]; then
+              got=$(helm template harmostes chart/ --set namespace=harmostes | grep -A1 'HARMOSTES_CANCEL_ON_SUPERSEDE' | grep -o 'value: "[a-z]*"')
+            else
+              got=$(helm template harmostes chart/ --set namespace=harmostes --set "worker.job.cancelOnSupersede=$set_val" | grep -A1 'HARMOSTES_CANCEL_ON_SUPERSEDE' | grep -o 'value: "[a-z]*"')
+            fi
+            [ "$got" = "value: \"$want\"" ] || { echo "knob path $set_val: want value: \"$want\", got $got"; exit 1; }
+          done
+          echo "cancel-on-supersede knob: all three render paths correct"
+
       # Declarative-layer render assertions (ADR-0011; r1 review P8 — the
       # default render exercises NONE of the new templates, which is how four
       # defects survived a green CI). Renders with the fork engine, resolver,

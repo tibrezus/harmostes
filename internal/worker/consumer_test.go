@@ -251,3 +251,31 @@ func TestDispatchConfigRejectsUnrunnable(t *testing.T) {
 		t.Fatal("non-numeric HARMOSTES_MAX_CONCURRENT must fail construction, not silently keep the default")
 	}
 }
+
+// The cancel-on-supersede knob (#402): default ON, parseable off, garbage is
+// a construction error — a chart typo must crash-loop at boot, not silently
+// restore the burn-the-run-bound behavior.
+func TestDispatchConfigCancelOnSupersedeKnob(t *testing.T) {
+	t.Setenv("HARMOSTES_WORKER_IMAGE", "harmostes:it")
+	cfg, err := DispatchConfigFromEnv(func(string, ...any) {})
+	if err != nil {
+		t.Fatalf("default config: %v", err)
+	}
+	if cfg.DisableCancelOnSupersede {
+		t.Fatal("cancel-on-supersede must default ON — the waste is pure loss")
+	}
+
+	t.Setenv("HARMOSTES_CANCEL_ON_SUPERSEDE", "false")
+	cfg, err = DispatchConfigFromEnv(func(string, ...any) {})
+	if err != nil {
+		t.Fatalf("off config: %v", err)
+	}
+	if !cfg.DisableCancelOnSupersede {
+		t.Fatal("HARMOSTES_CANCEL_ON_SUPERSEDE=false must disable the pass")
+	}
+
+	t.Setenv("HARMOSTES_CANCEL_ON_SUPERSEDE", "sometimes")
+	if _, err := DispatchConfigFromEnv(func(string, ...any) {}); err == nil {
+		t.Fatal("a malformed knob value must fail construction, not silently keep the default")
+	}
+}

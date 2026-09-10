@@ -16,6 +16,15 @@ var PullRequestWakeActions = map[string]bool{
 	"ready_for_review": true,
 	"label_updated":    true, // Forgejo granular-event name; the gate re-verifies state
 	"synchronized":     true, // Forgejo alias of synchronize — normalized at the edge
+	// ci_completed: the repo's OWN CI pipeline notifies harmostes when a
+	// pipeline run finishes (Forgejo Actions emits no run-completion
+	// webhook, so until the fork ships one, a final CI step POSTs a
+	// pull_request-shaped payload with this action). The gate wakes and
+	// re-verifies label ∧ CI at the annotated head — the notification
+	// itself carries no authority (r33: the handler stays dumb, the gate
+	// is the only evaluator). Kills the up-to-5-min dispatch-poll tail
+	// after the last check goes green; the sweep stays as the safety net.
+	"ci_completed": true,
 }
 
 // requestShapedActions is DERIVED from PullRequestWakeActions, not copied:

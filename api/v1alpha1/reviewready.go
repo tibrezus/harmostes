@@ -29,7 +29,30 @@ const (
 	// (timer bound) — the dead-dispatch class: the breaker counts it and the
 	// #331 hold keys on it. Distinct from DispatchLost by design.
 	ReleaseReasonDispatchTimeout = "dispatch-timeout"
+	// ReleaseReasonSuperseded / ReleaseReasonClosed: the gate decided the
+	// work is OBSOLETE (head moved / PR closed). Formerly open-string
+	// ("nothing branches on them") — the #402 cancel-on-supersede pass
+	// branches on exactly this set, so they are constants now, and the
+	// branching sites must agree through IsCancellationRelease (the
+	// DispatchLostWindowOpen lesson, r31 finding 4: two sites encoding one
+	// rule separately invited a wrong unification later).
+	ReleaseReasonSuperseded = "superseded"
+	ReleaseReasonClosed     = "closed"
 )
+
+// IsCancellationRelease reports whether a release reason marks a review the
+// gate decided is obsolete — the #402 cancel-on-supersede pass deletes those
+// claims' in-flight Jobs and finalizes their ledger. The predicate is THE
+// definition of the cancellation set: the gate's pass, the ledger
+// finalizer's phase mapping, and any future consumer branch through it, so
+// a reason rename cannot silently stop cancelling while the ledger still
+// records the release. Not in the set: horizon and standdown releases (the
+// verdict may still land — ADR-0006 lets it post at the pinned head) and
+// dispatch-lost/dispatch-timeout/sweep-aborted (never-dispatched or
+// already-dead runs — nothing left to cancel).
+func IsCancellationRelease(reason string) bool {
+	return reason == ReleaseReasonSuperseded || reason == ReleaseReasonClosed
+}
 
 // MaxDeadDispatchesPerHead is the dead-dispatch circuit breaker (#328): a
 // head whose dispatched reviews died without a verdict this many times is

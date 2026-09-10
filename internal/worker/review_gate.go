@@ -16,6 +16,7 @@ import (
 	kapierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -197,6 +198,11 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 	capacity := rr.EffectiveMaxConcurrent(deps.FleetMaxConcurrent)
 	api := newReviewAPI()
 	label := rr.EffectiveLabel()
+	// Durable writes (the sweep summary in D, the cancel pass's ledger
+	// finalization) run on a ctx the sweep deadline CANNOT cancel (r8 (e)):
+	// an aborted sweep must still leave its records truthful, or the failure
+	// mode this deadline exists for is invisible in the durable history.
+	recordCtx := context.WithoutCancel(ctx)
 
 	// Live status read: the timeline-transition dedupe reads the CURRENT
 	// aggregates, never the fetch-time snapshot (#257).
@@ -244,9 +250,14 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 
 	// ── A. In-flight claims: consume / expiry / refresh — never dispatch. ──
 	liveDispatched := 0
-	liveOn := map[string]bool{}      // normalized pointer → live claim present
-	keepArmed := map[string]bool{}   // armed-queued claims re-evaluated this sweep as waiting/proceed (r27)
-	releasedInA := map[string]bool{} // claims section A already released — the release pass's snapshot is stale
+	liveOn := map[string]bool{}    // normalized pointer → live claim present
+	keepArmed := map[string]bool{} // armed-queued claims re-evaluated this sweep as waiting/proceed (r27)
+	// releasedInA tracks claims section A already released — the release pass's snapshot is stale
+	releasedInA := map[string]bool{}
+	// newlyArmed records pointer → head SHA for arms THIS sweep performed —
+	// the cancel pass's log names the successor when the cancellation it
+	// reports was caused by an arm here (AC #5: the supersede→cancel pair).
+	newlyArmed := map[string]string{}
 	var out []GateDispatch
 	for _, c := range claims {
 		r := c.Status.Review
@@ -653,6 +664,7 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 				continue
 			}
 			out = append(out, GateDispatch{Envelope: res.Envelope, Attempt: at.Name})
+			newlyArmed[cand.pointer] = sha
 			free--
 			lastDecision, lastReason = string(res.Decision), res.Reason
 			emitGate(ctx, deps.TL, liveAgg, res, cand.repo, cand.pr)
@@ -670,6 +682,7 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 				recordReviewGate(ctx, wf.Name, cand.repo, err)
 			}
 			log("review-ready: armed %s at %s (waiting: %s)", cand.pointer, sha, res.Reason)
+			newlyArmed[cand.pointer] = sha
 			lastDecision, lastReason = string(res.Decision), res.Reason
 			emitGate(ctx, deps.TL, liveAgg, res, cand.repo, cand.pr)
 		case review.DecisionStanddown:
@@ -683,47 +696,68 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 	// the dead-head review burns the full run bound and the moved-head guard
 	// then discards the verdict. Pure token loss, recurring on every push
 	// during a review window. This pass pairs the one job snapshot with the
-	// CURRENT attempt state: Released with a cancellation reason → delete the
-	// Job and finalize the ledger. Live claims never match (their attempt
-	// reads Released=false — a same-head revival re-arms before this read),
-	// and horizon releases are excluded on purpose: that verdict may still be
-	// valid at the pinned head (ADR-0006 lets it post; the gate consumes it).
-	// No counter moves — cancelling a decided-obsolete run is not a dead
-	// dispatch. Fail-closed on the same polarity as the release passes: an
-	// aborted sweep or a failed job list is an unreliable observer and must
-	// not delete; the next healthy sweep converges (≤ one sweep of tail waste).
-	if deps.CancelOnSupersede && ctx.Err() == nil && jobsKnown() {
-		for _, j := range activeJobs() {
-			name := j.Labels[v1alpha1.AttemptLabel]
-			if name == "" {
-				continue
+	// CURRENT attempt state: Released with a cancellation reason (the shared
+	// IsCancellationRelease predicate) → delete the Job and finalize the
+	// ledger. Live claims never match (their attempt reads Released=false —
+	// a same-head revival re-arms before this read). Deliberately OUT of the
+	// set: horizon AND standdown releases — that verdict may still land at
+	// the pinned head (post-review keys on the head SHA, not the label, so
+	// even a label pulled mid-review can still post; ADR-0006 lets it, and
+	// the gate consumes it) — and dispatch-lost/dispatch-timeout/sweep-
+	// aborted, whose claims have no live Job left to cancel. No counter
+	// moves — cancelling a decided-obsolete run is not a dead dispatch.
+	// Fail-closed on the same polarity as the release passes: an aborted
+	// sweep or a failed job list is an unreliable observer and must not
+	// delete; the next healthy sweep converges (≤ one sweep of tail waste).
+	// The LEDGER WRITE runs on recordCtx (WithoutCancel): a deadline between
+	// DeleteJob and the finalize would manufacture the exact forever-
+	// reconciling husk this pass exists to end — the delete is destructive
+	// and stays on the guarded ctx, the bookkeeping is durable-write class
+	// (r8 (e), same rule as section D's summary).
+	// Defence-in-depth: the Job must be the controller-owned child of the
+	// attempt it names (BuildJob sets the ownerRef) — a forged label on a
+	// foreign Job is skipped, not honoured.
+	if deps.CancelOnSupersede {
+		if ctx.Err() != nil {
+			log("review-ready: sweep aborted (ctx: %v) — skipping the cancel pass (unreliable observer)", ctx.Err())
+		} else if !jobsKnown() {
+			log("review-ready: live-job list failed (%v) — skipping the cancel pass (delete is destructive; unknown must fail closed)", jobListErr)
+		} else {
+			for _, j := range activeJobs() {
+				name := j.Labels[v1alpha1.AttemptLabel]
+				if name == "" {
+					continue
+				}
+				var at v1alpha1.Attempt
+				if err := deps.Client.Get(ctx, client.ObjectKey{Namespace: wf.Namespace, Name: name}, &at); err != nil {
+					// An orphaned Job (attempt gone) self-cleans via
+					// ttlSecondsAfterFinished — log and leave it.
+					log("review-ready: cancel pass: get attempt %s: %v", name, err)
+					continue
+				}
+				r := at.Status.Review
+				if r == nil || !r.Released || !v1alpha1.IsCancellationRelease(r.ReleaseReason) {
+					continue // live (or revived) claim, or a non-cancellation release
+				}
+				if ref := j.ObjectMeta.OwnerReferences; len(ref) > 0 && ref[0].UID != types.UID(at.UID) {
+					log("review-ready: cancel pass: job %s names attempt %s but is owned by %s — skipping (forged or re-pointed label)", j.Name, name, ref[0].UID)
+					continue
+				}
+				if err := k8s.DeleteJob(ctx, deps.Client, wf.Namespace, j.Name); err != nil && !kapierrors.IsNotFound(err) {
+					log("review-ready: cancel %s (%s): delete job %s failed: %v", r.PR, r.HeadSHA, j.Name, err)
+					continue
+				}
+				if err := attempt.FinalizeCancelledClaim(recordCtx, deps.Client, wf.Namespace, name, r.ReleaseReason); err != nil {
+					log("review-ready: finalize cancelled attempt %s failed: %v", name, err)
+				}
+				log("review-ready: cancelled job %s for %s claim %s at %s — superseded by %s; dead-head review stopped before the run bound (#402)", j.Name, r.ReleaseReason, name, r.HeadSHA, newlyArmed[r.PR])
 			}
-			var at v1alpha1.Attempt
-			if err := deps.Client.Get(ctx, client.ObjectKey{Namespace: wf.Namespace, Name: name}, &at); err != nil {
-				log("review-ready: cancel pass: get attempt %s: %v", name, err)
-				continue
-			}
-			r := at.Status.Review
-			if r == nil || !r.Released ||
-				(r.ReleaseReason != "superseded" && r.ReleaseReason != "closed") {
-				continue // live (or revived) claim, or a non-cancellation release
-			}
-			if err := k8s.DeleteJob(ctx, deps.Client, wf.Namespace, j.Name); err != nil && !kapierrors.IsNotFound(err) {
-				log("review-ready: cancel %s (%s): delete job %s failed: %v", r.PR, r.HeadSHA, j.Name, err)
-				continue
-			}
-			if err := attempt.FinalizeCancelledClaim(ctx, deps.Client, wf.Namespace, name, r.ReleaseReason); err != nil {
-				log("review-ready: finalize cancelled attempt %s failed: %v", name, err)
-			}
-			log("review-ready: cancelled job %s for %s claim %s at %s — dead-head review stopped before the run bound (#402)", j.Name, r.ReleaseReason, name, r.HeadSHA)
 		}
 	}
 
 	// ── D. Aggregates (the Workflow status stops being a hot field). ──
-	// Durable records speak on a ctx the deadline CANNOT cancel (r8 (e)):
-	// an aborted sweep must still write its summary and its counters, or
-	// the failure mode this deadline exists for is invisible in it.
-	recordCtx := context.WithoutCancel(ctx)
+	// Durable records speak on recordCtx (defined with the sweep's shared
+	// state — WithoutCancel, r8 (e)); see the note there.
 	var abortAt *metav1.Time
 	if ctx.Err() != nil {
 		// The abort itself is countable — the effect of this safeguard is

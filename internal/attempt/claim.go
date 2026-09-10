@@ -410,24 +410,35 @@ func ReleaseClaimDead(ctx context.Context, c client.Client, namespace, attemptNa
 // off the live list either way; this is pure ledger hygiene).
 //
 // IDEMPOTENT by construction: the patch only touches non-terminal phases and
-// run records, and a worker-written terminal outcome is preserved verbatim.
-// The release reason is re-checked and never modified.
+// run records, and a worker-written terminal outcome is preserved verbatim —
+// the cancellation message is stamped ONLY when this call actually finalized
+// a running/empty run record (i.e. when the gate really is the death
+// observer); a run the worker already recorded honestly is never
+// second-guessed with an over-claiming message.
 func FinalizeCancelledClaim(ctx context.Context, c client.Client, namespace, attemptName, reason string) error {
+	if !v1alpha1.IsCancellationRelease(reason) {
+		return nil // not a cancellation — the ledger is not this call's business
+	}
 	return patchAttemptStatus(ctx, c, namespace, attemptName, func(s *v1alpha1.AttemptStatus) {
 		now := metav1.NewTime(time.Now())
+		finalizedRun := false
 		for i := range s.Runs {
 			if s.Runs[i].Phase == "" || s.Runs[i].Phase == "running" {
 				s.Runs[i].Phase = "failed"
 				s.Runs[i].EndedAt = now
+				finalizedRun = true
 			}
 		}
 		if s.Phase == "" || s.Phase == v1alpha1.AttemptPhaseReconciling {
-			if reason == "superseded" {
+			if reason == v1alpha1.ReleaseReasonSuperseded {
 				s.Phase = v1alpha1.AttemptPhaseSuperseded
 			} else {
 				s.Phase = v1alpha1.AttemptPhaseFailed
 			}
-			s.Message = fmt.Sprintf("review cancelled (%s) — Job deleted before the run bound; no verdict could land", reason)
+			finalizedRun = true
+		}
+		if finalizedRun {
+			s.Message = fmt.Sprintf("review cancelled (%s) — Job deleted before the run bound; the gate finalized this ledger as the death observer", reason)
 		}
 	})
 }

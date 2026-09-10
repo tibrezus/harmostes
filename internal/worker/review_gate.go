@@ -739,7 +739,7 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 				if r == nil || !r.Released || !v1alpha1.IsCancellationRelease(r.ReleaseReason) {
 					continue // live (or revived) claim, or a non-cancellation release
 				}
-				if ref := j.ObjectMeta.OwnerReferences; len(ref) > 0 && ref[0].UID != types.UID(at.UID) {
+				if ref := j.OwnerReferences; len(ref) > 0 && ref[0].UID != types.UID(at.UID) {
 					log("review-ready: cancel pass: job %s names attempt %s but is owned by %s — skipping (forged or re-pointed label)", j.Name, name, ref[0].UID)
 					continue
 				}

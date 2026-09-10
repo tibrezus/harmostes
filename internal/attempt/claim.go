@@ -372,13 +372,7 @@ func ReleaseClaimDead(ctx context.Context, c client.Client, namespace, attemptNa
 			recorded = true
 		}
 		deadDispatches = s.Review.DeadDispatches
-		now := metav1.NewTime(time.Now())
-		for i := range s.Runs {
-			if s.Runs[i].Phase == "" || s.Runs[i].Phase == "running" {
-				s.Runs[i].Phase = "failed"
-				s.Runs[i].EndedAt = now
-			}
-		}
+		finalizeRunningRuns(s, metav1.NewTime(time.Now()))
 		if s.Phase == "" || s.Phase == v1alpha1.AttemptPhaseReconciling {
 			s.Phase = v1alpha1.AttemptPhaseFailed
 			s.Message = fmt.Sprintf("run ended without a verdict (%s)", reason)
@@ -394,6 +388,23 @@ func ReleaseClaimDead(ctx context.Context, c client.Client, namespace, attemptNa
 		err = markClaimReleased(ctx, c, namespace, attemptName)
 	}
 	return recorded, deadDispatches, err
+}
+
+// finalizeRunningRuns fails every non-terminal run record, stamping its end
+// time — the ONE home of "the gate is the death observer" ledger hygiene
+// (shared by ReleaseClaimDead and FinalizeCancelledClaim, #402 r4 P2: a
+// third copy was one PR away). Returns whether anything was finalized, so
+// callers can decide whether their message is an honest observation.
+func finalizeRunningRuns(s *v1alpha1.AttemptStatus, now metav1.Time) bool {
+	finalized := false
+	for i := range s.Runs {
+		if s.Runs[i].Phase == "" || s.Runs[i].Phase == "running" {
+			s.Runs[i].Phase = "failed"
+			s.Runs[i].EndedAt = now
+			finalized = true
+		}
+	}
+	return finalized
 }
 
 // FinalizeCancelledClaim finalizes a claim the gate released as superseded or
@@ -430,14 +441,7 @@ func FinalizeCancelledClaim(ctx context.Context, c client.Client, namespace, att
 			return
 		}
 		now := metav1.NewTime(time.Now())
-		finalizedRun := false
-		for i := range s.Runs {
-			if s.Runs[i].Phase == "" || s.Runs[i].Phase == "running" {
-				s.Runs[i].Phase = "failed"
-				s.Runs[i].EndedAt = now
-				finalizedRun = true
-			}
-		}
+		finalizedRun := finalizeRunningRuns(s, now)
 		if s.Phase == "" || s.Phase == v1alpha1.AttemptPhaseReconciling {
 			if reason == v1alpha1.ReleaseReasonSuperseded {
 				s.Phase = v1alpha1.AttemptPhaseSuperseded
@@ -448,9 +452,13 @@ func FinalizeCancelledClaim(ctx context.Context, c client.Client, namespace, att
 		// The cancellation message is the death observer's statement: stamp it
 		// only when this call actually finalized a running/empty run record. A
 		// run the worker already recorded honestly (e.g. finished naturally
-		// between the job snapshot and this patch) keeps its own story.
+		// between the job snapshot and this patch) keeps its own story —
+		// the phase still moves (a stale reconciling must not survive), but
+		// with a distinct note, not a claim to have observed the death.
 		if finalizedRun {
 			s.Message = fmt.Sprintf("review cancelled (%s) — Job deleted before the run bound; the gate finalized this ledger as the death observer", reason)
+		} else if s.Message == "" {
+			s.Message = fmt.Sprintf("review cancelled (%s) — Job deleted after the run had already ended; the run record tells its own story", reason)
 		}
 	})
 }

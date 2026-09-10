@@ -63,17 +63,17 @@ type GateDeps struct {
 	// (#385); 0 means the 720h default (chart: worker.job.attemptRetention;
 	// GC cannot be disabled).
 	AttemptRetention time.Duration
-	// CancelOnSupersede deletes the review Job of a claim the gate released
-	// as superseded/closed (#402): the dead-head review otherwise burns the
-	// full run bound before the moved-head guard discards its verdict —
-	// pure token loss. Default on (chart: worker.job.cancelOnSupersede);
-	// the pass never cancels a live claim and never moves a breaker counter.
-	// The zero value is OFF while the product default is ON — every
-	// GateDeps construction site MUST set this explicitly, or cancellation
-	// silently regresses to burning run bounds.
-	CancelOnSupersede bool
-	Log               func(format string, args ...any)
-	TL                timeline.Writer
+	// DisableCancelOnSupersede turns the #402 cancellation pass OFF
+	// (the pass deletes the review Job of a claim the gate released as
+	// superseded/closed): the dead-head review otherwise burns the
+	// full run bound before the moved-head guard discards its verdict — pure
+	// token loss. Default OFF in Go — the zero value IS the shipping
+	// behavior — so a forgotten field cannot ship cancellation accidentally
+	// (the chart inverts: worker.job.cancelOnSupersede, default true). The
+	// pass never cancels a live claim and never moves a breaker counter.
+	DisableCancelOnSupersede bool
+	Log                      func(format string, args ...any)
+	TL                       timeline.Writer
 	// Wake carries the TRIGGER EVENT that scheduled this run (#349): the
 	// controller publishes it, the consumer hands it down with the run
 	// request, and the gate turns it into the labeled-scan's leading
@@ -719,7 +719,7 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 	// Defence-in-depth: the Job must be the controller-owned child of the
 	// attempt it names (BuildJob sets the ownerRef) — a forged label on a
 	// foreign Job is skipped, not honoured.
-	if deps.CancelOnSupersede {
+	if !deps.DisableCancelOnSupersede {
 		if ctx.Err() != nil {
 			log("review-ready: sweep aborted (ctx: %v) — skipping the cancel pass (unreliable observer)", ctx.Err())
 		} else if !jobsKnown() {
@@ -768,10 +768,19 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 					pair = fmt.Sprintf(" — superseded by %s", succ)
 				}
 				log("review-ready: cancelled job %s for %s claim %s at %s%s; dead-head review stopped before the run bound (#402)", j.Name, r.ReleaseReason, name, r.HeadSHA, pair)
-				// A cancellation is a gate DECISION, not debris — count it on
-				// the same durable series every other sweep decision class uses.
-				if repo, _, perr := parsePRPointer(r.PR); perr == nil {
+				// A cancellation is a gate DECISION, not debris — count it on the
+				// same durable series every other decision class uses, AND emit
+				// the timeline row so "why did my review die" joins release→
+				// cancel from the attempt's durable history, not from logs.
+				repo, _, perr := parsePRPointer(r.PR)
+				if perr == nil {
 					recordReviewGateReason(recordCtx, wf.Name, repo, "cancel")
+				}
+				if deps.TL != nil {
+					_ = deps.TL.Emit(recordCtx, timeline.KindGateCancel, "", map[string]any{
+						"reason": r.ReleaseReason, "pr": r.PR, "repo": repo,
+						"job": j.Name, "headSha": r.HeadSHA, "successorSha": newlyArmed[r.PR],
+					})
 				}
 			}
 		}

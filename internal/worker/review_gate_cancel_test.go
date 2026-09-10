@@ -11,6 +11,7 @@ package worker
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -87,7 +88,7 @@ func TestCancelOnSupersedeDeletesJobOfSupersededClaim(t *testing.T) {
 	claim := releasedClaimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#101", "deadbeef321", "superseded", disp)
 	job := reviewJobFixture(wf, claim)
 	deps, ctx := gateEnv(t, wf, st, claim, job)
-	deps.CancelOnSupersede = true
+	deps.DisableCancelOnSupersede = false
 
 	if _, err := RunReviewGateSweep(ctx, deps, wf); err != nil {
 		t.Fatalf("sweep: %v", err)
@@ -130,7 +131,7 @@ func TestCancelOnSupersedeClosedReasonFailsPhase(t *testing.T) {
 	claim := releasedClaimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#102", "deadbeef432", v1alpha1.ReleaseReasonPRClosed, disp)
 	job := reviewJobFixture(wf, claim)
 	deps, ctx := gateEnv(t, wf, st, claim, job)
-	deps.CancelOnSupersede = true
+	deps.DisableCancelOnSupersede = false
 
 	if _, err := RunReviewGateSweep(ctx, deps, wf); err != nil {
 		t.Fatalf("sweep: %v", err)
@@ -164,7 +165,7 @@ func TestCancelOnSupersedeSparesHorizonReleases(t *testing.T) {
 	claim := releasedClaimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#104", "deadbeef654", v1alpha1.ReleaseReasonHorizon, disp)
 	job := reviewJobFixture(wf, claim)
 	deps, ctx := gateEnv(t, wf, st, claim, job)
-	deps.CancelOnSupersede = true
+	deps.DisableCancelOnSupersede = false
 
 	if _, err := RunReviewGateSweep(ctx, deps, wf); err != nil {
 		t.Fatalf("sweep: %v", err)
@@ -190,7 +191,7 @@ func TestCancelOnSupersedeSparesLiveClaims(t *testing.T) {
 	claim.Status.Runs = []RunRecordAlias{{Name: "run-1", Phase: "running"}}
 	job := reviewJobFixture(wf, claim)
 	deps, ctx := gateEnv(t, wf, st, claim, job)
-	deps.CancelOnSupersede = true
+	deps.DisableCancelOnSupersede = false
 
 	if _, err := RunReviewGateSweep(ctx, deps, wf); err != nil {
 		t.Fatalf("sweep: %v", err)
@@ -220,7 +221,7 @@ func TestCancelOnSupersedeDisabled(t *testing.T) {
 	claim := releasedClaimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#106", "deadbeef87a", "superseded", disp)
 	job := reviewJobFixture(wf, claim)
 	deps, ctx := gateEnv(t, wf, st, claim, job)
-	deps.CancelOnSupersede = false
+	deps.DisableCancelOnSupersede = true
 
 	if _, err := RunReviewGateSweep(ctx, deps, wf); err != nil {
 		t.Fatalf("sweep: %v", err)
@@ -252,7 +253,7 @@ func TestCancelOnSupersedeSecondSweepNoop(t *testing.T) {
 	claim := releasedClaimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#107", "deadbeef98b", "superseded", disp)
 	job := reviewJobFixture(wf, claim)
 	deps, ctx := gateEnv(t, wf, st, claim, job)
-	deps.CancelOnSupersede = true
+	deps.DisableCancelOnSupersede = false
 
 	for i := 1; i <= 2; i++ {
 		if _, err := RunReviewGateSweep(ctx, deps, wf); err != nil {
@@ -286,7 +287,7 @@ func TestCancelOnSupersedePreservesWorkerWrittenOutcome(t *testing.T) {
 	claim.Status.Runs = []RunRecordAlias{{Name: "run-1", Phase: "succeeded", EndedAt: metav1.NewTime(disp.Add(time.Minute))}}
 	job := reviewJobFixture(wf, claim)
 	deps, ctx := gateEnv(t, wf, st, claim, job)
-	deps.CancelOnSupersede = true
+	deps.DisableCancelOnSupersede = false
 
 	if _, err := RunReviewGateSweep(ctx, deps, wf); err != nil {
 		t.Fatalf("sweep: %v", err)
@@ -298,8 +299,8 @@ func TestCancelOnSupersedePreservesWorkerWrittenOutcome(t *testing.T) {
 	if err := deps.Client.Get(ctx, client.ObjectKey{Namespace: wf.Namespace, Name: claim.Name}, &got); err != nil {
 		t.Fatalf("get claim: %v", err)
 	}
-	if got.Status.Message != "" {
-		t.Fatalf("death-observer message stamped over a worker-written outcome: %q", got.Status.Message)
+	if got.Status.Message == "" || strings.Contains(got.Status.Message, "death observer") {
+		t.Fatalf("expected the distinct phase-only note, got %q (the death-observer message must not be stamped over a worker-written outcome)", got.Status.Message)
 	}
 	if got.Status.Runs[0].Phase != "succeeded" {
 		t.Fatalf("worker-written run outcome mutated: %+v", got.Status.Runs[0])
@@ -324,7 +325,7 @@ func TestCancelOnSupersedeFastPathWithinOneSweep(t *testing.T) {
 	old := releasedClaimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#101", "oldsha111", "superseded", disp)
 	oldJob := reviewJobFixture(wf, old)
 	deps, ctx := gateEnv(t, wf, st, old, oldJob)
-	deps.CancelOnSupersede = true
+	deps.DisableCancelOnSupersede = false
 
 	out, err := RunReviewGateSweep(ctx, deps, wf)
 	if err != nil {
@@ -364,7 +365,7 @@ func TestCancelOnSupersedeSkipsForgedOwner(t *testing.T) {
 	job := reviewJobFixture(wf, claim)
 	job.OwnerReferences[0].UID = "a-different-attempt-uid" // re-pointed
 	deps, ctx := gateEnv(t, wf, st, claim, job)
-	deps.CancelOnSupersede = true
+	deps.DisableCancelOnSupersede = false
 
 	if _, err := RunReviewGateSweep(ctx, deps, wf); err != nil {
 		t.Fatalf("sweep: %v", err)
@@ -388,7 +389,7 @@ func TestCancelOnSupersedeSparesPointerInvalidReleases(t *testing.T) {
 	claim := releasedClaimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#112", "deadbeef32f", v1alpha1.ReleaseReasonPointerInvalid, disp)
 	job := reviewJobFixture(wf, claim)
 	deps, ctx := gateEnv(t, wf, st, claim, job)
-	deps.CancelOnSupersede = true
+	deps.DisableCancelOnSupersede = false
 
 	if _, err := RunReviewGateSweep(ctx, deps, wf); err != nil {
 		t.Fatalf("sweep: %v", err)
@@ -419,6 +420,104 @@ func TestFinalizeCancelledClaimNoopOnLiveClaim(t *testing.T) {
 	}
 	if got.Status.Phase != v1alpha1.AttemptPhaseReconciling || got.Status.Runs[0].Phase != "running" {
 		t.Fatalf("a live claim's ledger was mutated: phase=%q run=%q", got.Status.Phase, got.Status.Runs[0].Phase)
+	}
+}
+
+// classifyRelease decides which reason strings authorize a DELETION — it
+// must have direct coverage, not just transitive (r4 P8 gap 1). The table
+// pins the prose-matching contract AND the trap the r4 review named: a
+// "merged" standdown reason deliberately classifies as standdown (the
+// verdict may still land), not as a cancellation.
+func TestClassifyReleaseVocabulary(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"pull request closed", v1alpha1.ReleaseReasonPRClosed},
+		{"closed by author", v1alpha1.ReleaseReasonPRClosed},
+		{"pull request merged", "standdown"}, // merged ≠ closed: the verdict may still land
+		{"label absent (verdict posted — consumed)", "consumed"},
+		{"horizon exceeded while ambiguous", v1alpha1.ReleaseReasonHorizon},
+		{"dispatch presumed dead without a verdict", v1alpha1.ReleaseReasonDispatchTimeout},
+		{"fresh review request", "standdown"},
+	}
+	for _, tc := range cases {
+		if got := classifyRelease(tc.in); got != tc.want {
+			t.Errorf("classifyRelease(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// The other half of the ownerRef defence: a Job with NO controller ref at
+// all is skipped, not deleted (BuildJob always sets one, so this is the
+// forged-object shape).
+func TestCancelOnSupersedeSkipsOwnerlessJob(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := noVerdictServer(t)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	st := &fakeStatus{}
+	disp := time.Now().Add(-30 * time.Minute)
+	claim := releasedClaimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#114", "deadbeef54b", "superseded", disp)
+	job := reviewJobFixture(wf, claim)
+	job.OwnerReferences = nil
+	deps, ctx := gateEnv(t, wf, st, claim, job)
+	deps.DisableCancelOnSupersede = false
+
+	if _, err := RunReviewGateSweep(ctx, deps, wf); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if !jobExists(t, ctx, deps, wf, job.Name) {
+		t.Fatal("an ownerless Job must not be deleted off a copied label")
+	}
+}
+
+// DeleteJob failure → the ledger stays untouched: a finalize without a
+// delete would claim a death the Job never saw. The `continue` at the
+// failure site is the guarantee; this pins it.
+func TestCancelOnSupersedeDeleteFailureLeavesLedger(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := noVerdictServer(t)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	st := &fakeStatus{}
+	disp := time.Now().Add(-30 * time.Minute)
+	claim := releasedClaimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#115", "deadbeef65c", "superseded", disp)
+	claim.Status.Runs = []RunRecordAlias{{Name: "run-1", Phase: "running"}}
+	job := reviewJobFixture(wf, claim)
+
+	scheme := runtime.NewScheme()
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("AddToScheme: %v", err)
+	}
+	if err := batchv1.AddToScheme(scheme); err != nil {
+		t.Fatalf("batchv1: %v", err)
+	}
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&v1alpha1.Attempt{}).
+		WithRuntimeObjects(claim, job).
+		WithInterceptorFuncs(interceptor.Funcs{Delete: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+			if _, ok := obj.(*batchv1.Job); ok {
+				return fmt.Errorf("delete blip")
+			}
+			return cl.Delete(ctx, obj, opts...)
+		}}).
+		Build()
+	deps := GateDeps{Status: st, Client: cl, Scheme: scheme, FleetMaxConcurrent: 3, Log: t.Logf, DisableCancelOnSupersede: false}
+	ctx := context.Background()
+
+	if _, err := RunReviewGateSweep(ctx, deps, wf); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	var got v1alpha1.Attempt
+	if err := deps.Client.Get(ctx, client.ObjectKey{Namespace: wf.Namespace, Name: claim.Name}, &got); err != nil {
+		t.Fatalf("get claim: %v", err)
+	}
+	if got.Status.Message != "" || got.Status.Runs[0].Phase != "running" {
+		t.Fatalf("delete failed but the ledger was finalized anyway: msg=%q run=%q", got.Status.Message, got.Status.Runs[0].Phase)
 	}
 }
 
@@ -453,7 +552,7 @@ func TestCancelOnSupersedeJobListFailureSkips(t *testing.T) {
 			return cl.List(ctx, list, opts...)
 		}}).
 		Build()
-	deps := GateDeps{Status: st, Client: cl, Scheme: scheme, FleetMaxConcurrent: 3, Log: t.Logf, CancelOnSupersede: true}
+	deps := GateDeps{Status: st, Client: cl, Scheme: scheme, FleetMaxConcurrent: 3, Log: t.Logf, DisableCancelOnSupersede: false}
 	ctx := context.Background()
 
 	if _, err := RunReviewGateSweep(ctx, deps, wf); err != nil {

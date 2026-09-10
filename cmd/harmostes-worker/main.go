@@ -225,8 +225,8 @@ func runOneShot() {
 			Status: k8s.StatusPatcher{Client: cl, Namespace: namespace},
 			Client: cl, Scheme: scheme,
 			Log: logf, TL: gateTL,
-			Wake:              wakeFromEnv(),
-			CancelOnSupersede: cancelOnSupersede,
+			Wake:                     wakeFromEnv(),
+			DisableCancelOnSupersede: !cancelOnSupersede,
 		}
 		dispatches, err := worker.RunReviewGateWake(ctx, gateDeps, wf)
 		if err != nil {

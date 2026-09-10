@@ -61,17 +61,17 @@ type DispatchConfig struct {
 	// (#385). 0 means the 720h default; GC cannot be disabled — the knob
 	// tunes the horizon, it does not turn accumulation back on.
 	AttemptRetention time.Duration
-	// CancelOnSupersede deletes the review Job of a claim released as
+	// DisableCancelOnSupersede turns the #402 cancellation pass off
 	// superseded/closed (#402) — the dead-head review otherwise burns the
 	// full run bound before the moved-head guard discards its verdict.
 	// Default on; HARMOSTES_CANCEL_ON_SUPERSEDE=false turns it off.
-	CancelOnSupersede    bool
-	JobImage             string
-	ServiceAccount       string
-	JobTTLSeconds        *int32
-	DaprdImage           string
-	PluginConfigMaps     []string
-	ExtraConfigMapMounts []k8s.ConfigMapMount
+	DisableCancelOnSupersede bool
+	JobImage                 string
+	ServiceAccount           string
+	JobTTLSeconds            *int32
+	DaprdImage               string
+	PluginConfigMaps         []string
+	ExtraConfigMapMounts     []k8s.ConfigMapMount
 }
 
 // DispatchConfigFromEnv resolves the fleet-level dispatch configuration
@@ -98,6 +98,15 @@ func CancelOnSupersedeFromEnv() (bool, error) {
 		return false, fmt.Errorf("HARMOSTES_CANCEL_ON_SUPERSEDE=%q: must be a boolean", v)
 	}
 	return b, nil
+}
+
+// cancelOnSupersedeDisabledFromEnv is the DispatchConfig polarity: the Go
+// zero value must equal the shipping behavior (OFF), so the struct carries
+// the negation (#403 r4 P3 — a missing feature must be invisible, a missing
+// safety knob must not be).
+func cancelOnSupersedeDisabledFromEnv() (bool, error) {
+	on, err := CancelOnSupersedeFromEnv()
+	return !on, err
 }
 
 // Malformed values are ERRORS, not warnings-with-fallback: a chart typo that
@@ -141,7 +150,7 @@ func DispatchConfigFromEnv(logf func(string, ...any)) (DispatchConfig, error) {
 	// Cancel-on-supersede (#402): default ON — the waste is pure loss. A
 	// malformed value is an error, not a silent default (#311 convention).
 	// Shared with the one-shot gate path via CancelOnSupersedeFromEnv.
-	if cfg.CancelOnSupersede, err = CancelOnSupersedeFromEnv(); err != nil {
+	if cfg.DisableCancelOnSupersede, err = cancelOnSupersedeDisabledFromEnv(); err != nil {
 		return cfg, err
 	}
 	ttl := int32(3600)
@@ -299,14 +308,14 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req RunRequest) error {
 	// straight through (every class is Job-per-run, ADR-0007). The gate
 	// drains to capacity: one sweep accepts every free slot.
 	gateDeps := GateDeps{
-		Status:             k8s.StatusPatcher{Client: d.cl, Namespace: req.Namespace},
-		Client:             d.cl,
-		Scheme:             d.scheme,
-		FleetMaxConcurrent: d.cfg.FleetMaxConcurrent,
-		AttemptRetention:   d.cfg.AttemptRetention,
-		CancelOnSupersede:  d.cfg.CancelOnSupersede,
-		Log:                d.logf,
-		Wake:               GateWake{PR: req.Pr, Action: req.Action, Revision: req.Revision},
+		Status:                   k8s.StatusPatcher{Client: d.cl, Namespace: req.Namespace},
+		Client:                   d.cl,
+		Scheme:                   d.scheme,
+		FleetMaxConcurrent:       d.cfg.FleetMaxConcurrent,
+		AttemptRetention:         d.cfg.AttemptRetention,
+		DisableCancelOnSupersede: !!d.cfg.DisableCancelOnSupersede,
+		Log:                      d.logf,
+		Wake:                     GateWake{PR: req.Pr, Action: req.Action, Revision: req.Revision},
 		TL: timeline.NewGateWriter(dapr.Tracing(dapr.New(os.Getenv("DAPR_HTTP_ENDPOINT"))),
 			envOr("HARMOSTES_STATE_STORE", "statestore"), wf.Name, "", triggerSubject(req)),
 	}

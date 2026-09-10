@@ -424,7 +424,7 @@ func lastSlash(s string) int {
 
 // leaves the phase frozen forever — the run has no Job, no verdict, no
 // terminal state, and the attempt holds a claim slot if it carries one.
-// Claim-bearing attempts are RELEASED first ("closed" — terminal, no churn
+// Claim-bearing attempts are RELEASED first ("reaped" — terminal, no churn
 // strike), then the phase lands on failed with a message naming the reap.
 // Best-effort per attempt: one bad object must not block the rest.
 //
@@ -495,7 +495,7 @@ func GCAttempts(ctx context.Context, c client.Client, namespace, workflowName st
 // past olderThan (r30, #376): a worker loss (pod OOM mid-run, node drain)
 // leaves the phase frozen forever — the run has no Job, no verdict, no
 // terminal state, and the attempt holds a claim slot if it carries one.
-// Claim-bearing attempts are RELEASED first ("closed" — terminal, no churn
+// Claim-bearing attempts are RELEASED first ("reaped" — terminal, no churn
 // strike), then the phase lands on failed with a message naming the reap.
 // Best-effort per attempt: one bad object must not block the rest.
 //

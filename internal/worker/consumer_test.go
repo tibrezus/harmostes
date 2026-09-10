@@ -261,7 +261,7 @@ func TestDispatchConfigCancelOnSupersedeKnob(t *testing.T) {
 	if err != nil {
 		t.Fatalf("default config: %v", err)
 	}
-	if !cfg.CancelOnSupersede {
+	if cfg.DisableCancelOnSupersede {
 		t.Fatal("cancel-on-supersede must default ON — the waste is pure loss")
 	}
 
@@ -270,7 +270,7 @@ func TestDispatchConfigCancelOnSupersedeKnob(t *testing.T) {
 	if err != nil {
 		t.Fatalf("off config: %v", err)
 	}
-	if cfg.CancelOnSupersede {
+	if !cfg.DisableCancelOnSupersede {
 		t.Fatal("HARMOSTES_CANCEL_ON_SUPERSEDE=false must disable the pass")
 	}
 

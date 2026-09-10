@@ -51,7 +51,8 @@ const (
 	KindGateWaiting   = "gate.waiting" // transitions only — not every re-evaluation
 	KindGateProceed   = "gate.proceed"
 	KindGateStanddown = "gate.standdown"
-	KindAgentTurn     = "agent.turn" // reference only; content lives in the SessionRecord
+	KindGateCancel    = "gate.cancel" // a cancellation decision: superseded/pr-closed Job deleted (#402)
+	KindAgentTurn     = "agent.turn"  // reference only; content lives in the SessionRecord
 	KindAgentTool     = "agent.tool"
 )
 

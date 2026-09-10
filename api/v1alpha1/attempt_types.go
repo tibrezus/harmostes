@@ -231,7 +231,11 @@ type ReviewClaimStatus struct {
 	// later sweep.
 	Released bool `json:"released,omitempty"`
 
-	// ReleaseReason: consumed | horizon | dispatch-timeout | superseded | closed.
+	// ReleaseReason: consumed | horizon | dispatch-timeout | superseded |
+	// pr-closed | pointer-invalid | reaped. The cancellation subset
+	// (superseded | pr-closed) gates a DESTRUCTIVE action (#402 Job
+	// deletion) — its definition and membership live in
+	// IsCancellationRelease; producers must write the constants.
 	ReleaseReason string `json:"releaseReason,omitempty"`
 
 	// DeadDispatches counts dispatched reviews of this claim that provably

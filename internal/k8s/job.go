@@ -261,8 +261,9 @@ func ListActiveJobs(ctx context.Context, cl client.Client, namespace, workflow s
 // gate's cancel-on-supersede pass: a claim released as superseded/closed
 // leaves its Job running — nothing else deletes it, so the dead-head review
 // would burn the full run bound before the moved-head guard discards the
-// verdict. Deleting mid-run SIGTERMs the worker; the ctx-cancelled run never
-// reaches post-review, so no verdict can land for the dead head.
+// verdict. Deleting uses default (foreground-adjacent) propagation: the
+// running pod is SIGTERMed, which IS the mechanism — the ctx-cancelled run
+// never reaches post-review, so no verdict can land for the dead head.
 func DeleteJob(ctx context.Context, cl client.Client, namespace, name string) error {
 	j := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name}}
 	return cl.Delete(ctx, j)

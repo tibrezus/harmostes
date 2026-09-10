@@ -523,7 +523,7 @@ func ReapStuckAttempts(ctx context.Context, c client.Client, namespace, workflow
 		}
 		r := at.Status.Review
 		if r != nil && !r.Released {
-			if err := ReleaseClaim(ctx, c, namespace, at.Name, "closed"); err != nil {
+			if err := ReleaseClaim(ctx, c, namespace, at.Name, v1alpha1.ReleaseReasonReaped); err != nil {
 				continue // still reap the phase below if the release object survived
 			}
 		}

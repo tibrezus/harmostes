@@ -16,8 +16,12 @@ const OneShotRunBound = 30 * time.Minute
 // claim's ReleaseReason. Shared between the gate's classifyRelease
 // (producer) and the arm path's era rules (consumer) — bare literals
 // across that boundary silently disable the churn guard on a rename
-// (#344 r3 P2). "consumed"/"closed"/"superseded"/"standdown" stay
-// open-string on purpose: terminal classes nothing branches on.
+// (#344 r3 P2). Branching sites consume the cancellation set through
+// IsCancellationRelease; producers must write the constants, not
+// re-typed literals (the #402 cancel pass DELETES Jobs for cancellation
+// reasons — a producer writing the wrong constant changes what gets
+// killed). "consumed"/"standdown" remain open-string: terminal classes
+// nothing branches on.
 const (
 	// ReleaseReasonDispatchLost: the sweep released the claim before any
 	// dispatch (never-consummated era — revival keeps the era clock).
@@ -29,15 +33,25 @@ const (
 	// (timer bound) — the dead-dispatch class: the breaker counts it and the
 	// #331 hold keys on it. Distinct from DispatchLost by design.
 	ReleaseReasonDispatchTimeout = "dispatch-timeout"
-	// ReleaseReasonSuperseded / ReleaseReasonClosed: the gate decided the
-	// work is OBSOLETE (head moved / PR closed). Formerly open-string
-	// ("nothing branches on them") — the #402 cancel-on-supersede pass
-	// branches on exactly this set, so they are constants now, and the
-	// branching sites must agree through IsCancellationRelease (the
-	// DispatchLostWindowOpen lesson, r31 finding 4: two sites encoding one
-	// rule separately invited a wrong unification later).
+	// ReleaseReasonSuperseded: the PR's head moved — a newer claim arms at
+	// the new SHA. Cancellation class (#402): the in-flight Job is deleted.
 	ReleaseReasonSuperseded = "superseded"
-	ReleaseReasonClosed     = "closed"
+	// ReleaseReasonPRClosed: the PR itself was closed or merged mid-review.
+	// Cancellation class (#402): the in-flight Job is deleted. Deliberately
+	// DISTINCT from pointer-invalid/reaped — those are bookkeeping-only
+	// releases whose Jobs, if any, self-clean via the run bound and TTL.
+	ReleaseReasonPRClosed = "pr-closed"
+)
+
+// Non-cancellation bookkeeping reasons (#402 r3): releases that must NEVER
+// trigger the cancel pass. pointer-invalid = the claim's PR pointer cannot
+// be parsed (scope/normalization quirk) — the underlying review may be
+// perfectly alive and verdict-bearing. reaped = the janitor ended a
+// stuck-reconciling attempt on age — its honest ledger message must not be
+// overwritten by a cancellation claim.
+const (
+	ReleaseReasonPointerInvalid = "pointer-invalid"
+	ReleaseReasonReaped         = "reaped"
 )
 
 // IsCancellationRelease reports whether a release reason marks a review the
@@ -46,12 +60,13 @@ const (
 // definition of the cancellation set: the gate's pass, the ledger
 // finalizer's phase mapping, and any future consumer branch through it, so
 // a reason rename cannot silently stop cancelling while the ledger still
-// records the release. Not in the set: horizon and standdown releases (the
-// verdict may still land — ADR-0006 lets it post at the pinned head) and
-// dispatch-lost/dispatch-timeout/sweep-aborted (never-dispatched or
-// already-dead runs — nothing left to cancel).
+// records the release. Deliberately OUT of the set: horizon and standdown
+// (the verdict may still land — ADR-0006 lets it post at the pinned head),
+// pointer-invalid and reaped (bookkeeping-only releases — the review may be
+// alive and verdict-bearing; deleting its Job would kill work a human asked
+// for), and dispatch-lost/dispatch-timeout (no live Job left to cancel).
 func IsCancellationRelease(reason string) bool {
-	return reason == ReleaseReasonSuperseded || reason == ReleaseReasonClosed
+	return reason == ReleaseReasonSuperseded || reason == ReleaseReasonPRClosed
 }
 
 // MaxDeadDispatchesPerHead is the dead-dispatch circuit breaker (#328): a

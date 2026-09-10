@@ -68,6 +68,9 @@ type GateDeps struct {
 	// full run bound before the moved-head guard discards its verdict —
 	// pure token loss. Default on (chart: worker.job.cancelOnSupersede);
 	// the pass never cancels a live claim and never moves a breaker counter.
+	// The zero value is OFF while the product default is ON — every
+	// GateDeps construction site MUST set this explicitly, or cancellation
+	// silently regresses to burning run bounds.
 	CancelOnSupersede bool
 	Log               func(format string, args ...any)
 	TL                timeline.Writer
@@ -271,7 +274,7 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 			// trips, and the PR starves until a human re-applies the label).
 			repo, pr, perr := parsePRPointer(r.PR)
 			if perr != nil {
-				releaseClaim(ctx, deps, c, "closed", log)
+				releaseClaim(ctx, deps, c, v1alpha1.ReleaseReasonPointerInvalid, log)
 				releasedInA[c.Name] = true
 				continue
 			}
@@ -310,7 +313,7 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 					// skips non-request candidates for claimed pointers, so
 					// "hold and wait for the push wake" strands the claim on
 					// poll sweeps — the strand this branch shipped with.)
-					releaseClaim(ctx, deps, c, "superseded", log)
+					releaseClaim(ctx, deps, c, v1alpha1.ReleaseReasonSuperseded, log)
 					releasedInA[c.Name] = true
 					emitGate(ctx, deps.TL, liveAgg, res, repo, pr)
 					break
@@ -362,7 +365,7 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 		liveDispatched++
 		repo, pr, perr := parsePRPointer(r.PR)
 		if perr != nil {
-			releaseClaim(ctx, deps, c, "closed", log)
+			releaseClaim(ctx, deps, c, v1alpha1.ReleaseReasonPointerInvalid, log)
 			continue
 		}
 		p := review.Params{
@@ -612,7 +615,7 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 				}
 			}
 			if claimFor != nil {
-				if err := attempt.ReleaseClaim(ctx, deps.Client, wf.Namespace, claimFor.Name, "superseded"); err != nil {
+				if err := attempt.ReleaseClaim(ctx, deps.Client, wf.Namespace, claimFor.Name, v1alpha1.ReleaseReasonSuperseded); err != nil {
 					log("review-ready: supersede %s failed: %v", claimFor.Name, err)
 					continue
 				}
@@ -722,7 +725,13 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 		} else if !jobsKnown() {
 			log("review-ready: live-job list failed (%v) — skipping the cancel pass (delete is destructive; unknown must fail closed)", jobListErr)
 		} else {
-			for _, j := range activeJobs() {
+			jobs := activeJobs()
+			for idx := range jobs { // index range: the Job structs are large — no copies
+				if ctx.Err() != nil {
+					log("review-ready: sweep deadline hit mid-cancel-pass — %d Job(s) left for the next sweep (fail-safe: the pass re-runs)", len(jobs)-idx)
+					break
+				}
+				j := &jobs[idx]
 				name := j.Labels[v1alpha1.AttemptLabel]
 				if name == "" {
 					continue
@@ -738,7 +747,7 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 				if r == nil || !r.Released || !v1alpha1.IsCancellationRelease(r.ReleaseReason) {
 					continue // live (or revived) claim, or a non-cancellation release
 				}
-				if ref := metav1.GetControllerOf(&j.ObjectMeta); ref == nil || ref.UID != at.UID {
+				if ref := metav1.GetControllerOf(&j.ObjectMeta); ref == nil || ref.Kind != "Attempt" || ref.UID != at.UID {
 					log("review-ready: cancel pass: job %s names attempt %s but has no/mismatched controller owner (%v) — skipping (forged or re-pointed label)", j.Name, name, ref)
 					continue
 				}
@@ -749,13 +758,14 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 				if err := attempt.FinalizeCancelledClaim(recordCtx, deps.Client, wf.Namespace, name, r.ReleaseReason); err != nil {
 					log("review-ready: finalize cancelled attempt %s failed: %v", name, err)
 				}
-				// The successor half of the pair is only truthful for a
-				// supersession — a closed PR or an unparseable pointer has none,
-				// and saying "superseded by <no value>" would be the exact
-				// false precision the #357 standard exists to prevent.
+				// The successor half of the pair exists only when THIS sweep
+				// armed it — cross-sweep supersessions and pr-closures have no
+				// successor SHA in hand, and printing "superseded by <no value>"
+				// would be the exact false precision the #357 standard exists
+				// to prevent. Omit the clause instead.
 				pair := ""
-				if r.ReleaseReason == v1alpha1.ReleaseReasonSuperseded {
-					pair = fmt.Sprintf(" — superseded by %s", newlyArmed[r.PR])
+				if succ := newlyArmed[r.PR]; r.ReleaseReason == v1alpha1.ReleaseReasonSuperseded && succ != "" {
+					pair = fmt.Sprintf(" — superseded by %s", succ)
 				}
 				log("review-ready: cancelled job %s for %s claim %s at %s%s; dead-head review stopped before the run bound (#402)", j.Name, r.ReleaseReason, name, r.HeadSHA, pair)
 				// A cancellation is a gate DECISION, not debris — count it on
@@ -887,9 +897,10 @@ func isIntentionalStop(err error) bool {
 }
 
 // classifyRelease maps a standdown reason onto the claim's release-reason
-// vocabulary. "consumed"/"closed"/"superseded"/"standdown" stay bare
-// literals on purpose — terminal classes nothing branches on (the open-
-// string note lives on the ReleaseReason const block in api/v1alpha1).
+// vocabulary. Producers write CONSTANTS, not re-typed literals: the #402
+// cancel pass branches on the cancellation subset (IsCancellationRelease),
+// so a producer literal that drifts from the constant silently changes what
+// gets cancelled (r3 P4).
 func classifyRelease(reason string) string {
 	switch {
 	case strings.Contains(reason, "consumed"):
@@ -899,7 +910,7 @@ func classifyRelease(reason string) string {
 	case strings.Contains(reason, "horizon exceeded"):
 		return v1alpha1.ReleaseReasonHorizon
 	case strings.Contains(reason, "closed"):
-		return "closed"
+		return v1alpha1.ReleaseReasonPRClosed
 	default:
 		return "standdown"
 	}

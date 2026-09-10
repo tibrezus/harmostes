@@ -127,7 +127,7 @@ func TestCancelOnSupersedeClosedReasonFailsPhase(t *testing.T) {
 	wf := gateWorkflow()
 	st := &fakeStatus{}
 	disp := time.Now().Add(-30 * time.Minute)
-	claim := releasedClaimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#102", "deadbeef432", v1alpha1.ReleaseReasonClosed, disp)
+	claim := releasedClaimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#102", "deadbeef432", v1alpha1.ReleaseReasonPRClosed, disp)
 	job := reviewJobFixture(wf, claim)
 	deps, ctx := gateEnv(t, wf, st, claim, job)
 	deps.CancelOnSupersede = true
@@ -346,6 +346,79 @@ func TestCancelOnSupersedeFastPathWithinOneSweep(t *testing.T) {
 	// …and the old head's Job is already gone — no cross-sweep tail of waste.
 	if jobExists(t, ctx, deps, wf, oldJob.Name) {
 		t.Fatal("the dead head's Job must be cancelled in the SAME sweep that armed the new head")
+	}
+}
+
+// A Job whose controller ownerRef points at a DIFFERENT attempt (re-pointed
+// or forged label) is skipped — the label alone never earns a deletion.
+func TestCancelOnSupersedeSkipsForgedOwner(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := noVerdictServer(t)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	st := &fakeStatus{}
+	disp := time.Now().Add(-30 * time.Minute)
+	claim := releasedClaimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#111", "deadbeef21e", "superseded", disp)
+	claim.UID = "the-real-attempt-uid"
+	job := reviewJobFixture(wf, claim)
+	job.OwnerReferences[0].UID = "a-different-attempt-uid" // re-pointed
+	deps, ctx := gateEnv(t, wf, st, claim, job)
+	deps.CancelOnSupersede = true
+
+	if _, err := RunReviewGateSweep(ctx, deps, wf); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if !jobExists(t, ctx, deps, wf, job.Name) {
+		t.Fatal("a Job owned by another attempt must not be deleted off a copied label")
+	}
+}
+
+// A pointer-invalid release is bookkeeping-only: the underlying review may
+// be alive and verdict-bearing, so the pass must not cancel it (r3 P4 —
+// the overload that made "closed" destructive).
+func TestCancelOnSupersedeSparesPointerInvalidReleases(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := noVerdictServer(t)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	st := &fakeStatus{}
+	disp := time.Now().Add(-30 * time.Minute)
+	claim := releasedClaimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#112", "deadbeef32f", v1alpha1.ReleaseReasonPointerInvalid, disp)
+	job := reviewJobFixture(wf, claim)
+	deps, ctx := gateEnv(t, wf, st, claim, job)
+	deps.CancelOnSupersede = true
+
+	if _, err := RunReviewGateSweep(ctx, deps, wf); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if !jobExists(t, ctx, deps, wf, job.Name) {
+		t.Fatal("a pointer-invalid release must not cancel the in-flight review")
+	}
+}
+
+// The revival-window guard (r12 must-fix 1 shape): FinalizeCancelledClaim on
+// a claim that is LIVE again (revived between the gate's read and the
+// finalize) is a no-op — the ledger never tells a live review it is dead.
+func TestFinalizeCancelledClaimNoopOnLiveClaim(t *testing.T) {
+	clearTriggerEnv(t)
+	wf := gateWorkflow()
+	disp := time.Now().Add(-30 * time.Minute)
+	live := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#113", "deadbeef43a", disp.Add(-time.Minute), &disp)
+	live.Status.Phase = v1alpha1.AttemptPhaseReconciling
+	live.Status.Runs = []RunRecordAlias{{Name: "run-1", Phase: "running"}}
+	deps, ctx := gateEnv(t, wf, &fakeStatus{}, live)
+
+	if err := attempt.FinalizeCancelledClaim(ctx, deps.Client, wf.Namespace, live.Name, v1alpha1.ReleaseReasonSuperseded); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+	var got v1alpha1.Attempt
+	if err := deps.Client.Get(ctx, client.ObjectKey{Namespace: wf.Namespace, Name: live.Name}, &got); err != nil {
+		t.Fatalf("get claim: %v", err)
+	}
+	if got.Status.Phase != v1alpha1.AttemptPhaseReconciling || got.Status.Runs[0].Phase != "running" {
+		t.Fatalf("a live claim's ledger was mutated: phase=%q run=%q", got.Status.Phase, got.Status.Runs[0].Phase)
 	}
 }
 

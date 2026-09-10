@@ -176,7 +176,7 @@ func ArmClaim(ctx context.Context, c client.Client, scheme *runtime.Scheme, wf *
 		if o.Name == at.Name || o.Status.Review.PR != pr {
 			continue
 		}
-		if err := ReleaseClaim(ctx, c, wf.Namespace, o.Name, "superseded"); err != nil {
+		if err := ReleaseClaim(ctx, c, wf.Namespace, o.Name, v1alpha1.ReleaseReasonSuperseded); err != nil {
 			return nil, fmt.Errorf("supersede %s: %w", o.Name, err)
 		}
 	}

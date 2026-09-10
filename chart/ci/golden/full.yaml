@@ -81,6 +81,36 @@ data:
       assert.match(warning!, /not valid JSON/);
     });
     
+    // #363: the DEFAULT chain's CONTENT is a platform decision (ops template
+    // primary = mtplx speed, k8s-config 8c1fb609) and must match the
+    // extension's direction — speed → qwen3.8-flash. The resolveFallbackChains
+    // tests above only compare against the DEFAULT_FALLBACKS export itself
+    // (they flip silently with any edit); this pin goes red if the content
+    // moves without a deliberate platform decision behind it. The index.ts
+    // header drifted exactly this way once (said flash→speed while the code
+    // said flash→glm) — comments are not a pin.
+    test("default chain content is the #363 platform decision: speed → flash", () => {
+      assert.deepEqual(DEFAULT_FALLBACKS, {
+        "mtplx/qwen38-27b-optimized-speed-fp16": ["ali/anthropic/qwen3.8-flash"],
+      });
+      // And it wires over a proxy exposing exactly the three known groups:
+      // speed's registered window stays its own 256 KiB (min(256 Ki, 1 Mi)),
+      // i.e. the flip carries NO clamp-induced early-compaction cost, and
+      // flash/glm (unchained) carry no samplingParams at all.
+      const proxy = new Map([
+        ["mtplx/qwen38-27b-optimized-speed-fp16", { max_input_tokens: 262144, max_output_tokens: 32768 }],
+        ["ali/anthropic/qwen3.8-flash", { max_input_tokens: 1048576, max_output_tokens: 32768 }],
+        ["zai/anthropic/glm-5.3-flash", { max_input_tokens: 131072, max_output_tokens: 8192 }],
+      ]);
+      const models = [...proxy.entries()].map(([id, m]) => ({ id, ...m }));
+      const { annotated, wired } = applyChains(models, DEFAULT_FALLBACKS, proxy);
+      const speed = annotated.find((m) => m.id === "mtplx/qwen38-27b-optimized-speed-fp16")!;
+      assert.deepEqual(speed.samplingParams, { fallbacks: ["ali/anthropic/qwen3.8-flash"] });
+      assert.equal(speed.contextWindow, 262144); // min(262144, 1048576) = own window
+      assert.equal(speed.clampNote, undefined); // no ctx/maxTokens clamp, no early compaction
+      assert.deepEqual(wired, ["mtplx/qwen38-27b-optimized-speed-fp16 → ali/anthropic/qwen3.8-flash"]); // wired entries are primary→fallback summaries
+    });
+    
     test("JSON array (not object) degrades to the default", () => {
       const { chains, warning } = resolveFallbackChains('["a/b"]');
       assert.deepEqual(chains, DEFAULT_FALLBACKS);
@@ -208,12 +238,17 @@ data:
      * of #359: valid JSON with a wrong shape is the accidental-value risk).
      */
     
-    // The target is operator-chosen (2026-09-08: glm-5.3-flash via the
-    // anthropic-compatible route — the mtplx speed target stalled at long
-    // context, diagnosed in #373's rollback; glm smoke-verified 2/2).
-    // Both live in the proxy key's scope.
+    // Platform decision (#363): the review primary is the mtplx speed target
+    // and the extension default chain follows — speed → qwen3.8-flash. History:
+    // speed was demoted 2026-09-08 (#373's rollback — it stalled at long
+    // context) and glm-5.3-flash served as primary-then-fallback since; the
+    // platform re-promoted it as PRIMARY with the lean-context contract (the
+    // review run bound keeps context well inside speed's 256 KiB window, so
+    // the stall regime is contractually out of reach — the min-window clamp
+    // below registers exactly that window). All ids live in the proxy key's
+    // scope. ops-side template flip: k8s-config 8c1fb609.
     export const DEFAULT_FALLBACKS: Record<string, string[]> = {
-      "ali/anthropic/qwen3.8-flash": ["zai/anthropic/glm-5.3-flash"],
+      "mtplx/qwen38-27b-optimized-speed-fp16": ["ali/anthropic/qwen3.8-flash"],
     };
     
     /**
@@ -360,8 +395,9 @@ data:
      * request-level `fallbacks` param (via Model.samplingParams) — when the
      * primary model group fails mid-run, the proxy's router fails over to the
      * fallback group and the agent's stream continues instead of dying. Default
-     * chain: ali/anthropic/qwen3.8-flash → mtplx/qwen38-27b-optimized-speed-fp16
-     * (both live on the proxy). Override with LITELLM_FALLBACKS, a JSON object
+     * chain: mtplx/qwen38-27b-optimized-speed-fp16 → ali/anthropic/qwen3.8-flash
+     * (both live on the proxy; the platform decision, #363). Override with
+     * LITELLM_FALLBACKS, a JSON object
      * mapping model id → array of fallback ids — resolved by fallbacks.ts, which
      * degrades to the default chain on any semantically-bad value. NOTE the
      * naming boundary: on the proxy, ids are BARE group names (mtplx/...);
@@ -378,7 +414,10 @@ data:
      * group per request. (3) Chained models register min(primary, fallback)
      * windows so the post-failover replay fits the fallback group — a real
      * capacity cost on every healthy run, taken for correctness — pi compacts
-     * at window−reserve, so flash runs compact ~4× earlier (1 MiB→256 KiB).
+     * at window−reserve, so a chain whose fallback has a SMALLER window pulls
+     * the primary's budget down (the old flash→speed chain compacted ~4×
+     * early, 1 MiB→256 KiB). The current default has no such cost: speed
+     * (256 KiB) → flash (1 MiB) registers min = speed's own window.
      * The alternative, clamping only the fallback and letting the first
      * over-long replay 400, was considered and rejected: it trades a clean
      * early compaction for a dead stream exactly when the primary is already
@@ -4828,7 +4867,7 @@ spec:
         # the fork-maintenance.yaml template output (scripts/checks/defs/
         # hooks/skill CMs) and the litellm extension payload.
         checksum/fork-maintenance: 082d8c5472ee15b9beacfd112a46beff3f5121af68d95f1af2eadb6fd64372f4
-        checksum/litellm-extension: 894305d7a7480e676a375b88b56f0259fd0e148a7bc88da19e7e630c03678378
+        checksum/litellm-extension: a83bcf3707c8e696cbb013de7127c96466d52b2fe727a217f8cfdca7c75a818b
     spec:
       imagePullSecrets:
         - name: ghcr-pull

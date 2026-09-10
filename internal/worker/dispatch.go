@@ -313,7 +313,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req RunRequest) error {
 		Scheme:                   d.scheme,
 		FleetMaxConcurrent:       d.cfg.FleetMaxConcurrent,
 		AttemptRetention:         d.cfg.AttemptRetention,
-		DisableCancelOnSupersede: !!d.cfg.DisableCancelOnSupersede,
+		DisableCancelOnSupersede: d.cfg.DisableCancelOnSupersede,
 		Log:                      d.logf,
 		Wake:                     GateWake{PR: req.Pr, Action: req.Action, Revision: req.Revision},
 		TL: timeline.NewGateWriter(dapr.Tracing(dapr.New(os.Getenv("DAPR_HTTP_ENDPOINT"))),

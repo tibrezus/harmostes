@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { DEFAULT_FALLBACKS, resolveFallbackChains } from "./fallbacks.ts";
+import { DEFAULT_FALLBACKS, resolveFallbackChains, wiringSummary } from "./fallbacks.ts";
 
 test("no env keeps the default chain", () => {
   const { chains, warning } = resolveFallbackChains(undefined);
@@ -24,6 +24,120 @@ test("unparsable JSON degrades loudly to the default", () => {
   const { chains, warning } = resolveFallbackChains("{not json");
   assert.deepEqual(chains, DEFAULT_FALLBACKS);
   assert.match(warning!, /not valid JSON/);
+});
+
+// #363: the DEFAULT table's CONTENT is load-bearing (ops review templates
+// flipped to speed primary, k8s-config 8c1fb609; this chart's values.yaml
+// default still runs flash) — the resolveFallbackChains tests above only
+// compare against the DEFAULT_FALLBACKS export itself (they flip silently
+// with any edit). The invariant is COMPOSITION, not count: every LIVE
+// primary direction must have an entry, because a chain keyed by any other
+// primary is inert (applyChains never reaches it). The index.ts header
+// drifted exactly this way once (said flash→speed while the code said
+// flash→glm) — comments are not a pin.
+test("default chain composition covers every live primary (#363, #401 r2)", () => {
+  // Three live primaries in this repo: speed (ops review templates),
+  // flash (this chart's values.yaml default), glm (cmd/harmostes-agent +
+  // harmostes.py --model default). A live primary with no entry would
+  // attach no failover at all — the condition #363 was filed to fix.
+  assert.deepEqual(DEFAULT_FALLBACKS, {
+    "mtplx/qwen38-27b-optimized-speed-fp16": ["ali/anthropic/qwen3.8-flash"],
+    "ali/anthropic/qwen3.8-flash": ["zai/anthropic/glm-5.3-flash"],
+    "zai/anthropic/glm-5.3-flash": ["ali/anthropic/qwen3.8-flash"],
+  });
+  // And ALL THREE wire over a proxy exposing exactly the three known
+  // groups: speed keeps its own 256 KiB window (fallback LARGER — no
+  // clamp, no early compaction); flash pays the documented fallback clamp
+  // down to glm (128 Ki ctx / 8k out) — the pre-#363 shape, retained on
+  // purpose; glm clamps nothing (flash is larger in both dimensions).
+  const proxy = new Map([
+    ["mtplx/qwen38-27b-optimized-speed-fp16", { max_input_tokens: 262144, max_output_tokens: 32768 }],
+    ["ali/anthropic/qwen3.8-flash", { max_input_tokens: 1048576, max_output_tokens: 32768 }],
+    ["zai/anthropic/glm-5.3-flash", { max_input_tokens: 131072, max_output_tokens: 8192 }],
+  ]);
+  const models = [...proxy.entries()].map(([id, m]) => ({ id, ...m }));
+  const { annotated, wired, unwiredChains } = applyChains(models, DEFAULT_FALLBACKS, proxy);
+  const speed = annotated.find((m) => m.id === "mtplx/qwen38-27b-optimized-speed-fp16")!;
+  assert.deepEqual(speed.samplingParams, { fallbacks: ["ali/anthropic/qwen3.8-flash"] });
+  assert.equal(speed.contextWindow, 262144); // min(262144, 1048576) = own window
+  assert.equal(speed.clampNote, undefined); // no ctx/maxTokens clamp, no early compaction
+  const flash = annotated.find((m) => m.id === "ali/anthropic/qwen3.8-flash")!;
+  assert.deepEqual(flash.samplingParams, { fallbacks: ["zai/anthropic/glm-5.3-flash"] });
+  assert.equal(flash.contextWindow, 131072); // clamped to glm — the retained #373 chain's cost
+  assert.match(flash.clampNote!, /ctx 1048576→131072/);
+  const glm = annotated.find((m) => m.id === "zai/anthropic/glm-5.3-flash")!;
+  assert.deepEqual(glm.samplingParams, { fallbacks: ["ali/anthropic/qwen3.8-flash"] });
+  assert.equal(glm.contextWindow, 131072); // own window — flash is larger, no clamp
+  assert.equal(glm.clampNote, undefined);
+  assert.deepEqual(wired.sort(), [
+    "ali/anthropic/qwen3.8-flash → zai/anthropic/glm-5.3-flash", // wired entries are primary→fallback summaries
+    "mtplx/qwen38-27b-optimized-speed-fp16 → ali/anthropic/qwen3.8-flash",
+    "zai/anthropic/glm-5.3-flash → ali/anthropic/qwen3.8-flash",
+  ]);
+  assert.deepEqual(unwiredChains, []); // every default key is a served primary
+});
+
+// The documented off-switch, pinned (#401 review r2: it had no test at any
+// layer, while a PARTIAL override silently strips the platform decision —
+// whole-map substitution is the documented semantics, so the protection
+// for it is the composition pin above plus the summary log in index.ts
+// that distinguishes "none configured" from "configured but none wired").
+test("resolveFallbackChains: '{}' is the off-switch — empty chains, no warning", () => {
+  const { chains, warning } = resolveFallbackChains("{}");
+  assert.deepEqual(chains, {});
+  assert.equal(warning, undefined);
+});
+
+// The default table is a deliberate SUPERSET of any one proxy's groups
+// (#401 review r3): over a 2-group proxy (the chart-default shape, where
+// speed is ops-side), exactly the speed key is reported inert and the two
+// served directions still wire — the unwired note is expected output, not
+// an alarm.
+test("applyChains: a subset proxy reports exactly the unserved key", () => {
+  const two = new Map([
+    ["ali/anthropic/qwen3.8-flash", { max_input_tokens: 1048576, max_output_tokens: 32768 }],
+    ["zai/anthropic/glm-5.3-flash", { max_input_tokens: 131072, max_output_tokens: 8192 }],
+  ]);
+  const twoModels = [...two.entries()].map(([id, m]) => ({ id, ...m }));
+  const { wired, unwiredChains } = applyChains(twoModels, DEFAULT_FALLBACKS, two);
+  assert.deepEqual(unwiredChains, ["mtplx/qwen38-27b-optimized-speed-fp16"]);
+  assert.deepEqual(wired.sort(), [
+    "ali/anthropic/qwen3.8-flash → zai/anthropic/glm-5.3-flash",
+    "zai/anthropic/glm-5.3-flash → ali/anthropic/qwen3.8-flash",
+  ]);
+});
+
+// The summary branches are table-tested here because index.ts itself is
+// import-gate only (its factory returns early without LITELLM_URL).
+test("wiringSummary: wired / configured-but-unwired / off-switch", () => {
+  assert.equal(
+    wiringSummary(["a → b"], { "a": ["b"] }),
+    " | fallbacks wired: a → b",
+  );
+  assert.equal(
+    wiringSummary([], { "mtplx/x": ["ali/y"], "ali/y": ["zai/z"] }),
+    " | no fallbacks wired — chains configured for: mtplx/x, ali/y",
+  );
+  assert.equal(
+    wiringSummary([], {}),
+    " | no fallbacks wired — none configured (LITELLM_FALLBACKS='{}' disables all chains)",
+  );
+});
+
+// A chain keyed by a primary the proxy does not serve must SURFACE, not
+// vanish silently into "no fallbacks wired" (#401 review, pillar 7).
+test("applyChains: chain keys with an undiscovered primary are reported inert", () => {
+  const served = new Map([
+    ["mtplx/qwen38-27b-optimized-speed-fp16", { max_input_tokens: 262144, max_output_tokens: 32768 }],
+    ["ali/anthropic/qwen3.8-flash", { max_input_tokens: 1048576, max_output_tokens: 32768 }],
+  ]);
+  const servedModels = [...served.entries()].map(([id, m]) => ({ id, ...m }));
+  const { wired, unwiredChains } = applyChains(servedModels, {
+    "mtplx/qwen38-27b-optimized-speed-fp16": ["ali/anthropic/qwen3.8-flash"],
+    "ghost/group": ["mtplx/qwen38-27b-optimized-speed-fp16"],
+  }, served);
+  assert.deepEqual(unwiredChains, ["ghost/group"]); // the proxy does not serve it
+  assert.deepEqual(wired, ["mtplx/qwen38-27b-optimized-speed-fp16 → ali/anthropic/qwen3.8-flash"]);
 });
 
 test("JSON array (not object) degrades to the default", () => {
@@ -141,4 +255,18 @@ test("resolveFallbackChains: the default does not leak by reference", () => {
   (chains as Record<string, unknown>)["injected"] = ["x"];
   const { chains: again } = resolveFallbackChains(undefined);
   assert.equal(Object.keys(again).length, Object.keys(DEFAULT_FALLBACKS).length);
+  // And on the WARNING paths too (#401 review, pillar 8): they returned
+  // DEFAULT_FALLBACKS itself, so an in-place normalisation could grow the
+  // exported platform decision. Mutate a value ARRAY, not just a key —
+  // the shallow copy must cover the map, values are read-only by contract.
+  const { chains: degraded } = resolveFallbackChains("{not json");
+  (degraded["mtplx/qwen38-27b-optimized-speed-fp16"] as string[]).push("injected");
+  const { chains: after } = resolveFallbackChains("{not json");
+  // Compare against the EXPECTED literal, not the export: with the leak,
+  // `after` IS the mutated export and deepEqual(x, x) is trivially true.
+  assert.deepEqual(after, {
+    "mtplx/qwen38-27b-optimized-speed-fp16": ["ali/anthropic/qwen3.8-flash"],
+    "ali/anthropic/qwen3.8-flash": ["zai/anthropic/glm-5.3-flash"],
+    "zai/anthropic/glm-5.3-flash": ["ali/anthropic/qwen3.8-flash"],
+  });
 });

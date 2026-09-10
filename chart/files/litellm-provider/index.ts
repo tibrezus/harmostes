@@ -23,8 +23,11 @@
  * request-level `fallbacks` param (via Model.samplingParams) — when the
  * primary model group fails mid-run, the proxy's router fails over to the
  * fallback group and the agent's stream continues instead of dying. Default
- * chain: ali/anthropic/qwen3.8-flash → mtplx/qwen38-27b-optimized-speed-fp16
- * (both live on the proxy). Override with LITELLM_FALLBACKS, a JSON object
+ * chains: mtplx/qwen38-27b-optimized-speed-fp16 → ali/anthropic/qwen3.8-flash
+ * and ali/anthropic/qwen3.8-flash → zai/anthropic/glm-5.3-flash (every live
+ * primary direction carries an entry — chains are keyed by primary, and an
+ * entry for any other primary would be inert; #363, #401 review). Override with
+ * LITELLM_FALLBACKS, a JSON object
  * mapping model id → array of fallback ids — resolved by fallbacks.ts, which
  * degrades to the default chain on any semantically-bad value. NOTE the
  * naming boundary: on the proxy, ids are BARE group names (mtplx/...);
@@ -41,18 +44,32 @@
  * group per request. (3) Chained models register min(primary, fallback)
  * windows so the post-failover replay fits the fallback group — a real
  * capacity cost on every healthy run, taken for correctness — pi compacts
- * at window−reserve, so flash runs compact ~4× earlier (1 MiB→256 KiB).
+ * at window−reserve, so a chain whose fallback has a SMALLER window pulls
+ * the primary's budget down. Per-direction, for the CURRENT table: speed
+ * → flash none (min = speed's own 256 KiB); glm → flash none (flash is
+ * larger in both dimensions); flash → glm is the costly one — ~8× ctx
+ * clamp (1 MiB→128 KiB) PLUS a 4× output clamp (32k→8k tokens), retained
+ * on purpose because flash is this chart's default primary and glm is its
+ * only other served group (the historical flash→speed direction cost ~4×,
+ * 1 MiB→256 KiB — smaller than what we ship today).
  * The alternative, clamping only the fallback and letting the first
  * over-long replay 400, was considered and rejected: it trades a clean
  * early compaction for a dead stream exactly when the primary is already
  * down. (4) The clamp
  * is not transitive: a proxy-side chain hanging off the fallback group is
- * invisible here. (5) A failover moves the whole review context to a
+ * invisible here. Chains are keyed by PRIMARY model id: an entry for a
+ * model this proxy does not serve is inert (reported at startup,
+ * unwiredChains = keys with no discovered primary; undiscovered fallback
+ * ids and empty-filtering chains surface via droppedIds / the wiring
+ * summary instead). The default table carries an entry for every live
+ * primary direction (speed, flash, glm); a LITELLM_FALLBACKS override
+ * REPLACES the whole map — '{}' is the off-switch. (5) A failover moves
+ * the whole review context to a
  * DIFFERENT upstream group — chains are Deployment-env-settable, so the
  * trust boundary for review payloads is whoever can edit that Deployment.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { applyChains, resolveFallbackChains } from "./fallbacks.ts";
+import { applyChains, resolveFallbackChains, wiringSummary } from "./fallbacks.ts";
 
 export default async function (_pi: ExtensionAPI) {
   const rawUrl = process.env.LITELLM_URL;
@@ -105,7 +122,14 @@ export default async function (_pi: ExtensionAPI) {
   }
   const byId = new Map(models.map((m) => [m.id, m]));
 
-  const { wired, annotated } = applyChains(models, fallbacks, byId);
+  const { wired, annotated, unwiredChains } = applyChains(models, fallbacks, byId);
+  if (unwiredChains.length > 0) {
+    // Expected on any proxy that serves a SUBSET of the live primaries
+    // (the default table is deliberately a superset — honest-limits (4)):
+    // a note, not an alarm. The alarm-shaped case is the wiring summary
+    // below ("no fallbacks wired").
+    console.error(`[litellm-provider] note: default-table primary not served by this proxy (chain inert): ${unwiredChains.join(", ")}`);
+  }
 
   _pi.registerProvider("litellm", {
     name: "LiteLLM Proxy",
@@ -150,6 +174,6 @@ export default async function (_pi: ExtensionAPI) {
   // and non-empty. Anything else is "no fallbacks wired" for that model.
   console.error(
     `[litellm-provider] registered ${models.length} model(s): ${models.map((m) => m.id).join(", ")}` +
-      (wired.length ? ` | fallbacks wired: ${wired.join("; ")}` : " | no fallbacks wired"),
+      wiringSummary(wired, fallbacks),
   );
 }

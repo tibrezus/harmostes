@@ -1,6 +1,8 @@
 package main
 
 import (
+	"fmt"
+
 	"context"
 	"os"
 	"path/filepath"
@@ -348,4 +350,77 @@ func TestRunTimeoutFloorsAtRunBound(t *testing.T) {
 			t.Errorf("%s: runTimeout = %s, want %s", c.name, got, c.want)
 		}
 	}
+}
+
+// #350: the rig freshness contract is evaluated at agent-node SPAWN — after
+// prepare (inside the graph) has produced rig.db. The false-fire class this
+// kills: the old assembly-time check always saw an empty workspace on an
+// attempt's first run, so "graph: absent" fired on healthy reviews and
+// RIG_REQUIRE_SHA was structurally dead on single-chunk runs.
+func TestSpawnEnvRigFreshnessDecisionTable(t *testing.T) {
+	dir := t.TempDir()
+	graph := filepath.Join(dir, "rig.db")
+	base := []string{"PATH=/usr/bin"}
+
+	t.Run("no trigger sha — base untouched", func(t *testing.T) {
+		t.Setenv("HARMOSTES_TRIGGER_SHA", "")
+		got := spawnEnv(base, graph, func(string, ...any) {})
+		if len(got) != len(base) || got[0] != base[0] {
+			t.Fatalf("base must pass through unchanged, got %v", got)
+		}
+	})
+
+	t.Setenv("HARMOSTES_TRIGGER_SHA", "9262dc5e")
+	capture := func() ([]string, []string) {
+		var lines []string
+		got := spawnEnv(base, graph, func(f string, a ...any) { lines = append(lines, fmt.Sprintf(f, a...)) })
+		return got, lines
+	}
+	has := func(env []string, key string) bool {
+		for _, kv := range env {
+			if strings.HasPrefix(kv, key+"=") {
+				return true
+			}
+		}
+		return false
+	}
+
+	t.Run("graph absent — signal fires, strictness NOT armed", func(t *testing.T) {
+		got, lines := capture()
+		if !has(got, "RIG_EXPECTED_SHA") {
+			t.Fatal("expectation must arm from the trigger sha")
+		}
+		if len(lines) != 1 || !strings.Contains(lines[0], "graph: absent") {
+			t.Fatalf("degradation signal must fire: %v", lines)
+		}
+		if has(got, "RIG_REQUIRE_SHA") {
+			t.Fatal("strictness must not arm on an absent graph")
+		}
+	})
+
+	t.Run("graph unstamped — signal fires, strictness NOT armed", func(t *testing.T) {
+		if err := os.WriteFile(graph, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		got, lines := capture()
+		if len(lines) != 1 || !strings.Contains(lines[0], "graph: unstamped") {
+			t.Fatalf("degradation signal must fire: %v", lines)
+		}
+		if has(got, "RIG_REQUIRE_SHA") {
+			t.Fatal("strictness must not arm on an unstamped graph")
+		}
+	})
+
+	t.Run("graph stamped — THE #350 FIX: strictness arms on a first run", func(t *testing.T) {
+		if err := os.WriteFile(graph+".sha", []byte("9262dc5e"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		got, lines := capture()
+		if len(lines) != 0 {
+			t.Fatalf("healthy graph must stay silent, got %v", lines)
+		}
+		if !has(got, "RIG_REQUIRE_SHA") {
+			t.Fatal("strictness must arm on a stamped graph — the case that was structurally dead")
+		}
+	})
 }

@@ -76,6 +76,33 @@ func graphPresenceLine(graphPath string) (string, bool) {
 	return "", false
 }
 
+// spawnEnv extends the pi child env with the ADR-0009 rig freshness
+// contract (#338/#350), evaluated at agent-node spawn: the expectation is
+// armed from the reviewed SHA; the degradation signal (#338 r24 D5) says
+// when prepare emitted no graph or no stamp — "graph missing" must be
+// countable from pod logs alone, without a session join; strictness arms
+// ONLY on a stamped graph (r26 ARCH-2 — the stamp's producer is the ops
+// repo's workspace.sh, outside this repo's enforcement, so an unstamped
+// graph degrades to answered-with-caveat instead of an unobservable
+// fleet-wide refusal). Pure function of (base, files on disk): testable
+// without a pi process.
+func spawnEnv(base []string, graphPath string, logf func(string, ...any)) []string {
+	sha := os.Getenv("HARMOSTES_TRIGGER_SHA")
+	if sha == "" {
+		return base
+	}
+	env := append([]string{}, base...)
+	env = append(env, "RIG_EXPECTED_SHA="+sha)
+	line, degraded := graphPresenceLine(graphPath)
+	if degraded {
+		logf("%s", line)
+	}
+	if !degraded {
+		env = append(env, "RIG_REQUIRE_SHA=1")
+	}
+	return env
+}
+
 func main() {
 	// argv is the authoritative dispatch (ADR-0007 phase 2): the consumer
 	// execs "run" children and the per-Attempt Job runs "run" directly —
@@ -377,29 +404,16 @@ func runOneShot() {
 	// and REFUSES on mismatch. Scoped to the pi child's env — not process-global
 	// (deploy/gate plugins must not inherit a one-consumer variable, #338 r15).
 	piEnv := os.Environ()
-	if sha := os.Getenv("HARMOSTES_TRIGGER_SHA"); sha != "" {
-		piEnv = append(piEnv, "RIG_EXPECTED_SHA="+sha)
-		// Run-level degradation signal (#338 r24 D5): when the expectation is
-		// armed but prepare emitted no graph (or no stamp), say so at startup —
-		// "graph missing" must be countable from pod logs alone, without a
-		// session join, or the archaeology cost this feature exists to kill
-		// returns invisibly.
-		line, degraded := graphPresenceLine(piargs.RigGraphPath)
-		if degraded {
-			logf("%s", line)
-		}
-		// Strictness is armed ONLY when the run's graph is actually stamped
-		// (r26 ARCH-2): the stamp's producer is the ops repo's workspace.sh —
-		// outside this repo's enforcement. An unstamped graph under an armed
-		// expectation degrades to answered-with-caveat (the tool's prose +
-		// sha_state telemetry stay countable) instead of a fleet-wide refusal
-		// this repo cannot see or fix. A STAMPED graph gets the full rule:
-		// mismatch, malformed and unchecked all refuse.
-		if !degraded {
-			piEnv = append(piEnv, "RIG_REQUIRE_SHA=1")
-		}
-	}
 	deps.Agent = worker.RPCAgentRunner{
+		// The rig freshness contract arms at AGENT-NODE SPAWN, not run
+		// assembly (#350): prepare — the rig.db producer — executes inside
+		// the graph, so a check run before ExecuteGraph always saw an empty
+		// workspace on an attempt's first run (the signal false-fired and
+		// RIG_REQUIRE_SHA was structurally dead on single-chunk runs, the
+		// majority). The check itself was right; only its position was wrong.
+		SpawnEnv: func(env []string) []string {
+			return spawnEnv(env, piargs.RigGraphPath, logf)
+		},
 		Opts: agent.RPCOptions{
 			Args:        piargs.PiArgs(wf.Spec.Agent.Skill, wf.Spec.Agent.Model, wf.Spec.Agent.Tools),
 			Workdir:     workdir,

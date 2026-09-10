@@ -233,9 +233,21 @@ type RPCAgentRunner struct {
 	// after the pi process has exited (files are flushed at exit). Used to
 	// upload the forkable native session for the UI (#243).
 	SessionFiles func(ctx context.Context, files []string)
+
+	// SpawnEnv, when set, is evaluated at Run time and may extend Opts.Env
+	// — the hook for anything that must observe the workspace AS THE AGENT
+	// NODE SEES IT (#350): the rig-graph presence check and the strictness
+	// arm depend on files prepare produces, and prepare executes INSIDE the
+	// graph — before the first agent node spawns, but never before the run
+	// starts. Evaluated per spawn, so multi-node and resumed chunks each
+	// see the current workspace.
+	SpawnEnv func(env []string) []string
 }
 
 func (r RPCAgentRunner) Run(ctx context.Context, task string, gate agent.Gate, maxFixes int, log agent.Logger, opts ...agent.TaskOption) (agent.Result, error) {
+	if r.SpawnEnv != nil {
+		r.Opts.Env = r.SpawnEnv(r.Opts.Env) // per-spawn evaluation (#350)
+	}
 	rpc, err := agent.NewRPC(ctx, r.Opts)
 	if err != nil {
 		return agent.Result{}, err

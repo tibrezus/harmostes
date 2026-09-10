@@ -23,8 +23,8 @@
  * request-level `fallbacks` param (via Model.samplingParams) — when the
  * primary model group fails mid-run, the proxy's router fails over to the
  * fallback group and the agent's stream continues instead of dying. Default
- * chain: ali/anthropic/qwen3.8-flash → mtplx/qwen38-27b-optimized-speed-fp16
- * (both live on the proxy). Override with LITELLM_FALLBACKS, a JSON object
+ * chain: mtplx/qwen38-27b-optimized-speed-fp16 → ali/anthropic/qwen3.8-flash
+ * (both live on the proxy; the platform decision, #363). Override with LITELLM_FALLBACKS, a JSON object
  * mapping model id → array of fallback ids — resolved by fallbacks.ts, which
  * degrades to the default chain on any semantically-bad value. NOTE the
  * naming boundary: on the proxy, ids are BARE group names (mtplx/...);
@@ -41,7 +41,10 @@
  * group per request. (3) Chained models register min(primary, fallback)
  * windows so the post-failover replay fits the fallback group — a real
  * capacity cost on every healthy run, taken for correctness — pi compacts
- * at window−reserve, so flash runs compact ~4× earlier (1 MiB→256 KiB).
+ * at window−reserve, so a chain whose fallback has a SMALLER window pulls
+ * the primary's budget down (the old flash→speed chain compacted ~4×
+ * early, 1 MiB→256 KiB). The current default has no such cost: speed
+ * (256 KiB) → flash (1 MiB) registers min = speed's own window.
  * The alternative, clamping only the fallback and letting the first
  * over-long replay 400, was considered and rejected: it trades a clean
  * early compaction for a dead stream exactly when the primary is already

@@ -26,6 +26,36 @@ test("unparsable JSON degrades loudly to the default", () => {
   assert.match(warning!, /not valid JSON/);
 });
 
+// #363: the DEFAULT chain's CONTENT is a platform decision (ops template
+// primary = mtplx speed, k8s-config 8c1fb609) and must match the
+// extension's direction — speed → qwen3.8-flash. The resolveFallbackChains
+// tests above only compare against the DEFAULT_FALLBACKS export itself
+// (they flip silently with any edit); this pin goes red if the content
+// moves without a deliberate platform decision behind it. The index.ts
+// header drifted exactly this way once (said flash→speed while the code
+// said flash→glm) — comments are not a pin.
+test("default chain content is the #363 platform decision: speed → flash", () => {
+  assert.deepEqual(DEFAULT_FALLBACKS, {
+    "mtplx/qwen38-27b-optimized-speed-fp16": ["ali/anthropic/qwen3.8-flash"],
+  });
+  // And it wires over a proxy exposing exactly the three known groups:
+  // speed's registered window stays its own 256 KiB (min(256 Ki, 1 Mi)),
+  // i.e. the flip carries NO clamp-induced early-compaction cost, and
+  // flash/glm (unchained) carry no samplingParams at all.
+  const proxy = new Map([
+    ["mtplx/qwen38-27b-optimized-speed-fp16", { max_input_tokens: 262144, max_output_tokens: 32768 }],
+    ["ali/anthropic/qwen3.8-flash", { max_input_tokens: 1048576, max_output_tokens: 32768 }],
+    ["zai/anthropic/glm-5.3-flash", { max_input_tokens: 131072, max_output_tokens: 8192 }],
+  ]);
+  const models = [...proxy.entries()].map(([id, m]) => ({ id, ...m }));
+  const { annotated, wired } = applyChains(models, DEFAULT_FALLBACKS, proxy);
+  const speed = annotated.find((m) => m.id === "mtplx/qwen38-27b-optimized-speed-fp16")!;
+  assert.deepEqual(speed.samplingParams, { fallbacks: ["ali/anthropic/qwen3.8-flash"] });
+  assert.equal(speed.contextWindow, 262144); // min(262144, 1048576) = own window
+  assert.equal(speed.clampNote, undefined); // no ctx/maxTokens clamp, no early compaction
+  assert.deepEqual(wired, ["mtplx/qwen38-27b-optimized-speed-fp16 → ali/anthropic/qwen3.8-flash"]); // wired entries are primary→fallback summaries
+});
+
 test("JSON array (not object) degrades to the default", () => {
   const { chains, warning } = resolveFallbackChains('["a/b"]');
   assert.deepEqual(chains, DEFAULT_FALLBACKS);

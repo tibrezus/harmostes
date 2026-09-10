@@ -10,10 +10,40 @@
 package piargs
 
 import (
+	"encoding/json"
 	"os"
 	"slices"
 	"strings"
 )
+
+//go:generate go run ./gen
+
+// RenderExtensions renders the extension single-source into its two consumed
+// forms (#339): the JSON artifact (extensions.json) and the generated block
+// for harmostes.py — same bytes the generator writes, so go test IS the drift
+// check (regenerate, compare, red on any drift; no CI surgery, no scrape).
+func RenderExtensions() (jsonArtifact []byte, pyBlock []byte, err error) {
+	type manifest struct {
+		Extensions []string          `json:"extensions"`
+		Tools      map[string]string `json:"tools"`
+	}
+	m := manifest{Extensions: slices.Clone(Extensions), Tools: extensionTools}
+	jsonArtifact, err = json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return nil, nil, err
+	}
+	jsonArtifact = append(jsonArtifact, '\n')
+	// The py form is the block BETWEEN the generated-extension markers in
+	// harmostes.py — which sit inside main(), so every line carries the
+	// four-space statement indent. The markers' own indent comes from the
+	// surrounding file; this function owns everything between them.
+	py, err := json.MarshalIndent(m, "", "    ")
+	if err != nil {
+		return nil, nil, err
+	}
+	pyBlock = []byte("    EXTENSIONS_MANIFEST = " + strings.ReplaceAll(string(py), "\n", "\n    ") + "\n    ")
+	return jsonArtifact, pyBlock, nil
+}
 
 // harmostes.py (the standalone primitive's pi invocation). The
 // TestExtensionsSingleSource test fails any drift between them — an

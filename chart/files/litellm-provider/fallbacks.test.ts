@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { DEFAULT_FALLBACKS, resolveFallbackChains } from "./fallbacks.ts";
+import { DEFAULT_FALLBACKS, resolveFallbackChains, wiringSummary } from "./fallbacks.ts";
 
 test("no env keeps the default chain", () => {
   const { chains, warning } = resolveFallbackChains(undefined);
@@ -86,6 +86,42 @@ test("resolveFallbackChains: '{}' is the off-switch — empty chains, no warning
   const { chains, warning } = resolveFallbackChains("{}");
   assert.deepEqual(chains, {});
   assert.equal(warning, undefined);
+});
+
+// The default table is a deliberate SUPERSET of any one proxy's groups
+// (#401 review r3): over a 2-group proxy (the chart-default shape, where
+// speed is ops-side), exactly the speed key is reported inert and the two
+// served directions still wire — the unwired note is expected output, not
+// an alarm.
+test("applyChains: a subset proxy reports exactly the unserved key", () => {
+  const two = new Map([
+    ["ali/anthropic/qwen3.8-flash", { max_input_tokens: 1048576, max_output_tokens: 32768 }],
+    ["zai/anthropic/glm-5.3-flash", { max_input_tokens: 131072, max_output_tokens: 8192 }],
+  ]);
+  const twoModels = [...two.entries()].map(([id, m]) => ({ id, ...m }));
+  const { wired, unwiredChains } = applyChains(twoModels, DEFAULT_FALLBACKS, two);
+  assert.deepEqual(unwiredChains, ["mtplx/qwen38-27b-optimized-speed-fp16"]);
+  assert.deepEqual(wired.sort(), [
+    "ali/anthropic/qwen3.8-flash → zai/anthropic/glm-5.3-flash",
+    "zai/anthropic/glm-5.3-flash → ali/anthropic/qwen3.8-flash",
+  ]);
+});
+
+// The summary branches are table-tested here because index.ts itself is
+// import-gate only (its factory returns early without LITELLM_URL).
+test("wiringSummary: wired / configured-but-unwired / off-switch", () => {
+  assert.equal(
+    wiringSummary(["a → b"], { "a": ["b"] }),
+    " | fallbacks wired: a → b",
+  );
+  assert.equal(
+    wiringSummary([], { "mtplx/x": ["ali/y"], "ali/y": ["zai/z"] }),
+    " | no fallbacks wired — chains configured for: mtplx/x, ali/y",
+  );
+  assert.equal(
+    wiringSummary([], {}),
+    " | no fallbacks wired — none configured (LITELLM_FALLBACKS='{}' disables all chains)",
+  );
 });
 
 // A chain keyed by a primary the proxy does not serve must SURFACE, not

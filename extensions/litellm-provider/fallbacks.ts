@@ -30,6 +30,12 @@ export const DEFAULT_FALLBACKS: Record<string, string[]> = {
   // and harmostes.py (#401 review r2): without an entry a glm-primary run
   // attaches no failover at all. flash is LARGER in both dimensions, so
   // this entry clamps nothing.
+  //
+  // Ring note: flash→glm→flash is a cycle at the TABLE level, but LiteLLM
+  // request-level fallbacks are one list deep — a failing fallback ENDS
+  // the request, and the next attempt restarts at the configured primary.
+  // There is no in-request ping-pong; cross-attempt retry storms are the
+  // worker's attempt bound, not the chain's.
   "zai/anthropic/glm-5.3-flash": ["ali/anthropic/qwen3.8-flash"],
 };
 
@@ -74,6 +80,21 @@ export function resolveFallbackChains(
     chains[model] = chain as string[];
   }
   return { chains };
+}
+
+/**
+ * The wiring summary line's tail: distinguishes "nothing configured" (the
+ * '{}' off-switch) from "configured but nothing usable" (typo'd/partial
+ * override, group dropped mid-rollout) — the dead-stream symptom becomes a
+ * one-glance diagnosis (#401 review r2; pure so the branches are
+ * table-tested — index.ts itself is import-gate only).
+ */
+export function wiringSummary(wired: string[], chains: Record<string, string[]>): string {
+  if (wired.length) return ` | fallbacks wired: ${wired.join("; ")}`;
+  const keys = Object.keys(chains);
+  return keys.length
+    ? ` | no fallbacks wired — chains configured for: ${keys.join(", ")}`
+    : " | no fallbacks wired — none configured (LITELLM_FALLBACKS='{}' disables all chains)";
 }
 
 /** One model's registration-relevant fields after chain application. */

@@ -55,7 +55,7 @@ data:
   fallbacks.test.ts: |
     import assert from "node:assert/strict";
     import { test } from "node:test";
-    import { DEFAULT_FALLBACKS, resolveFallbackChains } from "./fallbacks.ts";
+    import { DEFAULT_FALLBACKS, resolveFallbackChains, wiringSummary } from "./fallbacks.ts";
     
     test("no env keeps the default chain", () => {
       const { chains, warning } = resolveFallbackChains(undefined);
@@ -141,6 +141,42 @@ data:
       const { chains, warning } = resolveFallbackChains("{}");
       assert.deepEqual(chains, {});
       assert.equal(warning, undefined);
+    });
+    
+    // The default table is a deliberate SUPERSET of any one proxy's groups
+    // (#401 review r3): over a 2-group proxy (the chart-default shape, where
+    // speed is ops-side), exactly the speed key is reported inert and the two
+    // served directions still wire — the unwired note is expected output, not
+    // an alarm.
+    test("applyChains: a subset proxy reports exactly the unserved key", () => {
+      const two = new Map([
+        ["ali/anthropic/qwen3.8-flash", { max_input_tokens: 1048576, max_output_tokens: 32768 }],
+        ["zai/anthropic/glm-5.3-flash", { max_input_tokens: 131072, max_output_tokens: 8192 }],
+      ]);
+      const twoModels = [...two.entries()].map(([id, m]) => ({ id, ...m }));
+      const { wired, unwiredChains } = applyChains(twoModels, DEFAULT_FALLBACKS, two);
+      assert.deepEqual(unwiredChains, ["mtplx/qwen38-27b-optimized-speed-fp16"]);
+      assert.deepEqual(wired.sort(), [
+        "ali/anthropic/qwen3.8-flash → zai/anthropic/glm-5.3-flash",
+        "zai/anthropic/glm-5.3-flash → ali/anthropic/qwen3.8-flash",
+      ]);
+    });
+    
+    // The summary branches are table-tested here because index.ts itself is
+    // import-gate only (its factory returns early without LITELLM_URL).
+    test("wiringSummary: wired / configured-but-unwired / off-switch", () => {
+      assert.equal(
+        wiringSummary(["a → b"], { "a": ["b"] }),
+        " | fallbacks wired: a → b",
+      );
+      assert.equal(
+        wiringSummary([], { "mtplx/x": ["ali/y"], "ali/y": ["zai/z"] }),
+        " | no fallbacks wired — chains configured for: mtplx/x, ali/y",
+      );
+      assert.equal(
+        wiringSummary([], {}),
+        " | no fallbacks wired — none configured (LITELLM_FALLBACKS='{}' disables all chains)",
+      );
     });
     
     // A chain keyed by a primary the proxy does not serve must SURFACE, not
@@ -323,6 +359,12 @@ data:
       // and harmostes.py (#401 review r2): without an entry a glm-primary run
       // attaches no failover at all. flash is LARGER in both dimensions, so
       // this entry clamps nothing.
+      //
+      // Ring note: flash→glm→flash is a cycle at the TABLE level, but LiteLLM
+      // request-level fallbacks are one list deep — a failing fallback ENDS
+      // the request, and the next attempt restarts at the configured primary.
+      // There is no in-request ping-pong; cross-attempt retry storms are the
+      // worker's attempt bound, not the chain's.
       "zai/anthropic/glm-5.3-flash": ["ali/anthropic/qwen3.8-flash"],
     };
     
@@ -367,6 +409,21 @@ data:
         chains[model] = chain as string[];
       }
       return { chains };
+    }
+    
+    /**
+     * The wiring summary line's tail: distinguishes "nothing configured" (the
+     * '{}' off-switch) from "configured but nothing usable" (typo'd/partial
+     * override, group dropped mid-rollout) — the dead-stream symptom becomes a
+     * one-glance diagnosis (#401 review r2; pure so the branches are
+     * table-tested — index.ts itself is import-gate only).
+     */
+    export function wiringSummary(wired: string[], chains: Record<string, string[]>): string {
+      if (wired.length) return ` | fallbacks wired: ${wired.join("; ")}`;
+      const keys = Object.keys(chains);
+      return keys.length
+        ? ` | no fallbacks wired — chains configured for: ${keys.join(", ")}`
+        : " | no fallbacks wired — none configured (LITELLM_FALLBACKS='{}' disables all chains)";
     }
     
     /** One model's registration-relevant fields after chain application. */
@@ -507,9 +564,13 @@ data:
      * windows so the post-failover replay fits the fallback group — a real
      * capacity cost on every healthy run, taken for correctness — pi compacts
      * at window−reserve, so a chain whose fallback has a SMALLER window pulls
-     * the primary's budget down (the old flash→speed chain compacted ~4×
-     * early, 1 MiB→256 KiB). The current default has no such cost: speed
-     * (256 KiB) → flash (1 MiB) registers min = speed's own window.
+     * the primary's budget down. Per-direction, for the CURRENT table: speed
+     * → flash none (min = speed's own 256 KiB); glm → flash none (flash is
+     * larger in both dimensions); flash → glm is the costly one — ~8× ctx
+     * clamp (1 MiB→128 KiB) PLUS a 4× output clamp (32k→8k tokens), retained
+     * on purpose because flash is this chart's default primary and glm is its
+     * only other served group (the historical flash→speed direction cost ~4×,
+     * 1 MiB→256 KiB — smaller than what we ship today).
      * The alternative, clamping only the fallback and letting the first
      * over-long replay 400, was considered and rejected: it trades a clean
      * early compaction for a dead stream exactly when the primary is already
@@ -527,7 +588,7 @@ data:
      * trust boundary for review payloads is whoever can edit that Deployment.
      */
     import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-    import { applyChains, resolveFallbackChains } from "./fallbacks.ts";
+    import { applyChains, resolveFallbackChains, wiringSummary } from "./fallbacks.ts";
     
     export default async function (_pi: ExtensionAPI) {
       const rawUrl = process.env.LITELLM_URL;
@@ -582,7 +643,11 @@ data:
     
       const { wired, annotated, unwiredChains } = applyChains(models, fallbacks, byId);
       if (unwiredChains.length > 0) {
-        console.error(`[litellm-provider] fallback chains keyed by primaries this proxy does not serve (inert): ${unwiredChains.join(", ")}`);
+        // Expected on any proxy that serves a SUBSET of the live primaries
+        // (the default table is deliberately a superset — honest-limits (4)):
+        // a note, not an alarm. The alarm-shaped case is the wiring summary
+        // below ("no fallbacks wired").
+        console.error(`[litellm-provider] note: default-table primary not served by this proxy (chain inert): ${unwiredChains.join(", ")}`);
       }
     
       _pi.registerProvider("litellm", {
@@ -626,19 +691,9 @@ data:
       // Honest wiring log: applyChains reports the chains actually ATTACHED —
       // fully-resolved (primary known, every fallback id a discovered group)
       // and non-empty. Anything else is "no fallbacks wired" for that model.
-      // Distinguish "nothing configured" (the '{}' off-switch) from
-      // "configured but nothing usable" (typo'd/partial override, group
-      // dropped mid-rollout) — the worst-case symptom (a dead stream with no
-      // failover) becomes a one-glance diagnosis (#401 review r2).
-      const configuredKeys = Object.keys(fallbacks);
-      const unwiredSummary = wired.length
-        ? ` | fallbacks wired: ${wired.join("; ")}`
-        : configuredKeys.length
-          ? ` | no fallbacks wired — chains configured for: ${configuredKeys.join(", ")}`
-          : " | no fallbacks wired — none configured (LITELLM_FALLBACKS='{}' disables all chains)";
       console.error(
         `[litellm-provider] registered ${models.length} model(s): ${models.map((m) => m.id).join(", ")}` +
-          unwiredSummary,
+          wiringSummary(wired, fallbacks),
       );
     }
     
@@ -4979,7 +5034,7 @@ spec:
         # the fork-maintenance.yaml template output (scripts/checks/defs/
         # hooks/skill CMs) and the litellm extension payload.
         checksum/fork-maintenance: 082d8c5472ee15b9beacfd112a46beff3f5121af68d95f1af2eadb6fd64372f4
-        checksum/litellm-extension: 3bad7fa6f1768b993ae4cd49586a188e94f8e8f2aa1185fdf4f4d15ce4fd0a4c
+        checksum/litellm-extension: b48e7a02c4d911c0def232e6c0cf41528c4cac8cec9bc6e19c65627688f48be1
     spec:
       imagePullSecrets:
         - name: ghcr-pull

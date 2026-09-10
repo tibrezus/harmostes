@@ -45,9 +45,13 @@
  * windows so the post-failover replay fits the fallback group — a real
  * capacity cost on every healthy run, taken for correctness — pi compacts
  * at window−reserve, so a chain whose fallback has a SMALLER window pulls
- * the primary's budget down (the old flash→speed chain compacted ~4×
- * early, 1 MiB→256 KiB). The current default has no such cost: speed
- * (256 KiB) → flash (1 MiB) registers min = speed's own window.
+ * the primary's budget down. Per-direction, for the CURRENT table: speed
+ * → flash none (min = speed's own 256 KiB); glm → flash none (flash is
+ * larger in both dimensions); flash → glm is the costly one — ~8× ctx
+ * clamp (1 MiB→128 KiB) PLUS a 4× output clamp (32k→8k tokens), retained
+ * on purpose because flash is this chart's default primary and glm is its
+ * only other served group (the historical flash→speed direction cost ~4×,
+ * 1 MiB→256 KiB — smaller than what we ship today).
  * The alternative, clamping only the fallback and letting the first
  * over-long replay 400, was considered and rejected: it trades a clean
  * early compaction for a dead stream exactly when the primary is already
@@ -65,7 +69,7 @@
  * trust boundary for review payloads is whoever can edit that Deployment.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { applyChains, resolveFallbackChains } from "./fallbacks.ts";
+import { applyChains, resolveFallbackChains, wiringSummary } from "./fallbacks.ts";
 
 export default async function (_pi: ExtensionAPI) {
   const rawUrl = process.env.LITELLM_URL;
@@ -120,7 +124,11 @@ export default async function (_pi: ExtensionAPI) {
 
   const { wired, annotated, unwiredChains } = applyChains(models, fallbacks, byId);
   if (unwiredChains.length > 0) {
-    console.error(`[litellm-provider] fallback chains keyed by primaries this proxy does not serve (inert): ${unwiredChains.join(", ")}`);
+    // Expected on any proxy that serves a SUBSET of the live primaries
+    // (the default table is deliberately a superset — honest-limits (4)):
+    // a note, not an alarm. The alarm-shaped case is the wiring summary
+    // below ("no fallbacks wired").
+    console.error(`[litellm-provider] note: default-table primary not served by this proxy (chain inert): ${unwiredChains.join(", ")}`);
   }
 
   _pi.registerProvider("litellm", {
@@ -164,18 +172,8 @@ export default async function (_pi: ExtensionAPI) {
   // Honest wiring log: applyChains reports the chains actually ATTACHED —
   // fully-resolved (primary known, every fallback id a discovered group)
   // and non-empty. Anything else is "no fallbacks wired" for that model.
-  // Distinguish "nothing configured" (the '{}' off-switch) from
-  // "configured but nothing usable" (typo'd/partial override, group
-  // dropped mid-rollout) — the worst-case symptom (a dead stream with no
-  // failover) becomes a one-glance diagnosis (#401 review r2).
-  const configuredKeys = Object.keys(fallbacks);
-  const unwiredSummary = wired.length
-    ? ` | fallbacks wired: ${wired.join("; ")}`
-    : configuredKeys.length
-      ? ` | no fallbacks wired — chains configured for: ${configuredKeys.join(", ")}`
-      : " | no fallbacks wired — none configured (LITELLM_FALLBACKS='{}' disables all chains)";
   console.error(
     `[litellm-provider] registered ${models.length} model(s): ${models.map((m) => m.id).join(", ")}` +
-      unwiredSummary,
+      wiringSummary(wired, fallbacks),
   );
 }

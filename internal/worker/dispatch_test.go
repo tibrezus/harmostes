@@ -311,20 +311,101 @@ func attemptAttemptFixture(t *testing.T, ctx context.Context, d *Dispatcher, wf 
 	return at.Name
 }
 
-// TestJobEnvAllowlistCarriesFallbacks (#359 r4 P4.1): LITELLM_FALLBACKS must
-// cross the Job boundary or the extension's override knob is a pool-pod-only
-// no-op on the attempt Jobs pr-review agents run in. The extension's header
-// documents this entry as the delivery path — the cross-language contract is
-// pinned here, in Go, where it fails CI when either side drifts.
-func TestJobEnvAllowlistCarriesFallbacks(t *testing.T) {
-	found := false
-	for _, k := range jobEnvAllowlist {
-		if k == "LITELLM_FALLBACKS" {
-			found = true
+// r#406-review blocking finding, folded per r2 P4 (table-driven so the
+// next alias costs one row): every CLI-canonical alias the chart injects
+// (worker-pool.yaml "CLI aliases" block) must be allowlisted AND forwarded
+// by jobCredentialEnv — an allowlist entry that never reaches the Job is
+// the same silent failure one indirection later, and a missing entry means
+// the agent's CLI posts unauthenticated (inline threads die to prose).
+func TestJobEnvAllowlistCarriesCLIAliases(t *testing.T) {
+	rows := []struct{ name, why string }{
+		{"FORGEJO_TOKEN", "the fj CLI's env fallback — without it the inline-thread protocol's Forgejo leg dies to prose"},
+		{"GH_TOKEN", "gh's native env — without it the protocol's GitHub leg dies to prose"},
+		{"LITELLM_FALLBACKS", "the extension's override knob is a pool-pod-only no-op without it (#359 r4 P4.1)"},
+	}
+	for _, row := range rows {
+		found := false
+		for _, k := range jobEnvAllowlist {
+			if k == row.name {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%s must be in jobEnvAllowlist: %s", row.name, row.why)
 		}
 	}
-	if !found {
-		t.Fatal("LITELLM_FALLBACKS must be in jobEnvAllowlist — without it the fallback override cannot reach attempt Jobs")
+	// jobCredentialEnv must actually FORWARD the names from the process env
+	// (the pool pod carries them) — an allowlist entry with a broken forward
+	// is the same silent failure one indirection later.
+	t.Setenv("FORGEJO_TOKEN", "probe-forge")
+	t.Setenv("GH_TOKEN", "probe-gh")
+	forwarded := map[string]bool{}
+	for _, kv := range jobCredentialEnv() {
+		for _, name := range []string{"FORGEJO_TOKEN", "GH_TOKEN"} {
+			if kv == name+"=probe-"+map[string]string{"FORGEJO_TOKEN": "forge", "GH_TOKEN": "gh"}[name] {
+				forwarded[name] = true
+			}
+		}
+	}
+	for _, name := range []string{"FORGEJO_TOKEN", "GH_TOKEN"} {
+		if !forwarded[name] {
+			t.Errorf("jobCredentialEnv does not forward %s from the process env", name)
+		}
+	}
+	// Negative row (r2 P5): an EMPTY alias must be dropped — a CLI seeing
+	// "set but unauthorized" stops resolving instead of falling through its
+	// chain, which is worse than absent.
+	t.Setenv("FORGEJO_TOKEN", "")
+	forwardedEmpty := false
+	for _, kv := range jobCredentialEnv() {
+		if kv == "FORGEJO_TOKEN=" {
+			forwardedEmpty = true
+		}
+	}
+	if forwardedEmpty {
+		t.Error("empty FORGEJO_TOKEN must not be forwarded — set-but-unauthorized blocks the CLI's resolution chain")
+	}
+}
+
+// The seam the allowlist tests cannot see: jobCredentialEnv's output reaches
+// the Job only through append(jobCredentialEnv(), dispatchEnv(...)) at the
+// Dispatch call site. Deleting that append left every allowlist test green
+// (r#406 review pillar 8) while the Job lost the credential — so pin the
+// DELIVERED env through the real dispatch path, with the pool env the chart
+// actually aliases.
+func TestDispatchedJobCarriesCLIAliasTokens(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := greenPRServer(t)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	t.Setenv("FORGEJO_TOKEN", "probe-forge")
+	t.Setenv("GH_TOKEN", "probe-gh")
+	wf := gatedDispatchWorkflow()
+
+	d, ctx := newTestDispatcher(t, wf)
+	if err := d.Dispatch(ctx, dispatchRequest()); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	var jobs batchv1.JobList
+	if err := d.cl.List(ctx, &jobs); err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs.Items) != 1 {
+		t.Fatalf("exactly one Job must be dispatched, got %d", len(jobs.Items))
+	}
+	env := jobs.Items[0].Spec.Template.Spec.Containers[0].Env
+	for alias, probe := range map[string]string{"FORGEJO_TOKEN": "probe-forge", "GH_TOKEN": "probe-gh"} {
+		found := false
+		var names []string
+		for _, kv := range env {
+			names = append(names, kv.Name+"="+kv.Value)
+			if kv.Name == alias && kv.Value == probe {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("dispatched Job must carry %s=%s — env has: %v", alias, probe, names)
+		}
 	}
 }
 

@@ -368,6 +368,19 @@ func triggerSubject(req RunRequest) timeline.Subject {
 // boundary, and future credentials are added here explicitly.
 var jobEnvAllowlist = []string{
 	"HARMOSTES_FORGEJO_TOKEN",
+	// CLI-canonical alias names (#374 protocol): the chart aliases the
+	// shared forge secrets at the exact names the agent CLIs read natively
+	// (worker-pool.yaml "CLI aliases" block) — the review agents drive
+	// gh/fj directly for inline review threads, and those CLIs resolve
+	// keys.json → <canonical env>. Without forwarding the aliases the
+	// agent's CLI was UNAUTHENTICATED and every inline review thread post
+	// failed ("not logged in"), silently degrading findings to verdict
+	// prose. Found live on BOTH legs: Forgejo (fj — 0 review objects on
+	// every rhesadox PR) and GitHub (gh — 0 inline comments on every
+	// harmostes PR; verified from inside a dispatched attempt Job).
+	// glab has no injected credential yet (GitLab leg: #374 follow-up).
+	"FORGEJO_TOKEN",
+	"GH_TOKEN",
 	"HARMOSTES_GIT_TOKEN",
 	"HARMOSTES_CODEBERG_TOKEN",
 	"HARMOSTES_RZC_USERNAME",
@@ -393,6 +406,9 @@ func jobCredentialEnv() []string {
 	var out []string
 	for _, kv := range os.Environ() {
 		if i := strings.IndexByte(kv, '='); i > 0 && wanted[kv[:i]] {
+			if i == len(kv)-1 {
+				continue // an EMPTY alias is worse than an absent one: the CLI sees "set but unauthorized" instead of falling through its resolution chain
+			}
 			out = append(out, kv)
 		}
 	}

@@ -90,8 +90,35 @@ func TestPiArgsDropsMissingExtension(t *testing.T) {
 // Dockerfiles (COPY), and harmostes.py (the standalone primitive). Drift in
 // any of them is fleet-wide — a missing COPY kills every agent at pi startup,
 // a missing -e silently drops the tool (#338 r9). This test pins them all.
+//
+// #339: harmostes.py's manifest is GENERATED (RenderExtensions → the marked
+// block; extensions.json is the checked-in artifact). The drift check is the
+// render itself — regenerate, compare bytes, red on any drift — replacing
+// the old strings.Contains scrapes, which a reordered or reformatted dict
+// literal could satisfy while the semantics drifted.
 func TestExtensionsSingleSource(t *testing.T) {
+	// The generated forms must match the committed bytes exactly.
+	jsonArtifact, pyBlock, err := RenderExtensions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := mustRead(t, "extensions.json"); string(got) != string(jsonArtifact) {
+		t.Errorf("extensions.json is stale — run `go generate ./internal/piargs`\nwant:\n%s\ngot:\n%s", jsonArtifact, got)
+	}
 	py := string(mustRead(t, "../../harmostes.py"))
+	const (
+		begin = "# BEGIN GENERATED EXTENSIONS (go generate ./internal/piargs — do not edit)"
+		end   = "# END GENERATED EXTENSIONS"
+	)
+	i, j := strings.Index(py, begin), strings.Index(py, end)
+	if i < 0 || j < 0 {
+		t.Fatalf("harmostes.py: generated-extension markers missing — the primitive's manifest is not generated anymore")
+	}
+	if got := py[i+len(begin)+1 : j]; string(pyBlock) != got {
+		t.Errorf("harmostes.py generated block is stale — run `go generate ./internal/piargs`\nwant:\n%s\ngot:\n%s", pyBlock, got)
+	}
+	// Structural scrapes stay for the Dockerfiles (COPY lines are layout,
+	// not generated): a missing COPY kills every agent at pi startup.
 	for _, ext := range Extensions {
 		dockerfile := string(mustRead(t, "../../Dockerfile.worker"))
 		release := string(mustRead(t, "../../.github/Dockerfile.worker.release"))
@@ -103,23 +130,10 @@ func TestExtensionsSingleSource(t *testing.T) {
 		if !strings.Contains(release, " "+ext) {
 			t.Errorf(".github/Dockerfile.worker.release (the published image) does not COPY %s", ext)
 		}
-		if !strings.Contains(py, "\""+ext+"\"") {
-			t.Errorf("harmostes.py does not load %s — the standalone primitive drifts from the worker", ext)
-		}
-		// The tool the extension registers must match the allowlist the Python
-		// path builds — value drift is the r17 M4 class (a path can load while
-		// the tool it registers never enters --tools). r25 F7: iterate the REAL
-		// extensionTools map, not a re-literalized copy — the guard must not
-		// itself be a duplicate of the value it guards.
-		if tool, ok := extensionTools[ext]; ok {
-			entry := "\"" + ext + "\": \"" + tool + "\""
-			if !strings.Contains(py, entry) {
-				t.Errorf("harmostes.py extension_tools is missing %s", entry)
-			}
-		}
-		// (provider-only extensions legitimately have no entry — see the
-		// extensionTools comment; iterating the REAL map means a tool ADDED
-		// there is checked without this test growing a copy, r25 F7.)
+		// (provider-only extensions legitimately have no tool entry — see the
+		// extensionTools comment. Tool coverage is now the artifact's: the
+		// rendered bytes above ARE extensionTools, so a tool ADDED to the map
+		// is drift-checked without this test growing a copy, r25 F7.)
 		args := buildPiArgs("s", "m", nil, Extensions, alwaysPresent)
 		if !strings.Contains(strings.Join(args, " "), ext) {
 			t.Errorf("PiArgs does not load %s", ext)

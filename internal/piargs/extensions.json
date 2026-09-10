@@ -1,0 +1,9 @@
+{
+  "extensions": [
+    "/extensions/litellm-provider",
+    "/extensions/rig-query"
+  ],
+  "tools": {
+    "/extensions/rig-query": "rig"
+  }
+}

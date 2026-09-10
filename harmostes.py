@@ -186,18 +186,28 @@ def main():
 
     # Mirror PiArgs INCLUDING its pre-flight: pi exits at startup when a -e
     # path does not exist, so a missing extension drops out of -e AND from the
-    # tools allowlist instead of killing the run (#338 r15 P1). The source of
-    # truth for this list is internal/piargs (Extensions + extensionTools) in
-    # the harmostes repo — a LEAF package so this primitive's mirror and the
-    # worker both point at one source without coupling (#338 r26 ARCH-1).
+    # tools allowlist instead of killing the run (#338 r15 P1). The manifest
+    # below is GENERATED from internal/piargs (Extensions + extensionTools) —
+    # `go generate ./internal/piargs` in the harmostes repo; never hand-edit
+    # (#339: this was the third hand-kept encoding of the list).
+    # BEGIN GENERATED EXTENSIONS (go generate ./internal/piargs — do not edit)
+    EXTENSIONS_MANIFEST = {
+        "extensions": [
+            "/extensions/litellm-provider",
+            "/extensions/rig-query"
+        ],
+        "tools": {
+            "/extensions/rig-query": "rig"
+        }
+    }
+    # END GENERATED EXTENSIONS
     extensions = []
-    extension_tools = {"/extensions/rig-query": "rig"}
-    for ext in ("/extensions/litellm-provider", "/extensions/rig-query"):
+    for ext in EXTENSIONS_MANIFEST["extensions"]:
         if os.path.isdir(ext):
             extensions.append(ext)
     tools = args.tools.split(",") if args.tools else []
     for ext in extensions:
-        tool = extension_tools.get(ext)
+        tool = EXTENSIONS_MANIFEST["tools"].get(ext)
         if tool and tool not in tools:
             tools.append(tool)
     pi_args = [

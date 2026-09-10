@@ -37,7 +37,7 @@ spec:
         - name: sync-skills
           image: {{ .Values.image.worker | quote }}
           imagePullPolicy: Always
-          command: ["sh", "-c", "git clone --depth 1 {{ .Values.skills.repo | default "https://github.com/tibrezus/agents.git" }} /tmp/agents && mkdir -p /skills && cp -r /tmp/agents/skills/. /skills/"]
+          command: ["sh", "-c", "git clone --depth 1 {{ .Values.skills.repo | default "https://github.com/tibrezus/agents.git" }} /tmp/agents && mkdir -p /skills && cp -r /tmp/agents/skills/. /skills/ && { echo \"[sync-skills] served skills revision: $(git -C /tmp/agents rev-parse HEAD)\"; (find /skills -name 'SKILL.md' | sort | xargs -r sha256sum > /skills/.manifest) || echo \"[sync-skills] manifest write failed (non-fatal)\"; true; }"]
           volumeMounts:
             - name: skills
               mountPath: /skills

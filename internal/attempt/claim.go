@@ -435,8 +435,11 @@ func FinalizeCancelledClaim(ctx context.Context, c client.Client, namespace, att
 			} else {
 				s.Phase = v1alpha1.AttemptPhaseFailed
 			}
-			finalizedRun = true
 		}
+		// The cancellation message is the death observer's statement: stamp it
+		// only when this call actually finalized a running/empty run record. A
+		// run the worker already recorded honestly (e.g. finished naturally
+		// between the job snapshot and this patch) keeps its own story.
 		if finalizedRun {
 			s.Message = fmt.Sprintf("review cancelled (%s) — Job deleted before the run bound; the gate finalized this ledger as the death observer", reason)
 		}

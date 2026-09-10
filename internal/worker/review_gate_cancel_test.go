@@ -253,6 +253,44 @@ func TestCancelOnSupersedeSecondSweepNoop(t *testing.T) {
 	}
 }
 
+// A review the worker already recorded honestly (finished naturally between
+// the job snapshot and the cancel pass) keeps its own outcome: the pass moves
+// the stale phase but does NOT stamp the death-observer message over it.
+func TestCancelOnSupersedePreservesWorkerWrittenOutcome(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := noVerdictServer(t)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	st := &fakeStatus{}
+	disp := time.Now().Add(-30 * time.Minute)
+	claim := releasedClaimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#109", "deadbeef10d", "superseded", disp)
+	claim.Status.Runs = []RunRecordAlias{{Name: "run-1", Phase: "succeeded", EndedAt: metav1.NewTime(disp.Add(time.Minute))}}
+	job := reviewJobFixture(wf, claim.Name)
+	deps, ctx := gateEnv(t, wf, st, claim, job)
+	deps.CancelOnSupersede = true
+
+	if _, err := RunReviewGateSweep(ctx, deps, wf); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if jobExists(t, ctx, deps, wf, job.Name) {
+		t.Fatal("the stale Job must still be cancelled")
+	}
+	var got v1alpha1.Attempt
+	if err := deps.Client.Get(ctx, client.ObjectKey{Namespace: wf.Namespace, Name: claim.Name}, &got); err != nil {
+		t.Fatalf("get claim: %v", err)
+	}
+	if got.Status.Message != "" {
+		t.Fatalf("death-observer message stamped over a worker-written outcome: %q", got.Status.Message)
+	}
+	if got.Status.Runs[0].Phase != "succeeded" {
+		t.Fatalf("worker-written run outcome mutated: %+v", got.Status.Runs[0])
+	}
+	if got.Status.Phase != v1alpha1.AttemptPhaseSuperseded {
+		t.Fatalf("phase = %q, want superseded (the stale phase still moves)", got.Status.Phase)
+	}
+}
+
 // Fail-closed: a JobList failure latches for the whole sweep — an observer
 // that cannot see Jobs must not delete them. The next healthy sweep converges.
 func TestCancelOnSupersedeJobListFailureSkips(t *testing.T) {

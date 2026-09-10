@@ -420,6 +420,15 @@ func FinalizeCancelledClaim(ctx context.Context, c client.Client, namespace, att
 		return nil // not a cancellation — the ledger is not this call's business
 	}
 	return patchAttemptStatus(ctx, c, namespace, attemptName, func(s *v1alpha1.AttemptStatus) {
+		// The write must re-agree with the state the read saw — the
+		// markClaimReleased discipline (r12 must-fix 1). The DeleteJob→
+		// finalize gap can see the era REVIVED (label re-applied, or an old
+		// head force-pushed back into the same attempt identity): patching
+		// then would stamp a terminal ledger over a live in-flight review.
+		// A revived claim is not dead; nothing here may tell it otherwise.
+		if s.Review == nil || !s.Review.Released || !v1alpha1.IsCancellationRelease(s.Review.ReleaseReason) {
+			return
+		}
 		now := metav1.NewTime(time.Now())
 		finalizedRun := false
 		for i := range s.Runs {

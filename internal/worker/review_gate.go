@@ -16,7 +16,6 @@ import (
 	kapierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -739,8 +738,8 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 				if r == nil || !r.Released || !v1alpha1.IsCancellationRelease(r.ReleaseReason) {
 					continue // live (or revived) claim, or a non-cancellation release
 				}
-				if ref := j.OwnerReferences; len(ref) > 0 && ref[0].UID != types.UID(at.UID) {
-					log("review-ready: cancel pass: job %s names attempt %s but is owned by %s — skipping (forged or re-pointed label)", j.Name, name, ref[0].UID)
+				if ref := metav1.GetControllerOf(&j.ObjectMeta); ref == nil || ref.UID != at.UID {
+					log("review-ready: cancel pass: job %s names attempt %s but has no/mismatched controller owner (%v) — skipping (forged or re-pointed label)", j.Name, name, ref)
 					continue
 				}
 				if err := k8s.DeleteJob(ctx, deps.Client, wf.Namespace, j.Name); err != nil && !kapierrors.IsNotFound(err) {
@@ -750,7 +749,20 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 				if err := attempt.FinalizeCancelledClaim(recordCtx, deps.Client, wf.Namespace, name, r.ReleaseReason); err != nil {
 					log("review-ready: finalize cancelled attempt %s failed: %v", name, err)
 				}
-				log("review-ready: cancelled job %s for %s claim %s at %s — superseded by %s; dead-head review stopped before the run bound (#402)", j.Name, r.ReleaseReason, name, r.HeadSHA, newlyArmed[r.PR])
+				// The successor half of the pair is only truthful for a
+				// supersession — a closed PR or an unparseable pointer has none,
+				// and saying "superseded by <no value>" would be the exact
+				// false precision the #357 standard exists to prevent.
+				pair := ""
+				if r.ReleaseReason == v1alpha1.ReleaseReasonSuperseded {
+					pair = fmt.Sprintf(" — superseded by %s", newlyArmed[r.PR])
+				}
+				log("review-ready: cancelled job %s for %s claim %s at %s%s; dead-head review stopped before the run bound (#402)", j.Name, r.ReleaseReason, name, r.HeadSHA, pair)
+				// A cancellation is a gate DECISION, not debris — count it on
+				// the same durable series every other sweep decision class uses.
+				if repo, _, perr := parsePRPointer(r.PR); perr == nil {
+					recordReviewGateReason(recordCtx, wf.Name, repo, "cancel")
+				}
 			}
 		}
 	}

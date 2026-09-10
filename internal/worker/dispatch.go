@@ -81,6 +81,25 @@ type DispatchConfig struct {
 // (default 3600), HARMOSTES_PLUGIN_CONFIGMAPS, HARMOSTES_EXTRA_CONFIGMAP_MOUNTS,
 // and the optional HARMOSTES_DAPRD_IMAGE pin.
 //
+// CancelOnSupersedeFromEnv resolves the cancel-on-supersede knob (#402):
+// default ON — the waste is pure loss — malformed values fail fast (#311
+// convention). ONE parse for BOTH boundaries (the consumer's
+// DispatchConfigFromEnv and the one-shot run's gate deps): two sites
+// encoding one default is the exact shape DispatchConfigFromEnv exists to
+// kill (#311/#314), and a divergent default here would make the Job path
+// and the pool path disagree on whether dead-head reviews get cancelled.
+func CancelOnSupersedeFromEnv() (bool, error) {
+	v := os.Getenv("HARMOSTES_CANCEL_ON_SUPERSEDE")
+	if v == "" {
+		return true, nil
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		return false, fmt.Errorf("HARMOSTES_CANCEL_ON_SUPERSEDE=%q: must be a boolean", v)
+	}
+	return b, nil
+}
+
 // Malformed values are ERRORS, not warnings-with-fallback: a chart typo that
 // silently drops a mount or silently keeps a default is the #311 failure
 // mode — fail-fast at boot turns it into an immediate, visible crash-loop.
@@ -121,13 +140,9 @@ func DispatchConfigFromEnv(logf func(string, ...any)) (DispatchConfig, error) {
 	}
 	// Cancel-on-supersede (#402): default ON — the waste is pure loss. A
 	// malformed value is an error, not a silent default (#311 convention).
-	cfg.CancelOnSupersede = true
-	if v := os.Getenv("HARMOSTES_CANCEL_ON_SUPERSEDE"); v != "" {
-		b, err := strconv.ParseBool(v)
-		if err != nil {
-			return cfg, fmt.Errorf("HARMOSTES_CANCEL_ON_SUPERSEDE=%q: must be a boolean", v)
-		}
-		cfg.CancelOnSupersede = b
+	// Shared with the one-shot gate path via CancelOnSupersedeFromEnv.
+	if cfg.CancelOnSupersede, err = CancelOnSupersedeFromEnv(); err != nil {
+		return cfg, err
 	}
 	ttl := int32(3600)
 	if v := os.Getenv("HARMOSTES_JOB_TTL_SECONDS"); v != "" {

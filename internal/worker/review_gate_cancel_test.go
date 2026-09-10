@@ -118,6 +118,62 @@ func TestCancelOnSupersedeDeletesJobOfSupersededClaim(t *testing.T) {
 	}
 }
 
+// The #410 trigger, end to end through the sweep: the claim was dispatched
+// at a head the PR has since moved past (the forge answers with the NEW
+// head), the run is fresh and well inside every bound — but its verdict can
+// never land, so the gate supersedes it and the cancel pass deletes the Job
+// in the SAME sweep. This is the ztphk/PR-2084 live case (24 minutes burned
+// at a dead head because the dispatched branch had no head-move handling).
+func TestSweepSupersedesDispatchedClaimOnHeadMove(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := noVerdictServer(t) // serves the PR at deadbeef123
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	st := &fakeStatus{}
+	now := time.Now()
+	disp := now.Add(-5 * time.Minute) // fresh dispatch, far inside DispatchTimeout
+	claim := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#101", "cafe000", now.Add(-6*time.Minute), &disp)
+	claim.UID = k8stypes.UID("attempt-uid-" + claim.Name)
+	claim.Status.Phase = v1alpha1.AttemptPhaseReconciling
+	job := reviewJobFixture(wf, claim)
+	deps, ctx := gateEnv(t, wf, st, claim, job)
+	deps.DisableCancelOnSupersede = false
+
+	if _, err := RunReviewGateSweep(ctx, deps, wf); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+
+	if jobExists(t, ctx, deps, wf, job.Name) {
+		t.Fatal("the stale-head Job must be deleted in the same sweep — the verdict could not land")
+	}
+	var got v1alpha1.Attempt
+	if err := deps.Client.Get(ctx, client.ObjectKey{Namespace: wf.Namespace, Name: claim.Name}, &got); err != nil {
+		t.Fatalf("get claim: %v", err)
+	}
+	if !got.Status.Review.Released || got.Status.Review.ReleaseReason != v1alpha1.ReleaseReasonSuperseded {
+		t.Fatalf("the moved-head release must be a supersession, got Released=%v reason=%q", got.Status.Review.Released, got.Status.Review.ReleaseReason)
+	}
+	if got.Status.Phase != v1alpha1.AttemptPhaseSuperseded {
+		t.Fatalf("phase = %q, want superseded", got.Status.Phase)
+	}
+	if got.Status.Review.DeadDispatches != 0 || got.Status.Review.DispatchLostReleases != 0 {
+		t.Fatalf("breaker budgets moved: DeadDispatches=%d DispatchLostReleases=%d — a supersession is not a death", got.Status.Review.DeadDispatches, got.Status.Review.DispatchLostReleases)
+	}
+	// The sweep must record the release even when a later section's failure
+	// overwrites the aggregates (last-decision-wins): the durable proof is
+	// the claim's own release record, not the aggregate tail.
+	if !got.Status.Review.Released || got.Status.Review.ReleaseReason != v1alpha1.ReleaseReasonSuperseded {
+		t.Fatalf("the moved-head release must be a supersession, got Released=%v reason=%q", got.Status.Review.Released, got.Status.Review.ReleaseReason)
+	}
+	if got.Status.Phase != v1alpha1.AttemptPhaseSuperseded {
+		t.Fatalf("phase = %q, want superseded", got.Status.Phase)
+	}
+	if got.Status.Review.DeadDispatches != 0 || got.Status.Review.DispatchLostReleases != 0 {
+		t.Fatalf("breaker budgets moved: DeadDispatches=%d DispatchLostReleases=%d — a supersession is not a death", got.Status.Review.DeadDispatches, got.Status.Review.DispatchLostReleases)
+	}
+}
+
 // A closed PR's in-flight review cancels too, but the terminal phase is
 // failed (the review is dead, not replaced).
 func TestCancelOnSupersedeClosedReasonFailsPhase(t *testing.T) {
@@ -178,7 +234,9 @@ func TestCancelOnSupersedeSparesHorizonReleases(t *testing.T) {
 
 // A live claim's Job is never touched: only the claim's own release passes
 // decide liveness; the cancel pass reads the CURRENT attempt state, so a
-// same-head revival (Released=false again) is invisible to it.
+// same-head revival (Released=false again) is invisible to it. The claim is
+// pinned at the head the forge still serves — a MOVED head would make the
+// gate itself supersede the claim (#410), which is a different test.
 func TestCancelOnSupersedeSparesLiveClaims(t *testing.T) {
 	clearTriggerEnv(t)
 	srv := noVerdictServer(t)
@@ -187,7 +245,7 @@ func TestCancelOnSupersedeSparesLiveClaims(t *testing.T) {
 	wf := gateWorkflow()
 	st := &fakeStatus{}
 	disp := time.Now().Add(-30 * time.Minute)
-	claim := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#105", "deadbeef789", disp.Add(-time.Minute), &disp)
+	claim := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#105", "deadbeef123", disp.Add(-time.Minute), &disp)
 	claim.Status.Runs = []RunRecordAlias{{Name: "run-1", Phase: "running"}}
 	job := reviewJobFixture(wf, claim)
 	deps, ctx := gateEnv(t, wf, st, claim, job)
@@ -439,6 +497,7 @@ func TestClassifyReleaseVocabulary(t *testing.T) {
 		{"label absent (verdict posted — consumed)", "consumed"},
 		{"horizon exceeded while ambiguous", v1alpha1.ReleaseReasonHorizon},
 		{"dispatch presumed dead without a verdict", v1alpha1.ReleaseReasonDispatchTimeout},
+		{"head moved while review in flight (dispatched at cafe000, PR now at deadbeef12) — verdict could not land", v1alpha1.ReleaseReasonSuperseded}, // #410
 		{"fresh review request", "standdown"},
 	}
 	for _, tc := range cases {

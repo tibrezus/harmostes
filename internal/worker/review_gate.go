@@ -918,6 +918,11 @@ func classifyRelease(reason string) string {
 		return v1alpha1.ReleaseReasonDispatchTimeout
 	case strings.Contains(reason, "horizon exceeded"):
 		return v1alpha1.ReleaseReasonHorizon
+	case strings.Contains(reason, "head moved"):
+		// #410: the in-flight review's PR advanced past the dispatched head —
+		// the verdict cannot land, so the release is a supersession, not a
+		// death: no breaker strike, and the #403 cancel pass deletes the Job.
+		return v1alpha1.ReleaseReasonSuperseded
 	case strings.Contains(reason, "closed"):
 		return v1alpha1.ReleaseReasonPRClosed
 	default:

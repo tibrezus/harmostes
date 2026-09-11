@@ -54,6 +54,7 @@ type Server struct {
 	wallMu      sync.Mutex
 	wallMeta    map[string]*wallUsage // workflow → cached agent metadata (live wall)
 	adminGroups map[string]bool       // identities in any of these groups see across all owner labels
+	devWrite    bool                  // dev-identity writes enabled — set ONLY for explicit dev/fixture servers
 }
 
 // SetAdminGroups configures the Authentik groups whose members see every
@@ -76,16 +77,27 @@ func (s *Server) SetAdminGroups(groups []string) {
 // never an unscoped one.
 const noIdentityOwner = "\x00no-identity"
 
+// devOwnerPrefix reserves the owner-label namespace dev identities stamp
+// into (see SetDevWriteEnabled): a dev identity can never occupy a real
+// user's owner label, even on a server with dev writes enabled. Exported so
+// the fixture world stamps its synthetic objects into the same namespace.
+const DevOwnerPrefix = "dev-"
+
 // visibleOwner resolves the owner filter an identity may use. Empty string
 // means unrestricted: the Server-level list helpers already treat it as no
 // label filter. Non-admin identities keep today's strictly-scoped view; a
-// missing identity fails closed.
+// missing identity fails closed. Dev identities read the reserved dev-
+// namespace their writes stamp into (devOwnerPrefix) — a dev identity can
+// never see or occupy a real user's owner label.
 func (s *Server) visibleOwner(id *Identity) string {
 	if id == nil {
 		return noIdentityOwner
 	}
 	if s.isAdmin(id) {
 		return ""
+	}
+	if id.Dev {
+		return DevOwnerPrefix + id.Username
 	}
 	return id.Username
 }
@@ -102,6 +114,29 @@ func ParseAdminGroups(env string) []string {
 		}
 	}
 	return groups
+}
+
+// SetDevWriteEnabled opts this server into dev-identity writes
+// (X-Harmostes-Dev-User). Production never calls it: the flag is set only by
+// the fixture server and by an explicit --dev-write / HARMOSTES_UI_DEV_WRITE
+// toggle that the chart renders ONLY when a values file asks for it — the
+// invariant lives in this repo's config, not in an assumption about network
+// reachability. Without it, a dev identity is read-only no matter what
+// headers a request carries.
+func (s *Server) SetDevWriteEnabled(v bool) {
+	s.devWrite = v
+}
+
+// mayWrite is the write gate for every mutating route: Authentik-authoritative
+// identities always qualify; the dev identity qualifies only when the server
+// was explicitly started with dev writes enabled. Client-suppliable
+// X-Forwarded-* fallbacks never qualify — a forged forwarded username can
+// browse, but can never create a workflow under someone else's owner label.
+func (s *Server) mayWrite(id *Identity) bool {
+	if id == nil {
+		return false
+	}
+	return id.Authoritative || (id.Dev && s.devWrite)
 }
 
 // isAdmin reports whether the identity belongs to any configured admin
@@ -127,7 +162,10 @@ func (s *Server) mayViewAttempt(att *v1alpha1.Attempt, id *Identity) bool {
 	if att == nil || id == nil {
 		return false
 	}
-	return s.isAdmin(id) || att.Labels[v1alpha1.OwnerLabel] == id.Username
+	// Identity-derived, not raw-username: visibleOwner carries the dev-
+	// namespace translation (a Dev identity reads its reserved namespace,
+	// exactly what its writes stamp into).
+	return s.isAdmin(id) || att.Labels[v1alpha1.OwnerLabel] == s.visibleOwner(id)
 }
 
 // New creates a Server with parsed templates and the given k8s client.
@@ -200,15 +238,26 @@ func (s *Server) Routes() http.Handler {
 	pages.HandleFunc("GET /attempts/{name}/runs/{job}/session", redirectAttempts)
 	pages.HandleFunc("GET /attempts/{name}/runs/{job}/pi-session", redirectAttempts)
 
-	// Workflows — read-only reference catalog (config is GitOps YAML).
-	// The UI is observe-only: no create, trigger, toggle, or delete surfaces.
+	// Workflows — the catalog. Creation is a sanctioned ADR-0012 §5 surface:
+	// thin templateRef instances, owner stamped server-side from the
+	// authenticated identity (anti-spoof), so everything created is visible
+	// to its creator. Lifecycle mutations (trigger/toggle/delete) stay pruned
+	// (#291) until their ADR-0012 issues land them deliberately.
 	pages.HandleFunc("GET /workflows", s.handleWorkflowList)
+	pages.HandleFunc("GET /workflows/new", s.handleWorkflowNew)
+	pages.HandleFunc("POST /workflows", s.handleWorkflowCreate)
 
 	// Templates — read-only catalog (WorkflowTemplate CRs discovered from the cluster)
 	pages.HandleFunc("GET /templates", s.handleTemplateList)
 	pages.HandleFunc("GET /templates/{name}", s.handleTemplateDetail)
 	pages.HandleFunc("GET /workflows/{name}", s.handleWorkflowDetail)
 	pages.HandleFunc("GET /workflows/{name}/runs/{job}", s.handleWorkflowRunRedirect)
+
+	// CRD-derived JSON schema (ADR-0012 §2): the OpenAPI schema of the
+	// Workflow/WorkflowTemplate CRDs, read live from the cluster — the single
+	// document editor completion (#416), the topology palette (#417) and
+	// typed forms render from. Never hand-written in the frontend.
+	pages.HandleFunc("GET /api/schema", s.handleSchema)
 
 	// Read-only graph API (auto-generated from Workflow spec — no editing)
 	pages.HandleFunc("GET /api/workflows/{name}/graph", s.handleWorkflowGraphAPI)

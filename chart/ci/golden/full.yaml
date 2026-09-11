@@ -4762,6 +4762,45 @@ spec:
       storage: "5Gi"
 
 ---
+# Source: harmostes/templates/ui-rbac.yaml
+# The schema endpoint (GET /api/schema, ADR-0012 §2) serves the CRDs'
+# openAPIV3Schema read live from the cluster. CRDs are cluster-scoped, so
+# this needs a ClusterRole — narrowed by resourceNames to exactly the two
+# harmostes CRDs and to the single verb the endpoint uses.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: harmostes-ui-crd-reader
+  labels:
+    app.kubernetes.io/name: harmostes
+    app.kubernetes.io/component: ui
+rules:
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources: ["customresourcedefinitions"]
+    resourceNames:
+      - workflows.harmostes.dev
+      - workflowtemplates.harmostes.dev
+    verbs: ["get"]
+
+---
+# Source: harmostes/templates/ui-rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: harmostes-ui-crd-reader
+  labels:
+    app.kubernetes.io/name: harmostes
+    app.kubernetes.io/component: ui
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: harmostes-ui-crd-reader
+subjects:
+  - kind: ServiceAccount
+    name: harmostes-ui
+    namespace: harmostes-ci
+
+---
 # Source: harmostes/templates/rbac.yaml
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -4809,49 +4848,37 @@ metadata:
   name: harmostes-ui
   namespace: harmostes-ci
 rules:
-  # Workflows: the UI is the ONLY creation surface (owner label stamped from
-  # the authenticated identity — every created workflow is visible to its
-  # creator). Full lifecycle: create/delete + trigger/toggle (update/patch).
+  # Workflows: create (the ADR-0012 §5 creation surface) + owner-scoped reads.
   - apiGroups: ["harmostes.dev"]
     resources: ["workflows"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+    verbs: ["get", "list", "create"]
   # Read attempts (observability-first primary view — Attempt timeline).
   - apiGroups: ["harmostes.dev"]
     resources: ["attempts"]
-    verbs: ["get", "list", "watch"]
-  # Read workflow templates (read-only catalog — config is GitOps YAML).
+    verbs: ["get", "list"]
+  # Read workflow templates (the creation form's catalog; resolution reads).
   - apiGroups: ["harmostes.dev"]
     resources: ["workflowtemplates"]
-    verbs: ["get", "list", "watch"]
-  # Pipeline CRUD (Phase G5: canvas UI). Same owner-label isolation as workflows.
-  - apiGroups: ["harmostes.dev"]
-    resources: ["pipelines"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+    verbs: ["get", "list"]
   # Read jobs (run history, filtered by owner label)
   - apiGroups: ["batch"]
     resources: ["jobs"]
-    verbs: ["get", "list", "watch"]
-  # Read pods + pod logs (Phase E: run detail log viewer). Pods are looked up
+    verbs: ["get", "list"]
+  # Read pods + pod logs (run detail log viewer). Pods are looked up
   # by job-name label; logs are streamed from the worker container. Access is
   # gated by the workflow owner-label check in the run-detail handler.
   - apiGroups: [""]
     resources: ["pods", "pods/log"]
     verbs: ["get", "list"]
-  # Per-user git token Secrets (Phase C). The UI creates/lists/deletes token
-  # secrets labeled harmostes.dev/owner=<username> + harmostes.dev/token=<platform>.
-  # Code-enforced isolation: the Go handlers filter by owner label and never
-  # return secret values to the browser. K8s RBAC cannot scope secrets by label
-  # (resourceNames are fixed at deploy time), so the Role grants access to all
-  # secrets in the namespace — the owner-label filter in the handlers is the
-  # actual security boundary.
-  - apiGroups: [""]
-    resources: ["secrets"]
-    verbs: ["get", "list", "create", "delete"]
-  # ExternalSecrets (ESO): list + read + create for Bitwarden-backed credentials.
-  # The UI discovers and displays BSM-managed secrets synced via ESO.
-  - apiGroups: ["external-secrets.io"]
-    resources: ["externalsecrets"]
-    verbs: ["get", "list", "create", "delete"]
+  # Deliberately ABSENT privilege (PR #427 review P1):
+  #  - no `pipelines` rule: the canvas was dismantled AND the resource with
+  #    it — chart/crds ships no pipelines CRD and no Go type exists.
+  #  - no `watch` verb: the UI runs a direct, non-cached client and never
+  #    calls Watch — live updates arrive via the daprd event sidecar.
+  #  - no secrets / externalsecrets rules: the per-user token manager was
+  #    pruned (#291); credential sync is chart-rendered ExternalSecrets
+  #    (ADR-0011). Verbs are granted only when a route needs them, never
+  #    speculatively.
 
 ---
 # Source: harmostes/templates/rbac.yaml
@@ -5466,10 +5493,12 @@ spec:
 
 ---
 # Source: harmostes/templates/ui-rbac.yaml
-# RBAC for harmostes-ui: read-only Workflows + Jobs (Phase A),
-# Secrets CRUD for per-user token management (Phase C).
-# Isolation is code-enforced: the UI filters by harmostes.dev/owner label.
-# Token VALUES are never returned to the browser (write-only secrets).
+# RBAC for harmostes-ui, right-sized to the ADR-0012 §5 write path: the UI
+# creates thin Workflow instances (owner label stamped from the authenticated
+# session — every created workflow is visible to its creator) and reads the
+# catalogs owner-scoped. Lifecycle mutations (update/patch/delete) return
+# with their own ADR-0012 issues (#418/#419) — until then the verbs are not
+# granted. Isolation is code-enforced: handlers filter by harmostes.dev/owner.
 
 ---
 # Source: harmostes/templates/ui.yaml

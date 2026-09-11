@@ -10,7 +10,7 @@ Platform operators and engineers who manage automation workflows harmostes runs 
 
 ## Product Purpose
 
-Harmostes UI is the observability surface for the harmostes automation platform. It shows what the system is doing: which Attempts are running, what phase they are in, what the agent said and did, whether the gate passed, and where it broke. Configuration is code-first (GitOps YAML); the UI never creates or edits workflows. Its sole job is visibility: make the opaque (agent sessions, gate evaluations, orchestration history) readable.
+Harmostes UI is the observability surface for the harmostes automation platform. It shows what the system is doing: which Attempts are running, what phase they are in, what the agent said and did, whether the gate passed, and where it broke. Templates are code-first (chart values, ADR-0011); the UI composes thin workflow instances from them (ADR-0012) and never mutates a template — shape changes go through git MRs with Flux as the source of truth. Its core job is visibility: make the opaque (agent sessions, gate evaluations, orchestration history) readable.
 
 ## Brand Personality
 
@@ -39,7 +39,7 @@ Honest: show what happened, not what looks good. Failed runs are red. Broken pip
 
 4. **Read the machine, not the marketing.** Raw output over summaries. Gate stderr over "validation failed." Tool call results over "tool completed." The UI surfaces what the system produced, unedited.
 
-5. **Code-first, UI-observe.** The UI never creates, edits, or deletes configuration — and has no write surfaces at all: no trigger, toggle, or creation flows. Workflows and templates are YAML in GitOps (Flux-provisioned); the UI reads and displays.
+5. **Compose, don't mutate.** The UI creates thin workflow instances — templateRef plus exactly the scope the template declares — and never mutates shapes: templates are chart values (ADR-0011); template changes compose a git MR, and Flux reconciliation stays the source of truth. Every creation is owner-stamped server-side from the session identity: what you create, you see; nothing else.
 
 ## Accessibility
 

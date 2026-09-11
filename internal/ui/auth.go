@@ -24,6 +24,12 @@ type Identity struct {
 	// unprivileged: privilege gates (admin visibility) require an
 	// authoritative identity.
 	Authoritative bool
+	// Dev is true only for the explicit development identity
+	// (X-Harmostes-Dev-User / fixture mode). It grants NO privilege by
+	// itself: writes additionally require the server to have been started
+	// with dev writes enabled (Server.SetDevWriteEnabled) — production
+	// servers never do, so this branch is inert there by construction.
+	Dev bool
 }
 
 // authMiddleware extracts the user identity from Authentik forward-auth headers.
@@ -96,7 +102,7 @@ func extractIdentity(r *http.Request) *Identity {
 	// Development override (no Authentik in local dev)
 	if username == "" {
 		if devUser := r.Header.Get("X-Harmostes-Dev-User"); devUser != "" {
-			return &Identity{Username: devUser}
+			return &Identity{Username: devUser, Dev: true}
 		}
 		return nil
 	}

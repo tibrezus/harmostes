@@ -1,13 +1,16 @@
 package v1alpha1
 
+import "encoding/json"
+
 // ApplyTemplateDefaults overlays a WorkflowTemplate's defaults onto a Workflow
 // that references it via spec.templateRef. Every field the Workflow leaves
 // unset is inherited from the template; fields the Workflow sets win — a
 // Workflow is a thin instantiation of a reusable pipeline shape.
 //
 // After the overlay, spec.config (the instance-level scope: repos, label,
-// wiki, …) is applied on top of prepare.config, so a template may ship a
-// default scope and an instance may override it wholesale.
+// wiki, …) is applied per key on top of prepare.config — instance-set keys
+// win, template keys survive — so a template may ship a default scope and an
+// instance overrides only the keys it declares.
 //
 // This runs in the worker right after it fetches the Workflow CR, so every
 // execution path (schedule, webhook, manual) sees the merged spec.
@@ -80,9 +83,26 @@ func ApplyTemplateDefaults(wf *Workflow, tmpl *WorkflowTemplate) {
 		s.Cache = t.Cache
 	}
 
-	// Instance scope wins: spec.config overrides whatever prepare.config
-	// holds after the template overlay.
+	// Instance scope wins PER KEY: spec.config overlays prepare.config —
+	// instance-set fields win, template fields survive. (The wholesale
+	// replace shipped earlier contradicted the overlay contract: any
+	// instance that set ANY key — even `{}` from a scope-less form —
+	// silently discarded the template's prepare.config; PR #427 review P2.)
 	if len(s.Config) > 0 {
-		s.Prepare.Config = s.Config
+		var inst map[string]any
+		if err := json.Unmarshal(s.Config, &inst); err != nil || inst == nil {
+			// Non-object instance config is a deliberate opaque payload —
+			// wholesale replace is the only sane reading.
+			s.Prepare.Config = s.Config
+		} else {
+			base := map[string]any{}
+			_ = json.Unmarshal(s.Prepare.Config, &base) // non-object base → empty underlay
+			for k, v := range inst {
+				base[k] = v
+			}
+			if merged, err := json.Marshal(base); err == nil {
+				s.Prepare.Config = merged
+			}
+		}
 	}
 }

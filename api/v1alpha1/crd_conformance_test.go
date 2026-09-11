@@ -27,8 +27,8 @@ import (
 func TestCRDConformance(t *testing.T) {
 	roots := []crdwalk.Root{
 		{File: "attempts.harmostes.dev.yaml", Type: reflect.TypeOf(Attempt{})},
-		{File: "workflows.harmostes.dev.yaml", Type: reflect.TypeOf(Workflow{})},
-		{File: "workflowtemplates.harmostes.dev.yaml", Type: reflect.TypeOf(WorkflowTemplate{})},
+		{File: WorkflowCRDFile, Type: reflect.TypeOf(Workflow{})},
+		{File: WorkflowTemplateCRDFile, Type: reflect.TypeOf(WorkflowTemplate{})},
 		{File: "connectionprofiles.harmostes.dev.yaml", Type: reflect.TypeOf(ConnectionProfile{})},
 	}
 	crdDir := filepath.Join("..", "..", "chart", "crds") + string(filepath.Separator)

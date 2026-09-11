@@ -105,6 +105,14 @@ func main() {
 		logger.Info("admin groups configured", "groups", groups)
 	}
 
+	// Dev-identity writes (X-Harmostes-Dev-User): OFF unless explicitly
+	// enabled. Production chart values never set this — the invariant lives
+	// here, not in an assumption about network reachability (PR #427 review).
+	if envOr("HARMOSTES_UI_DEV_WRITE", "") == "true" {
+		server.SetDevWriteEnabled(true)
+		logger.Warn("dev-identity writes ENABLED — never set in production")
+	}
+
 	// Wire the Dapr client for reading session transcripts from the worker's
 	// state store. resolveDaprEndpoint prefers the explicit DAPR_HTTP_ENDPOINT
 	// and falls back to the injector's DAPR_HTTP_PORT (127.0.0.1 — Go resolves

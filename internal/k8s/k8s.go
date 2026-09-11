@@ -9,6 +9,7 @@ import (
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -80,11 +81,16 @@ func (c ConfigMapTasks) Get(ctx context.Context, tt v1alpha1.TaskTemplate) (stri
 }
 
 // Scheme returns a runtime.Scheme with the harmostes + core + batch types
-// registered (what both the controller and the worker need).
+// registered (what both the controller and the worker need), plus the
+// apiextensions meta-types the UI's schema endpoint reads (GET /api/schema —
+// ADR-0012 §2). Registration is inert for the controller/worker binaries:
+// nothing in them decodes apiextensions types — scheme registration alone
+// neither grants RBAC nor starts watches.
 func Scheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = v1alpha1.AddToScheme(s)
 	_ = corev1.AddToScheme(s)
 	_ = batchv1.AddToScheme(s)
+	_ = apiextensionsv1.AddToScheme(s)
 	return s
 }

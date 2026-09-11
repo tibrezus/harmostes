@@ -439,6 +439,12 @@ jobs:
         run: |
           helm template harmostes chart/ -f chart/ci/golden-values.yaml \
             | grep -vE '(helm\.sh/chart|app\.kubernetes\.io/version):' > /tmp/golden-render.yaml
+          # dev-write guard: the client-settable X-Harmostes-Dev-User header is
+          # write-capable only when HARMOSTES_UI_DEV_WRITE is rendered — which
+          # the DEFAULT chart values must never do (PR #427 review). A flip of
+          # the default fails here, mechanically, not in prod.
+          grep -q 'HARMOSTES_UI_DEV_WRITE' /tmp/golden-render.yaml \
+            && { echo "::error::render-guard: HARMOSTES_UI_DEV_WRITE must not render under default values (ui.devWrite flipped?)"; exit 1; } || true
           diff -u chart/ci/golden/full.yaml /tmp/golden-render.yaml || {
             echo "::error::golden render drift — run 'make golden-update' and commit the golden with your change"
             exit 1

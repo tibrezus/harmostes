@@ -197,3 +197,56 @@ func TestApplyTemplateDefaultsCacheInherit(t *testing.T) {
 		t.Fatalf("instance-set cache must win, got %+v", own.Spec.Cache)
 	}
 }
+
+// TestApplyTemplateDefaults_ConfigOverlayPerKey pins the composition
+// contract (PR #427 review P2): spec.config overlays prepare.config PER KEY
+// — instance-set keys win, template keys survive. The wholesale replace this
+// replaced silently discarded the template's prepare.config for any
+// instance that set any key (even `{}`).
+func TestApplyTemplateDefaults_ConfigOverlayPerKey(t *testing.T) {
+	wf := &Workflow{
+		Spec: WorkflowSpec{
+			TemplateRef: "t",
+			Config:      json.RawMessage(`{"region":"us"}`),
+		},
+	}
+	tmpl := &WorkflowTemplate{
+		Spec: WorkflowTemplateSpec{
+			Prepare: PrepareSpec{
+				Plugin: PluginRef{Name: "p"},
+				Config: json.RawMessage(`{"region":"eu","extra":"keep"}`),
+			},
+		},
+	}
+	ApplyTemplateDefaults(wf, tmpl)
+
+	var got map[string]any
+	if err := json.Unmarshal(wf.Spec.Prepare.Config, &got); err != nil {
+		t.Fatalf("prepare.config not JSON: %v", err)
+	}
+	if got["region"] != "us" {
+		t.Errorf("region = %v, want us (instance key wins)", got["region"])
+	}
+	if got["extra"] != "keep" {
+		t.Errorf("extra = %v, want keep (template key survives the overlay)", got["extra"])
+	}
+}
+
+// TestApplyTemplateDefaults_InstanceConfigNilKeepsTemplateConfig: a thin
+// instance with NO config must not wipe the template's prepare.config —
+// absence is not an argument.
+func TestApplyTemplateDefaults_InstanceConfigNilKeepsTemplateConfig(t *testing.T) {
+	wf := &Workflow{Spec: WorkflowSpec{TemplateRef: "t"}}
+	tmpl := &WorkflowTemplate{
+		Spec: WorkflowTemplateSpec{
+			Prepare: PrepareSpec{
+				Plugin: PluginRef{Name: "p"},
+				Config: json.RawMessage(`{"extra":"keep"}`),
+			},
+		},
+	}
+	ApplyTemplateDefaults(wf, tmpl)
+	if string(wf.Spec.Prepare.Config) != `{"extra":"keep"}` {
+		t.Errorf("prepare.config = %s, want the template's untouched config", wf.Spec.Prepare.Config)
+	}
+}

@@ -130,8 +130,18 @@ func (s *Server) handleWorkflowDetail(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// renderError renders the error page.
+// renderError renders the error page (legacy callers: informational
+// failures where no better code exists yet).
 func (s *Server) renderError(w http.ResponseWriter, r *http.Request, msg string) {
+	s.renderErrorStatus(w, r, http.StatusOK, msg)
+}
+
+// renderErrorStatus renders the error page WITH an HTTP status. The write
+// path must status-code its failures — 400 client mistakes, 409 conflicts,
+// 500 apiserver faults — not blanket 200s that caches and API consumers
+// cannot distinguish (PR #427 review, round 4).
+func (s *Server) renderErrorStatus(w http.ResponseWriter, r *http.Request, code int, msg string) {
+	w.WriteHeader(code)
 	s.render(w, r, "pages/error.html", map[string]any{
 		"Error": msg,
 	})

@@ -14,14 +14,21 @@ try: review=json.loads(raw)
 except json.JSONDecodeError as e:
     print(f"ERROR: review.json invalid JSON: {e}",file=sys.stderr)
     print(f"First 300 chars: {raw[:300]}",file=sys.stderr)
-    print('Write VALID JSON: {"decision":"APPROVE","body":"...","comments":[]}',file=sys.stderr)
+    print('Write VALID JSON: {"decision":"APPROVE|REQUEST_CHANGES","reviewed_sha":"<head sha>","comments":[]}',file=sys.stderr)
     sys.exit(1)
 d=str(review.get("decision","")).upper()
-body=review.get("body","");comments=review.get("comments",[])
+comments=review.get("comments",[])
+# r7 (owner directive): there is NO body field in the contract — the
+# deploy step builds the one-line verdict (decision + SHA + blocking
+# count) itself. A legacy "body" written by an old-habit agent is
+# tolerated and IGNORED; requiring it here stranded the rhesadox agent in
+# a 4-attempt gate loop against instructions that forbade the body
+# (found live: #2085, "agent failed after 4 attempts" tonight).
 if d not in {"APPROVE","REQUEST_CHANGES","COMMENT"}:
     print(f'ERROR: decision must be APPROVE/REQUEST_CHANGES/COMMENT, got "{d}"',file=sys.stderr);sys.exit(1)
-if not body.strip(): print("ERROR: body is empty — write a review summary",file=sys.stderr);sys.exit(1)
 if not isinstance(comments,list): print("ERROR: comments must be a list",file=sys.stderr);sys.exit(1)
+if d=="REQUEST_CHANGES" and not comments:
+    print("ERROR: REQUEST_CHANGES requires at least one blocking finding in comments (threads are the review)",file=sys.stderr);sys.exit(1)
 for i,c in enumerate(comments):
     if not isinstance(c,dict) or not c.get("path") or not c.get("body"):
         print(f"ERROR: comments[{i}] must have path+body",file=sys.stderr);sys.exit(1)
@@ -87,9 +94,10 @@ if not sha:
     print("ERROR: review.json missing reviewed_sha (head SHA of /workspace/repo)",file=sys.stderr);sys.exit(1)
 if head and sha!=head:
     print(f"ERROR: reviewed_sha {sha[:12]} != PR head {head[:12]} — review the current head",file=sys.stderr);sys.exit(1)
-trailer=f"<!-- pr-review: {d} @ {sha} -->"
-if not body.rstrip().endswith(trailer):
-    print("ERROR: body must end with the exact trailer: " + trailer,file=sys.stderr);sys.exit(1)
+# The verdict trailer is embedded by the DEPLOY step in the one-line
+# verdict it builds — the agent does not write prose, so there is no body
+# for it to end with (r7; the old body-trailer check here stranded the
+# rhesadox agent in the 4-attempt gate loop).
 with open(path,"w") as f: json.dump(review,f,indent=2)
 print(f"review.json valid: decision={d} sha={sha[:12]} comments={len(comments)}")
 PYEOF

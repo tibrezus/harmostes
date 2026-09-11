@@ -97,10 +97,13 @@ jobs:
       # against the fleet's PI_VERSION — the PR-tier half of the pairing whose
       # image-tier half is the Dockerfile load probe. A failure here is a
       # COMPATIBILITY CHANGE (SoL-Pi agents-install protocol), not noise.
-      - name: Set up Node 24 (sol-pi tier — upstream devDeps/types track node 24)
+      - name: Set up Node 22 (sol-pi tier — the SHIPPING runtime: both worker
+        # images are node:22-bookworm-slim, sol-pi engines >=22.19; a compat
+        # tier on any other node validates a matrix production does not run,
+        # #426 r4 §4a)
         uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 22
       - name: sol-pi (upstream suite vs PI_VERSION)
         # PI_VERSION is derived from the Dockerfile hand-pin (no literal here —
         # a hardcoded copy would silently stale the compat tier on a pi bump;

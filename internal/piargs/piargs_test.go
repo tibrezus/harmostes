@@ -224,6 +224,16 @@ func TestSolPiProfileSingleSource(t *testing.T) {
 	}
 	// Both images install the same in-tree file at the path SoL-Pi reads.
 	const wantCopy = "COPY extensions/sol-pi/sol-pi.json /root/.pi/agent/sol-pi.json"
+	// AND the shipped settings.json must pin project trust to never — the
+	// single string that makes the shipped profile THE effective config
+	// (r4 §2 probe: without it, a trusted workspace's .pi/sol-pi.json
+	// overrides the profile, up to evidencePreservingReducer=true egress).
+	const wantTrust = `defaultProjectTrust":"never"`
+	for _, f := range []string{"../../Dockerfile.worker", "../../.github/Dockerfile.worker.release"} {
+		if !strings.Contains(string(mustRead(t, f)), wantTrust) {
+			t.Errorf("%s does not pin defaultProjectTrust=never in settings.json — workspace .pi/sol-pi.json could override the shipped profile", f)
+		}
+	}
 	for _, f := range []string{"../../Dockerfile.worker", "../../.github/Dockerfile.worker.release"} {
 		if !strings.Contains(string(mustRead(t, f)), wantCopy) {
 			t.Errorf("%s does not install the shipped profile with the exact single-source COPY (%q)", f, wantCopy)

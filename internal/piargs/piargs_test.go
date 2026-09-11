@@ -224,16 +224,10 @@ func TestSolPiProfileSingleSource(t *testing.T) {
 	if cfg.CacheWriteReadRatio == nil || *cfg.CacheWriteReadRatio < 0 {
 		t.Errorf("cacheWriteReadRatio must be present and non-negative, got %+v", cfg.CacheWriteReadRatio)
 	}
-	// Both images install the same in-tree file at the path SoL-Pi reads.
-	const wantCopy = "COPY extensions/sol-pi/sol-pi.json /root/.pi/agent/sol-pi.json"
-	// AND the shipped settings.json must pin project trust to never — the
-	// single string that makes the shipped profile THE effective config
-	// (r4 §2 probe: without it, a trusted workspace's .pi/sol-pi.json
-	// overrides the profile, up to evidencePreservingReducer=true egress).
-	// settings.json is a single in-tree source too (r5 DRY finding): parse
-	// it for the SECURITY values (never-pin + the override that beats a
-	// repo-shipped projectTrusted:true) and require both images to install
-	// exactly that file.
+
+	// settings.json: the never-pin gates the trust-requiring-resource class;
+	// projectTrusted is NOT a pi Settings key (0.84.4) — its absence is
+	// asserted so the inert key cannot return and teach a wrong trust model.
 	settings := string(mustRead(t, "../../extensions/sol-pi/settings.json"))
 	var sc struct {
 		DefaultProjectTrust string `json:"defaultProjectTrust"`
@@ -246,24 +240,83 @@ func TestSolPiProfileSingleSource(t *testing.T) {
 		t.Errorf("settings.json must pin defaultProjectTrust=never, got %+v", sc)
 	}
 	if sc.ProjectTrusted != nil {
-		t.Errorf("projectTrusted is not a pi Settings key (0.84.4) — it is inert and teaches a wrong trust model; remove it (r6)")
+		t.Errorf("projectTrusted is not a pi Settings key — inert and misleading; remove it (r6)")
 	}
-	const wantSettingsCopy = "COPY extensions/sol-pi/settings.json /root/.pi/agent/settings.json"
-	for _, f := range []string{"../../Dockerfile.worker", "../../.github/Dockerfile.worker.release"} {
-		if !strings.Contains(string(mustRead(t, f)), wantSettingsCopy) {
-			t.Errorf("%s does not install the shipped settings.json with the exact single-source COPY (%q)", f, wantSettingsCopy)
+
+	// Both images must install the shipped files at the exact paths SoL-Pi
+	// reads, via the single-source COPY literals.
+	const (
+		wantProfileCopy  = "COPY extensions/sol-pi/sol-pi.json /root/.pi/agent/sol-pi.json"
+		wantSettingsCopy = "COPY extensions/sol-pi/settings.json /root/.pi/agent/settings.json"
+	)
+	dockerfiles := map[string]string{
+		"../../Dockerfile.worker":                 "",
+		"../../.github/Dockerfile.worker.release": "",
+	}
+	for f := range dockerfiles {
+		dockerfiles[f] = string(mustRead(t, f))
+		if !strings.Contains(dockerfiles[f], wantProfileCopy) {
+			t.Errorf("%s does not install the shipped profile with the exact single-source COPY", f)
+		}
+		if !strings.Contains(dockerfiles[f], wantSettingsCopy) {
+			t.Errorf("%s does not install the shipped settings.json with the exact single-source COPY", f)
 		}
 	}
-	for _, f := range []string{"../../Dockerfile.worker", "../../.github/Dockerfile.worker.release"} {
-		if !strings.Contains(string(mustRead(t, f)), wantCopy) {
-			t.Errorf("%s does not install the shipped profile with the exact single-source COPY (%q)", f, wantCopy)
+
+	// BLOCK PARITY + ARM WIRING (r3 finding 4, r7 pillar 6/9): the WHOLE
+	// sol-pi span — from the vendored-extension comment through the trust
+	// gate's last assertion — must be byte-identical across dev and release,
+	// AND the two-arm trust gate inside it must be wired to the layer's exit
+	// status: each arm captures pi's rc, requires the probe line, and runs
+	// its assertion with a failure exit. A `; `-chained RUN decides only on
+	// its LAST command, so an unwired arm turns the security gate into a
+	// no-op with the build green (the exact defect r7 flagged).
+	// Locate the sol-pi span by line markers (start: the vendored-extension
+	// comment; end: the trust gate's last probe-line reference) — a regex
+	// over this span must escape both shell and Go quoting, so markers win.
+	span := map[string]string{}
+	for f := range dockerfiles {
+		lines := strings.Split(dockerfiles[f], "\n")
+		start, last := -1, -1
+		for i, l := range lines {
+			if start == -1 && strings.Contains(l, "# sol-pi (#425): NVIDIA's standalone") {
+				start = i
+			}
+			if strings.Contains(l, "sol_pi_trust_probe") {
+				last = i
+			}
 		}
+		if start == -1 || last == -1 || last < start {
+			t.Fatalf("sol-pi span not found in %s (start=%d last=%d)", f, start, last)
+		}
+		span[f] = strings.Join(lines[start:last+1], "\n")
 	}
+	if span["../../Dockerfile.worker"] != span["../../.github/Dockerfile.worker.release"] {
+		t.Errorf("the sol-pi Dockerfile span drifted between dev and release images — keep them byte-identical (r3 finding 4)")
+	}
+	gate := span["../../Dockerfile.worker"]
+	if got := strings.Count(gate, "|| rc=$?"); got != 2 {
+		t.Errorf("trust gate arms must capture pi's exit (|| rc=$?) per arm, found %d", got)
+	}
+	if got := strings.Count(gate, "grep -q sol_pi_trust_probe"); got != 2 {
+		t.Errorf("trust gate must require the probe line per arm, found %d grep guards", got)
+	}
+	if got := strings.Count(gate, "sol-pi trust gate arm"); got < 4 {
+		t.Errorf("trust gate arms must wire their failure exits (found %d named failure paths)", got)
+	}
+	// The standalone primitive mirrors --no-approve OUTSIDE the generated
+	// extension markers — TestExtensionsSingleSource cannot see it there
+	// (r7 pillar 9): the invocation-plane control must hold on every entry
+	// point.
+	py := string(mustRead(t, "../../harmostes.py"))
+	if !strings.Contains(py, `"--no-approve",`) {
+		t.Errorf("harmostes.py pi_args must carry --no-approve — the invocation-plane control must hold on every entry point")
+	}
+
 	// Vendored provenance: the checkout records where it came from, so a
-	// bump has a protocol and an audit trail (UPSTREAM.md).
+	// bump has a protocol and an audit trail (UPSTREAM.md). The provenance
+	// LINE, not any 40-char hex word anywhere in the file (r3 pillar 9b).
 	upstream := string(mustRead(t, "../../extensions/sol-pi/UPSTREAM.md"))
-	// The provenance LINE, not any 40-char hex word anywhere in the file
-	// (r3 pillar 9b: a loose scan passes on unrelated hex).
 	shaLine := regexp.MustCompile(`(?m)^Vendored from .*\` + "`" + `([0-9a-f]{40})\` + "`" + `?`)
 	if !shaLine.MatchString(upstream) {
 		t.Errorf("extensions/sol-pi/UPSTREAM.md must record the vendored upstream commit as a 40-hex SHA on its 'Vendored from' line")

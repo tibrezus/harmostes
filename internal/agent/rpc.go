@@ -239,6 +239,17 @@ func (r *RPC) Prompt(ctx context.Context, message, label string) (Event, int, Us
 				// reached the generic RPC log, so "loaded and inert" was
 				// invisible in the run summary).
 				capture.ExtensionErrors++
+				// Named logf event (r7, the #338 r25 F11 rig precedent):
+				// "an extension is inert" is not actionable without the
+				// path — carry pi's extensionPath out of the raw event so
+				// the pool event stream attributes the throw to the exact
+				// extension (litellm-provider vs rig-query vs sol-pi vs
+				// pi-searxng) instead of reading as a pipeline change.
+				var ee struct {
+					ExtensionPath string `json:"extensionPath"`
+				}
+				_ = json.Unmarshal(ev.Raw, &ee)
+				logf(r.log, pijsonl.Event{Type: "extension_degraded", ToolName: ee.ExtensionPath, Raw: ev.Raw})
 			case pijsonl.EvToolStart:
 				tools++
 				endTool() // close any prior (defensive; tools are sequential)

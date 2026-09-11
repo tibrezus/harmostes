@@ -75,11 +75,13 @@ var Extensions = []string{
 }
 
 // LoadedExtensions reports the extensions that exist on THIS image — the
-// same stat pre-flight buildPiArgs applies before emitting -e. Both entry
-// points log it at startup: per-run evidence of which extension set (and
-// therefore which tool pipeline, e.g. sol-pi's wrapped edit/write/bash)
-// was actually in effect (#425 r1: a fleet-wide silent degrade must be a
-// log query, not a rebuild).
+// same stat pre-flight buildPiArgs applies before emitting -e. ALL THREE
+// agent entry points log it at startup (worker pipeline, standalone
+// agent primitive, harmostes.py): per-run evidence of which extension
+// set — and therefore which tool pipeline, e.g. sol-pi's wrapped
+// edit/write/bash — was actually in effect (#425 r1; r3 pillar 8). An
+// EMPTY result is the degrade signal: callers log it as a warning, not
+// an empty list.
 func LoadedExtensions() []string {
 	return loadedExtensions(Extensions, os.Stat)
 }
@@ -109,12 +111,15 @@ const RigGraphPath = "/workspace/rig.db"
 var extensionTools = map[string]string{
 	"/extensions/rig-query": "rig",
 	// sol-pi's observation-pack registers obs_recall (its recall affordance
-	// for replaced large tool results): with observationPack ON — which the
-	// shipped profile REQUIRES (TestSolPiProfileSingleSource) — tool results
-	// above the size threshold become handles the model must be able to
-	// invoke. Without this entry the --tools allowlist dropped obs_recall
-	// while the rewriting stayed active: review evidence destroyed, recall
-	// impossible (#426 r2 pillar 5A). The litellm-provider has no entry:
+	// for replaced large tool results). The shipped profile
+	// (extensions/sol-pi/sol-pi.json, observationPack=true) is THE effective
+	// runtime config on every agent run — settings.json pins
+	// defaultProjectTrust=never, so no workspace .pi/sol-pi.json can
+	// override it (#426 r3 finding 1) — which makes obs_recall always
+	// registered and therefore always allowlist-required: without this
+	// entry the --tools allowlist dropped obs_recall while the rewriting
+	// stayed active, destroying review evidence with the recall affordance
+	// uncallable (#426 r2 pillar 5A). litellm-provider has no entry:
 	// provider-only extensions register no tools.
 	"/extensions/sol-pi": "obs_recall",
 }

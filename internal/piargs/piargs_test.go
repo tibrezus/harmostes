@@ -78,15 +78,29 @@ func TestExtensionToolsCoversEveryLoadedExtension(t *testing.T) {
 			continue
 		}
 		args := buildPiArgs("s", "m", []string{"bash", "read"}, Extensions, alwaysPresent)
-		joined := strings.Join(args, " ")
 		if want == "" {
 			if tool := extensionTools[ext]; tool != "" {
 				t.Errorf("%s is provider-only but extensionTools registers %q — update the table", ext, tool)
 			}
 			continue
 		}
-		if !strings.Contains(joined, want) {
-			t.Errorf("allowlist must contain %q for %s, got: %s", want, ext, joined)
+		// Exact membership in the PARSED --tools value (r3 finding 3): a
+		// substring check passes on "--tools bash,obs_recallX" while pi's
+		// strict allowlist would drop the unregistered name entirely.
+		tools := ""
+		for i, a := range args {
+			if a == "--tools" && i+1 < len(args) {
+				tools = args[i+1]
+			}
+		}
+		found := false
+		for _, t := range strings.Split(tools, ",") {
+			if t == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("parsed --tools %q must contain %q exactly (for %s)", tools, want, ext)
 		}
 	}
 }
@@ -218,24 +232,11 @@ func TestSolPiProfileSingleSource(t *testing.T) {
 	// Vendored provenance: the checkout records where it came from, so a
 	// bump has a protocol and an audit trail (UPSTREAM.md).
 	upstream := string(mustRead(t, "../../extensions/sol-pi/UPSTREAM.md"))
-	foundSHA := false
-	for _, field := range strings.Fields(upstream) {
-		trimmed := strings.Trim(field, "`")
-		if len(trimmed) == 40 {
-			isHex := true
-			for _, r := range trimmed {
-				if !strings.ContainsRune("0123456789abcdef", r) {
-					isHex = false
-					break
-				}
-			}
-			if isHex {
-				foundSHA = true
-			}
-		}
-	}
-	if !foundSHA {
-		t.Errorf("extensions/sol-pi/UPSTREAM.md must record the vendored upstream commit as a 40-hex SHA")
+	// The provenance LINE, not any 40-char hex word anywhere in the file
+	// (r3 pillar 9b: a loose scan passes on unrelated hex).
+	shaLine := regexp.MustCompile(`(?m)^Vendored from .*\` + "`" + `([0-9a-f]{40})\` + "`" + `?`)
+	if !shaLine.MatchString(upstream) {
+		t.Errorf("extensions/sol-pi/UPSTREAM.md must record the vendored upstream commit as a 40-hex SHA on its 'Vendored from' line")
 	}
 }
 

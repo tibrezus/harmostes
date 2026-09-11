@@ -1,7 +1,6 @@
 # Upstream provenance
 
-Vendored from https://github.com/NVlabs/SoL-Pi at commit
-`22277b7e0c3c46ba1259a6687f31fe39ade421a5` (main, 2026-09-11), pruned to
+Vendored from https://github.com/NVlabs/SoL-Pi at commit `22277b7e0c3c46ba1259a6687f31fe39ade421a5` (main, 2026-09-11), pruned to
 the files the fleet needs (source, tests, schema checker, license/notices,
 docs). Not a subtree/pin tool — bump by replacing this directory from the
 upstream commit and recording the new SHA here.

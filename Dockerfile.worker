@@ -161,8 +161,14 @@ RUN LITELLM_URL=http://127.0.0.1:1 LITELLM_API_KEY=stub PI_SKIP_VERSION_CHECK=1 
     fi
 RUN pi install npm:pi-searxng
 # pi settings: auto-load the searxng extension on every pi invocation
+# defaultProjectTrust=never (#426 r3 finding 1): review workspaces are
+# UNTRUSTED PR content — a repo shipping .pi/sol-pi.json must not be able to
+# flip the harness's own config (evidencePreservingReducer=true would ship
+# repo diagnostic logs to a remote reducer model) or load project .pi/
+# resources at all. The shipped /root/.pi/agent/sol-pi.json is therefore THE
+# effective profile on every agent run.
 RUN mkdir -p /root/.pi/agent && \
-    echo '{"packages":["npm:pi-searxng"]}' > /root/.pi/agent/settings.json
+    echo '{"packages":["npm:pi-searxng"],"defaultProjectTrust":"never"}' > /root/.pi/agent/settings.json
 # SearXNG instance in the cluster (searxng namespace)
 ENV SEARXNG_URL=http://searxng.searxng.svc.cluster.local:8080
 
@@ -187,6 +193,10 @@ RUN PI_SKIP_VERSION_CHECK=1 timeout 60 pi -e /extensions/sol-pi --mode rpc </dev
     head -5 /tmp/pi-solpi-load.log; \
     if [ $rc -ne 0 ]; then \
       echo "sol-pi load probe failed (pi exit $rc):"; cat /tmp/pi-solpi-load.log; exit 1; \
+    fi; \
+    if grep -q '"type":"extension_error"' /tmp/pi-solpi-load.log; then \
+      echo "sol-pi load probe: session_start threw (extension_error) — the extension would run INERT with the build green:"; \
+      cat /tmp/pi-solpi-load.log; exit 1; \
     fi
 
 # Where the plugin contract expects them to run + read/write

@@ -109,6 +109,7 @@ test-sol-pi:
 	# upstream tests resolve scripts/docs against process.cwd() (upstream
 	# layout); the overlay path is relative to that cwd.
 	cd extensions/sol-pi && npx vitest run --config ../sol-pi.fleet.vitest.mjs
+	@echo "sol-pi compat tier green (pi $(PI_VERSION))"
 
 ## test-rig-emit: the rig-emit plugin's Python validator — severity pin:
 ## circular deps WARN (the graph represents the codebase as it is; failing

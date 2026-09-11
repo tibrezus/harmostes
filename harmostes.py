@@ -219,7 +219,10 @@ def main():
     ]
     for ext in extensions:
         pi_args += ["-e", ext]
-    log(f"pi extensions: {','.join(extensions)}")
+    if extensions:
+        log(f"pi extensions: {','.join(extensions)}")
+    else:
+        log("pi extensions: NONE — every manifest entry is missing from this image (degraded)")
     log(f"starting pi --mode rpc (model={args.model}, tools={','.join(tools)}, workdir={workdir})")
 
     rpc = PiRpc(pi_args, cwd=workdir, env=env, log_path=args.log)

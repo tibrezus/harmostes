@@ -11,10 +11,11 @@ as a conventional pointer for readers who look for an `ARCHITECTURE.md`.
 
 ## Agent navigation subsystem (ADR-0009)
 
-**Vendored third-party extension** (`extensions/sol-pi`, #425): the fleet's
-agents run with NVIDIA's [SoL-Pi](https://github.com/NVlabs/SoL-Pi) efficiency
+**Vendored third-party extension** (`extensions/sol-pi`, #425): every fleet agent runs with NVIDIA's [SoL-Pi](https://github.com/NVlabs/SoL-Pi) efficiency
 extension (action fusion + observation pack; reducer/compact disabled in the
-shipped profile `extensions/sol-pi/sol-pi.json`). It is the one extension in
+shipped profile `extensions/sol-pi/sol-pi.json` — the effective runtime config,
+guaranteed by the `defaultProjectTrust: never` pin: no workspace
+`.pi/sol-pi.json` can override it). It is the one extension in
 `internal/piargs.Extensions` NOT in-tree-reviewed line-by-line — it is a
 vendored upstream checkout, so its provenance, bump protocol, and validation
 steps live in `extensions/sol-pi/UPSTREAM.md`, its shipped profile is pinned

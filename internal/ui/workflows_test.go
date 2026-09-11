@@ -313,11 +313,12 @@ func TestWorkflowCreate_Instance(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/workflows", strings.NewReader(
 		"name=pr-review-demo&templateRef=pr-review"+
-			"&scope-pr-review-label=needs-review&scope-pr-review-repos=a%2Cb&scope-pr-review-wiki=docs&injected=smuggled"))
+			"&scope-pr-review-label=needs-review&scope-pr-review-repos=a%2Cb&scope-pr-review-wiki=docs"+
+			// The actual spoof vector: client-supplied owner-ish fields must
+			// never reach the stored object (the stamp comes from the session).
+			"&owner=ghost&metadata.labels.harmostes.dev~1owner=ghost"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("X-Authentik-Username", "alice")
-	// Spoof attempt: a client-supplied owner field must be ignored.
-	req.Header.Set("Cookie", "ignored")
 	rec := httptest.NewRecorder()
 	s.Routes().ServeHTTP(rec, req)
 
@@ -338,6 +339,9 @@ func TestWorkflowCreate_Instance(t *testing.T) {
 	if wf.Spec.TemplateRef != "pr-review" {
 		t.Errorf("templateRef = %q, want pr-review", wf.Spec.TemplateRef)
 	}
+	if !wf.Spec.Disabled {
+		t.Error("created workflow is not disabled — creation must not arm an unattended agent loop (PR #427 review R1)")
+	}
 	if wf.Spec.Source.Kind != "schedule" {
 		t.Errorf("source.kind = %q, want schedule (non-wake for the claim sweep)", wf.Spec.Source.Kind)
 	}
@@ -348,11 +352,19 @@ func TestWorkflowCreate_Instance(t *testing.T) {
 	if err := json.Unmarshal(wf.Spec.Config, &cfg); err != nil {
 		t.Fatalf("spec.config not JSON: %v", err)
 	}
-	if len(cfg) != 3 {
-		t.Errorf("config keys = %v, want exactly the declared scope (label, repos, wiki)", cfg)
+	// Exact key set: every declared scope param, nothing else — no client
+	// field (owner, injected, or otherwise) survives into spec.config.
+	wantKeys := map[string]bool{}
+	for _, p := range prReviewTemplate().Spec.Scope {
+		wantKeys[p.Name] = true
 	}
-	if _, ok := cfg["injected"]; ok {
-		t.Errorf("undeclared key %q stored — config smuggling possible", "injected")
+	if len(cfg) != len(wantKeys) {
+		t.Errorf("config keys = %v, want exactly the declared scope %v", cfg, wantKeys)
+	}
+	for key := range cfg {
+		if !wantKeys[key] {
+			t.Errorf("undeclared key %q stored — config smuggling possible", key)
+		}
 	}
 	if got, ok := cfg["label"].(string); !ok || got != "needs-review" {
 		t.Errorf("label = %v, want \"needs-review\" (string scope)", cfg["label"])
@@ -460,6 +472,35 @@ func TestWorkflowCreate_ErrorCases(t *testing.T) {
 			s.Routes().ServeHTTP(rec, req)
 			if !strings.Contains(rec.Body.String(), tc.wantMsg) {
 				t.Errorf("error page missing %q (status %d)", tc.wantMsg, rec.Code)
+			}
+		})
+	}
+}
+
+// TestWorkflowCreate_CrossOriginRejected pins the CSRF guard: browsers send
+// Origin on cross-site POSTs — a mismatched origin never reaches creation,
+// so the (disabled-instance) forgery blast radius stays at zero.
+func TestWorkflowCreate_CrossOriginRejected(t *testing.T) {
+	s := workflowTestServer(prReviewTemplate())
+
+	cases := []struct {
+		name, origin string
+		want         int
+	}{
+		{"same origin passes", "http://" + "example.com", http.StatusSeeOther},
+		{"cross origin rejected", "https://evil.example", http.StatusForbidden},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/workflows",
+				strings.NewReader("name=cors-probe&templateRef=pr-review"))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			req.Header.Set("Origin", tc.origin)
+			req.Header.Set("X-Authentik-Username", "alice")
+			rec := httptest.NewRecorder()
+			s.Routes().ServeHTTP(rec, req)
+			if rec.Code != tc.want {
+				t.Errorf("Origin %q: status = %d, want %d", tc.origin, rec.Code, tc.want)
 			}
 		})
 	}

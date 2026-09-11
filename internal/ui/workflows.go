@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 
@@ -116,6 +117,19 @@ func (s *Server) handleWorkflowCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	owner := id.Username
 
+	// Same-origin guard (CSRF): the write is cookie-authenticated and
+	// urlencoded, so a cross-site form post is the classic forgery vector.
+	// Browsers send Origin on cross-site POSTs — when present, its host must
+	// be ours. (The outpost's SameSite cookie is the first line; this is the
+	// in-repo second.)
+	if origin := r.Header.Get("Origin"); origin != "" {
+		u, err := url.Parse(origin)
+		if err != nil || u.Host != r.Host {
+			s.logger.Warn("write rejected — cross-origin", "origin", origin, "host", r.Host)
+			http.Error(w, "403 Forbidden — cross-origin write", http.StatusForbidden)
+			return
+		}
+	}
 	if err := r.ParseForm(); err != nil {
 		s.renderError(w, r, "Invalid form data")
 		return
@@ -152,12 +166,12 @@ func (s *Server) handleWorkflowCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Source.Kind "schedule" marks the instance as poll-triggered (the
-	// claim sweep treats non-webhook kinds as non-wake). The cron STRING is
-	// deliberately not taken from the form: the controller's trigger decision
-	// is poll-interval-driven and never parses it — advertising a schedule
-	// the platform cannot honour would be a dead knob with a plausible label
-	// (adversarial review, PR #427). Scheduling semantics return with
-	// #418 when they can be honest.
+	// claim sweep treats non-webhook kinds as non-wake) — but it is also the
+	// kind the controller DUES every PollInterval: creation must not arm an
+	// unattended agent loop nobody asked to run. So every UI-created instance
+	// starts DISABLED: it is inert until armed through the run controls that
+	// #418 ships (or deliberately, out-of-band, by an operator). Creation is
+	// composition; arming is a separate, deliberate act.
 	wf := &v1alpha1.Workflow{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
@@ -167,6 +181,7 @@ func (s *Server) handleWorkflowCreate(w http.ResponseWriter, r *http.Request) {
 			TemplateRef: templateRef,
 			Source:      v1alpha1.SourceSpec{Kind: "schedule"},
 			Config:      cfg,
+			Disabled:    true,
 		},
 	}
 	if err := v1alpha1.StampOwnerLabel(wf, owner); err != nil {
@@ -182,10 +197,12 @@ func (s *Server) handleWorkflowCreate(w http.ResponseWriter, r *http.Request) {
 		s.renderError(w, r, "Failed to create workflow: "+err.Error())
 		return
 	}
-	// Per the form contract (same reason no CSRF token): the form posts
-	// same-site, urlencoded, and the owner is server-stamped — a cross-site
-	// forgery can at worst create a workflow under the VICTIM'S OWN identity,
-	// which the victim sees and can ask an admin to remove.
-	s.logger.Info("workflow created (template instance)", "owner", owner, "name", name, "template", templateRef)
+	// Per the form contract (same reason no CSRF token beyond the origin
+	// check): the form posts same-site, urlencoded, and the owner is
+	// server-stamped — a forgery can at worst create a DISABLED workflow
+	// under the victim's own identity, visible to them. Removal is currently
+	// out-of-band (kubectl by a cluster admin) until #419 ships lifecycle
+	// routes.
+	s.logger.Info("workflow created (template instance, disabled)", "owner", owner, "name", name, "template", templateRef)
 	http.Redirect(w, r, "/workflows/"+name, http.StatusSeeOther)
 }

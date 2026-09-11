@@ -14,8 +14,8 @@ func TestProbeDeterministicAndPopulated(t *testing.T) {
 	dir := filepath.Join("..", "..", "chart", "crds") + string(filepath.Separator)
 	roots := []Root{
 		{File: "attempts.harmostes.dev.yaml", Type: reflect.TypeOf(v1alpha1.Attempt{})},
-		{File: "workflows.harmostes.dev.yaml", Type: reflect.TypeOf(v1alpha1.Workflow{})},
-		{File: "workflowtemplates.harmostes.dev.yaml", Type: reflect.TypeOf(v1alpha1.WorkflowTemplate{})},
+		{File: v1alpha1.WorkflowCRDFile, Type: reflect.TypeOf(v1alpha1.Workflow{})},
+		{File: v1alpha1.WorkflowTemplateCRDFile, Type: reflect.TypeOf(v1alpha1.WorkflowTemplate{})},
 		{File: "connectionprofiles.harmostes.dev.yaml", Type: reflect.TypeOf(v1alpha1.ConnectionProfile{})},
 	}
 	for _, root := range roots {

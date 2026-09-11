@@ -26,6 +26,11 @@ const Version = "v1alpha1"
 const (
 	WorkflowCRDName         = "workflows." + GroupName
 	WorkflowTemplateCRDName = "workflowtemplates." + GroupName
+
+	// The chart file names the CRDs ship as (chart/crds/) — derived, so a
+	// rename moves the file references too.
+	WorkflowCRDFile         = WorkflowCRDName + ".yaml"
+	WorkflowTemplateCRDFile = WorkflowTemplateCRDName + ".yaml"
 )
 
 // SchemeGroupVersion is the group:version used to register these types.

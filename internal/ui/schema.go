@@ -33,7 +33,9 @@ const (
 // is derived from the CRDs' resourceVersions, so schema consumers get real
 // caching for free: an unchanged CRD pair answers If-None-Match with 304, and
 // a CRD rollout invalidates every cached copy on the next request — dev-first
-// correctness without a TTL to tune.
+// correctness without a TTL to tune. CONTRACT: clients MUST treat the ETag
+// as opaque — the delimiter/format is an implementation detail that may
+// switch to a content hash without notice (PR #427 review, L2).
 func (s *Server) handleSchema(w http.ResponseWriter, r *http.Request) {
 	wfSchema, wfRV, err := s.crdOpenAPISchema(r.Context(), workflowsCRDName)
 	if err != nil {

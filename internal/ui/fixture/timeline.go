@@ -36,7 +36,7 @@ func NewTimelineReader() timeline.Reader {
 		return timeline.Event{
 			At: at, Attempt: attempt, Run: run, Node: node, Kind: kind,
 			Payload: b,
-			Subject: timeline.Subject{Kind: "pr", Ref: "demo.rezus.cloud/harmostes#42", Title: "Fixture narrative"},
+			Subject: timeline.Subject{Kind: "pr", Ref: "demo-rezuscloud/harmostes#42", Title: "Fixture narrative"},
 		}
 	}
 
@@ -46,13 +46,13 @@ func NewTimelineReader() timeline.Reader {
 	att1 := "attempt-pr-review-demo-42a1"
 	events := []timeline.Event{
 		ev(t(1, 0).Time, att1, "", "gate", timeline.KindGateArmed,
-			map[string]any{"head": "b41fb712abcdef", "pr": "demo.rezus.cloud/harmostes#42"}),
+			map[string]any{"head": "b41fb712abcdef", "pr": "demo-rezuscloud/harmostes#42"}),
 		ev(t(6, 0).Time, att1, "pr-review-demo-42a1-prepare", "", timeline.KindRunStarted,
 			map[string]any{"source": "gate"}),
 		ev(t(7, 0).Time, att1, "pr-review-demo-42a1-prepare", "prepare", timeline.KindNodeStarted,
 			map[string]any{"type": "plugin"}),
 		ev(t(9, 0).Time, att1, "pr-review-demo-42a1-prepare", "prepare", timeline.KindPluginTail,
-			map[string]any{"line": "cloning demo.rezus.cloud/harmostes …"}),
+			map[string]any{"line": "cloning demo-rezuscloud/harmostes …"}),
 		ev(t(14, 30).Time, att1, "pr-review-demo-42a1-prepare", "prepare", timeline.KindNodeCompleted,
 			map[string]any{"type": "plugin", "status": "green", "durationMs": 300000}),
 		ev(t(15, 0).Time, att1, "pr-review-demo-42a1-prepare", "", timeline.KindRunCompleted,
@@ -76,11 +76,11 @@ func NewTimelineReader() timeline.Reader {
 		ev(t(13*60+45, 0).Time, att1, "pr-review-demo-42a1-gate", "gate", timeline.KindNodeStarted,
 			map[string]any{"type": "gate"}),
 		ev(t(14*60+8, 0).Time, att1, "pr-review-demo-42a1-gate", "gate", timeline.KindGateProceed,
-			map[string]any{"reason": "verdict posted", "pr": "demo.rezus.cloud/harmostes#42"}),
+			map[string]any{"reason": "verdict posted", "pr": "demo-rezuscloud/harmostes#42"}),
 		ev(t(14*60+10, 0).Time, att1, "pr-review-demo-42a1-gate", "gate", timeline.KindNodeCompleted,
 			map[string]any{"type": "gate", "status": "green", "durationMs": 30000, "feedback": "all claims validated"}),
 		ev(t(14*60+12, 0).Time, att1, "pr-review-demo-42a1-gate", "", timeline.KindRunCompleted,
-			map[string]any{"status": "succeeded", "message": "verdict posted on demo.rezus.cloud/harmostes#42", "source": "gate"}),
+			map[string]any{"status": "succeeded", "message": "verdict posted on demo-rezuscloud/harmostes#42", "source": "gate"}),
 	}
 
 	// Attempt 2 (mid-flight #43): armed, waiting on capacity, prepare done,
@@ -88,7 +88,7 @@ func NewTimelineReader() timeline.Reader {
 	att2 := "attempt-pr-review-demo-43c2"
 	events = append(events,
 		ev(t(30, 30).Time, att2, "", "gate", timeline.KindGateArmed,
-			map[string]any{"head": "9c02aa01feedbeef", "pr": "demo.rezus.cloud/harmostes#43"}),
+			map[string]any{"head": "9c02aa01feedbeef", "pr": "demo-rezuscloud/harmostes#43"}),
 		ev(t(31, 0).Time, att2, "", "gate", timeline.KindGateWaiting,
 			map[string]any{"reason": "capacity"}),
 		ev(t(30, 0).Time, att2, "pr-review-demo-43c2-prepare", "", timeline.KindRunStarted,
@@ -143,7 +143,7 @@ func (f *fixTimeline) GateEvents(ctx context.Context, attempt string, fltr timel
 func (f *fixTimeline) Subjects(ctx context.Context, attempts []string) (map[string]timeline.Subject, error) {
 	out := make(map[string]timeline.Subject, len(attempts))
 	for _, a := range attempts {
-		out[a] = timeline.Subject{Kind: "pr", Ref: "demo.rezus.cloud/harmostes#42", Title: "Fixture narrative"}
+		out[a] = timeline.Subject{Kind: "pr", Ref: "demo-rezuscloud/harmostes#42", Title: "Fixture narrative"}
 	}
 	return out, nil
 }

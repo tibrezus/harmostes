@@ -162,7 +162,7 @@ func Attempts(namespace string) ([]ctrlclient.Object, error) {
 	armT := t(0, 30)
 	dispT := t(0, 45)
 	terminal.Status.Review = &v1alpha1.ReviewClaimStatus{
-		PR: "demo.rezus.cloud/harmostes#42", HeadSHA: "b41fb712abcdef",
+		PR: "demo-rezuscloud/harmostes#42", HeadSHA: "b41fb712abcdef",
 		Label: "needs-review", ArmedSince: &armT, DispatchedAt: &dispT,
 		Released: true, ReleaseReason: "consumed",
 	}
@@ -181,7 +181,7 @@ func Attempts(namespace string) ([]ctrlclient.Object, error) {
 	armT2 := t(29, 0)
 	dispT2 := t(29, 30)
 	running.Status.Review = &v1alpha1.ReviewClaimStatus{
-		PR: "demo.rezus.cloud/harmostes#43", HeadSHA: "9c02aa01feedbeef",
+		PR: "demo-rezuscloud/harmostes#43", HeadSHA: "9c02aa01feedbeef",
 		Label: "needs-review", ArmedSince: &armT2, DispatchedAt: &dispT2,
 	}
 

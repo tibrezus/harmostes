@@ -156,6 +156,16 @@ func Attempts(namespace string) ([]ctrlclient.Object, error) {
 		{Name: "pr-review-demo-42a1-agent", StartedAt: t(0, 20), EndedAt: t(13, 25), Phase: "succeeded"},
 		{Name: "pr-review-demo-42a1-gate", StartedAt: t(13, 30), EndedAt: t(14, 10), Phase: "succeeded"},
 	}
+	// Claim transitions the Event Timeline's ledger half projects (ADR-0012
+	// §4): armed → dispatched → released(consumed). The gate store events
+	// carry the release transition itself.
+	armT := t(0, 30)
+	dispT := t(0, 45)
+	terminal.Status.Review = &v1alpha1.ReviewClaimStatus{
+		PR: "demo.rezus.cloud/harmostes#42", HeadSHA: "b41fb712abcdef",
+		Label: "needs-review", ArmedSince: &armT, DispatchedAt: &dispT,
+		Released: true, ReleaseReason: "consumed",
+	}
 
 	// --- 2. mid-flight review attempt -----------------------------------
 	running := prReviewAttempt(namespace, "attempt-pr-review-demo-43c2", "demo-rezuscloud/harmostes#43", t(30, 0))
@@ -166,6 +176,13 @@ func Attempts(namespace string) ([]ctrlclient.Object, error) {
 	running.Status.Runs = []v1alpha1.RunRecord{
 		{Name: "pr-review-demo-43c2-prepare", StartedAt: t(30, 5), EndedAt: t(30, 12), Phase: "succeeded"},
 		{Name: "pr-review-demo-43c2-agent", StartedAt: t(30, 20), Phase: "running"}, // no EndedAt: in flight
+	}
+	// In-flight claim: armed + dispatched, NOT released — the live position.
+	armT2 := t(29, 0)
+	dispT2 := t(29, 30)
+	running.Status.Review = &v1alpha1.ReviewClaimStatus{
+		PR: "demo.rezus.cloud/harmostes#43", HeadSHA: "9c02aa01feedbeef",
+		Label: "needs-review", ArmedSince: &armT2, DispatchedAt: &dispT2,
 	}
 
 	// --- 3. superseded merge-sync attempt -------------------------------
@@ -248,6 +265,8 @@ func NewServer(namespace string, logger *slog.Logger) (*ui.Server, error) {
 	// path — dev-identity writes are on by construction here (the production
 	// binary never enables them; see Server.SetDevWriteEnabled).
 	server.SetDevWriteEnabled(true)
+	// Event Timeline (ADR-0012 §4): the seeded fake reader (no sidecar here).
+	server.SetTimelineReader(NewTimelineReader())
 	return server, nil
 }
 

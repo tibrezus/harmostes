@@ -1,0 +1,35 @@
+{{define "pages/frag_event_timeline.html"}}
+{{- /* frag_event_timeline.html — the Event Timeline fragment (ADR-0012 §4):
+      one Attempt's history as append-only rows projected from the timeline
+      store + the Attempt ledger. Swapped whole by HTMX (tab click) and SSE
+      (lifecycle wakes); reload equals live. */ -}}
+<div class="event-timeline" data-testid="event-timeline">
+	{{if .TL.Empty}}
+	<p class="ds-empty-text" data-testid="event-timeline-empty">{{.TL.Empty}}</p>
+	{{else}}
+	<ol class="et-rows">
+		{{range .TL.Rows}}
+		<li class="et-row et-row--{{etStateClass .State}}" data-testid="timeline-row" data-row-kind="{{.Kind}}">
+			<span class="et-marker"></span>
+			<div class="et-main">
+				<div class="et-line">
+					{{template "state-chip" .State}}
+					<span class="et-kind" data-testid="timeline-row-kind">{{.Kind}}</span>
+					{{if .Node}}<span class="et-node"><code>{{.Node}}</code></span>{{end}}
+					{{if .Run}}<span class="et-run"><code>{{.Run}}</code></span>{{end}}
+					<span class="et-time" data-testid="timeline-row-time">{{.At}}</span>
+				</div>
+				<div class="et-summary">{{.Summary}}</div>
+				{{if .Payload}}
+				<details class="et-payload">
+					<summary data-testid="timeline-row-details">payload</summary>
+					<pre data-testid="timeline-row-payload">{{.Payload}}</pre>
+				</details>
+				{{end}}
+			</div>
+		</li>
+		{{end}}
+	</ol>
+	{{end}}
+</div>
+{{end}}

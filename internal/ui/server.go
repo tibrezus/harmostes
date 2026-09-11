@@ -25,6 +25,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
+	"github.com/tibrezus/harmostes/internal/timeline"
 )
 
 // template-embed-v2: forces Go build cache to re-embed updated templates
@@ -55,6 +56,7 @@ type Server struct {
 	wallMeta    map[string]*wallUsage // workflow → cached agent metadata (live wall)
 	adminGroups map[string]bool       // identities in any of these groups see across all owner labels
 	devWrite    bool                  // dev-identity writes enabled — set ONLY for explicit dev/fixture servers
+	timeline    timeline.Reader       // timeline-store reader (nil = Event Timeline renders an explicit empty-state)
 }
 
 // SetAdminGroups configures the Authentik groups whose members see every
@@ -70,6 +72,13 @@ func (s *Server) SetAdminGroups(groups []string) {
 		}
 	}
 	s.adminGroups = m
+}
+
+// SetTimelineReader wires the timeline-store reader (ADR-0012 §4). Nil (the
+// default) keeps the Event Timeline tab rendering an explicit empty-state —
+// the projection never guesses.
+func (s *Server) SetTimelineReader(r timeline.Reader) {
+	s.timeline = r
 }
 
 // noIdentityOwner is the fail-closed sentinel for a missing identity: it can
@@ -230,6 +239,8 @@ func (s *Server) Routes() http.Handler {
 	pages.HandleFunc("GET /runs", s.handleAttemptList)
 	pages.HandleFunc("GET /runs/{name}", s.handleAttemptDetail)
 	pages.HandleFunc("GET /runs/{name}/graph/events", s.handleRunGraphSSE)
+	pages.HandleFunc("GET /runs/{name}/events", s.handleRunEvents)
+	pages.HandleFunc("GET /runs/{name}/events/stream", s.handleRunEventsSSE)
 	pages.HandleFunc("GET /runs/{name}/runs/{job}/logs", s.handleRunLogs)
 	pages.HandleFunc("GET /runs/{name}/runs/{job}/session", s.handleAttemptSession)
 	pages.HandleFunc("GET /runs/{name}/runs/{job}/pi-session", s.handleAttemptPiSession)
@@ -282,6 +293,10 @@ func parseTemplates() (*template.Template, error) {
 		"chipState":    chipState,
 		"shortName":    shortAttemptName,
 		"wallState":    wallState,
+		// etStateClass maps the shared chip vocabulary onto the Event
+		// Timeline's marker-class suffix — the SAME vocabulary the state-chip
+		// template arms, so a row's color and its chip can never disagree.
+		"etStateClass": etStateClass,
 		"add":          func(a, b int) int { return a + b },
 		"statusClass":  statusClass,
 		"statusText":   statusText,

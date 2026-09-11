@@ -35,6 +35,7 @@ import (
 
 	"github.com/tibrezus/harmostes/internal/dapr"
 	"github.com/tibrezus/harmostes/internal/k8s"
+	"github.com/tibrezus/harmostes/internal/timeline"
 	"github.com/tibrezus/harmostes/internal/ui"
 	"github.com/tibrezus/harmostes/internal/ui/fixture"
 	"github.com/tibrezus/harmostes/version"
@@ -118,8 +119,12 @@ func main() {
 	// and falls back to the injector's DAPR_HTTP_PORT (127.0.0.1 — Go resolves
 	// localhost to ::1 while the sidecar binds v4 only).
 	daprEndpoint := resolveDaprEndpoint()
-	server.SetDaprClient(ui.NewDaprClient(dapr.New(daprEndpoint)))
-	logger.Info("Dapr client wired for transcripts + usage", "endpoint", daprEndpoint)
+	daprCli := dapr.New(daprEndpoint)
+	server.SetDaprClient(ui.NewDaprClient(daprCli))
+	// Event Timeline (ADR-0012 §4): the UI's first reader of the worker's
+	// timeline store. Same store the transcript reader uses.
+	server.SetTimelineReader(timeline.NewReader(daprCli, ui.TimelineStateStore()))
+	logger.Info("Dapr client wired for transcripts, usage + timeline", "endpoint", daprEndpoint)
 
 	serve(logger, addr, server.Routes(), namespace, false)
 }

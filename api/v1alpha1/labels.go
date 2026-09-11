@@ -1,6 +1,11 @@
 package v1alpha1
 
-import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+import (
+	"fmt"
+	"regexp"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
 
 // Label keys used by the harmostes.dev system for multi-tenant isolation and
 // workflow-to-job linking. Centralised here so the controller and the UI server
@@ -65,17 +70,32 @@ const (
 	AttemptLabel = "harmostes.dev/attempt"
 )
 
+// ownerLabelValueRe validates the label VALUE form (RFC 1123 label, ≤63
+// chars) before it is ever sent to the API server. The owner originates from
+// Authentik forwarding headers consumed verbatim; validating here means a
+// malformed identity fails as a clean 400 at the write gate instead of as a
+// raw apiserver error leaked through a renderError(err) page.
+var ownerLabelValueRe = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$`)
+
+const maxOwnerLabelLen = 63
+
 // StampOwnerLabel sets the owner label on obj from a SERVER-derived owner —
 // the authenticated session identity, never a client-supplied field. This is
 // the anti-spoof point of the write path (ADR-0012 §5): handlers call it with
 // identityFromContext(r).Username only, so a created object is by
 // construction visible to its creator (every read path filters by this exact
-// label) and a client can never choose someone else's owner.
-func StampOwnerLabel(o metav1.Object, owner string) {
+// label) and a client can never choose someone else's owner. Returns an error
+// when owner is not a valid label value — callers surface it, never the
+// apiserver's.
+func StampOwnerLabel(o metav1.Object, owner string) error {
+	if owner == "" || len(owner) > maxOwnerLabelLen || !ownerLabelValueRe.MatchString(owner) {
+		return fmt.Errorf("invalid owner identity: not a valid label value (alphanumerics, '.', '_' and '-', max %d chars)", maxOwnerLabelLen)
+	}
 	labels := o.GetLabels()
 	if labels == nil {
 		labels = map[string]string{}
 	}
 	labels[OwnerLabel] = owner
 	o.SetLabels(labels)
+	return nil
 }

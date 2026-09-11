@@ -286,9 +286,11 @@ func TestWorkflowCreationForm(t *testing.T) {
 	for _, marker := range []string{
 		"wf-new-form", `action="/workflows"`, "New Workflow",
 		`value="pr-review"`, // the template radio
-		`name="label"`,      // declared scope params render as fields
-		`name="repos"`,
-		`name="wiki"`,
+		// Scope params render template-prefixed: hidden fieldsets submit too,
+		// so unprefixed names could collide across templates.
+		`name="scope-pr-review-label"`,
+		`name="scope-pr-review-repos"`,
+		`name="scope-pr-review-wiki"`,
 	} {
 		if !strings.Contains(body, marker) {
 			t.Errorf("GET /workflows/new: missing marker %q", marker)
@@ -311,7 +313,7 @@ func TestWorkflowCreate_Instance(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/workflows", strings.NewReader(
 		"name=pr-review-demo&templateRef=pr-review"+
-			"&label=needs-review&repos=a%2Cb&wiki=docs&injected=smuggled"))
+			"&scope-pr-review-label=needs-review&scope-pr-review-repos=a%2Cb&scope-pr-review-wiki=docs&injected=smuggled"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("X-Authentik-Username", "alice")
 	// Spoof attempt: a client-supplied owner field must be ignored.

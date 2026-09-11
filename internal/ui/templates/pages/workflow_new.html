@@ -47,7 +47,8 @@
 	{{/* Per-template scope fields — the template declares its own dialect;
 	     the form renders exactly what the selected template consumes. */}}
 	{{- range .Templates}}
-	<fieldset class="wf-new-scope" data-template="{{.Name}}" {{if not (eq .Name $.SelectedTemplate)}}hidden{{end}}>
+	{{$t := .Name}}
+	<fieldset class="wf-new-scope" data-template="{{$t}}" {{if not (eq $t $.SelectedTemplate)}}hidden{{end}}>
 		<legend class="wf-new-scope-legend">Scope — {{.Name}}</legend>
 		<div class="wf-new-fields">
 			{{- if not .Spec.Scope}}
@@ -56,11 +57,13 @@
 			{{- range .Spec.Scope}}
 			<label class="wf-new-field">
 				<span>{{if .Label}}{{.Label}}{{else}}{{.Name}}{{end}}</span>
+				{{- /* name is template-prefixed: hidden fieldsets submit too, so
+				      unprefixed names could collide across templates */}}
 				{{- if eq .Kind "list"}}
-				<input type="text" name="{{.Name}}" {{if .Default}}value="{{.Default}}"{{end}}
+				<input type="text" name="scope-{{$t}}-{{.Name}}" {{if .Default}}value="{{.Default}}"{{end}}
 					placeholder="{{.Name}} (comma-separated)">
 				{{- else}}
-				<input type="text" name="{{.Name}}" {{if .Default}}value="{{.Default}}"{{end}} placeholder="{{.Name}}">
+				<input type="text" name="scope-{{$t}}-{{.Name}}" {{if .Default}}value="{{.Default}}"{{end}} placeholder="{{.Name}}">
 				{{- end}}
 				{{- if .Description}}<small>{{.Description}}</small>{{end}}
 			</label>

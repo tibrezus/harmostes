@@ -66,10 +66,14 @@ func (s *Server) resolveWorkflow(ctx context.Context, wf *v1alpha1.Workflow) v1a
 func scopeConfigJSON(r *http.Request, tmpl *v1alpha1.WorkflowTemplate) ([]byte, error) {
 	cfg := map[string]any{}
 	for _, p := range tmpl.Spec.Scope {
+		// Inputs are name-prefixed per template (see workflow_new.html) so a
+		// hidden fieldset's fields can never shadow the selected template's —
+		// every fieldset renders into the form, hidden ones included.
+		formName := "scope-" + tmpl.Name + "-" + p.Name
 		switch p.Kind {
 		case "list":
 			items := []string{}
-			for _, v := range strings.Split(r.FormValue(p.Name), ",") {
+			for _, v := range strings.Split(r.FormValue(formName), ",") {
 				if v = strings.TrimSpace(v); v != "" {
 					items = append(items, v)
 				}
@@ -83,7 +87,7 @@ func scopeConfigJSON(r *http.Request, tmpl *v1alpha1.WorkflowTemplate) ([]byte, 
 			}
 			cfg[p.Name] = items
 		default: // "string" (and undeclared kinds degrade to string)
-			v := strings.TrimSpace(r.FormValue(p.Name))
+			v := strings.TrimSpace(r.FormValue(formName))
 			if v == "" {
 				v = p.Default
 			}
@@ -165,7 +169,10 @@ func (s *Server) handleWorkflowCreate(w http.ResponseWriter, r *http.Request) {
 			Config:      cfg,
 		},
 	}
-	v1alpha1.StampOwnerLabel(wf, owner)
+	if err := v1alpha1.StampOwnerLabel(wf, owner); err != nil {
+		s.renderError(w, r, err.Error())
+		return
+	}
 	if err := s.k8sClient.Create(r.Context(), wf); err != nil {
 		if errors.IsAlreadyExists(err) {
 			s.renderError(w, r, "A workflow with that name already exists")

@@ -10,15 +10,18 @@ import (
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
 )
 
-// The CRDs whose OpenAPI schema GET /api/schema serves. ADR-0012 §2: the
-// schema is CRD-derived, read live from the cluster — never hand-written in
-// the frontend. Editor completion (#416), the topology palette (#417) and
-// typed forms all render from this one document.
+// The CRDs whose OpenAPI schema GET /api/schema serves — imported from the
+// API package, not restated (ADR-0012 §2: the schema is CRD-derived, read
+// live from the cluster — never hand-written in the frontend; the same
+// single-sourcing applies to the names). One document drives editor
+// completion (#416), the topology palette (#417) and typed forms.
 const (
-	workflowsCRDName         = "workflows.harmostes.dev"
-	workflowTemplatesCRDName = "workflowtemplates.harmostes.dev"
+	workflowsCRDName         = v1alpha1.WorkflowCRDName
+	workflowTemplatesCRDName = v1alpha1.WorkflowTemplateCRDName
 )
 
 // handleSchema serves the OpenAPI v3 schemas of the Workflow and

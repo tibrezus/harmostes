@@ -18,6 +18,16 @@ import (
 const GroupName = "harmostes.dev"
 const Version = "v1alpha1"
 
+// The CRDs' fully-qualified names, single-sourced beside GroupName so every
+// consumer derives them from one place. The schema endpoint (internal/ui)
+// reads these exact cluster objects; crdwalk registers the chart files; a
+// group/kind rename now breaks compilation here instead of 404ing silently
+// at request time (PR #427 review, Pillar 1).
+const (
+	WorkflowCRDName         = "workflows." + GroupName
+	WorkflowTemplateCRDName = "workflowtemplates." + GroupName
+)
+
 // SchemeGroupVersion is the group:version used to register these types.
 var SchemeGroupVersion = schema.GroupVersion{Group: GroupName, Version: Version}
 

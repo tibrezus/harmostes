@@ -198,7 +198,8 @@ def main():
             "/extensions/sol-pi"
         ],
         "tools": {
-            "/extensions/rig-query": "rig"
+            "/extensions/rig-query": "rig",
+            "/extensions/sol-pi": "obs_recall"
         }
     }
     # END GENERATED EXTENSIONS

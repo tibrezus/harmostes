@@ -12,7 +12,7 @@ TAG           ?= dev
 BIN_DIR       := bin
 GO            := go
 
-.PHONY: all build test test-go test-ui vet tidy generate manifests controller-worker docker docker-push docker-ui test-extensions test-integration clean test-rig-emit golden-update
+.PHONY: all build test test-go test-ui vet tidy generate manifests controller-worker docker docker-push docker-ui test-extensions test-sol-pi test-integration clean test-rig-emit golden-update
 
 
 all: test build
@@ -25,6 +25,8 @@ build:
 ## only the Go toolchain; test-extensions adds Node ≥ 22.5 + npm + python3
 ## (the fixture producer). CI runs them as separate steps, so a host without
 ## Node still gets a meaningful `make test-go`.
+# test-sol-pi is deliberately NOT here: it is the slow compat tier (installs
+# a second pi package set), run explicitly by CI next to the extensions tier.
 test: test-go test-extensions test-rig-emit
 
 
@@ -65,29 +67,6 @@ test-extensions:
 		extensions/rig-query/index.runtime.test.ts \
 		extensions/litellm-provider/fallbacks.test.ts
 	@node --experimental-strip-types -e 'await import("./extensions/litellm-provider/index.ts")'
-	@echo "litellm-provider: import gate + fallback table green"
-
-# sol-pi (#425): the vendored NVlabs/SoL-Pi suite run against the FLEET's pi
-# packages (PI_VERSION), not the vendored lockfile's 0.84.2 dev-deps — the
-# PR-tier half of the compat pairing (image-tier half: the Dockerfile load
-# probe). PI_VERSION here mirrors the Dockerfiles' hand-pinned ARG
-# (TestPinnedVersionsAgree pins those two; bump all three together).
-PI_VERSION ?= 0.84.4
-test-sol-pi:
-	npm ci --prefix extensions/sol-pi --ignore-scripts --no-audit --no-fund --silent
-	npm install --prefix extensions/sol-pi --no-save --no-audit --no-fund --silent \
-		@earendil-works/pi-coding-agent@$(PI_VERSION) \
-		@earendil-works/pi-ai@$(PI_VERSION) \
-		@earendil-works/pi-agent-core@$(PI_VERSION) \
-		@earendil-works/pi-tui@$(PI_VERSION)
-	# The vitest overlay (repo-owned, outside the vendored tree) excludes
-	# package.test.ts — it parses `npm pack` output, whose notice format
-	# differs under npm 12 (env-only failure; the packaging surface it
-	# checks is unused here — private package, loaded from the tree).
-	# cwd = the package root: several upstream tests resolve scripts/docs
-	# against process.cwd() (upstream layout). The overlay path is then
-	# relative to that cwd.
-	cd extensions/sol-pi && npx vitest run --config ../sol-pi.fleet.vitest.mjs
 	python3 extensions/rig-query/fixtures/freshness.py
 	@# Chart copy drift gate: the resolver's litellm-provider ConfigMap source
 	@# (chart/files/litellm-provider/) is a pinned copy of the canonical
@@ -102,6 +81,34 @@ test-sol-pi:
 	  [ -e extensions/litellm-provider/$$n ] || { echo "EXTRA: chart/files/litellm-provider/$$n has no canonical counterpart — stale copy" >&2; exit 1; }; \
 	done; \
 	echo "litellm-provider chart copy: complete + in sync with extensions/litellm-provider/"
+
+# sol-pi (#425): the vendored NVlabs/SoL-Pi suite run against the FLEET's pi
+# packages, not the vendored lockfile's 0.84.2 dev-deps — the PR-tier half of
+# the compat pairing (image-tier half: the Dockerfile load probe). PI_VERSION
+# is DERIVED from Dockerfile.worker (the hand-pin's single source — no fourth
+# literal; a bump re-runs this tier against the new pi automatically).
+PI_VERSION ?= $(shell sed -n 's/^ARG PI_VERSION=//p' Dockerfile.worker | head -1)
+## test-sol-pi: the SoL-Pi compat tier. Deliberately NOT part of `test:` — it
+## installs a second pi package set (slow) and exists to catch a compatibility
+## change (upstream agents-install protocol) that the fast tier cannot see.
+## CI runs it explicitly next to the extensions tier (ci.yml); run by hand on
+## any PI_VERSION or vendored-tree bump.
+test-sol-pi:
+	npm ci --prefix extensions/sol-pi --ignore-scripts --no-audit --no-fund --silent
+	npm install --prefix extensions/sol-pi --no-save --no-audit --no-fund --silent \
+		@earendil-works/pi-coding-agent@$(PI_VERSION) \
+		@earendil-works/pi-ai@$(PI_VERSION) \
+		@earendil-works/pi-agent-core@$(PI_VERSION) \
+		@earendil-works/pi-tui@$(PI_VERSION)
+	# The vitest overlay (repo-owned, outside the vendored tree) excludes
+	# package.test.ts — it parses `npm pack` output, whose notice format
+	# differs under npm 12 (env-only failure; the packaging surface it
+	# checks is unused here — private package, loaded from the tree) — and
+	# install-guide.test.ts (validates the upstream repo's agent-entry
+	# files, pruned in the vendored copy). cwd = the package root: several
+	# upstream tests resolve scripts/docs against process.cwd() (upstream
+	# layout); the overlay path is relative to that cwd.
+	cd extensions/sol-pi && npx vitest run --config ../sol-pi.fleet.vitest.mjs
 
 ## test-rig-emit: the rig-emit plugin's Python validator — severity pin:
 ## circular deps WARN (the graph represents the codebase as it is; failing

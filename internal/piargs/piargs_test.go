@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -53,6 +54,40 @@ func TestPiArgsToolsAllowlistKeepsRig(t *testing.T) {
 	joined = strings.Join(args, " ")
 	if !strings.Contains(joined, "--tools bash,rig") || strings.Contains(joined, "rig,rig") {
 		t.Errorf("declared rig must not be duplicated, got: %s", joined)
+	}
+}
+
+// TestExtensionToolsCoversEveryLoadedExtension is the table-driven form the
+// #426 r2 pillar 9A finding asked for: one case per Extensions entry naming
+// the tool its image presence contributes to the --tools allowlist. The
+// blind spot this closes: the map is the allowlist test's input AND subject,
+// so a missing entry (sol-pi's obs_recall shipped that way) was invisible —
+// the tool was registered at runtime, dropped by the allowlist, and every
+// gate stayed green. A new Extensions entry MUST either land here or be
+// justified in extensionTools' comment (provider-only → no entry).
+func TestExtensionToolsCoversEveryLoadedExtension(t *testing.T) {
+	cases := map[string]string{
+		"/extensions/litellm-provider": "", // provider-only: registers no tool
+		"/extensions/rig-query":        "rig",
+		"/extensions/sol-pi":           "obs_recall", // observation-pack's recall affordance (#425)
+	}
+	for _, ext := range Extensions {
+		want, known := cases[ext]
+		if !known {
+			t.Errorf("extension %s has no expected-tool entry in this test — add one (or a documented extensionTools omission)", ext)
+			continue
+		}
+		args := buildPiArgs("s", "m", []string{"bash", "read"}, Extensions, alwaysPresent)
+		joined := strings.Join(args, " ")
+		if want == "" {
+			if tool := extensionTools[ext]; tool != "" {
+				t.Errorf("%s is provider-only but extensionTools registers %q — update the table", ext, tool)
+			}
+			continue
+		}
+		if !strings.Contains(joined, want) {
+			t.Errorf("allowlist must contain %q for %s, got: %s", want, ext, joined)
+		}
 	}
 }
 
@@ -247,6 +282,23 @@ func TestPinnedVersionsAgree(t *testing.T) {
 	want := `"typebox": "` + piShippedTypebox + `"`
 	if !strings.Contains(pkg, want) {
 		t.Errorf("extensions/rig-query/package.json typebox pin != %s (what pi %s ships) — update the pin WITH PI_VERSION, together", piShippedTypebox, devPI)
+	}
+	// PI_VERSION is single-sourced at Dockerfile.worker (the hand-pin): the
+	// Makefile compat tier DERIVES it (no copy), and ci.yml passes the
+	// derivation through (no literal). A hardcoded copy anywhere else
+	// recreates the #426 r2 pillar-4 finding: a pi bump leaves the compat
+	// tier validating against a stale runtime with every gate green.
+	makefile := string(mustRead(t, "../../Makefile"))
+	if !strings.Contains(makefile, "PI_VERSION ?= $(shell sed -n 's/^ARG PI_VERSION=//p' Dockerfile.worker") {
+		t.Errorf("Makefile must derive PI_VERSION from Dockerfile.worker — a literal copy drifts from the hand-pin")
+	}
+	ci := string(mustRead(t, "../../.github/workflows/ci.yml"))
+	for _, line := range strings.Split(ci, "\n") {
+		// A hardcoded copy is a bare semver after PI_VERSION= — a shell
+		// reference ($PI_VERSION) or the sed derivation is the sanctioned form.
+		if strings.Contains(line, "PI_VERSION=") && regexp.MustCompile(`PI_VERSION=\d`).MatchString(line) {
+			t.Errorf("ci.yml hardcodes a PI_VERSION literal (%q) — derive it from Dockerfile.worker instead", strings.TrimSpace(line))
+		}
 	}
 }
 

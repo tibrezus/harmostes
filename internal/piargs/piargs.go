@@ -108,6 +108,15 @@ const RigGraphPath = "/workspace/rig.db"
 // only register providers have no entry.
 var extensionTools = map[string]string{
 	"/extensions/rig-query": "rig",
+	// sol-pi's observation-pack registers obs_recall (its recall affordance
+	// for replaced large tool results): with observationPack ON — which the
+	// shipped profile REQUIRES (TestSolPiProfileSingleSource) — tool results
+	// above the size threshold become handles the model must be able to
+	// invoke. Without this entry the --tools allowlist dropped obs_recall
+	// while the rewriting stayed active: review evidence destroyed, recall
+	// impossible (#426 r2 pillar 5A). The litellm-provider has no entry:
+	// provider-only extensions register no tools.
+	"/extensions/sol-pi": "obs_recall",
 }
 
 // PiArgs builds the pi --mode rpc extra args from the three values it

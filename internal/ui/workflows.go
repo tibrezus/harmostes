@@ -95,6 +95,12 @@ func scopeConfigJSON(r *http.Request, tmpl *v1alpha1.WorkflowTemplate) ([]byte, 
 			cfg[p.Name] = v
 		}
 	}
+	if len(cfg) == 0 {
+		// Scope-less template: store NO config key at all — an empty `{}` is
+		// length-2 truthiness and reads as "the instance made scope choices",
+		// which it did not (PR #427 review P2). The CR stays thin.
+		return nil, nil
+	}
 	return json.Marshal(cfg)
 }
 
@@ -122,6 +128,15 @@ func (s *Server) handleWorkflowCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	owner := id.Username
+	if id.Dev {
+		// Reserved namespace for dev-stamped owners (PR #427 review P6): a dev
+		// identity is structurally unable to occupy a real user's owner label —
+		// worst case it squats a dev-* label only admins see. The full trust
+		// chain for production: the outpost strips client identity headers,
+		// devWrite is never rendered under default values (golden-guarded), and
+		// this prefix keeps even an enabled dev server off real owner labels.
+		owner = DevOwnerPrefix + owner
+	}
 
 	// Same-origin guard (CSRF): the write is cookie-authenticated and
 	// urlencoded, so a cross-site form post is the classic forgery vector.

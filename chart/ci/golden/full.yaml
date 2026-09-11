@@ -4851,35 +4851,34 @@ rules:
   # Workflows: create (the ADR-0012 §5 creation surface) + owner-scoped reads.
   - apiGroups: ["harmostes.dev"]
     resources: ["workflows"]
-    verbs: ["get", "list", "watch", "create"]
+    verbs: ["get", "list", "create"]
   # Read attempts (observability-first primary view — Attempt timeline).
   - apiGroups: ["harmostes.dev"]
     resources: ["attempts"]
-    verbs: ["get", "list", "watch"]
+    verbs: ["get", "list"]
   # Read workflow templates (the creation form's catalog; resolution reads).
   - apiGroups: ["harmostes.dev"]
     resources: ["workflowtemplates"]
-    verbs: ["get", "list", "watch"]
-  # Pipelines: read-only. The canvas UI is dismantled (ADR-0012 §3) — no
-  # write routes exist; the SSE flow view still reads.
-  - apiGroups: ["harmostes.dev"]
-    resources: ["pipelines"]
-    verbs: ["get", "list", "watch"]
+    verbs: ["get", "list"]
   # Read jobs (run history, filtered by owner label)
   - apiGroups: ["batch"]
     resources: ["jobs"]
-    verbs: ["get", "list", "watch"]
+    verbs: ["get", "list"]
   # Read pods + pod logs (run detail log viewer). Pods are looked up
   # by job-name label; logs are streamed from the worker container. Access is
   # gated by the workflow owner-label check in the run-detail handler.
   - apiGroups: [""]
     resources: ["pods", "pods/log"]
     verbs: ["get", "list"]
-  # NO secrets / externalsecrets rules: the per-user token manager was pruned
-  # (#291) and nothing in the UI touches Secrets via the k8s API — the daprd
-  # sidecar reads the secret store, and credential sync is chart-rendered
-  # ExternalSecrets (ADR-0011). Write verbs are granted only when a route
-  # needs them, never speculatively.
+  # Deliberately ABSENT privilege (PR #427 review P1):
+  #  - no `pipelines` rule: the canvas was dismantled AND the resource with
+  #    it — chart/crds ships no pipelines CRD and no Go type exists.
+  #  - no `watch` verb: the UI runs a direct, non-cached client and never
+  #    calls Watch — live updates arrive via the daprd event sidecar.
+  #  - no secrets / externalsecrets rules: the per-user token manager was
+  #    pruned (#291); credential sync is chart-rendered ExternalSecrets
+  #    (ADR-0011). Verbs are granted only when a route needs them, never
+  #    speculatively.
 
 ---
 # Source: harmostes/templates/rbac.yaml

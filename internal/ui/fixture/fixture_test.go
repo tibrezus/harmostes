@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
+	"github.com/tibrezus/harmostes/internal/ui"
 )
 
 // The world parses and carries the fixture owner on every object.
@@ -25,7 +26,7 @@ func TestFixture_Objects(t *testing.T) {
 		if !ok {
 			t.Fatalf("object %T is not a Workflow", o)
 		}
-		if wf.Labels[v1alpha1.OwnerLabel] != DevUser {
+		if wf.Labels[v1alpha1.OwnerLabel] != ui.DevOwnerPrefix+DevUser {
 			t.Errorf("workflow %s missing owner label", wf.Name)
 		}
 		if wf.Spec.Graph == nil || len(wf.Spec.Graph.Nodes) == 0 {
@@ -52,7 +53,7 @@ func TestFixture_Attempts(t *testing.T) {
 	phases := map[string]int{}
 	for _, o := range atts {
 		a := o.(*v1alpha1.Attempt)
-		if a.Labels[v1alpha1.OwnerLabel] != DevUser {
+		if a.Labels[v1alpha1.OwnerLabel] != ui.DevOwnerPrefix+DevUser {
 			t.Errorf("attempt %s missing owner label", a.Name)
 		}
 		if a.Spec.WorkflowRef == "" || a.Spec.Objective.Kind == "" {

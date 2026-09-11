@@ -420,7 +420,8 @@ func TestWorkflowCreate_AntiSpoof(t *testing.T) {
 	}
 
 	// With the explicit server-side opt-in (fixture mode, or a dev-values
-	// chart render), the dev identity writes.
+	// chart render), the dev identity writes — but into the RESERVED dev-'
+	// owner namespace: it can never occupy a real user's owner label (P6).
 	s.SetDevWriteEnabled(true)
 	req := httptest.NewRequest(http.MethodPost, "/workflows",
 		strings.NewReader("name=w-dev-optin&templateRef=pr-review"))
@@ -430,6 +431,13 @@ func TestWorkflowCreate_AntiSpoof(t *testing.T) {
 	s.Routes().ServeHTTP(rec, req)
 	if rec.Code != http.StatusSeeOther {
 		t.Errorf("dev identity with server opt-in: status = %d, want 303", rec.Code)
+	}
+	var devWf v1alpha1.Workflow
+	if err := s.k8sClient.Get(context.Background(), client.ObjectKey{Namespace: "harmostes", Name: "w-dev-optin"}, &devWf); err != nil {
+		t.Fatalf("dev-created CR not found: %v", err)
+	}
+	if got := devWf.Labels[v1alpha1.OwnerLabel]; got != "dev-devuser" {
+		t.Errorf("dev-stamped owner = %q, want dev-devuser (reserved namespace — a dev identity cannot occupy a real user's label)", got)
 	}
 
 	// The rejections happened BEFORE any object was created: no workflow may

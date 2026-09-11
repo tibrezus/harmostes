@@ -136,6 +136,12 @@ func TestGoldenUIRBAC(t *testing.T) {
 			if res == "externalsecrets" {
 				t.Errorf("rule %d grants externalsecrets — dead privilege since ADR-0011", i)
 			}
+			if res == "pipelines" {
+				t.Errorf("rule %d grants pipelines — the canvas was dismantled AND the resource with it (no CRD, no type)", i)
+			}
+		}
+		if contains(verbs, "watch") {
+			t.Errorf("rule %d (resources %v) grants watch — the UI uses a direct non-cached client and never calls Watch", i, resources)
 		}
 		for _, v := range verbs {
 			if !writeVerbs[v] {
@@ -153,7 +159,7 @@ func TestGoldenUIRBAC(t *testing.T) {
 					t.Errorf("workflows verb %q granted — lifecycle routes do not exist yet (#418/#419 re-add with their routes)", forbidden)
 				}
 			}
-			for _, want := range []string{"get", "list", "watch", "create"} {
+			for _, want := range []string{"get", "list", "create"} {
 				if !contains(verbs, want) {
 					t.Errorf("workflows verbs %v missing %q", verbs, want)
 				}

@@ -77,16 +77,27 @@ func (s *Server) SetAdminGroups(groups []string) {
 // never an unscoped one.
 const noIdentityOwner = "\x00no-identity"
 
+// devOwnerPrefix reserves the owner-label namespace dev identities stamp
+// into (see SetDevWriteEnabled): a dev identity can never occupy a real
+// user's owner label, even on a server with dev writes enabled. Exported so
+// the fixture world stamps its synthetic objects into the same namespace.
+const DevOwnerPrefix = "dev-"
+
 // visibleOwner resolves the owner filter an identity may use. Empty string
 // means unrestricted: the Server-level list helpers already treat it as no
 // label filter. Non-admin identities keep today's strictly-scoped view; a
-// missing identity fails closed.
+// missing identity fails closed. Dev identities read the reserved dev-
+// namespace their writes stamp into (devOwnerPrefix) — a dev identity can
+// never see or occupy a real user's owner label.
 func (s *Server) visibleOwner(id *Identity) string {
 	if id == nil {
 		return noIdentityOwner
 	}
 	if s.isAdmin(id) {
 		return ""
+	}
+	if id.Dev {
+		return DevOwnerPrefix + id.Username
 	}
 	return id.Username
 }
@@ -151,7 +162,10 @@ func (s *Server) mayViewAttempt(att *v1alpha1.Attempt, id *Identity) bool {
 	if att == nil || id == nil {
 		return false
 	}
-	return s.isAdmin(id) || att.Labels[v1alpha1.OwnerLabel] == id.Username
+	// Identity-derived, not raw-username: visibleOwner carries the dev-
+	// namespace translation (a Dev identity reads its reserved namespace,
+	// exactly what its writes stamp into).
+	return s.isAdmin(id) || att.Labels[v1alpha1.OwnerLabel] == s.visibleOwner(id)
 }
 
 // New creates a Server with parsed templates and the given k8s client.

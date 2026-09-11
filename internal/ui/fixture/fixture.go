@@ -73,7 +73,7 @@ func Objects(namespace string) ([]ctrlclient.Object, error) {
 		if wf.Labels == nil {
 			wf.Labels = map[string]string{}
 		}
-		wf.Labels[v1alpha1.OwnerLabel] = DevUser
+		wf.Labels[v1alpha1.OwnerLabel] = ui.DevOwnerPrefix + DevUser
 		objs = append(objs, &wf)
 	}
 	return objs, nil
@@ -97,7 +97,7 @@ func prReviewAttempt(namespace, name, pr string, created metav1.Time) *v1alpha1.
 		ObjectMeta: metav1.ObjectMeta{
 			Name:              name,
 			Namespace:         namespace,
-			Labels:            map[string]string{v1alpha1.OwnerLabel: DevUser},
+			Labels:            map[string]string{v1alpha1.OwnerLabel: ui.DevOwnerPrefix + DevUser},
 			CreationTimestamp: created,
 		},
 		Spec: v1alpha1.AttemptSpec{
@@ -117,7 +117,7 @@ func mergeSyncAttempt(namespace, name string, created metav1.Time) *v1alpha1.Att
 		ObjectMeta: metav1.ObjectMeta{
 			Name:              name,
 			Namespace:         namespace,
-			Labels:            map[string]string{v1alpha1.OwnerLabel: DevUser},
+			Labels:            map[string]string{v1alpha1.OwnerLabel: ui.DevOwnerPrefix + DevUser},
 			CreationTimestamp: created,
 		},
 		Spec: v1alpha1.AttemptSpec{

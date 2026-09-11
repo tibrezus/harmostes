@@ -160,22 +160,10 @@ RUN LITELLM_URL=http://127.0.0.1:1 LITELLM_API_KEY=stub PI_SKIP_VERSION_CHECK=1 
       echo "litellm-provider load probe failed (pi exit $rc):"; cat /tmp/pi-litellm-load.log; exit 1; \
     fi
 RUN pi install npm:pi-searxng
-# pi settings: auto-load the searxng extension on every pi invocation
-# defaultProjectTrust=never (#426 r3 finding 1): review workspaces are
-# UNTRUSTED PR content — a repo shipping .pi/sol-pi.json must not be able to
-# flip the harness's own config (evidencePreservingReducer=true would ship
-# repo diagnostic logs to a remote reducer model) or load project .pi/
-# resources at all. The shipped /root/.pi/agent/sol-pi.json is therefore THE
-# effective profile on every agent run.
-# settings.json is a single in-tree source too (extensions/sol-pi/settings.json):
-# defaultProjectTrust=never AND projectTrusted=false — pi's project-trust
-# override wins over both the trust store and the default, so a repo shipping
-# .pi/settings.json {projectTrusted:true} must not re-open the project-config
-# path (#426 r5 blocking finding; the r4 §2 probe showed the never-pin alone
-# is not sufficient for all workspace classes).
-COPY extensions/sol-pi/settings.json /root/.pi/agent/settings.json
-# SearXNG instance in the cluster (searxng namespace)
-ENV SEARXNG_URL=http://searxng.searxng.svc.cluster.local:8080
+# pi settings: auto-load the searxng extension on every pi invocation.
+# defaultProjectTrust=never + the single-source sol-pi profile/settings ride
+# the extensions/sol-pi block below (r6/r7: one COPY, one rationale — the
+# control that holds is buildPiArgs' --no-approve).
 
 # sol-pi (#425): NVIDIA's standalone efficiency extension for pi, VENDORED
 # at extensions/sol-pi (provenance, ownership constraints, bump protocol:

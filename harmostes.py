@@ -48,6 +48,7 @@ import argparse
 import json
 import os
 import subprocess
+import tempfile
 import sys
 import time
 from datetime import datetime, timezone
@@ -63,8 +64,15 @@ class PiRpc:
     def __init__(self, args, cwd, env, log_path):
         self.log_path = log_path
         self._logf = open(log_path, "a") if log_path else None
+        # A persistent session dir is required by extensions that archive
+        # against it (sol-pi's observation-pack throws per request without
+        # one — inert-with-throws, #426 r9 P5a). Provision per run, under
+        # HARMOSTES_PI_SESSIONS when the fleet provides it.
+        sessions_root = os.environ.get("HARMOSTES_PI_SESSIONS") or tempfile.mkdtemp(prefix="harmostes-pi-sessions-")
+        os.makedirs(sessions_root, exist_ok=True)
+        session_dir = tempfile.mkdtemp(prefix="harmostes-pi-session-", dir=sessions_root)
         self.proc = subprocess.Popen(
-            ["pi", "--mode", "rpc", "--no-session", *args],
+            ["pi", "--mode", "rpc", "--session-dir", session_dir, *args],
             cwd=cwd, env=env,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             bufsize=0,

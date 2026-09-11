@@ -138,7 +138,15 @@ func PiArgs(skill, model string, tools []string) []string {
 // drop out of the args (and take its --tools entry with it) rather than
 // kill every workflow that declares tools (#338 r14 B1).
 func buildPiArgs(skill, model string, tools []string, extensions []string, stat func(string) (os.FileInfo, error)) []string {
-	args := []string{"--skill", skill, "--model", model}
+	// --no-approve lands on EVERY pi invocation (#426 r5 blocking finding):
+	// the agent's cwd is the PR checkout — untrusted content. It ignores
+	// project-local files (settings, extensions, .pi/sol-pi.json) for the
+	// run, so a hostile repo cannot flip the harness's own config (e.g.
+	// evidencePreservingReducer=true ships repo logs to a remote reducer
+	// model) even when pi's trust resolution would mark the workspace
+	// trusted. Belt-and-braces over the settings.json projectTrusted=false
+	// pin — the config plane and the invocation plane enforce the same rule.
+	args := []string{"--skill", skill, "--model", model, "--no-approve"}
 	for _, ext := range extensions {
 		if _, err := stat(ext); err != nil {
 			continue // not on this image — degrade quietly

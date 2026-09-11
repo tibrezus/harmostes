@@ -215,6 +215,10 @@ def main():
     pi_args = [
         "--skill", args.skill,
         "--model", args.model,
+        # --no-approve: the workspace is untrusted PR content — ignore
+        # project-local files for the run (same rule as buildPiArgs,
+        # #426 r5 blocking finding).
+        "--no-approve",
         "--tools", ",".join(tools),
     ]
     for ext in extensions:

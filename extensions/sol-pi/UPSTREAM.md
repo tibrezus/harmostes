@@ -20,3 +20,19 @@ upstream commit and recording the new SHA here.
 Upstream tests against pi 0.84.2 (peer `*`). The fleet pins `PI_VERSION`
 (0.84.4) — `make test-sol-pi` runs the upstream suite against the fleet's
 pi packages; treat any failure there as a compatibility change, not noise.
+
+## Ownership constraints (r5 review)
+
+- **No in-tree edits to this directory.** The fleet owns upstream's runtime
+  behavior through it (the extension replaces built-in edit/write and
+  rewrites prompt context per request) — that ownership is only safe while
+  the tree is byte-pristine: a needed patch is an upstream PR first, and
+  the fleet waits. `make test-sol-pi`'s "treat any failure as a
+  compatibility change" depends on this.
+- **Known upstream hazard (recorded, not fixable here):**
+  `action-fusion/file-queue.ts` serialises fused mutations on SoL-Pi's own
+  queue and intentionally does not nest pi's built-in mutation queue;
+  `then-run.ts`'s pre-command hash guard yields via `setImmediate`, so the
+  check and the command are not atomic against a non-fused mutation of the
+  same file from pi's queue. Shipped profile never lets a model call
+  happen, so the exposure is upstream's to close.

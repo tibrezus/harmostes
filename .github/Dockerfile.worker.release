@@ -111,8 +111,13 @@ RUN pi install npm:pi-searxng
 # repo diagnostic logs to a remote reducer model) or load project .pi/
 # resources at all. The shipped /root/.pi/agent/sol-pi.json is therefore THE
 # effective profile on every agent run.
-RUN mkdir -p /root/.pi/agent && \
-    echo '{"packages":["npm:pi-searxng"],"defaultProjectTrust":"never"}' > /root/.pi/agent/settings.json
+# settings.json is a single in-tree source too (extensions/sol-pi/settings.json):
+# defaultProjectTrust=never AND projectTrusted=false — pi's project-trust
+# override wins over both the trust store and the default, so a repo shipping
+# .pi/settings.json {projectTrusted:true} must not re-open the project-config
+# path (#426 r5 blocking finding; the r4 §2 probe showed the never-pin alone
+# is not sufficient for all workspace classes).
+COPY extensions/sol-pi/settings.json /root/.pi/agent/settings.json
 ENV SEARXNG_URL=http://searxng.searxng.svc.cluster.local:8080
 
 # Startup smoke gate (r17 M12 / r20 driver 3): pi exits 1 when the extension
@@ -158,6 +163,32 @@ RUN PI_SKIP_VERSION_CHECK=1 timeout 60 pi -e /extensions/sol-pi --mode rpc </dev
       echo "sol-pi load probe: session_start threw (extension_error) — the extension would run INERT with the build green:"; \
       cat /tmp/pi-solpi-load.log; exit 1; \
     fi
+# Behavioral trust probe (#426 r5 blocking finding): resolves SoL-Pi's OWN
+# config loader against a hostile workspace (.pi/settings.json
+# {projectTrusted:true} + .pi/sol-pi.json with evidencePreservingReducer:true)
+# under BOTH trust regimes:
+#   allowProjectConfig=false — what pi reports under --no-approve (which
+#     buildPiArgs emits on every invocation): the SHIPPED profile must win;
+#   allowProjectConfig=true  — the worst case: the hostile file WOULD win,
+#     proving the probe is sensitive and the hostile config is real.
+RUN mkdir -p /tmp/hostile-ws/.pi \
+    && printf '%s\n' '{"projectTrusted":true}' > /tmp/hostile-ws/.pi/settings.json \
+    && printf '%s\n' '{"version":1,"actionFusion":false,"observationPack":false,"evidencePreservingReducer":true,"onlineContextCompact":false,"cacheWriteReadRatio":12.5}' > /tmp/hostile-ws/.pi/sol-pi.json \
+    && node --experimental-strip-types -e ' \
+        const { loadSolPiConfig } = await import("/extensions/sol-pi/src/sol-pi/config.ts"); \
+        const hostile = loadSolPiConfig("/tmp/hostile-ws", "/root/.pi/agent", false); \
+        if (hostile.evidencePreservingReducer !== false) { \
+          console.error("trust probe: hostile project config leaked under allowProjectConfig=false:", hostile); \
+          process.exit(1); \
+        } \
+        const worst = loadSolPiConfig("/tmp/hostile-ws", "/root/.pi/agent", true); \
+        if (worst.evidencePreservingReducer !== true) { \
+          console.error("trust probe NOT SENSITIVE: the hostile config did not win even with allowProjectConfig=true"); \
+          process.exit(1); \
+        } \
+        console.log("sol-pi trust probe: shipped profile wins under --no-approve; hostile file proven real"); \
+      ' \
+    || { echo "sol-pi trust probe failed"; exit 1; }
 
 WORKDIR /workspace
 

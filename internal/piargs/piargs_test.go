@@ -228,10 +228,25 @@ func TestSolPiProfileSingleSource(t *testing.T) {
 	// single string that makes the shipped profile THE effective config
 	// (r4 §2 probe: without it, a trusted workspace's .pi/sol-pi.json
 	// overrides the profile, up to evidencePreservingReducer=true egress).
-	const wantTrust = `defaultProjectTrust":"never"`
+	// settings.json is a single in-tree source too (r5 DRY finding): parse
+	// it for the SECURITY values (never-pin + the override that beats a
+	// repo-shipped projectTrusted:true) and require both images to install
+	// exactly that file.
+	settings := string(mustRead(t, "../../extensions/sol-pi/settings.json"))
+	var sc struct {
+		DefaultProjectTrust string `json:"defaultProjectTrust"`
+		ProjectTrusted      *bool  `json:"projectTrusted"`
+	}
+	if err := json.Unmarshal([]byte(settings), &sc); err != nil {
+		t.Fatalf("extensions/sol-pi/settings.json does not parse: %v", err)
+	}
+	if sc.DefaultProjectTrust != "never" || sc.ProjectTrusted == nil || *sc.ProjectTrusted {
+		t.Errorf("settings.json must pin defaultProjectTrust=never AND projectTrusted=false, got %+v", sc)
+	}
+	const wantSettingsCopy = "COPY extensions/sol-pi/settings.json /root/.pi/agent/settings.json"
 	for _, f := range []string{"../../Dockerfile.worker", "../../.github/Dockerfile.worker.release"} {
-		if !strings.Contains(string(mustRead(t, f)), wantTrust) {
-			t.Errorf("%s does not pin defaultProjectTrust=never in settings.json — workspace .pi/sol-pi.json could override the shipped profile", f)
+		if !strings.Contains(string(mustRead(t, f)), wantSettingsCopy) {
+			t.Errorf("%s does not install the shipped settings.json with the exact single-source COPY (%q)", f, wantSettingsCopy)
 		}
 	}
 	for _, f := range []string{"../../Dockerfile.worker", "../../.github/Dockerfile.worker.release"} {

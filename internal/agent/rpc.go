@@ -233,6 +233,12 @@ func (r *RPC) Prompt(ctx context.Context, message, label string) (Event, int, Us
 				if text := messageEndContent(ev.Raw); text != "" {
 					capture.Response = text
 				}
+			case "extension_error":
+				// An extension handler threw: pi continues with that
+				// extension inert (#426 r5 — the raw event previously only
+				// reached the generic RPC log, so "loaded and inert" was
+				// invisible in the run summary).
+				capture.ExtensionErrors++
 			case pijsonl.EvToolStart:
 				tools++
 				endTool() // close any prior (defensive; tools are sequential)

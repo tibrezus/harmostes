@@ -2,8 +2,13 @@ package ui
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
 	"regexp"
+	"strings"
 
+	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
@@ -14,6 +19,25 @@ import (
 var workflowNameRe = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 
 const maxWorkflowNameLen = 63
+
+// handleWorkflowNew renders the creation form (GET /workflows/new — ADR-0012
+// §5): a template catalog (WorkflowTemplate CRs — the reusable pipeline
+// shapes) plus per-template scope fields. The form is the human view of the
+// same declaration the create handler enforces: only parameters the selected
+// template declares (spec.scope) are ever stored in spec.config.
+func (s *Server) handleWorkflowNew(w http.ResponseWriter, r *http.Request) {
+	templates, err := s.listTemplates(r)
+	if err != nil {
+		s.logger.Error("list templates for workflow form", "err", err)
+		s.renderError(w, r, "Failed to load templates: "+err.Error())
+		return
+	}
+
+	s.render(w, r, "pages/workflow_new.html", map[string]any{
+		"Templates":        templates,
+		"SelectedTemplate": r.URL.Query().Get("template"),
+	})
+}
 
 // resolveWorkflow returns wf with its effective spec: when spec.templateRef
 // names a WorkflowTemplate, the template defaults are overlaid (instance-set
@@ -31,4 +55,123 @@ func (s *Server) resolveWorkflow(ctx context.Context, wf *v1alpha1.Workflow) v1a
 	merged := wf.DeepCopy()
 	v1alpha1.ApplyTemplateDefaults(merged, &tmpl)
 	return *merged
+}
+
+// scopeConfigJSON builds the instance's spec.config from the form, using
+// ONLY the parameters the selected template declares (spec.scope). The
+// template owns its configuration dialect end-to-end: the form renders from
+// the same declaration, and keys the template does not declare are never
+// stored — a client cannot smuggle undeclared config into the instance.
+// Defaults apply when a field is left empty.
+func scopeConfigJSON(r *http.Request, tmpl *v1alpha1.WorkflowTemplate) ([]byte, error) {
+	cfg := map[string]any{}
+	for _, p := range tmpl.Spec.Scope {
+		switch p.Kind {
+		case "list":
+			items := []string{}
+			for _, v := range strings.Split(r.FormValue(p.Name), ",") {
+				if v = strings.TrimSpace(v); v != "" {
+					items = append(items, v)
+				}
+			}
+			if len(items) == 0 && p.Default != "" {
+				for _, v := range strings.Split(p.Default, ",") {
+					if v = strings.TrimSpace(v); v != "" {
+						items = append(items, v)
+					}
+				}
+			}
+			cfg[p.Name] = items
+		default: // "string" (and undeclared kinds degrade to string)
+			v := strings.TrimSpace(r.FormValue(p.Name))
+			if v == "" {
+				v = p.Default
+			}
+			cfg[p.Name] = v
+		}
+	}
+	return json.Marshal(cfg)
+}
+
+// handleWorkflowCreate handles POST /workflows — instance creation under
+// ADR-0012 §5: a thin template instance (name + templateRef + schedule + the
+// template's declared scope params). Templates themselves are chart values
+// (ADR-0011) and are never mutated in-cluster; template changes compose MRs
+// against their git source.
+//
+// The write is gated on identity provenance (mayWrite) and the owner label
+// is stamped via StampOwnerLabel from the session identity — never from
+// client input — so every created workflow is visible to its creator by
+// construction.
+func (s *Server) handleWorkflowCreate(w http.ResponseWriter, r *http.Request) {
+	id := identityFromContext(r.Context())
+	if !id.mayWrite() {
+		s.logger.Warn("write rejected — identity provenance", "user", id.Username)
+		http.Error(w, "403 Forbidden — write actions require an authenticated session (your proxy supplied only legacy forwarded headers)", http.StatusForbidden)
+		return
+	}
+	owner := id.Username
+
+	if err := r.ParseForm(); err != nil {
+		s.renderError(w, r, "Invalid form data")
+		return
+	}
+
+	name := strings.TrimSpace(r.FormValue("name"))
+	schedule := strings.TrimSpace(r.FormValue("schedule"))
+	if schedule == "" {
+		schedule = "*/30 * * * *"
+	}
+
+	// Validation
+	if name == "" {
+		s.renderError(w, r, "Workflow name is required")
+		return
+	}
+	if !workflowNameRe.MatchString(name) || len(name) > maxWorkflowNameLen {
+		s.renderError(w, r, "Invalid workflow name: must be lowercase, alphanumeric with hyphens, max 63 characters")
+		return
+	}
+
+	templateRef := strings.TrimSpace(r.FormValue("templateRef"))
+	if templateRef == "" {
+		s.renderError(w, r, "A template must be selected — workflows are template instances")
+		return
+	}
+
+	var tmpl v1alpha1.WorkflowTemplate
+	if err := s.k8sClient.Get(r.Context(), client.ObjectKey{Namespace: s.namespace, Name: templateRef}, &tmpl); err != nil {
+		s.renderError(w, r, "Unknown template: "+templateRef)
+		return
+	}
+
+	cfg, err := scopeConfigJSON(r, &tmpl)
+	if err != nil {
+		s.renderError(w, r, "Failed to build config: "+err.Error())
+		return
+	}
+
+	wf := &v1alpha1.Workflow{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: s.namespace,
+		},
+		Spec: v1alpha1.WorkflowSpec{
+			TemplateRef: templateRef,
+			Source:      v1alpha1.SourceSpec{Kind: "schedule", Schedule: schedule},
+			Config:      cfg,
+		},
+	}
+	v1alpha1.StampOwnerLabel(wf, owner)
+	if err := s.k8sClient.Create(r.Context(), wf); err != nil {
+		if errors.IsAlreadyExists(err) {
+			s.renderError(w, r, "A workflow with that name already exists")
+			return
+		}
+		s.logger.Error("create workflow", "owner", owner, "name", name, "err", err)
+		s.renderError(w, r, "Failed to create workflow: "+err.Error())
+		return
+	}
+	s.logger.Info("workflow created (template instance)", "owner", owner, "name", name, "template", templateRef)
+	http.Redirect(w, r, "/workflows/"+name, http.StatusSeeOther)
 }

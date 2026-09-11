@@ -1,5 +1,7 @@
 package v1alpha1
 
+import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 // Label keys used by the harmostes.dev system for multi-tenant isolation and
 // workflow-to-job linking. Centralised here so the controller and the UI server
 // reference the same constant (no drift between the two sides of the label).
@@ -62,3 +64,18 @@ const (
 	// checks.
 	AttemptLabel = "harmostes.dev/attempt"
 )
+
+// StampOwnerLabel sets the owner label on obj from a SERVER-derived owner —
+// the authenticated session identity, never a client-supplied field. This is
+// the anti-spoof point of the write path (ADR-0012 §5): handlers call it with
+// identityFromContext(r).Username only, so a created object is by
+// construction visible to its creator (every read path filters by this exact
+// label) and a client can never choose someone else's owner.
+func StampOwnerLabel(o metav1.Object, owner string) {
+	labels := o.GetLabels()
+	if labels == nil {
+		labels = map[string]string{}
+	}
+	labels[OwnerLabel] = owner
+	o.SetLabels(labels)
+}

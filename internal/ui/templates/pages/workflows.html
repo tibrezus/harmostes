@@ -3,6 +3,10 @@
 	<a href="/workflows" class="page-tab page-tab--active">Workflows</a>
 	<a href="/templates" class="page-tab">Templates</a>
 </div>
+<div class="ds-section ds-section--row">
+	<p class="ds-empty-text">Workflows are created here — instantiate a reusable template. Every workflow you create is owner-stamped from your session and visible to you.</p>
+	<a href="/workflows/new" class="ds-button ds-button--primary" data-testid="wf-new-link">New Workflow</a>
+</div>
 {{- if not .Workflows}}
 <div class="ds-empty">
 	<div class="ds-empty-icon">
@@ -11,7 +15,7 @@
 		</svg>
 	</div>
 	<span class="ds-empty-title">No Workflows Yet</span>
-	<p class="ds-empty-text">No workflows are visible to your account. Workflows are provisioned by the platform (Flux-managed) and scoped by the harmostes.dev/owner label; admins see everything.</p>
+	<p class="ds-empty-text">You have no workflows. <a href="/workflows/new">Create one</a> to start automating with harmostes.</p>
 </div>
 {{- else}}
 {{range .GateGroups}}

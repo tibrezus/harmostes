@@ -24,6 +24,12 @@ type Identity struct {
 	// unprivileged: privilege gates (admin visibility) require an
 	// authoritative identity.
 	Authoritative bool
+	// Dev is true only for the explicit development identity
+	// (X-Harmostes-Dev-User / fixture mode). It is the second provenance
+	// allowed to take write actions: harmless in production (the outpost
+	// always sets X-Authentik-Username, so this branch is unreachable there)
+	// and intended in local dev, where there is no Authentik.
+	Dev bool
 }
 
 // authMiddleware extracts the user identity from Authentik forward-auth headers.
@@ -96,7 +102,7 @@ func extractIdentity(r *http.Request) *Identity {
 	// Development override (no Authentik in local dev)
 	if username == "" {
 		if devUser := r.Header.Get("X-Harmostes-Dev-User"); devUser != "" {
-			return &Identity{Username: devUser}
+			return &Identity{Username: devUser, Dev: true}
 		}
 		return nil
 	}
@@ -132,4 +138,13 @@ func identityFromContext(ctx context.Context) *Identity {
 	}
 	id, _ := v.(*Identity)
 	return id
+}
+
+// mayWrite reports whether the identity may take write actions (create a
+// Workflow — ADR-0012 §5). Two provenances qualify: an Authentik-authoritative
+// identity, or the explicit dev identity. Client-suppliable X-Forwarded-*
+// fallbacks stay read-only: a forged forwarded username can browse, but can
+// never create a workflow under someone else's owner label.
+func (id *Identity) mayWrite() bool {
+	return id != nil && (id.Authoritative || id.Dev)
 }

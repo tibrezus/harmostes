@@ -200,15 +200,26 @@ func (s *Server) Routes() http.Handler {
 	pages.HandleFunc("GET /attempts/{name}/runs/{job}/session", redirectAttempts)
 	pages.HandleFunc("GET /attempts/{name}/runs/{job}/pi-session", redirectAttempts)
 
-	// Workflows — read-only reference catalog (config is GitOps YAML).
-	// The UI is observe-only: no create, trigger, toggle, or delete surfaces.
+	// Workflows — the catalog. Creation is a sanctioned ADR-0012 §5 surface:
+	// thin templateRef instances, owner stamped server-side from the
+	// authenticated identity (anti-spoof), so everything created is visible
+	// to its creator. Lifecycle mutations (trigger/toggle/delete) stay pruned
+	// (#291) until their ADR-0012 issues land them deliberately.
 	pages.HandleFunc("GET /workflows", s.handleWorkflowList)
+	pages.HandleFunc("GET /workflows/new", s.handleWorkflowNew)
+	pages.HandleFunc("POST /workflows", s.handleWorkflowCreate)
 
 	// Templates — read-only catalog (WorkflowTemplate CRs discovered from the cluster)
 	pages.HandleFunc("GET /templates", s.handleTemplateList)
 	pages.HandleFunc("GET /templates/{name}", s.handleTemplateDetail)
 	pages.HandleFunc("GET /workflows/{name}", s.handleWorkflowDetail)
 	pages.HandleFunc("GET /workflows/{name}/runs/{job}", s.handleWorkflowRunRedirect)
+
+	// CRD-derived JSON schema (ADR-0012 §2): the OpenAPI schema of the
+	// Workflow/WorkflowTemplate CRDs, read live from the cluster — the single
+	// document editor completion (#416), the topology palette (#417) and
+	// typed forms render from. Never hand-written in the frontend.
+	pages.HandleFunc("GET /api/schema", s.handleSchema)
 
 	// Read-only graph API (auto-generated from Workflow spec — no editing)
 	pages.HandleFunc("GET /api/workflows/{name}/graph", s.handleWorkflowGraphAPI)

@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes"
@@ -229,7 +230,7 @@ func NewServer(namespace string, logger *slog.Logger) (*ui.Server, error) {
 
 	k8sClient := fakectrl.NewClientBuilder().
 		WithScheme(scheme).
-		WithRuntimeObjects(runtimeObjs...).
+		WithRuntimeObjects(append(runtimeObjs, fixtureExtras(namespace)...)...).
 		WithStatusSubresource(&v1alpha1.Attempt{}).
 		Build()
 
@@ -240,4 +241,60 @@ func NewServer(namespace string, logger *slog.Logger) (*ui.Server, error) {
 	var kubeClient kubernetes.Interface = fake.NewSimpleClientset()
 
 	return ui.New(k8sClient, namespace, logger, kubeClient, nil)
+}
+
+// fixtureExtras seeds the objects the ADR-0012 write-path surfaces read: one
+// WorkflowTemplate (the creation form's catalog entry — the fixture workflows
+// are graph-native and reference no template) and the two CRDs the schema
+// endpoint serves as a projection of the cluster's actual CRDs (ADR-0012 §2).
+// The schemas are compact but structurally truthful: type object, a spec
+// object, marker descriptions the E2E tier asserts on.
+func fixtureExtras(namespace string) []runtime.Object {
+	tmpl := &v1alpha1.WorkflowTemplate{
+		ObjectMeta: metav1.ObjectMeta{Name: "pr-review", Namespace: namespace},
+		Spec: v1alpha1.WorkflowTemplateSpec{
+			Description: "PR review (fixture)",
+			Scope: []v1alpha1.ScopeParam{
+				{Name: "repos", Kind: "list", Label: "Repos", Description: "the scope the prepare plugin operates on"},
+				{Name: "label", Kind: "string", Label: "Label trigger", Default: "needs-review"},
+			},
+		},
+	}
+	workflowCRD := &apiextensionsv1.CustomResourceDefinition{
+		ObjectMeta: metav1.ObjectMeta{Name: "workflows.harmostes.dev", ResourceVersion: "42"},
+		Spec: apiextensionsv1.CustomResourceDefinitionSpec{
+			Group: "harmostes.dev",
+			Names: apiextensionsv1.CustomResourceDefinitionNames{Kind: "Workflow"},
+			Versions: []apiextensionsv1.CustomResourceDefinitionVersion{{
+				Name: "v1alpha1", Served: true, Storage: true,
+				Schema: &apiextensionsv1.CustomResourceValidation{
+					OpenAPIV3Schema: &apiextensionsv1.JSONSchemaProps{
+						Type: "object",
+						Properties: map[string]apiextensionsv1.JSONSchemaProps{
+							"spec": {Type: "object", Description: "the Workflow spec (fixture projection)"},
+						},
+					},
+				},
+			}},
+		},
+	}
+	templateCRD := &apiextensionsv1.CustomResourceDefinition{
+		ObjectMeta: metav1.ObjectMeta{Name: "workflowtemplates.harmostes.dev", ResourceVersion: "42"},
+		Spec: apiextensionsv1.CustomResourceDefinitionSpec{
+			Group: "harmostes.dev",
+			Names: apiextensionsv1.CustomResourceDefinitionNames{Kind: "WorkflowTemplate"},
+			Versions: []apiextensionsv1.CustomResourceDefinitionVersion{{
+				Name: "v1alpha1", Served: true, Storage: true,
+				Schema: &apiextensionsv1.CustomResourceValidation{
+					OpenAPIV3Schema: &apiextensionsv1.JSONSchemaProps{
+						Type: "object",
+						Properties: map[string]apiextensionsv1.JSONSchemaProps{
+							"spec": {Type: "object", Description: "the WorkflowTemplate spec (fixture projection)"},
+						},
+					},
+				},
+			}},
+		},
+	}
+	return []runtime.Object{tmpl, workflowCRD, templateCRD}
 }

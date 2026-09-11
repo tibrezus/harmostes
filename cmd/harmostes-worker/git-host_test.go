@@ -127,6 +127,31 @@ func TestGitHostLibMirrorsGoResolver(t *testing.T) {
 			t.Errorf("%s: bash api_base %q != Go APIBase %q (%v)", repo, api, h.APIBase, err)
 		}
 
+		// The HARMOSTES_TEST_GITHUB_API_BASE seam (#429) may drift github.com BY DESIGN —
+		// but only there, and only when the var is set (r2 P3: the drift
+		// rule is enforced, not assumed; PluginEnv's closed env keeps
+		// production from ever setting it).
+		if host == "github.com" {
+			// Loopback honoured (r4 P6: remote redirection is refused).
+			overridden, err := runGitHost(t, []string{"HARMOSTES_TEST_GITHUB_API_BASE=http://127.0.0.1:1"}, "host::api_base github.com")
+			if err != nil || overridden != "http://127.0.0.1:1" {
+				t.Errorf("loopback seam not honoured: %q (%v)", overridden, err)
+			}
+			// Non-loopback refused → the canonical base.
+			refused, err := runGitHost(t, []string{"HARMOSTES_TEST_GITHUB_API_BASE=https://evil.invalid"}, "host::api_base github.com")
+			if err != nil || refused != h.APIBase {
+				t.Errorf("non-loopback seam must be refused (canonical base), got %q (%v)", refused, err)
+			}
+			clean, err := runGitHost(t, nil, "host::api_base github.com")
+			if err != nil || clean != h.APIBase {
+				t.Errorf("seam must be unset-inert: %q != %q (%v)", clean, h.APIBase, err)
+			}
+			other, err := runGitHost(t, []string{"HARMOSTES_TEST_GITHUB_API_BASE=http://127.0.0.1:1"}, "host::api_base git.rezus.cloud")
+			if err != nil || other != "https://git.rezus.cloud/api/v1" {
+				t.Errorf("seam must apply to github.com only, git.rezus.cloud got %q (%v)", other, err)
+			}
+		}
+
 		wantFJ := "false"
 		if h.Kind == review.HostForgejo {
 			wantFJ = "true"

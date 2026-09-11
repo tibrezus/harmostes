@@ -34,30 +34,18 @@ if [ -n "$REVIEWED_SHA" ] && [ -n "$LIVE_SHA" ] && [ "$REVIEWED_SHA" != "$LIVE_S
 fi
 
 log "posting review to $HOST/$REPO#$PR_NUM…"
-PAYLOAD=$(python3 << 'PYEOF'
-import json, os
-with open(os.environ["REVIEW"]) as f: review=json.load(f)
-d=review["decision"]
-# Forgejo review events: APPROVED | REQUEST_CHANGES | COMMENT. Canonical
-# skill decisions: APPROVE | REQUEST_CHANGES | COMMENT.
-if os.environ.get("IS_FJ")=="true":
-    event={"APPROVE":"APPROVED"}.get(d, d if d in ("REQUEST_CHANGES","COMMENT") else "COMMENT")
-else:
-    event=d
-p={"body":review["body"],"event":event}
-cs=review.get("comments",[])
-if cs:
-    if os.environ.get("IS_FJ")=="true": p["comments"]=[{"path":c["path"],"line":int(c.get("line",1)),"body":c["body"]} for c in cs]
-    else: p["comments"]=[{"path":c["path"],"line":int(c.get("line",1)),"side":c.get("side","RIGHT"),"body":c["body"]} for c in cs]
-print(json.dumps(p))
-PYEOF
-)
+case "$API_BASE" in
+  "https://api.github.com"|"https://codeberg.org/api/v1"|"https://git.rezus.cloud/api/v1") ;;
+  *) log "WARN: non-canonical API base in use ($API_BASE) — a test seam or a misconfiguration is redirecting forge traffic";;
+esac
 DEC=$(python3 -c "import json;print(json.load(open('$REVIEW'))['decision'])")
 
-# ── Inline findings are the AGENT's voice now: during the run it posts
-# anchored threads via review-api (github/gitlab/forgejo backends), replies
-# with fix SHAs, and resolves. This plugin keeps only the VERDICT and the
-# unresolved-thread GATE below — no duplicate posting. ──
+# ── Inline findings are published HERE, deterministically (#429): the
+# agent's findings ride review.json's comments[] and this plugin posts them
+# as native anchored threads below. The agent must NOT self-post (the task
+# prompt says so; the dedupe guard in the publisher is the second line of
+# defense for a skill-following agent). This plugin owns: the VERDICT
+# comment, the inline-thread PUBLISH, and the unresolved-thread GATE. ──
 # ── Unresolved-thread gate (the merge currency, mechanically enforced) ──
 # Threads from PRIOR rounds (commit_id != this reviewed_sha) with NO reply
 # must be addressed before an APPROVE is lawful. Any open prior thread
@@ -96,7 +84,7 @@ def paged(path):
     # silently hid every thread past 30).
     sep = "&" if "?" in path else "?"
     out, page = [], 1
-    while True:
+    while page <= 5:
         part = get(f"{path}{sep}per_page=100&page={page}")
         out += part
         if len(part) < 100:
@@ -230,7 +218,172 @@ curl -fsSL -X POST -H "authorization: token $TOKEN" -H "content-type: applicatio
   || { echo "ERROR: issue comment rejected">&2; exit 1; }
 log "verdict comment posted to $REPO#$PR_NUM ($DEC)"
 
+# ── Native inline threads (deterministic, #429): the agent never reliably
+# self-posts (attempt 90f9fd63ad9a: 81 bash tools, zero review-api calls —
+# the task's review.json contract and the round-trip budget both push it to
+# prose), so the DEPLOY step publishes review.json's comments as real
+# anchored threads. NON-FATAL by construction (#430 r1 P5): the verdict is
+# already posted above — a thread failure must never skip the consume step
+# (label removal) or the artifact JSON. One call per finding on GitHub (a
+# line the host rejects skips that finding, not the batch); Forgejo batches
+# the create-pull-review and falls back per finding on rejection (r2 P7).
+# The artifact always carries "inline_threads" with one unified key set —
+# zero findings, skips and scan failures all speak (r3 P3/P5/P9).
+THREAD_STATUS_FILE="$(mktemp)"
+DEDUPE_FLAG_FILE="$(mktemp)"; export DEDUPE_FLAG_FILE
+echo '{"posted":0,"rejected":0,"capped":0}' > "$THREAD_STATUS_FILE"; export THREAD_STATUS_FILE
+# Single source for the dedupe key (r3 P2): dedupe scan and publisher must
+# agree on what "our thread" looks like — two literals here is how the
+# guard silently stops recognising its own posts.
+MARKER="automated review of ${REVIEWED_SHA:0:8}"; export MARKER
+# The threads anchor at reviewed_sha: an absent/malformed SHA cannot anchor
+# (r3 P5 — trailers allow 7-40 hex, so validate, never assume full length).
+if echo "${REVIEWED_SHA:-}" | grep -qE '^[0-9a-f]{7,40}$'; then
+  THREADS_ANCHOR=1
+else
+  THREADS_ANCHOR=0
+  log "WARN: reviewed_sha missing/malformed — threads skipped (verdict stands)"
+  echo '{"posted":0,"rejected":0,"capped":0,"skipped":"sha-invalid"}' > "$THREAD_STATUS_FILE"
+fi
+
+if [ "${IS_GITLAB:-}" = "true" ]; then
+  # Unwired dialect — it must SPEAK (r4 P8): a green artifact here is
+  # ambiguous between "nothing to post" and "this host cannot be posted to".
+  echo '{"posted":0,"rejected":0,"capped":0,"skipped":"gitlab-not-wired"}' > "$THREAD_STATUS_FILE"
+elif [ "$THREADS_ANCHOR" = "1" ] && python3 -c "import json,sys;cs=json.load(open('$REVIEW')).get('comments',[]);sys.exit(0 if cs else 1)" 2>/dev/null; then
+  # Dedupe guard keyed on the MARKER (r2: the GitHub standalone-comment
+  # endpoint attaches no review object, so counting reviews never sees this
+  # publisher's own posts). Prefix-matched: trailers allow 7-40 hex, the
+  # host always serves the full id (r3 P5).
+  EXISTING=$(python3 - << 'PYDEDUP'
+import json, os, subprocess, sys
+base=os.environ["API_BASE"]; tok=os.environ["TOKEN"]
+repo=os.environ["REPO"]; pr=os.environ["PR_NUM"]
+sha=json.load(open(os.environ["REVIEW"])).get("reviewed_sha","")
+marker=os.environ["MARKER"]
+def get(path):
+    # single sep logic — the r4 P5c bug rebuilt the query with a second "?",
+    # 404ing page 2 exactly on the >100-comment PRs the guard protects
+    sep = "&" if "?" in path else "?"
+    out, page = [], 1
+    while page <= 5:  # hard page cap (r4 P5): a >100-comment PR must not wedge the deploy
+        r=subprocess.run(["curl","-fsS","--max-time","20","-H",f"authorization: token {tok}",
+            "-H","accept: application/json", f"{base}{path}{sep}page={page}"],
+            capture_output=True,text=True)
+        if r.returncode!=0: raise RuntimeError(f"{path}: {r.stderr.strip()[:80]}")
+        cs=json.loads(r.stdout) or []
+        out+=cs
+        if len(cs)<100: return out
+        page+=1
+    return out
+    return out
+try:
+    found=0
+    if os.environ.get("IS_FJ")=="true":
+        for r in get(f"/repos/{repo}/pulls/{pr}/reviews"):
+            if str(r.get("commit_id") or "").startswith(sha) and marker in (r.get("body") or ""):
+                found+=1; break
+    else:
+        for c in get(f"/repos/{repo}/pulls/{pr}/comments?per_page=100"):
+            if str(c.get("commit_id") or "").startswith(sha) and marker in (c.get("body") or ""):
+                found+=1; break
+    print(found)
+except Exception as e:
+    # Fail open, but SPEAK on the failure path itself (r4 P5a/b): the flag
+    # lands in the artifact wherever the scan died.
+    with open(os.environ["DEDUPE_FLAG_FILE"],"w") as f: f.write(',"dedupe":"scan-failed"')
+    print(f"[post-review] WARN: dedupe scan failed ({e}) — publishing anyway, flagged in artifact", file=sys.stderr)
+    print(0)
+PYDEDUP
+  ) || EXISTING=0
+  if [ "${EXISTING:-0}" != "0" ]; then
+    log "inline threads already posted at ${REVIEWED_SHA:0:8} — not duplicating"
+    echo '{"posted":0,"rejected":0,"capped":0,"skipped":"already-posted"}' > "$THREAD_STATUS_FILE"
+  else
+    python3 - << 'PYTHREADS' || log "WARN: inline thread publish failed — verdict stands, threads skipped"
+import json, os, subprocess, sys
+review=json.load(open(os.environ["REVIEW"]))
+all_cs=review.get("comments",[])
+cs=all_cs[:20]  # cap: the first 20 anchor as threads; the verdict body carries the rest
+base=os.environ["API_BASE"]; tok=os.environ["TOKEN"]
+repo=os.environ["REPO"]; pr=os.environ["PR_NUM"]; sha=review.get("reviewed_sha","")
+fj = os.environ.get("IS_FJ")=="true"
+marker=os.environ["MARKER"]
+posted=0; rejected=0
+def curl(path, payload):
+    # No -f: with -f the response body never reaches stdout and the WARN
+    # drops the host's actual reason (r2 P8). Status parsed manually.
+    r=subprocess.run(["curl","-sS","--max-time","20","-X","POST",
+        "-w","\n%{http_code}","-H",f"authorization: token {tok}",
+        "-H","content-type: application/json",
+        base+path,"-d",json.dumps(payload)], capture_output=True,text=True)
+    out=r.stdout
+    code=out.rsplit("\n",1)[-1].strip()
+    body=out[:out.rfind("\n")] if "\n" in out else ""
+    ok = r.returncode==0 and code.startswith("2")
+    return ok, (body or r.stderr).strip()[:120]
+valid=[]
+for c in cs:
+    path=c.get("path"); body=c.get("body")
+    if not path or not body:
+        rejected+=1   # a malformed finding skips itself, never the batch (r1 P5)
+        print("[post-review] WARN: malformed finding (missing path/body) — skipped", file=sys.stderr)
+        continue
+    try:
+        line=int(str(c.get("line")))
+    except (ValueError, TypeError):
+        # r4 P5d: line is optional by the review.json contract but the
+        # threads anchor to a line — a finding without one is carried by
+        # the verdict body, never silently pinned to line 1.
+        rejected+=1
+        print(f"[post-review] WARN: finding {path} has no usable line — carried by the verdict body", file=sys.stderr)
+        continue
+    valid.append((path, line, c.get("side","RIGHT"), body))
+if fj:
+    # Forgejo accepts a comments ARRAY in one create-pull-review — batch
+    # first (one review object on the UI), fall back per finding on
+    # rejection so one bad line cannot kill the batch (r2 P7).
+    payload={"event":"COMMENT","commit_id":sha,"body":marker,
+             "comments":[{"path":p,"new_position":l,"body":b} for p,l,_,b in valid]}
+    ok, reason = curl(f"/repos/{repo}/pulls/{pr}/reviews", payload)
+    if ok:
+        posted += len(valid)
+    else:
+        print(f"[post-review] WARN: batch publish rejected ({reason[:120]}) — falling back per finding", file=sys.stderr)
+        for p,l,_,b in valid:
+            ok2, reason2 = curl(f"/repos/{repo}/pulls/{pr}/reviews", {"event":"COMMENT","commit_id":sha,"body":marker,
+                                     "comments":[{"path":p,"new_position":l,"body":b}]})
+            if ok2: posted+=1
+            else:
+                rejected+=1
+                print(f"[post-review] WARN: inline thread {p}:{l} rejected — {reason2}", file=sys.stderr)
+else:
+    for p,l,side,b in valid:
+        ok, reason = curl(f"/repos/{repo}/pulls/{pr}/comments", {"commit_id":sha,"path":p,"line":l,"side":side,
+                 "body":"_"+marker+"_"+chr(10)+chr(10)+b})
+        if ok: posted+=1
+        else:
+            rejected+=1
+            print(f"[post-review] WARN: inline thread {p}:{l} rejected — {reason}", file=sys.stderr)
+dropped=[c.get("path","?") for c in all_cs[len(cs):]]
+if dropped:
+    print(f"[post-review] capped: {len(dropped)} findings anchor only in the verdict body: {', '.join(dropped)}", file=sys.stderr)
+with open(os.environ["THREAD_STATUS_FILE"],"w") as f:
+    json.dump({"posted":posted,"rejected":rejected,"capped":max(0,len(all_cs)-len(cs))}, f)
+PYTHREADS
+  fi
+fi
+THREADS=$(cat "$THREAD_STATUS_FILE")
+# The scan-failed flag (written by the dedupe scan on failure) splices into
+# WHATEVER shape the file carries — publish, skip, or default (r4 P8
+# blocker: reading+rm'ing the flag inside a branch made the splice dead).
+if [ -s "$DEDUPE_FLAG_FILE" ]; then
+  FLAG="$(cat "$DEDUPE_FLAG_FILE")"
+  THREADS="${THREADS%\}}${FLAG}}"
+fi
+rm -f "$THREAD_STATUS_FILE" "$DEDUPE_FLAG_FILE"
+
 log "removing label '$LABEL'…"
 curl -fsSL -X DELETE -H "authorization: token $TOKEN" -H "accept: application/json" \
   "$API_BASE/repos/$REPO/issues/$PR_NUM/labels/$LABEL" 2>/dev/null||log "WARN: could not remove label"
-echo "{\"artifact\":\"pr-$HOST-$REPO-$PR_NUM\",\"status\":\"ok\",\"event\":{\"host\":\"$HOST\",\"repo\":\"$REPO\",\"number\":$PR_NUM,\"decision\":\"$DEC\",\"thread_gate\":\"$GATE_STATUS\"}}"
+echo "{\"artifact\":\"pr-$HOST-$REPO-$PR_NUM\",\"status\":\"ok\",\"event\":{\"host\":\"$HOST\",\"repo\":\"$REPO\",\"number\":$PR_NUM,\"decision\":\"$DEC\",\"thread_gate\":\"$GATE_STATUS\",\"inline_threads\":$THREADS}}"

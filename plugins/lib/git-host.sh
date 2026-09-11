@@ -16,27 +16,28 @@
 host::api_base() { # <host>
   # Test seams (#429): the HARMOSTES_TEST_* vars redirect a base at a stub
   # server so the plugins' bash can be integration-tested in-process.
-  # LOOPBACK-ONLY (r4 P6): plugin nodes inherit the entire worker process
-  # env (cmd/harmostes-worker main.go uses os.Environ()), so a non-loopback
-  # value here would send HARMOSTES_GITHUB_TOKEN / HARMOSTES_FORGEJO_TOKEN
-  # bearer auth to an arbitrary origin from the deploy plugin — the most
-  # privileged forge context in the system. Loopback makes that impossible
-  # while leaving httptest untouched. jobEnvAllowlist contains no
-  # *_API_BASE name (test-pinned); a refused value is loud, never silent.
+  # LOOPBACK-ONLY, URL-PARSED (r6 P2): plugin nodes inherit the entire
+  # worker process env (cmd/harmostes-worker main.go uses os.Environ()), so
+  # a hostile value here would carry HARMOSTES_GITHUB_TOKEN /
+  # HARMOSTES_FORGEJO_TOKEN bearer auth to an arbitrary origin from the
+  # deploy plugin. A glob is NOT a URL check — http://127.0.0.1:80@evil
+  # matches every loopback glob and parses 127.0.0.1:80 as USERINFO — so
+  # the value is regex-parsed (scheme, loopback host, numeric port, no
+  # userinfo) and anything else is refused loudly to the canonical base.
   local __seam
   case "$1" in
     github.com)      __seam="${HARMOSTES_TEST_GITHUB_API_BASE:-}";;
     git.rezus.cloud) __seam="${HARMOSTES_TEST_FORGEJO_API_BASE:-}";;
   esac
   if [ -n "$__seam" ]; then
-    case "$__seam" in
-      http://127.0.0.1:*|http://localhost:*)
-        echo "$__seam"
-        return;;
-      *)
-        echo "WARN: refusing non-loopback test seam for $1 ($__seam) — using the canonical base" >&2
-        ;;
-    esac
+    # A glob is not a URL check: `http://127.0.0.1:80@evil.example.com`
+    # matches the loopback patterns (curl parses 127.0.0.1:80 as USERINFO)
+    # and would carry the bearer token to the remote host (r6 P2).
+    if echo "$__seam" | grep -qE '^http://(127\.0\.0\.1|localhost):[0-9]+$'; then
+      echo "$__seam"
+      return
+    fi
+    echo "WARN: refusing invalid/non-loopback test seam for $1 ($__seam) — using the canonical base" >&2
   fi
   case "$1" in
     github.com)      echo "https://api.github.com";;

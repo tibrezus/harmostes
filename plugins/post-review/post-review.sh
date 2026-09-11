@@ -81,15 +81,25 @@ def get(path):
     return json.load(urllib.request.urlopen(req, timeout=30))
 def paged(path):
     # per_page=100&page=N until a short page (C4: a page-1-only listing
-    # silently hid every thread past 30).
+    # silently hid every thread past 30). CUMULATIVE budget (r6 P1): five
+    # sequential 30s node timeouts SIGKILL the deploy before the artifact
+    # line — the budget fires first and fail() names it. A cap exit marks
+    # the truncation in the gate status (r6 P1: "no open threads" and
+    # "we stopped looking" must be distinguishable).
+    import time as _t
     sep = "&" if "?" in path else "?"
+    t0=_t.time()
     out, page = [], 1
     while page <= 5:
+        if _t.time()-t0 > 40:
+            fail("scan budget exceeded — listing truncated")
         part = get(f"{path}{sep}per_page=100&page={page}")
         out += part
         if len(part) < 100:
             return out
         page += 1
+    with open(os.environ["GATE_STATUS_FILE"], "a") as f: f.write(",truncated:true")
+    return out
 def fail(why):
     import sys as _s
     print(f"[post-review] WARN: thread gate skipped ({why})", file=_s.stderr)
@@ -134,7 +144,18 @@ except Exception as e:
     fail(f"{type(e).__name__}: {e}"[:120])
 PYEOF
 )
-GATE_STATUS="evaluated"; [ -s "$GATE_STATUS_FILE" ] && GATE_STATUS="$(cat "$GATE_STATUS_FILE")"; rm -f "$GATE_STATUS_FILE"
+GATE_STATUS="evaluated"; [ -s "$GATE_STATUS_FILE" ] && GATE_STATUS="$(cat "$GATE_STATUS_FILE")"
+# A degraded gate must never post a verdict it could not evaluate (r6 P1):
+# on an APPROVE with a failed/truncated listing, skip the verdict comment
+# AND the label removal — emit the structured skip and let the next cycle
+# retry with a healthy forge. (Non-APPROVE verdicts are unaffected: the
+# listing cannot downgrade what is already not an approval.)
+if [ "$DEC" = "APPROVE" ] && [ "$GATE_STATUS" != "evaluated" ]; then
+  log "thread gate unavailable ($GATE_STATUS) on an APPROVE — skipping verdict post and label removal; next cycle retries"
+  echo "{\"artifact\":\"pr-$HOST-$REPO-$PR_NUM\",\"status\":\"ok\",\"event\":{\"host\":\"$HOST\",\"repo\":\"$REPO\",\"number\":$PR_NUM,\"decision\":\"$DEC\",\"thread_gate\":\"$GATE_STATUS\",\"skipped\":\"gate-unavailable\"}}"
+  exit 0
+fi
+rm -f "$GATE_STATUS_FILE"
 # The classifier program lives verbatim between the GATE-CLASSIFIER markers
 # (the golden test extracts exactly these bytes). It is held in a QUOTED
 # heredoc so bash never parses it; do not unquote.
@@ -195,26 +216,27 @@ PYEOF
 fi
 fi
 
-# The verdict as a plain issue/PR comment — the ONE surface (verified on
-# both hosts) that always renders and always carries the trailer (the
-# merge currency dw_wait_review polls for). The old secondary review
-# event (/pulls/N/reviews) was removed: as the PR author, the shared
-# identity gets "reject your own pull is not allowed" — it errored on
-# every run and rendered nowhere (#29).
-BODY=$(python3 - << 'PYEOF'
+# The verdict as a ONE-LINE comment, BUILT here from decision + SHA +
+# blocking count (r7, owner directive): the review's posted output is
+# blocking threads + this line. review.json's analysis prose is never
+# posted — there is no pillar-structured body, no findings summary; the
+# threads ARE the findings record. The trailer inside is the merge
+# currency the gate polls for.
+VERDICT_COMMENT=$(python3 - << 'PYEOF'
 import json, os
 with open(os.environ["REVIEW"]) as f: review=json.load(f)
-body=review["body"]
-cs=review.get("comments",[])
-if cs:
-    body += "\n\n---\n\n**Inline findings**\n\n"
-    for c in cs:
-        body += f"- `{c['path']}:{c.get('line','?')}` — {c['body']}\n"
-print(json.dumps({"body": body}))
+dec=review["decision"]; sha=review.get("reviewed_sha","")
+n=len(review.get("comments",[]) or [])
+if dec=="APPROVE":
+    line=f"APPROVE at {sha} — all pillars clean, no blocking findings. Label consumed; re-arm with the label to review again."
+else:
+    plural="finding" if n==1 else "findings"
+    line=f"{dec} at {sha} — {n} blocking {plural} posted as review threads; close them, then re-arm with the label to re-review."
+print(json.dumps({"body": line+"\n\n<!-- pr-review: "+dec+" @ "+sha+" -->"}))
 PYEOF
 )
 curl -fsSL -X POST -H "authorization: token $TOKEN" -H "content-type: application/json" \
-  "$API_BASE/repos/$REPO/issues/$PR_NUM/comments" -d "$BODY" >/dev/null \
+  "$API_BASE/repos/$REPO/issues/$PR_NUM/comments" -d "$VERDICT_COMMENT" >/dev/null \
   || { echo "ERROR: issue comment rejected">&2; exit 1; }
 log "verdict comment posted to $REPO#$PR_NUM ($DEC)"
 
@@ -235,7 +257,8 @@ echo '{"posted":0,"rejected":0,"capped":0}' > "$THREAD_STATUS_FILE"; export THRE
 # Single source for the dedupe key (r3 P2): dedupe scan and publisher must
 # agree on what "our thread" looks like — two literals here is how the
 # guard silently stops recognising its own posts.
-MARKER="automated review of ${REVIEWED_SHA:0:8}"; export MARKER
+SHA8="$(echo "${REVIEWED_SHA:-}" | cut -c1-8)"; export SHA8
+MARKER="automated review of $SHA8"; export MARKER
 # The threads anchor at reviewed_sha: an absent/malformed SHA cannot anchor
 # (r3 P5 — trailers allow 7-40 hex, so validate, never assume full length).
 if echo "${REVIEWED_SHA:-}" | grep -qE '^[0-9a-f]{7,40}$'; then
@@ -260,7 +283,7 @@ import json, os, subprocess, sys
 base=os.environ["API_BASE"]; tok=os.environ["TOKEN"]
 repo=os.environ["REPO"]; pr=os.environ["PR_NUM"]
 sha=json.load(open(os.environ["REVIEW"])).get("reviewed_sha","")
-marker=os.environ["MARKER"]
+marker=os.environ["MARKER"]  # built from the shell-normalised SHA8 — one fact, one home
 def get(path):
     # single sep logic — the r4 P5c bug rebuilt the query with a second "?",
     # 404ing page 2 exactly on the >100-comment PRs the guard protects
@@ -300,7 +323,7 @@ PYDEDUP
     log "inline threads already posted at ${REVIEWED_SHA:0:8} — not duplicating"
     echo '{"posted":0,"rejected":0,"capped":0,"skipped":"already-posted"}' > "$THREAD_STATUS_FILE"
   else
-    python3 - << 'PYTHREADS' || log "WARN: inline thread publish failed — verdict stands, threads skipped"
+    python3 - << 'PYTHREADS' || { echo '{"posted":0,"rejected":0,"capped":0,"skipped":"publisher-crashed"}' > "$THREAD_STATUS_FILE"; } && log "WARN: inline thread publish failed — verdict stands, threads skipped"
 import json, os, subprocess, sys
 review=json.load(open(os.environ["REVIEW"]))
 all_cs=review.get("comments",[])
@@ -309,7 +332,7 @@ base=os.environ["API_BASE"]; tok=os.environ["TOKEN"]
 repo=os.environ["REPO"]; pr=os.environ["PR_NUM"]; sha=review.get("reviewed_sha","")
 fj = os.environ.get("IS_FJ")=="true"
 marker=os.environ["MARKER"]
-posted=0; rejected=0
+posted=0; rejected=0; last_error=""
 def curl(path, payload):
     # No -f: with -f the response body never reaches stdout and the WARN
     # drops the host's actual reason (r2 P8). Status parsed manually.
@@ -368,8 +391,11 @@ else:
 dropped=[c.get("path","?") for c in all_cs[len(cs):]]
 if dropped:
     print(f"[post-review] capped: {len(dropped)} findings anchor only in the verdict body: {', '.join(dropped)}", file=sys.stderr)
+summary={"posted":posted,"rejected":rejected,"capped":max(0,len(all_cs)-len(cs))}
+if last_error:
+    summary["last_error"]=last_error[:60]
 with open(os.environ["THREAD_STATUS_FILE"],"w") as f:
-    json.dump({"posted":posted,"rejected":rejected,"capped":max(0,len(all_cs)-len(cs))}, f)
+    json.dump(summary, f)
 PYTHREADS
   fi
 fi

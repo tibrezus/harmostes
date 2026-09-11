@@ -2,6 +2,7 @@ package worker
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -37,6 +38,7 @@ type fakeForge struct {
 	reviews     []map[string]any
 	comments    []map[string]any
 	verdictPost bool
+	verdictBody string
 	labelGone   bool
 	comment422  map[string]bool // path → force 422
 }
@@ -82,8 +84,11 @@ func (f *fakeForge) mux(t *testing.T) *http.ServeMux {
 		_ = json.NewEncoder(w).Encode(map[string]any{"id": len(f.comments)})
 	})
 	mux.HandleFunc("/repos/tibrezus/harmostes/issues/99/comments", func(w http.ResponseWriter, r *http.Request) {
+		var b map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&b)
 		f.mu.Lock()
 		f.verdictPost = true
+		f.verdictBody, _ = b["body"].(string)
 		f.mu.Unlock()
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(map[string]any{"id": 2})
@@ -188,7 +193,7 @@ func TestPostReviewPublishesNativeInlineThreads(t *testing.T) {
 	srv := httptest.NewServer(f.mux(t))
 	t.Cleanup(srv.Close)
 
-	out := runPlugin(t, srv, false, baseReview([]any{
+	runPlugin(t, srv, false, baseReview([]any{
 		map[string]any{"path": "a.go", "line": 7, "body": "finding one"},
 		map[string]any{"path": "b.go", "line": 12, "body": "finding two"},
 	}))
@@ -223,7 +228,20 @@ func TestPostReviewPublishesNativeInlineThreads(t *testing.T) {
 	if !strings.Contains(seenKey(seen, "a.go"), "finding one") || !strings.Contains(seenKey(seen, "b.go"), "finding two") {
 		t.Fatalf("findings missing from the native threads: %v", seen)
 	}
-	_ = out
+	// The verdict comment is ONE brief line + the trailer (r7, owner
+	// directive): no pillar-structured body, no inline-findings prose —
+	// the threads are the findings record.
+	vb := f.verdictBody // still under the lock taken above (r7: no re-Lock — self-deadlock)
+	if !strings.Contains(vb, "<!-- pr-review: REQUEST_CHANGES @ deadbeef123 -->") {
+		t.Errorf("verdict must carry the trailer, got %q", vb)
+	}
+	if strings.Contains(vb, "Inline findings") || strings.Count(vb, "\n") > 2 {
+		t.Errorf("verdict must be brief (one line + trailer), got %d chars/%d lines: %q",
+			len(vb), strings.Count(vb, "\n"), vb)
+	}
+	if !strings.Contains(vb, "2 blocking findings posted as review threads") {
+		t.Errorf("verdict must state the blocking count, got %q", vb)
+	}
 }
 
 func seenKey(m map[string]bool, path string) string {
@@ -241,7 +259,17 @@ func seenKey(m map[string]bool, path string) string {
 // which lastJSONLine zeroes into a lost artifact.
 func TestPostReviewZeroFindingsArtifactValid(t *testing.T) {
 	f := &fakeForge{comments: []map[string]any{}, reviews: []map[string]any{}}
-	srv := httptest.NewServer(f.mux(t))
+	mux := f.mux(t)
+	// The APPROVE gate maps resolved threads via GraphQL (reviewThreads).
+	mux.HandleFunc("/graphql", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}`))
+	})
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("unmatched fake-forge request: %s %s", r.Method, r.URL.Path)
+		w.WriteHeader(http.StatusNotFound)
+	})
+	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
 	review := baseReview(nil)
@@ -366,6 +394,35 @@ func TestPostReviewDedupePaginatesPastHundred(t *testing.T) {
 	}
 	if len(others) != 100 {
 		t.Fatalf("the marker on page 2 must suppress the publish (page-1 threads only), got %d", len(others))
+	}
+}
+
+// The [:20] cap is load-bearing (r6 P9: it silently downgrades findings —
+// the merge currency keys on native threads). 21 findings → 20 threads +
+// capped:1; deleting the cap turns this red.
+func TestPostReviewCapTruncatesAtTwenty(t *testing.T) {
+	f := &fakeForge{comments: []map[string]any{}, reviews: []map[string]any{}}
+	srv := httptest.NewServer(f.mux(t))
+	t.Cleanup(srv.Close)
+
+	cs := []any{}
+	for i := 0; i < 21; i++ {
+		cs = append(cs, map[string]any{"path": "f.go", "line": i + 1, "body": fmt.Sprintf("finding %d", i)})
+	}
+	out := runPlugin(t, srv, false, baseReview(cs))
+
+	assertInlineThreads(t, out, 20, 0, 1)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.comments) != 20 {
+		t.Fatalf("cap must publish exactly 20 threads, got %d", len(f.comments))
+	}
+	if !strings.Contains(out, "capped: 1 findings") {
+		t.Errorf("the dropped findings must be named on the log, output:\n%s", out)
+	}
+	// side pass-through is asserted on the first posted thread (RIGHT default).
+	if f.comments[0]["side"] != "RIGHT" {
+		t.Errorf("github threads must carry side=RIGHT by default, got %v", f.comments[0]["side"])
 	}
 }
 

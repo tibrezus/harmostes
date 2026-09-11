@@ -436,15 +436,17 @@ tasks:
 
     Write the review to /workspace/review.json via python3 (not a heredoc):
 
-        {"decision": "APPROVE|REQUEST_CHANGES|COMMENT",
+        {"decision": "APPROVE|REQUEST_CHANGES",
          "reviewed_sha": "<head SHA of /workspace/repo>",
-         "body": "## Adversarial Review\n... (pillar-structured)",
-         "comments": [{"path": "...", "line": N, "body": "..."}]}
+         "comments": [{"path": "...", "line": N, "body": "Blocking: ..."}]}
 
-    Every finding goes in "comments" — the deploy step publishes them as
-    native anchored review threads (the merge currency). Do NOT post the
-    threads yourself: the deploy owns publishing, and a self-post would
-    duplicate.
+    There is NO "body" field. The pillar analysis is your process, never
+    posted as prose. "comments" carries ONLY blocking findings (CRITICAL
+    or verified MAJOR) — each becomes a native anchored review thread that
+    must be closed before merge. MINOR/NIT findings are dropped, not
+    posted. Do NOT post the threads yourself: the deploy owns publishing,
+    and a self-post would duplicate. The deploy writes the one-line
+    verdict (decision + SHA + blocking count) — you write no prose.
 
     The body MUST end with the trailer (exact decision keyword, full SHA):
 

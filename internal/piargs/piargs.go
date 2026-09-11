@@ -50,10 +50,49 @@ func RenderExtensions() (jsonArtifact []byte, pyBlock []byte, err error) {
 // extension named here but missing from an image takes down every agent
 // that loads it, and one missing from PiArgs is silently unavailable
 // while task contracts mandate it (#338 r9/r14).
+//
+// THREE failure modes govern every entry (r1 review of #425 named the
+// third): (1) named here but absent from the image → pi exits at startup
+// on the missing -e path — the build-time load probes + the COPY drift
+// test catch it; (2) on the image but missing here → silently
+// unavailable; (3) present, loaded, and INERT — an extension whose
+// mechanisms are opt-in (sol-pi) loads clean with everything disabled,
+// and the fleet runs exactly as if nothing was added. Mode (3) is
+// covered by the shipped config file (extensions/sol-pi/sol-pi.json,
+// schema-checked at image build) + the "pi extensions:" startup log line
+// (LoadedExtensions, mirrored in harmostes.py) making the resolved set
+// visible per run.
+//
+// Provenance: litellm-provider and rig-query are IN-TREE
+// (extensions/<name>, COPY'd); sol-pi is a VENDORED third-party checkout
+// (extensions/sol-pi — NVlabs/SoL-Pi, see its UPSTREAM.md for the source
+// SHA and bump procedure). Vendoring keeps the review/update path of a
+// build-time-fetched artifact inside the tree.
 var Extensions = []string{
 	"/extensions/litellm-provider",
 	"/extensions/rig-query",
 	"/extensions/sol-pi",
+}
+
+// LoadedExtensions reports the extensions that exist on THIS image — the
+// same stat pre-flight buildPiArgs applies before emitting -e. Both entry
+// points log it at startup: per-run evidence of which extension set (and
+// therefore which tool pipeline, e.g. sol-pi's wrapped edit/write/bash)
+// was actually in effect (#425 r1: a fleet-wide silent degrade must be a
+// log query, not a rebuild).
+func LoadedExtensions() []string {
+	return loadedExtensions(Extensions, os.Stat)
+}
+
+func loadedExtensions(extensions []string, stat func(string) (os.FileInfo, error)) []string {
+	var out []string
+	for _, ext := range extensions {
+		if _, err := stat(ext); err != nil {
+			continue
+		}
+		out = append(out, ext)
+	}
+	return out
 }
 
 // RigGraphPath is the ONE sanctioned location of the SHA-exact review-time

@@ -218,6 +218,7 @@ def main():
     ]
     for ext in extensions:
         pi_args += ["-e", ext]
+    log(f"pi extensions: {','.join(extensions)}")
     log(f"starting pi --mode rpc (model={args.model}, tools={','.join(tools)}, workdir={workdir})")
 
     rpc = PiRpc(pi_args, cwd=workdir, env=env, log_path=args.log)

@@ -66,6 +66,28 @@ test-extensions:
 		extensions/litellm-provider/fallbacks.test.ts
 	@node --experimental-strip-types -e 'await import("./extensions/litellm-provider/index.ts")'
 	@echo "litellm-provider: import gate + fallback table green"
+
+# sol-pi (#425): the vendored NVlabs/SoL-Pi suite run against the FLEET's pi
+# packages (PI_VERSION), not the vendored lockfile's 0.84.2 dev-deps — the
+# PR-tier half of the compat pairing (image-tier half: the Dockerfile load
+# probe). PI_VERSION here mirrors the Dockerfiles' hand-pinned ARG
+# (TestPinnedVersionsAgree pins those two; bump all three together).
+PI_VERSION ?= 0.84.4
+test-sol-pi:
+	npm ci --prefix extensions/sol-pi --ignore-scripts --no-audit --no-fund --silent
+	npm install --prefix extensions/sol-pi --no-save --no-audit --no-fund --silent \
+		@earendil-works/pi-coding-agent@$(PI_VERSION) \
+		@earendil-works/pi-ai@$(PI_VERSION) \
+		@earendil-works/pi-agent-core@$(PI_VERSION) \
+		@earendil-works/pi-tui@$(PI_VERSION)
+	# The vitest overlay (repo-owned, outside the vendored tree) excludes
+	# package.test.ts — it parses `npm pack` output, whose notice format
+	# differs under npm 12 (env-only failure; the packaging surface it
+	# checks is unused here — private package, loaded from the tree).
+	# cwd = the package root: several upstream tests resolve scripts/docs
+	# against process.cwd() (upstream layout). The overlay path is then
+	# relative to that cwd.
+	cd extensions/sol-pi && npx vitest run --config ../sol-pi.fleet.vitest.mjs
 	python3 extensions/rig-query/fixtures/freshness.py
 	@# Chart copy drift gate: the resolver's litellm-provider ConfigMap source
 	@# (chart/files/litellm-provider/) is a pinned copy of the canonical

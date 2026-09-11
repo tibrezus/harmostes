@@ -11,6 +11,16 @@ as a conventional pointer for readers who look for an `ARCHITECTURE.md`.
 
 ## Agent navigation subsystem (ADR-0009)
 
+**Vendored third-party extension** (`extensions/sol-pi`, #425): the fleet's
+agents run with NVIDIA's [SoL-Pi](https://github.com/NVlabs/SoL-Pi) efficiency
+extension (action fusion + observation pack; reducer/compact disabled in the
+shipped profile `extensions/sol-pi/sol-pi.json`). It is the one extension in
+`internal/piargs.Extensions` NOT in-tree-reviewed line-by-line — it is a
+vendored upstream checkout, so its provenance, bump protocol, and validation
+steps live in `extensions/sol-pi/UPSTREAM.md`, its shipped profile is pinned
+by `TestSolPiProfileSingleSource`, and its pi-version pairing is enforced by
+`make test-sol-pi` (upstream suite vs `PI_VERSION`).
+
 `extensions/rig-query` — a pi extension exposing the project graph (`rig.db`,
 generated SHA-exact at review time by the ops repo's `workspace.sh` prepare
 (using the vendored `plugins/rig-emit` emitter); the in-repo `rig-emit.sh`

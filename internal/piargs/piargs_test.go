@@ -1,6 +1,7 @@
 package piargs
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"strings"
@@ -138,6 +139,83 @@ func TestExtensionsSingleSource(t *testing.T) {
 		if !strings.Contains(strings.Join(args, " "), ext) {
 			t.Errorf("PiArgs does not load %s", ext)
 		}
+	}
+}
+
+// TestSolPiProfileSingleSource (#425 r1): the shipped sol-pi profile is the
+// ONE copy in the tree — extensions/sol-pi/sol-pi.json — and both images must
+// install exactly that file at the path SoL-Pi reads (~/.pi/agent). Guards
+// the review findings that a duplicated printf literal per Dockerfile made
+// the profile undiffable and the two images able to load different
+// mechanism sets with every gate green.
+func TestSolPiProfileSingleSource(t *testing.T) {
+	profile := string(mustRead(t, "../../extensions/sol-pi/sol-pi.json"))
+	var cfg struct {
+		Version                   int      `json:"version"`
+		ActionFusion              bool     `json:"actionFusion"`
+		ObservationPack           bool     `json:"observationPack"`
+		EvidencePreservingReducer bool     `json:"evidencePreservingReducer"`
+		OnlineContextCompact      bool     `json:"onlineContextCompact"`
+		CacheWriteReadRatio       *float64 `json:"cacheWriteReadRatio"`
+	}
+	if err := json.Unmarshal([]byte(profile), &cfg); err != nil {
+		t.Fatalf("shipped sol-pi.json does not parse: %v", err)
+	}
+	// The conservative profile is EFFECTIVE, not merely parseable: the two
+	// local, model-call-free mechanisms on; the reducer (ships repo logs to
+	// a reducer model) and the compact-and-continue flow OFF.
+	if !cfg.ActionFusion || !cfg.ObservationPack {
+		t.Errorf("conservative profile must enable actionFusion + observationPack, got %+v", cfg)
+	}
+	if cfg.EvidencePreservingReducer || cfg.OnlineContextCompact {
+		t.Errorf("conservative profile must keep reducer/compact OFF, got %+v", cfg)
+	}
+	if cfg.CacheWriteReadRatio == nil || *cfg.CacheWriteReadRatio < 0 {
+		t.Errorf("cacheWriteReadRatio must be present and non-negative, got %+v", cfg.CacheWriteReadRatio)
+	}
+	// Both images install the same in-tree file at the path SoL-Pi reads.
+	const wantCopy = "COPY extensions/sol-pi/sol-pi.json /root/.pi/agent/sol-pi.json"
+	for _, f := range []string{"../../Dockerfile.worker", "../../.github/Dockerfile.worker.release"} {
+		if !strings.Contains(string(mustRead(t, f)), wantCopy) {
+			t.Errorf("%s does not install the shipped profile with the exact single-source COPY (%q)", f, wantCopy)
+		}
+	}
+	// Vendored provenance: the checkout records where it came from, so a
+	// bump has a protocol and an audit trail (UPSTREAM.md).
+	upstream := string(mustRead(t, "../../extensions/sol-pi/UPSTREAM.md"))
+	foundSHA := false
+	for _, field := range strings.Fields(upstream) {
+		trimmed := strings.Trim(field, "`")
+		if len(trimmed) == 40 {
+			isHex := true
+			for _, r := range trimmed {
+				if !strings.ContainsRune("0123456789abcdef", r) {
+					isHex = false
+					break
+				}
+			}
+			if isHex {
+				foundSHA = true
+			}
+		}
+	}
+	if !foundSHA {
+		t.Errorf("extensions/sol-pi/UPSTREAM.md must record the vendored upstream commit as a 40-hex SHA")
+	}
+}
+
+// TestLoadedExtensions mirrors buildPiArgs' stat pre-flight: the startup log
+// ("pi extensions: …") must name the same set that actually gets -e'd, so a
+// silent degrade is observable per run (#425 r1 pillar 8).
+func TestLoadedExtensions(t *testing.T) {
+	all := loadedExtensions([]string{"/a", "/b"}, func(p string) (os.FileInfo, error) {
+		if p == "/b" {
+			return nil, os.ErrNotExist
+		}
+		return nil, nil
+	})
+	if len(all) != 1 || all[0] != "/a" {
+		t.Fatalf("loadedExtensions = %v, want [/a] — the log must match the -e set", all)
 	}
 }
 

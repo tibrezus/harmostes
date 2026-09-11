@@ -159,49 +159,35 @@ RUN LITELLM_URL=http://127.0.0.1:1 LITELLM_API_KEY=stub PI_SKIP_VERSION_CHECK=1 
     if [ $rc -ne 0 ]; then \
       echo "litellm-provider load probe failed (pi exit $rc):"; cat /tmp/pi-litellm-load.log; exit 1; \
     fi
-# sol-pi (#425): NVIDIA's standalone efficiency extension for pi (action
-# fusion + observation pack in the shipped default config; reducer/compact
-# OFF — see the config rationale in the issue). Pinned by SHA, deliberately:
-# an unpinned clone drifts on every rebuild, and the extension wraps the
-# agents' built-in edit/write/bash tools — its behavior is part of the
-# image's contract. The compat story: SoL-Pi tests against pi 0.84.2, peer
-# deps are `*`; the load probe below + the upstream suite (132/134 vs npm-12
-# pack-output parsing, env-only) are the 0.84.4 acceptance.
-ARG SOL_PI_REF=22277b7e0c3c46ba1259a6687f31fe39ade421a5
-RUN git clone --quiet https://github.com/NVlabs/SoL-Pi /tmp/sol-pi \
-    && git -C /tmp/sol-pi checkout --quiet ${SOL_PI_REF} \
-    && mkdir -p /extensions/sol-pi \
-    && cp -a /tmp/sol-pi/. /extensions/sol-pi/ \
-    && rm -rf /extensions/sol-pi/.git /tmp/sol-pi
-# Shipped default config (#425): the README's conservative profile — local,
-# model-call-free mechanisms only. EPR is OFF: it would send repo diagnostic
-# logs to a reducer model; online-context-compact is OFF: its
-# abort/compact/continue flow would interact with the review gate's turn
-# structure. Validated at build time with SoL-Pi's own schema check.
-RUN mkdir -p /root/.pi/agent && printf '%s\n' \
-    '{' \
-    '  "version": 1,' \
-    '  "actionFusion": true,' \
-    '  "observationPack": true,' \
-    '  "evidencePreservingReducer": false,' \
-    '  "onlineContextCompact": false,' \
-    '  "cacheWriteReadRatio": 12.5' \
-    '}' > /root/.pi/agent/sol-pi.json \
-    && node /extensions/sol-pi/scripts/check-sol-pi-config.mjs --config /root/.pi/agent/sol-pi.json \
-    || { echo "sol-pi config check failed"; exit 1; }
-# sol-pi load probe (#425): same gate as the probes above — pi must exit 0
-# with the extension loaded (all mechanisms register at session_start, so a
-# parse/load-time throw is what this catches; the config above governs the rest).
-RUN PI_SKIP_VERSION_CHECK=1 timeout 60 pi -e /extensions/sol-pi --mode rpc </dev/null >/tmp/pi-solpi-load.log 2>&1; rc=$?; \
-    if [ $rc -ne 0 ]; then \
-      echo "sol-pi load probe failed (pi exit $rc):"; cat /tmp/pi-solpi-load.log; exit 1; \
-    fi
 RUN pi install npm:pi-searxng
 # pi settings: auto-load the searxng extension on every pi invocation
 RUN mkdir -p /root/.pi/agent && \
     echo '{"packages":["npm:pi-searxng"]}' > /root/.pi/agent/settings.json
 # SearXNG instance in the cluster (searxng namespace)
 ENV SEARXNG_URL=http://searxng.searxng.svc.cluster.local:8080
+
+# sol-pi (#425): NVIDIA's standalone efficiency extension for pi, VENDORED
+# at extensions/sol-pi (provenance + bump protocol: extensions/sol-pi/UPSTREAM.md).
+# The shipped profile (extensions/sol-pi/sol-pi.json — the ONE copy in the tree)
+# is the README's conservative profile: actionFusion + observationPack are local
+# and make no model calls; evidencePreservingReducer is OFF (it would send repo
+# diagnostic logs to a reducer model) and onlineContextCompact is OFF (its
+# abort/compact/continue flow would interact with the review gate's turn
+# structure). Gates, in order: schema check with SoL-Pi's own checker (asserting
+# the conservative profile is EFFECTIVE — fusion+pack on, reducer+compact off —
+# not merely parseable), then the load probe (pi exits 0 with the extension
+# loaded). The probe's first log lines are always recorded: a new third-party
+# dependency gets a per-release record of which extensions initialised.
+COPY extensions/sol-pi /extensions/sol-pi
+COPY extensions/sol-pi/sol-pi.json /root/.pi/agent/sol-pi.json
+RUN node /extensions/sol-pi/scripts/check-sol-pi-config.mjs --config /root/.pi/agent/sol-pi.json > /tmp/sol-pi-config.json \
+    && node -e 'const c=JSON.parse(require("fs").readFileSync("/tmp/sol-pi-config.json","utf8"));const e=c.effective_config||c;if(!e.actionFusion||!e.observationPack||e.evidencePreservingReducer!==false||e.onlineContextCompact!==false){console.error("sol-pi profile drift:",JSON.stringify(e));process.exit(1)}' \
+    || { echo "sol-pi config/profile check failed"; cat /tmp/sol-pi-config.json 2>/dev/null; exit 1; }
+RUN PI_SKIP_VERSION_CHECK=1 timeout 60 pi -e /extensions/sol-pi --mode rpc </dev/null >/tmp/pi-solpi-load.log 2>&1; rc=$?; \
+    head -5 /tmp/pi-solpi-load.log; \
+    if [ $rc -ne 0 ]; then \
+      echo "sol-pi load probe failed (pi exit $rc):"; cat /tmp/pi-solpi-load.log; exit 1; \
+    fi
 
 # Where the plugin contract expects them to run + read/write
 WORKDIR /workspace

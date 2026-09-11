@@ -11,6 +11,23 @@ as a conventional pointer for readers who look for an `ARCHITECTURE.md`.
 
 ## Agent navigation subsystem (ADR-0009)
 
+**Vendored third-party extension** (`extensions/sol-pi`, #425): every fleet agent runs with NVIDIA's [SoL-Pi](https://github.com/NVlabs/SoL-Pi) efficiency
+extension (action fusion + observation pack; reducer/compact disabled in the
+shipped profile `extensions/sol-pi/sol-pi.json`). ONE control makes that
+profile effective for every workspace class: `buildPiArgs` emits
+`--no-approve` on every pi invocation — pi documents it as the run-level
+override of project trust (the twin of `--approve`), and pi 0.84.4
+auto-trusts a `.pi/sol-pi.json`-only workspace before `defaultProjectTrust`
+is ever consulted. The shipped `settings.json` (`defaultProjectTrust: never`)
+is a user-plane belt for the trust-requiring-resource class; the image
+build's two-arm trust gate asserts both the invariant and the probe's
+sensitivity. It is the one extension in
+`internal/piargs.Extensions` NOT in-tree-reviewed line-by-line — it is a
+vendored upstream checkout, so its provenance, bump protocol, and validation
+steps live in `extensions/sol-pi/UPSTREAM.md`, its shipped profile is pinned
+by `TestSolPiProfileSingleSource`, and its pi-version pairing is enforced by
+`make test-sol-pi` (upstream suite vs `PI_VERSION`).
+
 `extensions/rig-query` — a pi extension exposing the project graph (`rig.db`,
 generated SHA-exact at review time by the ops repo's `workspace.sh` prepare
 (using the vendored `plugins/rig-emit` emitter); the in-repo `rig-emit.sh`

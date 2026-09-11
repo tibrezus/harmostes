@@ -93,6 +93,22 @@ jobs:
         # TestPinnedVersionsAgree + TestExtensionsSingleSource (piargs).
         run: make test-extensions
 
+      # sol-pi (#425): the vendored NVlabs/SoL-Pi checkout, upstream suite run
+      # against the fleet's PI_VERSION — the PR-tier half of the pairing whose
+      # image-tier half is the Dockerfile load probe. A failure here is a
+      # COMPATIBILITY CHANGE (SoL-Pi agents-install protocol), not noise.
+      # sol-pi tier: runs on this job's node 22 — the SHIPPING runtime (both
+      # worker images are node:22-bookworm-slim, sol-pi engines >=22.19); a
+      # compat tier on any other node validates a matrix production does not
+      # run (#426 r4 §4a).
+      - name: sol-pi (upstream suite vs PI_VERSION)
+        # PI_VERSION is derived from the Dockerfile hand-pin (no literal here —
+        # a hardcoded copy would silently stale the compat tier on a pi bump;
+        # #426 r2 pillar 4).
+        run: |
+          PI_VERSION="$(sed -n 's/^ARG PI_VERSION=//p' Dockerfile.worker | head -1)"
+          make test-sol-pi PI_VERSION="$PI_VERSION"
+
       # The rig-emit plugin's Python validator severity (cycles warn —
       # rhesadox#1864 review ran graph-less because a cyclic repo failed the
       # emit). Stdlib-only, no deps.

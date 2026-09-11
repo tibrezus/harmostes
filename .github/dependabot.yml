@@ -35,3 +35,12 @@ updates:
       - dependency-name: "typebox"  # locked to pi's shipped version; bump by hand with PI_VERSION
     schedule:
       interval: "weekly"
+  # sol-pi (#425): vendored NVlabs/SoL-Pi — dev-dep bumps surface as PRs and
+  # pass through make test-sol-pi (upstream suite vs the fleet's PI_VERSION);
+  # typebox is locked to pi's shipped version, same as rig-query.
+  - package-ecosystem: "npm"
+    directory: "/extensions/sol-pi"
+    ignore:
+      - dependency-name: "typebox"  # locked to pi's shipped version; bump by hand with PI_VERSION
+    schedule:
+      interval: "weekly"

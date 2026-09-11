@@ -110,6 +110,7 @@ func main() {
 	// worker's pipeline closure to assemble flags): it loads every in-image
 	// extension (-e) and appends extension tools to the --tools allowlist —
 	// keeping this binary identical to the worker's agent path (#338 r16 F1).
+	hlog("%s", piargs.ExtensionsLogLine())
 	hlog("starting pi --mode rpc (model=%s tools=%s workdir=%s)", *model, *tools, *workdir)
 	rpc, err := agent.NewRPC(ctx, agent.RPCOptions{
 		Args:    piargs.PiArgs(*skill, *model, splitTools(*tools)),

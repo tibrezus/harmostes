@@ -233,3 +233,68 @@ echo '{"type":"agent_end"}'
 		t.Fatalf("SessionRoot must not gain a run-* dir when a lineage is set: %v", entries)
 	}
 }
+
+// TestExtensionErrorAttribution (#426 r8 F3): pi continues a run when an
+// extension handler throws — the event must be counted on the turn capture
+// AND attributed: the named extension_degraded event carries the failing
+// extension's path and the failing handler + error text in Message (Event.Raw
+// is json:"-", so without Message the consumers see only Type/ToolName and
+// the actionable part is dropped).
+func TestExtensionErrorAttribution(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "fakepi")
+	script := strings.Join([]string{
+		"#!/usr/bin/env bash",
+		"while IFS= read -r line; do",
+		"  case \"$line\" in",
+		"    *'\"type\":\"abort\"'*) exit 0 ;;",
+		"  esac",
+		"  echo '{\"type\":\"extension_error\",\"extensionPath\":\"/extensions/sol-pi\",\"event\":\"session_start\",\"error\":\"SoL-Pi config version must be 1\"}'",
+		"  echo '{\"type\":\"agent_end\"}'",
+		"done",
+		"",
+	}, "\n")
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	var seen []Event
+	logger := func(ev Event) { seen = append(seen, ev) }
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	rpc, err := NewRPC(ctx, RPCOptions{PiPath: path, Workdir: ".", Log: logger})
+	if err != nil {
+		t.Fatalf("NewRPC: %v", err)
+	}
+	defer func() { _ = rpc.Abort(context.Background()) }()
+
+	ev, _, _, capture, err := rpc.Prompt(ctx, "do the task", "initial task")
+	if err != nil {
+		t.Fatalf("prompt: %v", err)
+	}
+	if ev.Type != "agent_end" {
+		t.Fatalf("expected agent_end (pi continues with the extension inert), got %q", ev.Type)
+	}
+	if capture.ExtensionErrors != 1 {
+		t.Fatalf("ExtensionErrors = %d, want 1 — the throw must be counted on the run summary", capture.ExtensionErrors)
+	}
+	var degraded *Event
+	for i := range seen {
+		if seen[i].Type == "extension_degraded" {
+			degraded = &seen[i]
+		}
+	}
+	if degraded == nil {
+		t.Fatal("no named extension_degraded event was logged")
+	}
+	if degraded.ToolName != "/extensions/sol-pi" {
+		t.Fatalf("ToolName = %q, want the failing extension's path", degraded.ToolName)
+	}
+	for _, want := range []string{"handler=session_start", "error=SoL-Pi config version must be 1"} {
+		if !strings.Contains(degraded.Message, want) {
+			t.Errorf("Message %q must contain %q — the actionable part must survive the marshalled event", degraded.Message, want)
+		}
+	}
+}

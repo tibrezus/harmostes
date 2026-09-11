@@ -66,6 +66,12 @@ type GateResult struct {
 type TurnCapture struct {
 	Response string     `json:"response"`
 	Tools    []ToolCall `json:"tools"`
+	// ExtensionErrors counts pi extension handler throws observed during
+	// the turn (#426 r5): pi continues the run with the throwing extension
+	// INERT (runner.js catches per handler), so without this counter the
+	// "loaded and inert" degrade is invisible in the run summary — the
+	// raw event only ever reached the generic RPC log.
+	ExtensionErrors int `json:"extensionErrors,omitempty"`
 }
 
 // SessionWriter writes the current SessionRecord to a durable store (Dapr

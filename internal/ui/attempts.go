@@ -15,6 +15,7 @@ import (
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
 	"github.com/tibrezus/harmostes/internal/agent"
+	"github.com/tibrezus/harmostes/internal/timeline"
 )
 
 type attemptSummary struct {
@@ -736,5 +737,87 @@ func chipState(phase string) string {
 		return "superseded"
 	default:
 		return "reconciling"
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Event-timeline row vocabulary (ADR-0012 §4).
+//
+// The Event Timeline is a projection of TWO sources — the timeline store
+// (internal/timeline, the worker's durable node-boundary log) and the Attempt
+// status ledger (the CR's Runs/Review fields, which outlive the store's 7-day
+// TTL). Every row — from either source — classifies onto the ONE chip
+// vocabulary above via eventState: exact members where the semantics match,
+// verbatim neutral fall-through where they don't. Same contract as
+// claimState/groupState/chipState: typed here, rendered by the state-chip
+// template, parity-tested in console_state_test.go — three places, together.
+// ---------------------------------------------------------------------------
+
+// Ledger-projected row kinds. Store events keep their timeline.Kind* strings
+// verbatim (the row's type column shows what actually happened); only facts
+// the store cannot supply (attempt trigger, claim arm/dispatch, TTL-expired
+// run boundaries) get kinds of their own.
+const (
+	rowKindTrigger       = "trigger"
+	rowKindRunStarted    = "run started"      // ledger-only: no store run.started
+	rowKindRunEnded      = "run ended"        // ledger-only: no store run.completed
+	rowKindClaimArmed    = "claim armed"      // Review.ArmedSince
+	rowKindClaimDispatch = "claim dispatched" // Review.DispatchedAt
+)
+
+// eventState classifies a timeline row (kind + payload status) onto the chip
+// vocabulary. Unknown kinds fall through VERBATIM — the state-chip template
+// renders unknown strings as neutral chips, so a new store kind degrades to
+// visible-but-unstyled, never a wrong state (same rule as groupState).
+func eventState(kind, status string) string {
+	switch kind {
+	case rowKindTrigger:
+		return "queued"
+	case rowKindClaimArmed:
+		return "armed"
+	case rowKindClaimDispatch:
+		return "in flight"
+	case rowKindRunStarted, timeline.KindRunStarted, timeline.KindNodeStarted,
+		timeline.KindAgentTurn, timeline.KindAgentTool:
+		return "in flight"
+	case rowKindRunEnded:
+		switch status {
+		case "succeeded", "ok":
+			return "validated"
+		case "failed":
+			return "failed"
+		default:
+			return "in flight"
+		}
+	case timeline.KindRunCompleted:
+		switch status {
+		case "succeeded", "ok", "green":
+			return "validated"
+		case "failed", "red":
+			return "failed"
+		default:
+			return "run ended"
+		}
+	case timeline.KindNodeCompleted:
+		switch status {
+		case "green", "ok":
+			return "validated"
+		case "red", "failed":
+			return "failed"
+		default:
+			return status // skipped etc — verbatim neutral
+		}
+	case timeline.KindGateArmed:
+		return "armed"
+	case timeline.KindGateWaiting:
+		return "queued"
+	case timeline.KindGateProceed:
+		return "verdict"
+	case timeline.KindGateStanddown:
+		return "queued"
+	case timeline.KindGateCancel:
+		return "superseded"
+	default:
+		return kind // neutral verbatim (plugin.tail, future kinds)
 	}
 }

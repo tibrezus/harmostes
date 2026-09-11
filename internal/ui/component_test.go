@@ -312,3 +312,65 @@ func TestComponent_DevIdentity_ZeroSetup(t *testing.T) {
 		t.Errorf("wall cards visible to the injected dev user = %d, want 3", got)
 	}
 }
+
+// The run detail page exposes the tabbed execution views (ADR-0012 §4): the
+// graph tab is the default, the Event Timeline tab lazy-loads its pane, and
+// both carry the data-testid contract the e2e tier pins.
+func TestComponent_RunDetail_EventTimelineTabs(t *testing.T) {
+	ts := newFixtureServer(t)
+	doc := getAsFixtureUser(t, ts, "/runs/attempt-pr-review-demo-42a1")
+
+	if testIDSelection(t, doc, "graph-tab").Length() != 1 {
+		t.Error("graph tab must exist (the default execution view)")
+	}
+	tab := testIDSelection(t, doc, "event-timeline-tab")
+	if tab.Length() != 1 {
+		t.Fatal("event timeline tab must exist on run detail")
+	}
+	if pane := testIDSelection(t, doc, "event-timeline-pane"); pane.Length() != 1 {
+		t.Error("event timeline pane must exist (hidden until first activation)")
+	}
+	href, ok := tab.Attr("hx-get")
+	if !ok || href != "/runs/attempt-pr-review-demo-42a1/events" {
+		t.Errorf("event timeline tab hx-get = %q (ok=%v), want the fragment route", href, ok)
+	}
+}
+
+// The events fragment over the fixture world renders the full narrative:
+// trigger → claim rows → gate → node/agent rows → terminal, every row with
+// the state chip + payload expander contract.
+func TestComponent_EventsFragment_FullNarrative(t *testing.T) {
+	ts := newFixtureServer(t)
+	doc := getAsFixtureUser(t, ts, "/runs/attempt-pr-review-demo-42a1/events")
+
+	rows := testIDSelection(t, doc, "timeline-row")
+	if rows.Length() < 10 {
+		t.Errorf("timeline rows = %d, want the full fixture narrative (≥10)", rows.Length())
+	}
+	text := doc.Text()
+	for _, want := range []string{
+		"objective anchored", // ledger trigger row
+		"claim armed",        // ledger claim row
+		"claim dispatched",   // ledger claim row
+		"gate.armed",         // store gate event
+		"node.started",       // store node event
+		"node.completed",     // store node completion
+		"agent turn",         // store agent turn
+		"gate.proceed",       // gate verdict transition
+		"run.completed",      // terminal
+		"verdict posted",     // gate feedback content
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("events fragment missing %q", want)
+		}
+	}
+	// Payload expanders exist (store rows carry payloads).
+	if testIDSelection(t, doc, "timeline-row-payload").Length() == 0 {
+		t.Error("store rows must expose payload expanders")
+	}
+	// The live attempt's story: in-flight states, not just terminals.
+	doc2 := getAsFixtureUser(t, ts, "/runs/attempt-pr-review-demo-43c2/events")
+	if !strings.Contains(doc2.Text(), "gate.waiting") {
+		t.Error("mid-flight attempt must show gate.waiting")
+	}
+}

@@ -24,17 +24,24 @@
 	</div>
 	{{end}}
 
-	<!-- Timeline graph: compiled workflow, node states, live position -->
-	<div class="ds-section" id="run-graph">
-		<h3 class="ds-section-heading">Timeline</h3>
-		<div class="run-graph-layout">
-			<div class="run-graph-stream" id="run-graph-frag">
-				{{template "pages/frag_run_graph.html" .}}
-			</div>
-			<aside class="rg-panel" id="rg-panel" aria-live="polite">
-				<div class="rg-panel-empty">Hover or click a node for its live data.</div>
-			</aside>
+	<!-- Execution views: graph + event timeline (ADR-0012 §4 tabs) -->
+	<div class="ds-section" id="run-detail-views">
+		<div class="ds-tabs" role="tablist">
+			<button type="button" class="ds-tab ds-tab--active" id="tab-graph" role="tab" aria-selected="true" aria-controls="pane-graph" data-testid="graph-tab">Graph</button>
+			<button type="button" class="ds-tab" id="tab-events" role="tab" aria-selected="false" aria-controls="event-timeline-pane" data-testid="event-timeline-tab"
+				hx-get="/runs/{{.Name}}/events" hx-target="#event-timeline-pane" hx-swap="innerHTML">Event Timeline</button>
 		</div>
+		<div id="pane-graph">
+			<div class="run-graph-layout">
+				<div class="run-graph-stream" id="run-graph-frag">
+					{{template "pages/frag_run_graph.html" .}}
+				</div>
+				<aside class="rg-panel" id="rg-panel" aria-live="polite">
+					<div class="rg-panel-empty">Hover or click a node for its live data.</div>
+				</aside>
+			</div>
+		</div>
+		<div id="event-timeline-pane" data-testid="event-timeline-pane" hidden></div>
 	</div>
 
 	{{if .Claim}}
@@ -157,10 +164,44 @@
 <script id="run-graph-data-initial" type="application/json">{{.NodeDataJSON}}</script>
 <script>
 (function () {
-	var section = document.getElementById('run-graph');
-	if (!section) return;
+	var views = document.getElementById('run-detail-views');
+	if (!views) return;
 	var frag = document.getElementById('run-graph-frag');
 	var panel = document.getElementById('rg-panel');
+
+	// --- Tabs: graph (default) vs event timeline (lazy) ---
+	var tabGraph = document.getElementById('tab-graph');
+	var tabEvents = document.getElementById('tab-events');
+	var paneGraph = document.getElementById('pane-graph');
+	var eventsPane = document.getElementById('event-timeline-pane');
+	var eventsStream = null;
+
+	function activate(tab, pane, otherTab, otherPane) {
+		tab.classList.add('ds-tab--active');
+		tab.setAttribute('aria-selected', 'true');
+		otherTab.classList.remove('ds-tab--active');
+		otherTab.setAttribute('aria-selected', 'false');
+		pane.hidden = false;
+		otherPane.hidden = true;
+	}
+
+	tabGraph.addEventListener('click', function () {
+		activate(tabGraph, paneGraph, tabEvents, eventsPane);
+	});
+	tabEvents.addEventListener('click', function () {
+		activate(tabEvents, eventsPane, tabGraph, paneGraph);
+		openEventsStream();
+	});
+
+	// The events stream opens once, on first tab activation; the pane keeps
+	// refreshing in the background while hidden (cheap fragment, one probe).
+	function openEventsStream() {
+		if (eventsStream || !window.EventSource) return;
+		eventsStream = new EventSource(location.pathname + '/events/stream');
+		eventsStream.addEventListener('eventtimeline', function (e) {
+			eventsPane.innerHTML = e.data;
+		});
+	}
 
 	function dataFor(id) {
 		var el = document.getElementById('run-graph-data') ||
@@ -210,13 +251,13 @@
 		panel.appendChild(dl);
 	}
 
-	section.addEventListener('mouseover', function (e) {
+	views.addEventListener('mouseover', function (e) {
 		var g = e.target.closest('[data-node]');
-		if (g) show(g.getAttribute('data-node'));
+		if (g && !paneGraph.hidden) show(g.getAttribute('data-node'));
 	});
-	section.addEventListener('click', function (e) {
+	views.addEventListener('click', function (e) {
 		var g = e.target.closest('[data-node]');
-		if (g) show(g.getAttribute('data-node'));
+		if (g && !paneGraph.hidden) show(g.getAttribute('data-node'));
 	});
 
 	if (!window.EventSource) return;

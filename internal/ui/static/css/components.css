@@ -576,3 +576,95 @@
 
 /* error page alert content */
 .ds-alert-content { min-width: 0; }
+
+/* Event Timeline (ADR-0012 §4): tabbed execution views + append-only rows */
+.ds-tabs {
+	display: flex;
+	gap: var(--sp-1);
+	margin-bottom: var(--sp-3);
+	border-bottom: 1px solid var(--border);
+}
+.ds-tab {
+	appearance: none;
+	background: none;
+	border: none;
+	border-bottom: 2px solid transparent;
+	color: var(--fg-muted);
+	cursor: pointer;
+	font: inherit;
+	font-size: var(--fs-sm);
+	padding: var(--sp-2) var(--sp-3);
+}
+.ds-tab:hover { color: var(--fg); }
+.ds-tab--active {
+	color: var(--fg);
+	border-bottom-color: var(--accent);
+}
+
+.et-rows {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+}
+.et-row {
+	display: flex;
+	gap: var(--sp-3);
+	position: relative;
+	padding: var(--sp-2) 0 var(--sp-2) var(--sp-4);
+	border-left: 1px solid var(--border);
+	margin-left: var(--sp-2);
+}
+.et-marker {
+	position: absolute;
+	left: -5px;
+	top: 14px;
+	width: 9px;
+	height: 9px;
+	border-radius: 50%;
+	background: var(--chip-neutral-bg);
+	border: 1px solid var(--fg-muted);
+}
+.et-row--ok .et-marker { background: var(--chip-ok-bg); border-color: var(--success); }
+.et-row--fail .et-marker { background: var(--chip-fail-bg); border-color: var(--danger); }
+.et-row--run .et-marker { background: var(--chip-run-bg); border-color: var(--running); }
+.et-main { min-width: 0; flex: 1; }
+.et-line {
+	display: flex;
+	align-items: baseline;
+	gap: var(--sp-2);
+	flex-wrap: wrap;
+}
+.et-kind {
+	font-family: var(--font-mono);
+	font-size: var(--fs-sm);
+	color: var(--fg);
+}
+.et-node, .et-run { font-size: var(--fs-sm); }
+.et-time {
+	margin-left: auto;
+	font-family: var(--font-mono);
+	font-size: var(--fs-xs);
+	color: var(--fg-muted);
+	white-space: nowrap;
+}
+.et-summary {
+	color: var(--fg-muted);
+	font-size: var(--fs-sm);
+	margin-top: var(--sp-1);
+	overflow-wrap: anywhere;
+}
+.et-payload { margin-top: var(--sp-1); }
+.et-payload summary {
+	cursor: pointer;
+	color: var(--fg-muted);
+	font-size: var(--fs-xs);
+}
+.et-payload pre {
+	margin: var(--sp-1) 0 0;
+	padding: var(--sp-2);
+	background: var(--bg-elev, var(--chip-neutral-bg));
+	border: 1px solid var(--border);
+	border-radius: 4px;
+	font-size: var(--fs-xs);
+	overflow-x: auto;
+}

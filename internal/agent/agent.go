@@ -166,6 +166,10 @@ func Task(ctx context.Context, sess PiSession, gate Gate, task string, maxFixes 
 		)
 		_, _, turnUsage, capture, err := sess.Prompt(tctx, message, label)
 		usage.add(turnUsage)
+		// Extension handler throws (r5/r6): pi continues with the throwing
+		// extension inert — the count on the turn span makes that visible in
+		// the trace, not just the per-turn ledger blob.
+		span.SetAttributes(attribute.Int("harmostes.extension_errors", capture.ExtensionErrors))
 		span.End()
 		recordAgentSeconds(ctx, wf, time.Since(start))
 		recordTurn(ctx, wf)

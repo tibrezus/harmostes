@@ -107,6 +107,8 @@ func TestExtensionToolsCoversEveryLoadedExtension(t *testing.T) {
 
 func alwaysPresent(string) (os.FileInfo, error) { return nil, nil }
 
+func alwaysMissing(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
+
 // An image without an extension directory must drop it from the args (and
 // from the --tools allowlist) instead of killing pi at startup (#338 r14 B1).
 func TestPiArgsDropsMissingExtension(t *testing.T) {
@@ -240,8 +242,11 @@ func TestSolPiProfileSingleSource(t *testing.T) {
 	if err := json.Unmarshal([]byte(settings), &sc); err != nil {
 		t.Fatalf("extensions/sol-pi/settings.json does not parse: %v", err)
 	}
-	if sc.DefaultProjectTrust != "never" || sc.ProjectTrusted == nil || *sc.ProjectTrusted {
-		t.Errorf("settings.json must pin defaultProjectTrust=never AND projectTrusted=false, got %+v", sc)
+	if sc.DefaultProjectTrust != "never" {
+		t.Errorf("settings.json must pin defaultProjectTrust=never, got %+v", sc)
+	}
+	if sc.ProjectTrusted != nil {
+		t.Errorf("projectTrusted is not a pi Settings key (0.84.4) — it is inert and teaches a wrong trust model; remove it (r6)")
 	}
 	const wantSettingsCopy = "COPY extensions/sol-pi/settings.json /root/.pi/agent/settings.json"
 	for _, f := range []string{"../../Dockerfile.worker", "../../.github/Dockerfile.worker.release"} {
@@ -277,6 +282,48 @@ func TestLoadedExtensions(t *testing.T) {
 	})
 	if len(all) != 1 || all[0] != "/a" {
 		t.Fatalf("loadedExtensions = %v, want [/a] — the log must match the -e set", all)
+	}
+}
+
+// TestPiArgsAlwaysCarryNoApprove (#426 r6): --no-approve is the ONE control
+// that holds for every workspace class (pi 0.84.4 auto-trusts a
+// .pi/sol-pi.json-only workspace before defaultProjectTrust is consulted —
+// probed by the reviewer). It must therefore be on EVERY invocation shape,
+// not just the common ones.
+func TestPiArgsAlwaysCarryNoApprove(t *testing.T) {
+	for name, args := range map[string][]string{
+		"no tools, all extensions": buildPiArgs("s", "m", nil, Extensions, alwaysPresent),
+		"with tools":               buildPiArgs("s", "m", []string{"bash", "read"}, Extensions, alwaysPresent),
+		"no extensions on image":   buildPiArgs("s", "m", nil, nil, alwaysPresent),
+		"everything missing":       buildPiArgs("s", "m", nil, Extensions, alwaysMissing),
+	} {
+		found := false
+		for _, a := range args {
+			if a == "--no-approve" {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%s: pi invocation must always carry --no-approve — it is the sole control that holds for the auto-trust workspace class, got: %v", name, args)
+		}
+	}
+}
+
+// TestSolPiVitestOverlay (#426 r6 pillar 9d): the fleet vitest overlay's
+// root and exclusions are load-bearing — root "." (repo cwd) is what makes
+// the **-prefixed exclusions reach into the vendored tree, and the two
+// excluded files are the known-environmental/known-pruned classes. A
+// refactor that moves the overlay or "simplifies" the exclusions would
+// silently re-admit failing tests or stop validating the pruned surface.
+func TestSolPiVitestOverlay(t *testing.T) {
+	s := string(mustRead(t, "../../extensions/sol-pi.fleet.vitest.mjs"))
+	if !strings.Contains(s, `root: ".",`) {
+		t.Errorf("overlay root must stay `root: \".\"` (resolved against the make target's cwd) — a package-root cwd breaks the exclusion globs")
+	}
+	for _, want := range []string{`"**/package.test.ts"`, `"**/install-guide.test.ts"`} {
+		if !strings.Contains(s, want) {
+			t.Errorf("overlay must exclude %s — re-admitting it fails the compat tier on npm-12/pruned-file grounds", want)
+		}
 	}
 }
 

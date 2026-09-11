@@ -97,6 +97,18 @@ func loadedExtensions(extensions []string, stat func(string) (os.FileInfo, error
 	return out
 }
 
+// ExtensionsLogLine renders the startup "pi extensions:" line for any
+// entry point. An EMPTY resolved set is the degrade case — it must read
+// as a warning, never as a blank field (r6 pillar 8: the warn used to
+// live only on the least-used path).
+func ExtensionsLogLine() string {
+	loaded := LoadedExtensions()
+	if len(loaded) == 0 {
+		return "pi extensions: NONE — every manifest entry is missing from this image (degraded)"
+	}
+	return "pi extensions: " + strings.Join(loaded, ",")
+}
+
 // RigGraphPath is the ONE sanctioned location of the SHA-exact review-time
 // graph (ADR-0009 freshness contract, #338 r25 F6). Three halves must agree:
 // the ops prepare emits it there (workspace.sh), the rig-query extension
@@ -113,10 +125,12 @@ var extensionTools = map[string]string{
 	// sol-pi's observation-pack registers obs_recall (its recall affordance
 	// for replaced large tool results). The shipped profile
 	// (extensions/sol-pi/sol-pi.json, observationPack=true) is THE effective
-	// runtime config on every agent run — settings.json pins
-	// defaultProjectTrust=never, so no workspace .pi/sol-pi.json can
-	// override it (#426 r3 finding 1) — which makes obs_recall always
-	// registered and therefore always allowlist-required: without this
+	// runtime config on every agent run: buildPiArgs emits --no-approve
+	// unconditionally (the invocation plane — the control that holds for ALL
+	// workspace classes, including the auto-trusted .pi/sol-pi.json-only one;
+	// #426 r6), and settings.json's defaultProjectTrust=never gates the
+	// trust-requiring-resource class — making obs_recall always registered
+	// and therefore always allowlist-required: without this
 	// entry the --tools allowlist dropped obs_recall while the rewriting
 	// stayed active, destroying review evidence with the recall affordance
 	// uncallable (#426 r2 pillar 5A). litellm-provider has no entry:

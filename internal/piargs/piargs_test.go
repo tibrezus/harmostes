@@ -1,8 +1,10 @@
 package piargs
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -55,7 +57,57 @@ func TestPiArgsToolsAllowlistKeepsRig(t *testing.T) {
 	}
 }
 
+// TestExtensionToolsCoversEveryLoadedExtension is the table-driven form the
+// #426 r2 pillar 9A finding asked for: one case per Extensions entry naming
+// the tool its image presence contributes to the --tools allowlist. The
+// blind spot this closes: the map is the allowlist test's input AND subject,
+// so a missing entry (sol-pi's obs_recall shipped that way) was invisible —
+// the tool was registered at runtime, dropped by the allowlist, and every
+// gate stayed green. A new Extensions entry MUST either land here or be
+// justified in extensionTools' comment (provider-only → no entry).
+func TestExtensionToolsCoversEveryLoadedExtension(t *testing.T) {
+	cases := map[string]string{
+		"/extensions/litellm-provider": "", // provider-only: registers no tool
+		"/extensions/rig-query":        "rig",
+		"/extensions/sol-pi":           "obs_recall", // observation-pack's recall affordance (#425)
+	}
+	for _, ext := range Extensions {
+		want, known := cases[ext]
+		if !known {
+			t.Errorf("extension %s has no expected-tool entry in this test — add one (or a documented extensionTools omission)", ext)
+			continue
+		}
+		args := buildPiArgs("s", "m", []string{"bash", "read"}, Extensions, alwaysPresent)
+		if want == "" {
+			if tool := extensionTools[ext]; tool != "" {
+				t.Errorf("%s is provider-only but extensionTools registers %q — update the table", ext, tool)
+			}
+			continue
+		}
+		// Exact membership in the PARSED --tools value (r3 finding 3): a
+		// substring check passes on "--tools bash,obs_recallX" while pi's
+		// strict allowlist would drop the unregistered name entirely.
+		tools := ""
+		for i, a := range args {
+			if a == "--tools" && i+1 < len(args) {
+				tools = args[i+1]
+			}
+		}
+		found := false
+		for _, t := range strings.Split(tools, ",") {
+			if t == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("parsed --tools %q must contain %q exactly (for %s)", tools, want, ext)
+		}
+	}
+}
+
 func alwaysPresent(string) (os.FileInfo, error) { return nil, nil }
+
+func alwaysMissing(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
 
 // An image without an extension directory must drop it from the args (and
 // from the --tools allowlist) instead of killing pi at startup (#338 r14 B1).
@@ -141,6 +193,193 @@ func TestExtensionsSingleSource(t *testing.T) {
 	}
 }
 
+// TestSolPiProfileSingleSource (#425 r1): the shipped sol-pi profile is the
+// ONE copy in the tree — extensions/sol-pi/sol-pi.json — and both images must
+// install exactly that file at the path SoL-Pi reads (~/.pi/agent). Guards
+// the review findings that a duplicated printf literal per Dockerfile made
+// the profile undiffable and the two images able to load different
+// mechanism sets with every gate green.
+func TestSolPiProfileSingleSource(t *testing.T) {
+	profile := string(mustRead(t, "../../extensions/sol-pi/sol-pi.json"))
+	var cfg struct {
+		Version                   int      `json:"version"`
+		ActionFusion              bool     `json:"actionFusion"`
+		ObservationPack           bool     `json:"observationPack"`
+		EvidencePreservingReducer bool     `json:"evidencePreservingReducer"`
+		OnlineContextCompact      bool     `json:"onlineContextCompact"`
+		CacheWriteReadRatio       *float64 `json:"cacheWriteReadRatio"`
+	}
+	if err := json.Unmarshal([]byte(profile), &cfg); err != nil {
+		t.Fatalf("shipped sol-pi.json does not parse: %v", err)
+	}
+	// The conservative profile is EFFECTIVE, not merely parseable: the two
+	// local, model-call-free mechanisms on; the reducer (ships repo logs to
+	// a reducer model) and the compact-and-continue flow OFF.
+	if !cfg.ActionFusion || !cfg.ObservationPack {
+		t.Errorf("conservative profile must enable actionFusion + observationPack, got %+v", cfg)
+	}
+	if cfg.EvidencePreservingReducer || cfg.OnlineContextCompact {
+		t.Errorf("conservative profile must keep reducer/compact OFF, got %+v", cfg)
+	}
+	if cfg.CacheWriteReadRatio == nil || *cfg.CacheWriteReadRatio < 0 {
+		t.Errorf("cacheWriteReadRatio must be present and non-negative, got %+v", cfg.CacheWriteReadRatio)
+	}
+
+	// settings.json: the never-pin gates the trust-requiring-resource class;
+	// projectTrusted is NOT a pi Settings key (0.84.4) — its absence is
+	// asserted so the inert key cannot return and teach a wrong trust model.
+	settings := string(mustRead(t, "../../extensions/sol-pi/settings.json"))
+	var sc struct {
+		DefaultProjectTrust string `json:"defaultProjectTrust"`
+		ProjectTrusted      *bool  `json:"projectTrusted"`
+	}
+	if err := json.Unmarshal([]byte(settings), &sc); err != nil {
+		t.Fatalf("extensions/sol-pi/settings.json does not parse: %v", err)
+	}
+	if sc.DefaultProjectTrust != "never" {
+		t.Errorf("settings.json must pin defaultProjectTrust=never, got %+v", sc)
+	}
+	if sc.ProjectTrusted != nil {
+		t.Errorf("projectTrusted is not a pi Settings key — inert and misleading; remove it (r6)")
+	}
+
+	// Both images must install the shipped files at the exact paths SoL-Pi
+	// reads, via the single-source COPY literals.
+	const (
+		wantProfileCopy  = "COPY extensions/sol-pi/sol-pi.json /root/.pi/agent/sol-pi.json"
+		wantSettingsCopy = "COPY extensions/sol-pi/settings.json /root/.pi/agent/settings.json"
+	)
+	dockerfiles := map[string]string{
+		"../../Dockerfile.worker":                 "",
+		"../../.github/Dockerfile.worker.release": "",
+	}
+	for f := range dockerfiles {
+		dockerfiles[f] = string(mustRead(t, f))
+		if !strings.Contains(dockerfiles[f], wantProfileCopy) {
+			t.Errorf("%s does not install the shipped profile with the exact single-source COPY", f)
+		}
+		if !strings.Contains(dockerfiles[f], wantSettingsCopy) {
+			t.Errorf("%s does not install the shipped settings.json with the exact single-source COPY", f)
+		}
+	}
+
+	// BLOCK PARITY + ARM WIRING (r3 finding 4, r7 pillar 6/9): the WHOLE
+	// sol-pi span — from the vendored-extension comment through the trust
+	// gate's last assertion — must be byte-identical across dev and release,
+	// AND the two-arm trust gate inside it must be wired to the layer's exit
+	// status: each arm captures pi's rc, requires the probe line, and runs
+	// its assertion with a failure exit. A `; `-chained RUN decides only on
+	// its LAST command, so an unwired arm turns the security gate into a
+	// no-op with the build green (the exact defect r7 flagged).
+	// Locate the sol-pi span by line markers (start: the vendored-extension
+	// comment; end: the trust gate's last probe-line reference) — a regex
+	// over this span must escape both shell and Go quoting, so markers win.
+	span := map[string]string{}
+	for f := range dockerfiles {
+		lines := strings.Split(dockerfiles[f], "\n")
+		start, last := -1, -1
+		for i, l := range lines {
+			if start == -1 && strings.Contains(l, "# sol-pi (#425): NVIDIA's standalone") {
+				start = i
+			}
+			if strings.Contains(l, "sol_pi_trust_probe") {
+				last = i
+			}
+		}
+		if start == -1 || last == -1 || last < start {
+			t.Fatalf("sol-pi span not found in %s (start=%d last=%d)", f, start, last)
+		}
+		span[f] = strings.Join(lines[start:last+1], "\n")
+	}
+	if span["../../Dockerfile.worker"] != span["../../.github/Dockerfile.worker.release"] {
+		t.Errorf("the sol-pi Dockerfile span drifted between dev and release images — keep them byte-identical (r3 finding 4)")
+	}
+	gate := span["../../Dockerfile.worker"]
+	if got := strings.Count(gate, "|| rc=$?"); got != 2 {
+		t.Errorf("trust gate arms must capture pi's exit (|| rc=$?) per arm, found %d", got)
+	}
+	if got := strings.Count(gate, "grep -q sol_pi_trust_probe"); got != 2 {
+		t.Errorf("trust gate must require the probe line per arm, found %d grep guards", got)
+	}
+	if got := strings.Count(gate, "sol-pi trust gate arm"); got < 4 {
+		t.Errorf("trust gate arms must wire their failure exits (found %d named failure paths)", got)
+	}
+	// The standalone primitive mirrors --no-approve OUTSIDE the generated
+	// extension markers — TestExtensionsSingleSource cannot see it there
+	// (r7 pillar 9): the invocation-plane control must hold on every entry
+	// point.
+	py := string(mustRead(t, "../../harmostes.py"))
+	if !strings.Contains(py, `"--no-approve",`) {
+		t.Errorf("harmostes.py pi_args must carry --no-approve — the invocation-plane control must hold on every entry point")
+	}
+
+	// Vendored provenance: the checkout records where it came from, so a
+	// bump has a protocol and an audit trail (UPSTREAM.md). The provenance
+	// LINE, not any 40-char hex word anywhere in the file (r3 pillar 9b).
+	upstream := string(mustRead(t, "../../extensions/sol-pi/UPSTREAM.md"))
+	shaLine := regexp.MustCompile(`(?m)^Vendored from .*\` + "`" + `([0-9a-f]{40})\` + "`" + `?`)
+	if !shaLine.MatchString(upstream) {
+		t.Errorf("extensions/sol-pi/UPSTREAM.md must record the vendored upstream commit as a 40-hex SHA on its 'Vendored from' line")
+	}
+}
+
+// TestLoadedExtensions mirrors buildPiArgs' stat pre-flight: the startup log
+// ("pi extensions: …") must name the same set that actually gets -e'd, so a
+// silent degrade is observable per run (#425 r1 pillar 8).
+func TestLoadedExtensions(t *testing.T) {
+	all := loadedExtensions([]string{"/a", "/b"}, func(p string) (os.FileInfo, error) {
+		if p == "/b" {
+			return nil, os.ErrNotExist
+		}
+		return nil, nil
+	})
+	if len(all) != 1 || all[0] != "/a" {
+		t.Fatalf("loadedExtensions = %v, want [/a] — the log must match the -e set", all)
+	}
+}
+
+// TestPiArgsAlwaysCarryNoApprove (#426 r6): --no-approve is the ONE control
+// that holds for every workspace class (pi 0.84.4 auto-trusts a
+// .pi/sol-pi.json-only workspace before defaultProjectTrust is consulted —
+// probed by the reviewer). It must therefore be on EVERY invocation shape,
+// not just the common ones.
+func TestPiArgsAlwaysCarryNoApprove(t *testing.T) {
+	for name, args := range map[string][]string{
+		"no tools, all extensions": buildPiArgs("s", "m", nil, Extensions, alwaysPresent),
+		"with tools":               buildPiArgs("s", "m", []string{"bash", "read"}, Extensions, alwaysPresent),
+		"no extensions on image":   buildPiArgs("s", "m", nil, nil, alwaysPresent),
+		"everything missing":       buildPiArgs("s", "m", nil, Extensions, alwaysMissing),
+	} {
+		found := false
+		for _, a := range args {
+			if a == "--no-approve" {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%s: pi invocation must always carry --no-approve — it is the sole control that holds for the auto-trust workspace class, got: %v", name, args)
+		}
+	}
+}
+
+// TestSolPiVitestOverlay (#426 r6 pillar 9d): the fleet vitest overlay's
+// root and exclusions are load-bearing — root "." (repo cwd) is what makes
+// the **-prefixed exclusions reach into the vendored tree, and the two
+// excluded files are the known-environmental/known-pruned classes. A
+// refactor that moves the overlay or "simplifies" the exclusions would
+// silently re-admit failing tests or stop validating the pruned surface.
+func TestSolPiVitestOverlay(t *testing.T) {
+	s := string(mustRead(t, "../../extensions/sol-pi.fleet.vitest.mjs"))
+	if !strings.Contains(s, `root: ".",`) {
+		t.Errorf("overlay root must stay `root: \".\"` (resolved against the make target's cwd) — a package-root cwd breaks the exclusion globs")
+	}
+	for _, want := range []string{`"**/package.test.ts"`, `"**/install-guide.test.ts"`} {
+		if !strings.Contains(s, want) {
+			t.Errorf("overlay must exclude %s — re-admitting it fails the compat tier on npm-12/pruned-file grounds", want)
+		}
+	}
+}
+
 // piShippedTypebox is the typebox version the pinned PI_VERSION ships and
 // aliases at runtime (pi's extension loader injects `typebox` → its bundled
 // copy). extensions/rig-query/package.json pins exactly this version so
@@ -169,6 +408,23 @@ func TestPinnedVersionsAgree(t *testing.T) {
 	want := `"typebox": "` + piShippedTypebox + `"`
 	if !strings.Contains(pkg, want) {
 		t.Errorf("extensions/rig-query/package.json typebox pin != %s (what pi %s ships) — update the pin WITH PI_VERSION, together", piShippedTypebox, devPI)
+	}
+	// PI_VERSION is single-sourced at Dockerfile.worker (the hand-pin): the
+	// Makefile compat tier DERIVES it (no copy), and ci.yml passes the
+	// derivation through (no literal). A hardcoded copy anywhere else
+	// recreates the #426 r2 pillar-4 finding: a pi bump leaves the compat
+	// tier validating against a stale runtime with every gate green.
+	makefile := string(mustRead(t, "../../Makefile"))
+	if !strings.Contains(makefile, "PI_VERSION ?= $(shell sed -n 's/^ARG PI_VERSION=//p' Dockerfile.worker") {
+		t.Errorf("Makefile must derive PI_VERSION from Dockerfile.worker — a literal copy drifts from the hand-pin")
+	}
+	ci := string(mustRead(t, "../../.github/workflows/ci.yml"))
+	for _, line := range strings.Split(ci, "\n") {
+		// A hardcoded copy is a bare semver after PI_VERSION= — a shell
+		// reference ($PI_VERSION) or the sed derivation is the sanctioned form.
+		if strings.Contains(line, "PI_VERSION=") && regexp.MustCompile(`PI_VERSION=\d`).MatchString(line) {
+			t.Errorf("ci.yml hardcodes a PI_VERSION literal (%q) — derive it from Dockerfile.worker instead", strings.TrimSpace(line))
+		}
 	}
 }
 

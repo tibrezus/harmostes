@@ -21,3 +21,6 @@ e2e/playwright-report/
 # UI design-review artifacts (screenshots + critiques) — local working notes,
 # not part of any PR contract (r6 review, scope discipline).
 .impeccable/
+
+# vendored sol-pi (#425): derived by make test-sol-pi / npm ci — never committed
+extensions/sol-pi/node_modules/

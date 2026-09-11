@@ -50,9 +50,63 @@ func RenderExtensions() (jsonArtifact []byte, pyBlock []byte, err error) {
 // extension named here but missing from an image takes down every agent
 // that loads it, and one missing from PiArgs is silently unavailable
 // while task contracts mandate it (#338 r9/r14).
+//
+// THREE failure modes govern every entry (r1 review of #425 named the
+// third): (1) named here but absent from the image → pi exits at startup
+// on the missing -e path — the build-time load probes + the COPY drift
+// test catch it; (2) on the image but missing here → silently
+// unavailable; (3) present, loaded, and INERT — an extension whose
+// mechanisms are opt-in (sol-pi) loads clean with everything disabled,
+// and the fleet runs exactly as if nothing was added. Mode (3) is
+// covered by the shipped config file (extensions/sol-pi/sol-pi.json,
+// schema-checked at image build) + the "pi extensions:" startup log line
+// (LoadedExtensions, mirrored in harmostes.py) making the resolved set
+// visible per run.
+//
+// Provenance: litellm-provider and rig-query are IN-TREE
+// (extensions/<name>, COPY'd); sol-pi is a VENDORED third-party checkout
+// (extensions/sol-pi — NVlabs/SoL-Pi, see its UPSTREAM.md for the source
+// SHA and bump procedure). Vendoring keeps the review/update path of a
+// build-time-fetched artifact inside the tree.
 var Extensions = []string{
 	"/extensions/litellm-provider",
 	"/extensions/rig-query",
+	"/extensions/sol-pi",
+}
+
+// LoadedExtensions reports the extensions that exist on THIS image — the
+// same stat pre-flight buildPiArgs applies before emitting -e. ALL THREE
+// agent entry points log it at startup (worker pipeline, standalone
+// agent primitive, harmostes.py): per-run evidence of which extension
+// set — and therefore which tool pipeline, e.g. sol-pi's wrapped
+// edit/write/bash — was actually in effect (#425 r1; r3 pillar 8). An
+// EMPTY result is the degrade signal: callers log it as a warning, not
+// an empty list.
+func LoadedExtensions() []string {
+	return loadedExtensions(Extensions, os.Stat)
+}
+
+func loadedExtensions(extensions []string, stat func(string) (os.FileInfo, error)) []string {
+	var out []string
+	for _, ext := range extensions {
+		if _, err := stat(ext); err != nil {
+			continue
+		}
+		out = append(out, ext)
+	}
+	return out
+}
+
+// ExtensionsLogLine renders the startup "pi extensions:" line for any
+// entry point. An EMPTY resolved set is the degrade case — it must read
+// as a warning, never as a blank field (r6 pillar 8: the warn used to
+// live only on the least-used path).
+func ExtensionsLogLine() string {
+	loaded := LoadedExtensions()
+	if len(loaded) == 0 {
+		return "pi extensions: NONE — every manifest entry is missing from this image (degraded)"
+	}
+	return "pi extensions: " + strings.Join(loaded, ",")
 }
 
 // RigGraphPath is the ONE sanctioned location of the SHA-exact review-time
@@ -68,6 +122,21 @@ const RigGraphPath = "/workspace/rig.db"
 // only register providers have no entry.
 var extensionTools = map[string]string{
 	"/extensions/rig-query": "rig",
+	// sol-pi's observation-pack registers obs_recall (its recall affordance
+	// for replaced large tool results). The shipped profile
+	// (extensions/sol-pi/sol-pi.json, observationPack=true) is THE effective
+	// runtime config on every agent run because --no-approve (below) is the
+	// ONE control that holds for every workspace class: pi 0.84.4 auto-trusts
+	// a .pi/sol-pi.json-only workspace before defaultProjectTrust is ever
+	// consulted (r6, reviewer-probed), so settings.json's
+	// defaultProjectTrust=never is a user-plane belt with no project-plane
+	// brace — the invocation flag is what makes obs_recall always registered
+	// and therefore always allowlist-required: without this
+	// entry the --tools allowlist dropped obs_recall while the rewriting
+	// stayed active, destroying review evidence with the recall affordance
+	// uncallable (#426 r2 pillar 5A). litellm-provider has no entry:
+	// provider-only extensions register no tools.
+	"/extensions/sol-pi": "obs_recall",
 }
 
 // PiArgs builds the pi --mode rpc extra args from the three values it
@@ -84,7 +153,17 @@ func PiArgs(skill, model string, tools []string) []string {
 // drop out of the args (and take its --tools entry with it) rather than
 // kill every workflow that declares tools (#338 r14 B1).
 func buildPiArgs(skill, model string, tools []string, extensions []string, stat func(string) (os.FileInfo, error)) []string {
-	args := []string{"--skill", skill, "--model", model}
+	// --no-approve lands on EVERY pi invocation (#426 r5 blocking finding):
+	// the agent's cwd is the PR checkout — untrusted content. It ignores
+	// project-local files (settings, extensions, .pi/sol-pi.json) for the
+	// run, so a hostile repo cannot flip the harness's own config (e.g.
+	// evidencePreservingReducer=true ships repo logs to a remote reducer
+	// model) even when pi's trust resolution would mark the workspace
+	// trusted. pi documents the flag as the run-level OVERRIDE of project
+	// trust (the twin of --approve); settings.json's defaultProjectTrust=
+	// never is a user-plane belt for the trust-requiring-resource class —
+	// THIS flag is the control that holds for every workspace class (r8 F2).
+	args := []string{"--skill", skill, "--model", model, "--no-approve"}
 	for _, ext := range extensions {
 		if _, err := stat(ext); err != nil {
 			continue // not on this image — degrade quietly

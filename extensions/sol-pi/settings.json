@@ -1,0 +1,4 @@
+{
+  "packages": ["npm:pi-searxng"],
+  "defaultProjectTrust": "never"
+}

@@ -413,6 +413,7 @@ func runOneShot() {
 	// and REFUSES on mismatch. Scoped to the pi child's env — not process-global
 	// (deploy/gate plugins must not inherit a one-consumer variable, #338 r15).
 	piEnv := os.Environ()
+	logfFn("%s", piargs.ExtensionsLogLine())
 	deps.Agent = worker.RPCAgentRunner{
 		// The rig freshness contract arms at AGENT-NODE SPAWN, not run
 		// assembly (#350): prepare — the rig.db producer — executes inside

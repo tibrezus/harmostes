@@ -918,7 +918,7 @@ func TestSweepDispatchTimeoutWithAliveJobNotCounted(t *testing.T) {
 	st := &fakeStatus{}
 	now := time.Now()
 	disp := now.Add(-46 * time.Minute) // past DispatchTimeout (45m)
-	claim := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#101", "deadbeef321", now.Add(-46*time.Minute), &disp)
+	claim := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#101", "deadbeef123", now.Add(-46*time.Minute), &disp)
 	claim.Status.Phase = v1alpha1.AttemptPhaseReconciling
 	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
@@ -970,7 +970,7 @@ func TestSweepDispatchTimeoutForeignLiveJobStillCounts(t *testing.T) {
 	st := &fakeStatus{}
 	now := time.Now()
 	disp := now.Add(-46 * time.Minute)
-	claim := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#102", "deadbeef432", now.Add(-46*time.Minute), &disp)
+	claim := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#102", "deadbeef123", now.Add(-46*time.Minute), &disp)
 	claim.Status.Phase = v1alpha1.AttemptPhaseReconciling
 	foreign := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
@@ -1009,7 +1009,7 @@ func TestSweepDispatchTimeoutJobListFailureCountsDead(t *testing.T) {
 	st := &fakeStatus{}
 	now := time.Now()
 	disp := now.Add(-46 * time.Minute)
-	claim := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#103", "deadbeef543", now.Add(-46*time.Minute), &disp)
+	claim := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#103", "deadbeef123", now.Add(-46*time.Minute), &disp)
 	claim.Status.Phase = v1alpha1.AttemptPhaseReconciling
 
 	scheme := runtime.NewScheme()
@@ -1243,6 +1243,16 @@ func TestSweepHeldReasonSurvivesLaterRefusal(t *testing.T) {
 				{"number": 106, "updated_at": "2026-08-30T00:00:00Z",
 					"labels": []map[string]string{{"name": "needs-review"}}},
 			})
+		case strings.HasSuffix(req.URL.Path, "/pulls/101"):
+			// The held claim's own head — distinct from the refused claim's
+			// (attempt names derive from repo+sha, so the two fixtures cannot
+			// share one), and equal to it so the dispatched branch reaches the
+			// timer hold instead of the moved-head supersede (#410).
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"state": "open", "head": map[string]string{"sha": "cafe9999"},
+				"base":   map[string]string{"ref": "main"},
+				"labels": []map[string]string{{"name": "needs-review"}},
+			})
 		case strings.Contains(req.URL.Path, "/comments"):
 			_ = json.NewEncoder(w).Encode([]any{})
 		case strings.Contains(req.URL.Path, "/branch_protections/"):
@@ -1265,7 +1275,10 @@ func TestSweepHeldReasonSurvivesLaterRefusal(t *testing.T) {
 	disp := now.Add(-46 * time.Minute) // past DispatchTimeout (45m)
 
 	// Claim A: dispatched, past the timeout, Job observably ALIVE → held.
-	held := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#101", "deadbeef321", now.Add(-46*time.Minute), &disp)
+	// Name-derived order (cafe9999 < deadbeef123) makes this claim process
+	// before the refused one — the durability promise under test is "a hold
+	// recorded first survives a later refusal".
+	held := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#101", "cafe9999", now.Add(-46*time.Minute), &disp)
 	held.Status.Phase = v1alpha1.AttemptPhaseReconciling
 	liveJob := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{

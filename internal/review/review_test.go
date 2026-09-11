@@ -3,6 +3,7 @@ package review
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -759,6 +760,77 @@ func TestDispatchedZeroTimeoutKeepsWaiting(t *testing.T) {
 	res := Evaluate(context.Background(), api, p)
 	if res.Decision != DecisionWaiting || !strings.Contains(res.Reason, "in flight") {
 		t.Fatalf("zero DispatchTimeout must keep waiting (horizon remains the bound), got %s: %s", res.Decision, res.Reason)
+	}
+}
+
+// Head moved while the review was in flight (#410): the run is reviewing a
+// dead head — the pipeline's moved-head guard will discard its verdict — so
+// the gate must stand down as a SUPERSEDED-class release immediately (the
+// #403 cancel pass deletes the Job; section C re-arms the new head). The
+// claim must NOT ride out the dispatch timeout at a head no verdict can land
+// on (the ztphk/PR-2084 live case: 24 minutes burned at a dead head).
+func TestDispatchedHeadMovedStandsDownSuperseded(t *testing.T) {
+	api := &fakeAPI{
+		pr:       openPR("needs-review"), // host now at abc123; claim armed at an older sha
+		required: []string{"ci"},
+		states:   map[string]string{"ci": "success"},
+	}
+	p := base
+	p.ArmedSha = "dead9999"                      // the sha the run was dispatched at
+	p.DispatchedAt = p.Now.Add(-5 * time.Minute) // fresh dispatch — well inside every bound
+	p.DispatchTimeout = 45 * time.Minute
+	res := Evaluate(context.Background(), api, p)
+	if res.Decision != DecisionStanddown || !strings.Contains(res.Reason, "head moved") {
+		t.Fatalf("dispatched claim at a moved head must stand down, got %s: %s", res.Decision, res.Reason)
+	}
+	if res.NewArmedSha != "" {
+		t.Fatalf("superseded release must disarm, got NewArmedSha %q", res.NewArmedSha)
+	}
+}
+
+// A verdict that exists outranks the head move: the pipeline never posts
+// past a moved head, so an existing verdict was posted BEFORE the push —
+// the durable consume signal wins (mirrors TestDispatchedVerdictBeatsTimeout,
+// now against the supersede branch).
+func TestDispatchedVerdictBeatsHeadMove(t *testing.T) {
+	api := &fakeAPI{
+		pr:       openPR("needs-review"),
+		required: []string{"ci"},
+		states:   map[string]string{"ci": "success"},
+		comments: []fakeComment{{
+			IssueComment: IssueComment{Body: "verdict\n<!-- pr-review: APPROVE @ dead9999 -->"},
+			updatedAt:    base.Now.Add(-5 * time.Minute),
+		}},
+	}
+	p := base
+	p.ArmedSha = "dead9999"
+	p.DispatchedAt = p.Now.Add(-10 * time.Minute)
+	p.DispatchTimeout = 45 * time.Minute
+	res := Evaluate(context.Background(), api, p)
+	if res.Decision != DecisionStanddown || res.Reason != "verdict posted — consumed" {
+		t.Fatalf("verdict must outrank the head move, got %s: %q", res.Decision, res.Reason)
+	}
+}
+
+// A FAILED verdict scan must not classify as a head move: the waiting return
+// path is conservative (retry the whole evaluation next sweep) — the head
+// could have moved, but the consume check is the claim's durable truth and
+// it errored. Live burns at most one more sweep interval; a wrong supersede
+// would delete a Job whose verdict was about to land.
+func TestDispatchedVerdictCheckFailureWithMovedHeadWaits(t *testing.T) {
+	api := &fakeAPI{
+		pr:          openPR("needs-review"),
+		required:    []string{"ci"},
+		states:      map[string]string{"ci": "success"},
+		commentsErr: errors.New("forge down"),
+	}
+	p := base
+	p.ArmedSha = "dead9999"
+	p.DispatchedAt = p.Now.Add(-10 * time.Minute)
+	p.DispatchTimeout = 45 * time.Minute
+	res := Evaluate(context.Background(), api, p)
+	if res.Decision != DecisionWaiting || !strings.Contains(res.Reason, "verdict check failed") {
+		t.Fatalf("failed verdict scan must stay on the conservative waiting path, got %s: %s", res.Decision, res.Reason)
 	}
 }
 

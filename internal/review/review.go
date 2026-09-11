@@ -638,6 +638,25 @@ func Evaluate(ctx context.Context, api API, p Params) Result {
 		if hasVerdict(comments) {
 			return Result{Evaluation: standdown("verdict posted — consumed"), NewArmedSha: ""}
 		}
+		// Head moved while the review was in flight (#410): the run was
+		// dispatched at the claim's head, but the PR has advanced past it.
+		// The pipeline's moved-head guard will discard any verdict this run
+		// could produce, so every further second is waste. Stand down as a
+		// SUPERSEDED-class release (classifyRelease maps "head moved" →
+		// superseded): the #403 cancel pass deletes the stale Job in the
+		// same sweep and section C re-arms the new head immediately — no
+		// run-bound burn, no breaker strike (a superseded claim is not a
+		// dead dispatch). Ordered AFTER the verdict scan: a verdict that
+		// exists was posted before the push (the pipeline never posts past
+		// a moved head), so the durable consume signal outranks the move.
+		// Ordered BEFORE the dispatch-timeout presumption: a stale-head run
+		// that overstayed its bound was superseded, not dead — striking the
+		// breaker for it would punish the PR for waste the supersession
+		// already prevented. A failed verdict scan stays on the waiting
+		// path above (conservative: retry the whole evaluation next sweep).
+		if p.ArmedSha != "" && p.ArmedSha != pr.HeadSHA {
+			return Result{Evaluation: standdown(fmt.Sprintf("head moved while review in flight (dispatched at %s, PR now at %s) — verdict could not land", p.ArmedSha, pr.HeadSHA)), NewArmedSha: ""}
+		}
 		if p.DispatchTimeout > 0 && now.Sub(p.DispatchedAt) >= p.DispatchTimeout {
 			return Result{Evaluation: standdown(fmt.Sprintf("dispatch presumed dead (no verdict after %s; run bound %s) — backlog will re-arm", p.DispatchTimeout, v1alpha1.OneShotRunBound)), NewArmedSha: ""}
 		}

@@ -3,10 +3,11 @@
 	<a href="/workflows" class="tpl-back">◂ Workflows</a>
 	<h1 class="ds-section-title">New Workflow</h1>
 	<p class="ds-empty-text">
-		Pick a reusable template and give it a name, a schedule, and its scope.
-		The instance inherits its pipeline shape from the template — you only
-		set what the template declares below. Templates are chart-owned; the
-		instance stays thin.
+		Pick a reusable template and give it a name plus its scope. The
+		instance inherits its pipeline shape and trigger cadence from the
+		template and the platform poll interval — you only set what the
+		template declares below. Templates are chart-owned; the instance stays
+		thin.
 	</p>
 </div>
 
@@ -40,11 +41,6 @@
 			<input type="text" name="name" data-testid="wf-new-name" pattern="[a-z0-9]([-a-z0-9]*[a-z0-9])?" maxlength="63"
 				placeholder="pr-review-myrepo" required>
 			<small>lowercase alphanumerics and hyphens, max 63 chars</small>
-		</label>
-		<label class="wf-new-field">
-			<span>Schedule (cron)</span>
-			<input type="text" name="schedule" data-testid="wf-new-schedule" value="*/10 * * * *">
-			<small>how often the trigger fires</small>
 		</label>
 	</div>
 

@@ -25,10 +25,10 @@ type Identity struct {
 	// authoritative identity.
 	Authoritative bool
 	// Dev is true only for the explicit development identity
-	// (X-Harmostes-Dev-User / fixture mode). It is the second provenance
-	// allowed to take write actions: harmless in production (the outpost
-	// always sets X-Authentik-Username, so this branch is unreachable there)
-	// and intended in local dev, where there is no Authentik.
+	// (X-Harmostes-Dev-User / fixture mode). It grants NO privilege by
+	// itself: writes additionally require the server to have been started
+	// with dev writes enabled (Server.SetDevWriteEnabled) — production
+	// servers never do, so this branch is inert there by construction.
 	Dev bool
 }
 
@@ -138,13 +138,4 @@ func identityFromContext(ctx context.Context) *Identity {
 	}
 	id, _ := v.(*Identity)
 	return id
-}
-
-// mayWrite reports whether the identity may take write actions (create a
-// Workflow — ADR-0012 §5). Two provenances qualify: an Authentik-authoritative
-// identity, or the explicit dev identity. Client-suppliable X-Forwarded-*
-// fallbacks stay read-only: a forged forwarded username can browse, but can
-// never create a workflow under someone else's owner label.
-func (id *Identity) mayWrite() bool {
-	return id != nil && (id.Authoritative || id.Dev)
 }

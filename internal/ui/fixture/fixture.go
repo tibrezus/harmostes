@@ -240,7 +240,15 @@ func NewServer(namespace string, logger *slog.Logger) (*ui.Server, error) {
 	// exactly as production's. No pods are seeded; log streaming degrades.
 	var kubeClient kubernetes.Interface = fake.NewSimpleClientset()
 
-	return ui.New(k8sClient, namespace, logger, kubeClient, nil)
+	server, err := ui.New(k8sClient, namespace, logger, kubeClient, nil)
+	if err != nil {
+		return nil, err
+	}
+	// Fixture servers exist to exercise the full surface including the write
+	// path — dev-identity writes are on by construction here (the production
+	// binary never enables them; see Server.SetDevWriteEnabled).
+	server.SetDevWriteEnabled(true)
+	return server, nil
 }
 
 // fixtureExtras seeds the objects the ADR-0012 write-path surfaces read: one

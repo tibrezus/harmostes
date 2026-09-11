@@ -105,9 +105,9 @@ func scopeConfigJSON(r *http.Request, tmpl *v1alpha1.WorkflowTemplate) ([]byte, 
 // construction.
 func (s *Server) handleWorkflowCreate(w http.ResponseWriter, r *http.Request) {
 	id := identityFromContext(r.Context())
-	if !id.mayWrite() {
-		s.logger.Warn("write rejected — identity provenance", "user", id.Username)
-		http.Error(w, "403 Forbidden — write actions require an authenticated session (your proxy supplied only legacy forwarded headers)", http.StatusForbidden)
+	if !s.mayWrite(id) {
+		s.logger.Warn("write rejected — identity provenance", "user", id.Username, "dev", id.Dev)
+		http.Error(w, "403 Forbidden — write actions require an authenticated session (your proxy supplied only legacy forwarded headers, or dev writes are disabled on this server)", http.StatusForbidden)
 		return
 	}
 	owner := id.Username
@@ -118,10 +118,6 @@ func (s *Server) handleWorkflowCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	name := strings.TrimSpace(r.FormValue("name"))
-	schedule := strings.TrimSpace(r.FormValue("schedule"))
-	if schedule == "" {
-		schedule = "*/30 * * * *"
-	}
 
 	// Validation
 	if name == "" {
@@ -151,6 +147,13 @@ func (s *Server) handleWorkflowCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Source.Kind "schedule" marks the instance as poll-triggered (the
+	// claim sweep treats non-webhook kinds as non-wake). The cron STRING is
+	// deliberately not taken from the form: the controller's trigger decision
+	// is poll-interval-driven and never parses it — advertising a schedule
+	// the platform cannot honour would be a dead knob with a plausible label
+	// (adversarial review, PR #427). Scheduling semantics return with
+	// #418 when they can be honest.
 	wf := &v1alpha1.Workflow{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
@@ -158,7 +161,7 @@ func (s *Server) handleWorkflowCreate(w http.ResponseWriter, r *http.Request) {
 		},
 		Spec: v1alpha1.WorkflowSpec{
 			TemplateRef: templateRef,
-			Source:      v1alpha1.SourceSpec{Kind: "schedule", Schedule: schedule},
+			Source:      v1alpha1.SourceSpec{Kind: "schedule"},
 			Config:      cfg,
 		},
 	}
@@ -172,6 +175,10 @@ func (s *Server) handleWorkflowCreate(w http.ResponseWriter, r *http.Request) {
 		s.renderError(w, r, "Failed to create workflow: "+err.Error())
 		return
 	}
+	// Per the form contract (same reason no CSRF token): the form posts
+	// same-site, urlencoded, and the owner is server-stamped — a cross-site
+	// forgery can at worst create a workflow under the VICTIM'S OWN identity,
+	// which the victim sees and can ask an admin to remove.
 	s.logger.Info("workflow created (template instance)", "owner", owner, "name", name, "template", templateRef)
 	http.Redirect(w, r, "/workflows/"+name, http.StatusSeeOther)
 }

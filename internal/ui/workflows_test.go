@@ -294,6 +294,12 @@ func TestWorkflowCreationForm(t *testing.T) {
 			t.Errorf("GET /workflows/new: missing marker %q", marker)
 		}
 	}
+	// The schedule field must stay gone: the controller's trigger decision is
+	// poll-driven and never parses a cron string — advertising one would be a
+	// dead knob with a plausible label (PR #427 review, Pillar 2).
+	if strings.Contains(body, `name="schedule"`) {
+		t.Error("GET /workflows/new: schedule field re-armed — it is not honoured by the controller")
+	}
 }
 
 // TestWorkflowCreate_Instance drives the full POST: the stored CR must be
@@ -304,7 +310,7 @@ func TestWorkflowCreate_Instance(t *testing.T) {
 	s := workflowTestServer(prReviewTemplate())
 
 	req := httptest.NewRequest(http.MethodPost, "/workflows", strings.NewReader(
-		"name=pr-review-demo&templateRef=pr-review&schedule=*/5+*+*+*+*"+
+		"name=pr-review-demo&templateRef=pr-review"+
 			"&label=needs-review&repos=a%2Cb&wiki=docs&injected=smuggled"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("X-Authentik-Username", "alice")
@@ -330,8 +336,11 @@ func TestWorkflowCreate_Instance(t *testing.T) {
 	if wf.Spec.TemplateRef != "pr-review" {
 		t.Errorf("templateRef = %q, want pr-review", wf.Spec.TemplateRef)
 	}
-	if wf.Spec.Source.Kind != "schedule" || wf.Spec.Source.Schedule != "*/5 * * * *" {
-		t.Errorf("source = %+v, want schedule */5 * * * *", wf.Spec.Source)
+	if wf.Spec.Source.Kind != "schedule" {
+		t.Errorf("source.kind = %q, want schedule (non-wake for the claim sweep)", wf.Spec.Source.Kind)
+	}
+	if wf.Spec.Source.Schedule != "" {
+		t.Errorf("source.schedule = %q, want empty — the form must not advertise a cron the controller never parses", wf.Spec.Source.Schedule)
 	}
 	var cfg map[string]any
 	if err := json.Unmarshal(wf.Spec.Config, &cfg); err != nil {
@@ -352,9 +361,11 @@ func TestWorkflowCreate_Instance(t *testing.T) {
 }
 
 // TestWorkflowCreate_AntiSpoof pins the write gate: creation requires an
-// Authentik-authoritative identity or the explicit dev identity. Legacy
-// X-Forwarded-* headers are client-suppliable — they may read, but a forged
-// forwarded username can never create under someone else's owner label.
+// Authentik-authoritative identity — or the explicit dev identity on a
+// server that was STARTED with dev writes enabled. Legacy X-Forwarded-*
+// headers are client-suppliable and never qualify, with or without the flag:
+// a forged forwarded username can browse, but can never create under someone
+// else's owner label.
 func TestWorkflowCreate_AntiSpoof(t *testing.T) {
 	s := workflowTestServer(prReviewTemplate())
 
@@ -367,9 +378,9 @@ func TestWorkflowCreate_AntiSpoof(t *testing.T) {
 		headers: map[string]string{"X-Authentik-Username": "alice"},
 		want:    http.StatusSeeOther,
 	}, {
-		name:    "dev identity writes",
+		name:    "dev identity without server opt-in is forbidden",
 		headers: map[string]string{"X-Harmostes-Dev-User": "devuser"},
-		want:    http.StatusSeeOther,
+		want:    http.StatusForbidden,
 	}, {
 		name: "forwarded-only identity is forbidden",
 		headers: map[string]string{
@@ -394,14 +405,27 @@ func TestWorkflowCreate_AntiSpoof(t *testing.T) {
 		})
 	}
 
-	// The forwarded-only rejection happened BEFORE any object was created:
-	// no workflow may exist under the forged identity.
+	// With the explicit server-side opt-in (fixture mode, or a dev-values
+	// chart render), the dev identity writes.
+	s.SetDevWriteEnabled(true)
+	req := httptest.NewRequest(http.MethodPost, "/workflows",
+		strings.NewReader("name=w-dev-optin&templateRef=pr-review"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-Harmostes-Dev-User", "devuser")
+	rec := httptest.NewRecorder()
+	s.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther {
+		t.Errorf("dev identity with server opt-in: status = %d, want 303", rec.Code)
+	}
+
+	// The rejections happened BEFORE any object was created: no workflow may
+	// exist under a forged identity.
 	wfs, err := s.listWorkflows(httptest.NewRequest(http.MethodGet, "/", nil), "alice")
 	if err != nil {
 		t.Fatalf("list workflows: %v", err)
 	}
-	if len(wfs) != 1 { // only the authoritative "w-authenticated-identity-writes"
-		t.Errorf("workflows visible to alice = %d, want 1 (forwarded forgery must not create)", len(wfs))
+	if len(wfs) != 1 { // only the authoritative case
+		t.Errorf("workflows visible to alice = %d, want 1 (forgeries must not create)", len(wfs))
 	}
 }
 

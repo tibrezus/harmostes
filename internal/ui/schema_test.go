@@ -77,21 +77,42 @@ func TestSchemaEndpoint(t *testing.T) {
 	if !strings.Contains(string(body["workflowtemplate"]), "template-spec-marker") {
 		t.Error("workflowtemplate schema is not the CRD's openAPIV3Schema (marker property missing)")
 	}
+	if cc := rec.Header().Get("Cache-Control"); !strings.Contains(cc, "no-cache") {
+		t.Errorf("Cache-Control = %q, want no-cache (store, but revalidate via ETag)", cc)
+	}
 
-	// ETag revalidation: the same request with If-None-Match gets 304 —
-	// schema consumers cache for free, and a CRD rollout (new resourceVersion)
-	// invalidates the cached copy.
+	// ETag revalidation: every If-None-Match form real clients send gets a
+	// 304 — exact match, weak validator, star, and candidate lists (RFC 9110
+	// §8.8.3.2). A CRD rollout (new resourceVersion) invalidates the cache.
 	etag := rec.Header().Get("ETag")
 	if etag == "" {
 		t.Fatal("no ETag set — schema caching impossible")
 	}
+	variants := map[string]string{
+		"exact match":    etag,
+		"weak validator": "W/" + etag,
+		"star":           "*",
+		"candidate list": `"rv-workflow-spec-marker-rv-template-spec-marker", ` + etag,
+	}
+	for name, inm := range variants {
+		req = httptest.NewRequest(http.MethodGet, "/api/schema", nil)
+		req.Header.Set("X-Authentik-Username", "alice")
+		req.Header.Set("If-None-Match", inm)
+		rec = httptest.NewRecorder()
+		s.Routes().ServeHTTP(rec, req)
+		if rec.Code != http.StatusNotModified {
+			t.Errorf("If-None-Match (%s) status = %d, want 304", name, rec.Code)
+		}
+	}
+
+	// A non-matching validator is a full 200 — the client's copy is stale.
 	req = httptest.NewRequest(http.MethodGet, "/api/schema", nil)
 	req.Header.Set("X-Authentik-Username", "alice")
-	req.Header.Set("If-None-Match", etag)
+	req.Header.Set("If-None-Match", "\"stale-rv\"")
 	rec = httptest.NewRecorder()
 	s.Routes().ServeHTTP(rec, req)
-	if rec.Code != http.StatusNotModified {
-		t.Errorf("If-None-Match status = %d, want 304", rec.Code)
+	if rec.Code != http.StatusOK {
+		t.Errorf("stale If-None-Match status = %d, want 200", rec.Code)
 	}
 }
 

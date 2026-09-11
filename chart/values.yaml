@@ -131,6 +131,12 @@ ui:
   image: ghcr.io/tibrezus/harmostes-ui:dev
   serviceAccount: harmostes-ui
   host: harmostes.rezus.cloud   # Gateway API HTTPRoute hostname (behind Authentik forward-auth)
+  # Dev-identity writes (X-Harmostes-Dev-User → POST /workflows): leave false
+  # in production. The header is client-suppliable if a request reaches the
+  # pod directly; enabling this flag is what makes that path write-capable,
+  # so it is an explicit per-environment decision rendered into the pod env
+  # — never a runtime assumption (PR #427 adversarial review, Pillar 6).
+  devWrite: false
   resources:
     requests: { cpu: 50m, memory: 64Mi }
     limits:   { cpu: 500m, memory: 256Mi }

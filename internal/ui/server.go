@@ -54,6 +54,7 @@ type Server struct {
 	wallMu      sync.Mutex
 	wallMeta    map[string]*wallUsage // workflow → cached agent metadata (live wall)
 	adminGroups map[string]bool       // identities in any of these groups see across all owner labels
+	devWrite    bool                  // dev-identity writes enabled — set ONLY for explicit dev/fixture servers
 }
 
 // SetAdminGroups configures the Authentik groups whose members see every
@@ -102,6 +103,29 @@ func ParseAdminGroups(env string) []string {
 		}
 	}
 	return groups
+}
+
+// SetDevWriteEnabled opts this server into dev-identity writes
+// (X-Harmostes-Dev-User). Production never calls it: the flag is set only by
+// the fixture server and by an explicit --dev-write / HARMOSTES_UI_DEV_WRITE
+// toggle that the chart renders ONLY when a values file asks for it — the
+// invariant lives in this repo's config, not in an assumption about network
+// reachability. Without it, a dev identity is read-only no matter what
+// headers a request carries.
+func (s *Server) SetDevWriteEnabled(v bool) {
+	s.devWrite = v
+}
+
+// mayWrite is the write gate for every mutating route: Authentik-authoritative
+// identities always qualify; the dev identity qualifies only when the server
+// was explicitly started with dev writes enabled. Client-suppliable
+// X-Forwarded-* fallbacks never qualify — a forged forwarded username can
+// browse, but can never create a workflow under someone else's owner label.
+func (s *Server) mayWrite(id *Identity) bool {
+	if id == nil {
+		return false
+	}
+	return id.Authoritative || (id.Dev && s.devWrite)
 }
 
 // isAdmin reports whether the identity belongs to any configured admin

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -44,7 +45,11 @@ func (s *Server) handleSchema(w http.ResponseWriter, r *http.Request) {
 
 	etag := `"` + wfRV + "-" + tmplRV + `"`
 	w.Header().Set("ETag", etag)
-	if r.Header.Get("If-None-Match") == etag {
+	// no-cache (not no-store): clients may KEEP the body but must revalidate
+	// — the ETag dance below is the intended traffic pattern, so proxies and
+	// browsers that send conditional requests get real 304s.
+	w.Header().Set("Cache-Control", "no-cache")
+	if etagMatches(r.Header.Get("If-None-Match"), etag) {
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
@@ -56,6 +61,26 @@ func (s *Server) handleSchema(w http.ResponseWriter, r *http.Request) {
 	}); err != nil {
 		s.logger.Error("encode schema", "err", err)
 	}
+}
+
+// etagMatches implements RFC 9110 §8.8.3.2 If-None-Match comparison for the
+// cases real clients send: `*` (any), a comma-separated candidate list, and
+// weak validators (W/ prefix — for If-None-Match a weak match is a match).
+func etagMatches(ifNoneMatch, etag string) bool {
+	if ifNoneMatch == "" {
+		return false
+	}
+	if ifNoneMatch == "*" {
+		return true
+	}
+	for _, candidate := range strings.Split(ifNoneMatch, ",") {
+		candidate = strings.TrimSpace(candidate)
+		candidate = strings.TrimPrefix(candidate, "W/")
+		if candidate == etag {
+			return true
+		}
+	}
+	return false
 }
 
 // crdOpenAPISchema reads one CRD and returns its storage version's

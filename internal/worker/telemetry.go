@@ -43,7 +43,9 @@ func recordReviewGateReason(ctx context.Context, workflow, repo, reason string) 
 		metric.WithDescription("Review-gate arm refusals and sweep degradations per workflow "+
 			"(dismissed = horizon guard, budget = dispatch-lost churn budget, breaker = dead-dispatch guard, "+
 			"arm-error = ctx-bound arm, scan-error = labeled scan failed, sweep-abort = sweep deadline cancelled it, "+
-			"cancel = superseded/closed review Job deleted, #402)."))
+			"cancel = superseded/closed review Job deleted, #402, "+
+			"override-add/remove/unknown = Forgejo granular label wake resolved to add (override granted) / "+
+			"removal (refused) / API-blinded (refused), #423)."))
 	c.Add(ctx, 1, metric.WithAttributes(
 		attribute.String("workflow", workflow),
 		attribute.String("repo", repo),

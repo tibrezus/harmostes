@@ -46,9 +46,13 @@ func deriveRequestShaped() map[string]bool {
 
 // RequestShaped reports whether a webhook action is label-touching — the
 // request-shaped class that may supersede a live review claim. Of the
-// request-shaped actions, only "labeled" is the breaker's human override
-// (#328): unlabeled/label_updated touch the label without asking for a
-// retry, so they must not reset the dead-dispatch counter.
+// request-shaped actions, "labeled" is the breaker's human override
+// directly (#328); Forgejo's granular "label_updated" becomes one through
+// resolution — the gate resolves add-vs-remove against the label presence
+// the evaluator establishes (Result.LabelPresent / humanOverride):
+// present = (re-)request, absent or unknown ⇒ no override (#423). This set
+// does NOT enforce that — it only makes the action supersede-eligible; the
+// direction check lives in the gate (internal/worker/review_gate.go).
 func RequestShaped(action string) bool {
 	return requestShapedActions[action]
 }

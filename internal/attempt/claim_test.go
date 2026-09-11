@@ -78,7 +78,7 @@ func TestArmClaim_BreakerOpensAndResets(t *testing.T) {
 	if !errors.Is(err, ErrDeadDispatchBreaker) {
 		t.Fatalf("automatic arm at threshold: err = %v, want ErrDeadDispatchBreaker", err)
 	}
-	if !strings.Contains(err.Error(), "re-apply the label") {
+	if !strings.Contains(err.Error(), "explicit label request") {
 		t.Errorf("breaker error must name the escape hatches: %v", err)
 	}
 

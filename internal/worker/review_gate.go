@@ -128,6 +128,12 @@ func (d GateDeps) wake(wf *v1alpha1.Workflow) *candidate {
 		repo: repo, pr: pr, pointer: fmt.Sprintf("%s#%d", repo, pr), sha: d.Wake.Revision,
 		request: requestShaped,
 		labeled: d.Wake.Action == "labeled",
+		// Forgejo's PR-label webhook emits only "label_updated" — for add
+		// AND remove (Gitea heritage; "labeled"/"unlabeled" never fire).
+		// #423: the add/remove ambiguity resolves against the PR's CURRENT
+		// labels at evaluation time — present means the human (re-)requested
+		// the review, absent means they removed it (never an override).
+		granularLabel: d.Wake.Action == "label_updated",
 	}
 }
 
@@ -168,10 +174,84 @@ type candidate struct {
 	pointer string // host/owner/name#N (normalized)
 	sha     string // wake revision, when the wake carried one
 	request bool   // request-shaped (label touched): may supersede a live claim
-	// labeled: the wake was the label being APPLIED — the breaker's human
-	// override. unlabeled/label_updated touch the label without asking for
-	// a retry, so they must not reset the dead-dispatch counter (#328).
+	// labeled: the wake was the label being APPLIED (GitHub's action) —
+	// the breaker's human override directly. unlabeled never overrides
+	// (#328); a granular label_updated overrides only through the resolved
+	// direction (humanApplied, #423).
 	labeled bool
+	// granularLabel: the wake was Forgejo's ambiguous "label_updated" —
+	// add and remove are indistinguishable in the payload, so humanOverride
+	// resolves the direction against the PR's current labels (#423).
+	granularLabel bool
+	// humanResolved: the carried verdict of humanOverride's direction
+	// resolution (nil = not resolved — the wake never ran the pre-read).
+	// Supersede and arm both consume THIS fact for granular candidates;
+	// res.LabelPresent only covers wakes that never needed the pre-read
+	// (r2 P1: two reads must not decide one wake).
+	humanResolved *bool
+}
+
+// humanApplied is the ONE spelling of #328's override predicate: did the
+// human definitively apply the review label? GitHub's "labeled" action
+// says so directly; a granular wake carries the resolution (pre-read when
+// one ran, else the evaluator's presence fact); a removal or an unknown
+// direction is never an override (#423). The arm sites compose it as
+// `cand.labeled || (cand.granularLabel && cand.humanApplied(...))` — the
+// guard is part of the composition because wake() sets labeled and
+// granularLabel from mutually exclusive comparisons (labeled ⇒ never
+// granular), so a carried resolution can only exist on the granular leg.
+func (c candidate) humanApplied(labelPresent bool) bool {
+	if c.humanResolved != nil {
+		return *c.humanResolved
+	}
+	return labelPresent
+}
+
+// humanOverride reports whether this candidate is the dead-dispatch
+// breaker's explicit human override: the review label was definitively
+// APPLIED — GitHub's "labeled" action says so directly; Forgejo's
+// "label_updated" only says the label was TOUCHED (add and remove are
+// indistinguishable in the payload), so the direction is resolved against
+// the PR's current labels: present = (re-)request, absent = removal (never
+// an override — #423). Unknown (API failure) fails closed AND SPEAKS: a
+// refusal that looks identical to "nothing to do" is the #423 symptom
+// with the explanation amputated (r9 (d)).
+//
+// The resolution is carried on the candidate (cand.humanResolved) so the
+// supersede and the later arm are decided by ONE fetch's fact (r2 P1):
+// two presence reads at two times can disagree, and the disagreement
+// window sat exactly around a destructive supersede — a transient PR-fetch
+// failure after a present-resolution destroyed the live review AND
+// dispatched nothing. The supersede-before-Evaluate ordering is a
+// deliberate trade: it saves the full Evaluate (required-contexts fetch +
+// status fetch + verdict scan) for same-head candidates the override will
+// drop anyway; the cost is that the carried read, not the evaluator's,
+// authorizes the supersede — acceptable because it fails closed and
+// speaks (r2 P1 fix, P8).
+func humanOverride(ctx context.Context, api review.API, cand *candidate, wfName, label string, log func(string, ...any)) bool {
+	if cand.labeled {
+		return true
+	}
+	if !cand.granularLabel {
+		return false
+	}
+	pr, err := api.GetPullRequest(ctx, cand.repo, cand.pr)
+	if err != nil {
+		log("review-ready: override direction unknown: PR fetch failed (%v) — not overriding", err)
+		cand.humanResolved = &[]bool{false}[0]
+		recordReviewGateReason(ctx, wfName, cand.repo, "override-unknown")
+		return false
+	}
+	present := pr.HasLabel(label)
+	if present {
+		log("review-ready: override direction resolved: review label present (re-request) — overriding")
+		recordReviewGateReason(ctx, wfName, cand.repo, "override-add")
+	} else {
+		log("review-ready: override direction resolved: review label absent (removal) — not overriding")
+		recordReviewGateReason(ctx, wfName, cand.repo, "override-remove")
+	}
+	cand.humanResolved = &present
+	return present
 }
 
 // gateSweepDeadline bounds the sweep itself (r7 P1): a healthy sweep is
@@ -608,8 +688,11 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 				// breaker's human override: an explicit label re-apply on
 				// a head that has recorded dead dispatches (#328). The
 				// supersede below is uncounted; the re-arm resets the
-				// counter and spends a fresh dispatch.
-				if !cand.labeled || claimFor.Status.Review.DeadDispatches == 0 {
+				// counter and spends a fresh dispatch. Forgejo's granular
+				// label_updated resolves its direction first (#423) — a
+				// label REMOVAL on a breaker-open head is a stand-down,
+				// not a retry.
+				if !humanOverride(ctx, api, &cand, wf.Name, label, log) || claimFor.Status.Review.DeadDispatches == 0 {
 					log("review-ready: candidate %s dropped: same-head re-request with no dead dispatches — nothing to do", cand.pointer)
 					continue
 				}
@@ -651,7 +734,8 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 		switch res.Decision {
 		case review.DecisionProceed:
 			sha := res.Envelope.HeadSHA
-			at, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf, cand.pointer, sha, label, cand.labeled)
+			human := cand.labeled || (cand.granularLabel && cand.humanApplied(res.LabelPresent))
+			at, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf, cand.pointer, sha, label, human)
 			if err != nil {
 				if isIntentionalStop(err) {
 					standDown(ctx, deps, liveAgg, wf.Name, cand, err, log, &lastDecision, &lastReason, &heldRecorded)
@@ -675,7 +759,8 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 			if sha == "" {
 				sha = candSha(cand)
 			}
-			if _, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf, cand.pointer, sha, label, cand.labeled); err != nil {
+			human := cand.labeled || (cand.granularLabel && cand.humanApplied(res.LabelPresent))
+			if _, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf, cand.pointer, sha, label, human); err != nil {
 				if isIntentionalStop(err) {
 					standDown(ctx, deps, liveAgg, wf.Name, cand, err, log, &lastDecision, &lastReason, &heldRecorded)
 					continue

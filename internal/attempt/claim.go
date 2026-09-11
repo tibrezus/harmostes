@@ -186,7 +186,7 @@ func ArmClaim(ctx context.Context, c client.Client, scheme *runtime.Scheme, wf *
 	if cur := at.Status.Review; cur != nil &&
 		cur.PR == pr && cur.HeadSHA == headSHA &&
 		cur.DeadDispatches >= v1alpha1.MaxDeadDispatchesPerHead && !humanRequest {
-		return nil, fmt.Errorf("%w: %d dispatched reviews of %s died without a verdict — automatic re-arm refused; push a new commit or re-apply the label to override",
+		return nil, fmt.Errorf("%w: %d dispatched reviews of %s died without a verdict — automatic re-arm refused; push a new commit or re-issue an explicit label request to override (on Forgejo any label edit on a labeled PR counts)",
 			ErrDeadDispatchBreaker, cur.DeadDispatches, shortSHA(headSHA))
 	}
 

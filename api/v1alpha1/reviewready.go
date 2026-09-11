@@ -77,6 +77,18 @@ func IsCancellationRelease(reason string) bool {
 // OneShotRunBound — observed live: 19 dead runs over 12 hours on one PR.
 // The breaker converts the silent burn into a bounded, visible standdown.
 // It resets on a new head push or an explicit label wake (human override).
+// Override breadth on Forgejo (#423): the granular label webhook cannot
+// say WHICH label changed, so the override fires when the review label is
+// present at ANY label touch — a bot adding an unrelated label to a
+// breaker-open head resets the counter and spends a fresh dispatch.
+// Deliberately accepted (r2 P6 of #424): GitHub's "labeled" had the same
+// breadth but was effectively unused; Forgejo is the fleet's default host,
+// so this IS the reachable path. The chosen containment is payload-label
+// threading (#408: consume the changed label from the webhook payload, and
+// bound overrides to ≤1 per head per Horizon) — NOT in this change; until
+// it lands, MaxDeadDispatchesPerHead is defeatable by anyone with label
+// permission on the PR, and the override-add reason on
+// harmostes_review_gate_total is the audit trail for it.
 const MaxDeadDispatchesPerHead = 3
 
 // MaxDispatchLostReleases bounds era stickiness for NEVER-DISPATCHED
@@ -98,7 +110,8 @@ const MaxDeadDispatchesPerHead = 3
 // and the labeled PR waits for a human. That is the intended convergence:
 // bounded, visible, and cheaper than unbounded churn; the arm-error and
 // sweep-abort reasons on harmostes_review_gate_total are what tell you it
-// was weather. The concrete arithmetic lives next to pollInterval in
+// was weather; override-add/override-remove/override-unknown on the same
+// counter are the Forgejo override audit trail (#423). The concrete arithmetic lives next to pollInterval in
 // chart/values.yaml, where the interval is chosen.
 //
 // One budget, three constants (r11 nit): gateSweepDeadline + reDispatchGrace

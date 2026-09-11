@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -797,6 +799,441 @@ func TestSweepBreakerHumanOverrideDispatches(t *testing.T) {
 	}
 	if claims[0].Status.Review.DeadDispatches != 0 {
 		t.Fatalf("override must reset the counter, got %d", claims[0].Status.Review.DeadDispatches)
+	}
+}
+
+// ── #423: Forgejo's PR-label webhook emits only "label_updated" — for add
+// AND remove. The breaker's human override ("re-apply the label") must
+// resolve the direction against the PR's current labels, or the override is
+// unreachable on git.rezus.cloud (found live on rhesadox#2065). ──
+
+func TestSweepBreakerOverrideViaForgejoLabelUpdated(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := greenPRServer(t) // PR carries needs-review → the touch was an ADD
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	st := &fakeStatus{}
+	deps, ctx := gateEnvW(t, wf, st, "git.rezus.cloud/tibrez/rhesadox#99", "label_updated", "deadbeef123")
+	for i := 0; i < v1alpha1.MaxDeadDispatchesPerHead; i++ {
+		at, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf,
+			"git.rezus.cloud/tibrez/rhesadox#99", "deadbeef123", "needs-review", false)
+		if err != nil {
+			t.Fatalf("arm %d: %v", i+1, err)
+		}
+		_ = attempt.MarkClaimDispatched(ctx, deps.Client, wf.Namespace, at.Name)
+		_, _, _ = attempt.ReleaseClaimDead(ctx, deps.Client, wf.Namespace, at.Name, "dispatch-lost")
+	}
+
+	out, err := RunReviewGateWake(ctx, deps, wf)
+	if err != nil {
+		t.Fatalf("wake sweep: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("label_updated with the label present must override the breaker, got %d dispatch(es)", len(out))
+	}
+	claims, err := attempt.LiveReviewClaims(ctx, deps.Client, wf)
+	if err != nil || len(claims) != 1 {
+		t.Fatalf("override must leave a live claim, got %d (%v)", len(claims), err)
+	}
+	if claims[0].Status.Review.DeadDispatches != 0 {
+		t.Fatalf("override must reset the counter, got %d", claims[0].Status.Review.DeadDispatches)
+	}
+}
+
+// The claimed-branch path: a LIVE claim at the same head + dead dispatches.
+// humanOverride (not the Proceed-branch shortcut) is the decider here —
+// mutant-probe: reverting it to pre-#423 behavior (label_updated never
+// overrides) must turn this red.
+func TestSweepBreakerOverrideViaForgejoLabelUpdatedThroughLiveClaim(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := greenPRServer(t)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	st := &fakeStatus{}
+	deps, ctx := gateEnvW(t, wf, st, "git.rezus.cloud/tibrez/rhesadox#99", "label_updated", "deadbeef123")
+	// Two deaths, then a re-arm: a LIVE claim holding a partial count.
+	for i := 0; i < 2; i++ {
+		at, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf,
+			"git.rezus.cloud/tibrez/rhesadox#99", "deadbeef123", "needs-review", false)
+		if err != nil {
+			t.Fatalf("arm %d: %v", i+1, err)
+		}
+		_ = attempt.MarkClaimDispatched(ctx, deps.Client, wf.Namespace, at.Name)
+		_, _, _ = attempt.ReleaseClaimDead(ctx, deps.Client, wf.Namespace, at.Name, "dispatch-lost")
+	}
+	if _, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf,
+		"git.rezus.cloud/tibrez/rhesadox#99", "deadbeef123", "needs-review", false); err != nil {
+		t.Fatalf("re-arm: %v", err)
+	}
+
+	out, err := RunReviewGateWake(ctx, deps, wf)
+	if err != nil {
+		t.Fatalf("wake sweep: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("label_updated (label present) through a live partial-count claim must dispatch, got %d", len(out))
+	}
+	claims, err := attempt.LiveReviewClaims(ctx, deps.Client, wf)
+	if err != nil || len(claims) != 1 {
+		t.Fatalf("exactly one live claim after override, got %d (%v)", len(claims), err)
+	}
+	if claims[0].Status.Review.DeadDispatches != 0 {
+		t.Fatalf("override must reset the counter, got %d", claims[0].Status.Review.DeadDispatches)
+	}
+}
+
+// The reviewer-required arm (r1 blocker): label_updated REMOVAL with NO live
+// claim on a breaker-open head — the real rhesadox#2065 end-state (every era
+// released). Evaluate returns WAITING for label-absent-no-verdict (the #1635
+// stay-armed ambiguity), so the Waiting arm's ArmClaim is the decider: with
+// human=false the breaker refuses and the counter survives; OR-ing
+// granularLabel into that arm (the r1 shortcut) resets 3 → 0 and revives the
+// era. Mutant: human := cand.labeled || cand.granularLabel at Waiting → red.
+func TestSweepForgejoLabelUpdatedRemovalNoLiveClaimKeepsBreaker(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := prServerWithLabels(t, "full-pipeline") // the label is gone; no live claim; breaker open
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	st := &fakeStatus{}
+	deps, ctx := gateEnvW(t, wf, st, "git.rezus.cloud/tibrez/rhesadox#99", "label_updated", "deadbeef123")
+	for i := 0; i < v1alpha1.MaxDeadDispatchesPerHead; i++ {
+		at, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf,
+			"git.rezus.cloud/tibrez/rhesadox#99", "deadbeef123", "needs-review", false)
+		if err != nil {
+			t.Fatalf("arm %d: %v", i+1, err)
+		}
+		_ = attempt.MarkClaimDispatched(ctx, deps.Client, wf.Namespace, at.Name)
+		_, _, _ = attempt.ReleaseClaimDead(ctx, deps.Client, wf.Namespace, at.Name, "dispatch-lost")
+	}
+
+	out, err := RunReviewGateWake(ctx, deps, wf)
+	if err != nil {
+		t.Fatalf("wake sweep: %v", err)
+	}
+	if len(out) != 0 {
+		t.Fatalf("a label REMOVAL on a breaker-open head must not dispatch, got %d", len(out))
+	}
+	// The breaker must still be open: an automatic re-arm is still refused
+	// (the counter survived the label_updated wake untouched).
+	if _, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf,
+		"git.rezus.cloud/tibrez/rhesadox#99", "deadbeef123", "needs-review", false); err == nil {
+		t.Fatal("dead-dispatch breaker must still be open after a label_updated removal — the counter was erased")
+	}
+	claims, err := attempt.LiveReviewClaims(ctx, deps.Client, wf)
+	if err != nil || len(claims) != 0 {
+		t.Fatalf("no live claim may be revived by a removal, got %d (%v)", len(claims), err)
+	}
+}
+
+func TestSweepForgejoLabelUpdatedRemovalIsNotOverride(t *testing.T) {
+	clearTriggerEnv(t)
+	// The PR's labels no longer carry needs-review: the label_updated was a
+	// REMOVAL — the human asked to stop, so a live claim must survive.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(req.URL.Path, "/pulls/"):
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"state": "open", "head": map[string]string{"sha": "deadbeef123"},
+				"base":   map[string]string{"ref": "main"},
+				"labels": []map[string]string{{"name": "full-pipeline"}},
+			})
+		case strings.Contains(req.URL.Path, "/comments"):
+			_ = json.NewEncoder(w).Encode([]any{})
+		case strings.HasSuffix(req.URL.Path, "/statuses"):
+			_ = json.NewEncoder(w).Encode([]map[string]string{
+				{"context": "ci / build-test (push)", "status": "success"},
+			})
+		default:
+			http.NotFound(w, req)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	st := &fakeStatus{}
+	deps, ctx := gateEnvW(t, wf, st, "git.rezus.cloud/tibrez/rhesadox#99", "label_updated", "deadbeef123")
+	// One dead dispatch, then a live dispatched claim at the same head.
+	at, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf,
+		"git.rezus.cloud/tibrez/rhesadox#99", "deadbeef123", "needs-review", false)
+	if err != nil {
+		t.Fatalf("arm 1: %v", err)
+	}
+	_ = attempt.MarkClaimDispatched(ctx, deps.Client, wf.Namespace, at.Name)
+	_, _, _ = attempt.ReleaseClaimDead(ctx, deps.Client, wf.Namespace, at.Name, "dispatch-lost")
+	at, err = attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf,
+		"git.rezus.cloud/tibrez/rhesadox#99", "deadbeef123", "needs-review", false)
+	if err != nil {
+		t.Fatalf("re-arm: %v", err)
+	}
+	_ = attempt.MarkClaimDispatched(ctx, deps.Client, wf.Namespace, at.Name)
+
+	out, err := RunReviewGateWake(ctx, deps, wf)
+	if err != nil {
+		t.Fatalf("wake sweep: %v", err)
+	}
+	if len(out) != 0 {
+		t.Fatalf("label_updated REMOVAL must not supersede a live claim or dispatch, got %d", len(out))
+	}
+	claims, err := attempt.LiveReviewClaims(ctx, deps.Client, wf)
+	if err != nil || len(claims) != 1 {
+		t.Fatalf("the live claim must survive a label removal, got %d (%v)", len(claims), err)
+	}
+	if claims[0].Status.Review.DeadDispatches != 1 {
+		t.Fatalf("a removal must not reset the dead-dispatch counter, got %d", claims[0].Status.Review.DeadDispatches)
+	}
+}
+
+// prServerWithLabels is greenPRServer with an arbitrary label list — the
+// removal/identity tests differ ONLY in labels (r2 P9: shape-identical
+// hand-rolled servers drift into tests that pass on shape).
+func prServerWithLabels(t *testing.T, labels ...string) *httptest.Server {
+	t.Helper()
+	ls := make([]map[string]string, 0, len(labels))
+	for _, l := range labels {
+		ls = append(ls, map[string]string{"name": l})
+	}
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(req.URL.Path, "/pulls/"):
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"state": "open", "head": map[string]string{"sha": "deadbeef123"},
+				"base":   map[string]string{"ref": "main"},
+				"labels": ls,
+			})
+		case strings.Contains(req.URL.Path, "/comments"):
+			_ = json.NewEncoder(w).Encode([]any{})
+		case strings.HasSuffix(req.URL.Path, "/statuses"):
+			_ = json.NewEncoder(w).Encode([]map[string]string{
+				{"context": "ci / build-test (push)", "status": "success"},
+			})
+		default:
+			http.NotFound(w, req)
+		}
+	}))
+}
+
+// Kills mutant B (r2 P9): humanOverride FAILING OPEN on a PR-fetch error.
+// A granular same-head wake + breaker + live claim + a host whose PR fetch
+// 500s: the direction is UNKNOWN — the live claim must survive and nothing
+// dispatch. Fail-open here destroys a live review on a transient blip
+// (r2 P1's hot path).
+// prServerWithPRFetchError 500s the PR fetch — the fail-closed/unknown
+// direction case (r2 P4: dedicated helper only where the shape differs).
+func prServerWithPRFetchError(t *testing.T) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(req.URL.Path, "/pulls/") {
+			http.Error(w, `{"message":"boom"}`, http.StatusInternalServerError)
+			return
+		}
+		http.NotFound(w, req)
+	}))
+}
+
+func TestSweepForgejoOverrideFailsClosedOnFetchError(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := prServerWithPRFetchError(t)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	st := &fakeStatus{}
+	deps, ctx := gateEnvW(t, wf, st, "git.rezus.cloud/tibrez/rhesadox#99", "label_updated", "deadbeef123")
+	at, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf,
+		"git.rezus.cloud/tibrez/rhesadox#99", "deadbeef123", "needs-review", false)
+	if err != nil {
+		t.Fatalf("arm 1: %v", err)
+	}
+	_ = attempt.MarkClaimDispatched(ctx, deps.Client, wf.Namespace, at.Name)
+	_, _, _ = attempt.ReleaseClaimDead(ctx, deps.Client, wf.Namespace, at.Name, "dispatch-lost")
+	at, err = attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf,
+		"git.rezus.cloud/tibrez/rhesadox#99", "deadbeef123", "needs-review", false)
+	if err != nil {
+		t.Fatalf("re-arm: %v", err)
+	}
+	_ = attempt.MarkClaimDispatched(ctx, deps.Client, wf.Namespace, at.Name)
+
+	out, err := RunReviewGateWake(ctx, deps, wf)
+	if err != nil {
+		t.Fatalf("wake sweep: %v", err)
+	}
+	if len(out) != 0 {
+		t.Fatalf("unknown direction must not dispatch, got %d", len(out))
+	}
+	claims, err := attempt.LiveReviewClaims(ctx, deps.Client, wf)
+	if err != nil || len(claims) != 1 {
+		t.Fatalf("the live claim must survive an unknown direction, got %d (%v)", len(claims), err)
+	}
+	if claims[0].Status.Review.DeadDispatches != 1 {
+		t.Fatalf("unknown direction must not reset the counter, got %d", claims[0].Status.Review.DeadDispatches)
+	}
+	// The discriminating observable (r2 P9 mutant B): the claim must be the
+	// ORIGINAL DISPATCHED one, not a revived armed-waiting era. Fail-open
+	// supersedes the dispatched claim, the fetch-failed Waiting arm re-arms
+	// a fresh era (DispatchedAt nil), and — at counter < max — every other
+	// assertion above still passes. DispatchedAt is what proves no
+	// destructive supersede happened.
+	if claims[0].Status.Review.DispatchedAt == nil {
+		t.Fatal("the dispatched claim was superseded by an armed-waiting revival — fail-open destroyed a live review")
+	}
+}
+
+// Kills mutant C (r2 P9): "unlabeled" is request-shaped but NEVER
+// override-eligible — #328's rule must not hinge on one == and a comment.
+func TestSweepUnlabeledWakeNeverOverridesBreaker(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := greenPRServer(t) // label present — only the ACTION decides here
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	st := &fakeStatus{}
+	deps, ctx := gateEnvW(t, wf, st, "git.rezus.cloud/tibrez/rhesadox#99", "unlabeled", "deadbeef123")
+	for i := 0; i < 2; i++ {
+		at, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf,
+			"git.rezus.cloud/tibrez/rhesadox#99", "deadbeef123", "needs-review", false)
+		if err != nil {
+			t.Fatalf("arm %d: %v", i+1, err)
+		}
+		_ = attempt.MarkClaimDispatched(ctx, deps.Client, wf.Namespace, at.Name)
+		_, _, _ = attempt.ReleaseClaimDead(ctx, deps.Client, wf.Namespace, at.Name, "dispatch-lost")
+	}
+	if _, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf,
+		"git.rezus.cloud/tibrez/rhesadox#99", "deadbeef123", "needs-review", false); err != nil {
+		t.Fatalf("re-arm: %v", err)
+	}
+
+	out, err := RunReviewGateWake(ctx, deps, wf)
+	if err != nil {
+		t.Fatalf("wake sweep: %v", err)
+	}
+	if len(out) != 0 {
+		t.Fatalf("unlabeled must never trip the breaker override, got %d dispatch(es)", len(out))
+	}
+	claims, err := attempt.LiveReviewClaims(ctx, deps.Client, wf)
+	if err != nil || len(claims) != 1 {
+		t.Fatalf("the live claim must survive an unlabeled wake, got %d (%v)", len(claims), err)
+	}
+	if claims[0].Status.Review.DeadDispatches != 2 {
+		t.Fatalf("unlabeled must not reset the counter, got %d", claims[0].Status.Review.DeadDispatches)
+	}
+}
+
+// Documents the P5(d) identity boundary: Forgejo's label_updated fires for a
+// touch of ANY label — an unrelated-label touch while needs-review sits on
+// the PR resolves to present and (on a green head with a live claim)
+// overrides. That over-breadth is pre-existing on GitHub too ("labeled"
+// fires for unrelated labels); this test pins the CURRENT semantics so the
+// payload-label threading (#408) changes it deliberately, not silently.
+func TestSweepForgejoOverrideOnUnrelatedLabelTouch(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := prServerWithLabels(t, "needs-review", "bug")
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	st := &fakeStatus{}
+	deps, ctx := gateEnvW(t, wf, st, "git.rezus.cloud/tibrez/rhesadox#99", "label_updated", "deadbeef123")
+	at, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf,
+		"git.rezus.cloud/tibrez/rhesadox#99", "deadbeef123", "needs-review", false)
+	if err != nil {
+		t.Fatalf("arm 1: %v", err)
+	}
+	_ = attempt.MarkClaimDispatched(ctx, deps.Client, wf.Namespace, at.Name)
+	_, _, _ = attempt.ReleaseClaimDead(ctx, deps.Client, wf.Namespace, at.Name, "dispatch-lost")
+
+	out, err := RunReviewGateWake(ctx, deps, wf)
+	if err != nil {
+		t.Fatalf("wake sweep: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("present-resolved granular wake overrides (pinned current semantics), got %d", len(out))
+	}
+}
+
+// THE precedence test (r3 P9 blocker): the carried resolution and the
+// evaluator's presence fact DISAGREE. The pre-read (humanOverride's fetch)
+// sees the label present; Evaluate's own fetch then fails — the r2-P1
+// window. humanApplied must honor the CARRIED verdict (human=true → the
+// breaker resets, counter 2→0, armed waiting): the human demonstrably
+// re-applied, and the alternative (evaluator-only) is exactly the
+// destroyed-live-review bug the carried fact exists to prevent. Mutant:
+// replacing humanApplied(res.LabelPresent) with res.LabelPresent at either
+// arm → the breaker refuses (human=false) → counter stays 2 → RED here.
+func TestSweepForgejoOverrideCarriedResolutionBeatsFetchFailure(t *testing.T) {
+	clearTriggerEnv(t)
+	// Stateful host: the first TWO PR fetches succeed WITH the label (fetch
+	// #1 is section A's in-flight-claim evaluation, #2 is the pre-read in
+	// humanOverride); every later fetch (section C's Evaluate) 500s — the
+	// two override facts DISAGREE: carried present, evaluator unknown.
+	var prFetches int32
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(req.URL.Path, "/pulls/"):
+			mu.Lock()
+			n := atomic.AddInt32(&prFetches, 1)
+			mu.Unlock()
+			if n <= 2 {
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"state": "open", "head": map[string]string{"sha": "deadbeef123"},
+					"base":   map[string]string{"ref": "main"},
+					"labels": []map[string]string{{"name": "needs-review"}},
+				})
+				return
+			}
+			http.Error(w, `{"message":"transient"}`, http.StatusInternalServerError)
+		case strings.Contains(req.URL.Path, "/comments"):
+			_ = json.NewEncoder(w).Encode([]any{})
+		case strings.HasSuffix(req.URL.Path, "/statuses"):
+			_ = json.NewEncoder(w).Encode([]map[string]string{
+				{"context": "ci / build-test (push)", "status": "success"},
+			})
+		default:
+			http.NotFound(w, req)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	st := &fakeStatus{}
+	deps, ctx := gateEnvW(t, wf, st, "git.rezus.cloud/tibrez/rhesadox#99", "label_updated", "deadbeef123")
+	// Two deaths, then a LIVE dispatched claim at partial count — the same
+	// shape as the claimed-branch tests: supersede happens, then the arm.
+	for i := 0; i < 2; i++ {
+		at, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf,
+			"git.rezus.cloud/tibrez/rhesadox#99", "deadbeef123", "needs-review", false)
+		if err != nil {
+			t.Fatalf("arm %d: %v", i+1, err)
+		}
+		_ = attempt.MarkClaimDispatched(ctx, deps.Client, wf.Namespace, at.Name)
+		_, _, _ = attempt.ReleaseClaimDead(ctx, deps.Client, wf.Namespace, at.Name, "dispatch-lost")
+	}
+	if _, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf,
+		"git.rezus.cloud/tibrez/rhesadox#99", "deadbeef123", "needs-review", false); err != nil {
+		t.Fatalf("re-arm: %v", err)
+	}
+
+	out, err := RunReviewGateWake(ctx, deps, wf)
+	if err != nil {
+		t.Fatalf("wake sweep: %v", err)
+	}
+	if len(out) != 0 {
+		t.Fatalf("an override on a fetch-failed evaluation arms WAITING, it must not dispatch, got %d", len(out))
+	}
+	claims, err := attempt.LiveReviewClaims(ctx, deps.Client, wf)
+	if err != nil || len(claims) != 1 {
+		t.Fatalf("exactly one live claim after the carried-resolution override, got %d (%v)", len(claims), err)
+	}
+	if claims[0].Status.Review.DeadDispatches != 0 {
+		t.Fatalf("the carried resolution must win over the failed evaluator read: counter must reset to 0, got %d", claims[0].Status.Review.DeadDispatches)
+	}
+	if claims[0].Status.Review.DispatchedAt != nil {
+		t.Fatal("the revived claim is armed-waiting (CI unknown), not dispatched")
 	}
 }
 

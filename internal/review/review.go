@@ -87,6 +87,19 @@ type PullRequest struct {
 	Labels  []string `json:"labels"`
 }
 
+// HasLabel reports whether the PR carries the review label — the ONE
+// spelling of membership across the seam (the gate's override resolution
+// consumes this; two hand-rolled contains() agree only by inspection,
+// r2 P2b).
+func (pr *PullRequest) HasLabel(label string) bool {
+	for _, l := range pr.Labels {
+		if l == label {
+			return true
+		}
+	}
+	return false
+}
+
 // ---------------------------------------------------------------------------
 // Host resolution — mirrors the platform's repo-path convention:
 //
@@ -526,6 +539,13 @@ type Result struct {
 	// NewArmedSha/NewArmedAt: updated armed state (empty NewArmedSha → disarm).
 	NewArmedSha string
 	NewArmedAt  time.Time
+	// LabelPresent: whether the fetched PR carried the review label — known
+	// only after the PR fetch succeeds (pre-fetch exits leave it false).
+	// The gate's Forgejo override resolution consumes this (#423): Waiting is
+	// reachable BOTH with the label present (CI not green) and absent (the
+	// #1635 stay-armed ambiguity), so presence is a fact the evaluator owns,
+	// not something the caller may imply from the decision.
+	LabelPresent bool
 }
 
 // Evaluate performs one Review-Ready decision.
@@ -554,11 +574,29 @@ func Evaluate(ctx context.Context, api API, p Params) Result {
 		return Result{Evaluation: waiting("pr fetch failed: " + err.Error()), NewArmedSha: keepSha, NewArmedAt: armTime(p.ArmedAt, now)}
 	}
 
-	if pr.State != "open" {
-		return Result{Evaluation: standdown("pull request " + stateWord(pr.State)), NewArmedSha: ""}
+	// The evaluator owns the presence fact (it has the PR in hand): compute
+	// it ONCE here and thread every post-fetch return through `withPresence`
+	// (r2 P2 — a hand-maintained bool across ~16 return sites gets a future
+	// return silently wrong, and the wrongness re-unreachable's the #423
+	// override invisibly: false is fail-closed AND passes CI). Pre-fetch
+	// exits above keep the zero value: unknown ≠ absent, and every consumer
+	// treats false as "do not treat as applied".
+	labelPresent := pr.HasLabel(p.Label)
+	withPresence := func(ev Evaluation, armedSha string, armedAt time.Time) Result {
+		return Result{Evaluation: ev, NewArmedSha: armedSha, NewArmedAt: armedAt, LabelPresent: labelPresent}
+	}
+	// The label-absent branch's exits: presence false is the zero value, but
+	// the exits go through a closure too so NO return site hand-writes the
+	// field (r2 P2).
+	withoutPresence := func(ev Evaluation, armedSha string, armedAt time.Time) Result {
+		return Result{Evaluation: ev, NewArmedSha: armedSha, NewArmedAt: armedAt}
 	}
 
-	if !hasLabel(pr.Labels, p.Label) {
+	if pr.State != "open" {
+		return withPresence(standdown("pull request "+stateWord(pr.State)), "", time.Time{})
+	}
+
+	if !pr.HasLabel(p.Label) {
 		// Label absent is a real stand-down ONLY once a verdict exists: the
 		// deploy plugin removes the label after posting the verdict trailer
 		// — that trailer is the durable consume signal. Without a verdict the
@@ -585,10 +623,10 @@ func Evaluate(ctx context.Context, api API, p Params) Result {
 			if keepSha == "" {
 				keepSha = pr.HeadSHA
 			}
-			return Result{Evaluation: waiting("label absent; verdict check failed: " + err.Error()), NewArmedSha: keepSha, NewArmedAt: armTime(p.ArmedAt, now)}
+			return withoutPresence(waiting("label absent; verdict check failed: "+err.Error()), keepSha, armTime(p.ArmedAt, now))
 		}
 		if hasVerdict(comments) {
-			return Result{Evaluation: standdown("label absent (verdict posted — consumed)"), NewArmedSha: ""}
+			return withoutPresence(standdown("label absent (verdict posted — consumed)"), "", time.Time{})
 		}
 		armedAt := armTime(p.ArmedAt, now)
 		// Head moved during the ambiguity window: reset the horizon clock,
@@ -599,9 +637,9 @@ func Evaluate(ctx context.Context, api API, p Params) Result {
 			armedAt = now
 		}
 		if now.Sub(armedAt) > p.Horizon {
-			return Result{Evaluation: standdown("horizon exceeded (label absent, no verdict; pending > " + p.Horizon.String() + ")"), NewArmedSha: ""}
+			return withoutPresence(standdown("horizon exceeded (label absent, no verdict; pending > "+p.Horizon.String()+")"), "", time.Time{})
 		}
-		return Result{Evaluation: waiting("label absent, no verdict — ingress may be lost, staying armed"), NewArmedSha: pr.HeadSHA, NewArmedAt: armedAt}
+		return withPresence(waiting("label absent, no verdict — ingress may be lost, staying armed"), pr.HeadSHA, armedAt)
 	}
 
 	// Head moved since arming: re-arm at the new head (reset the horizon).
@@ -611,7 +649,7 @@ func Evaluate(ctx context.Context, api API, p Params) Result {
 	}
 
 	if now.Sub(armedAt) > p.Horizon {
-		return Result{Evaluation: standdown("horizon exceeded (CI pending > " + p.Horizon.String() + ")"), NewArmedSha: ""}
+		return withPresence(standdown("horizon exceeded (CI pending > "+p.Horizon.String()+")"), "", time.Time{})
 	}
 
 	// In-flight discrimination (#250 r2) + liveness bound (#248) — BEFORE
@@ -633,10 +671,10 @@ func Evaluate(ctx context.Context, api API, p Params) Result {
 		since := armTime(p.ArmedAt, now).Add(-verdictSinceSlack)
 		comments, err := api.ListComments(ctx, p.Repo, p.PR, since)
 		if err != nil {
-			return Result{Evaluation: waiting("in-flight verdict check failed: " + err.Error()), NewArmedSha: pr.HeadSHA, NewArmedAt: armedAt}
+			return withPresence(waiting("in-flight verdict check failed: "+err.Error()), pr.HeadSHA, armedAt)
 		}
 		if hasVerdict(comments) {
-			return Result{Evaluation: standdown("verdict posted — consumed"), NewArmedSha: ""}
+			return withPresence(standdown("verdict posted — consumed"), "", time.Time{})
 		}
 		// Head moved while the review was in flight (#410): the run was
 		// dispatched at the claim's head, but the PR has advanced past it.
@@ -658,14 +696,14 @@ func Evaluate(ctx context.Context, api API, p Params) Result {
 			return Result{Evaluation: standdown(fmt.Sprintf("head moved while review in flight (dispatched at %s, PR now at %s) — verdict could not land", p.ArmedSha, pr.HeadSHA)), NewArmedSha: ""}
 		}
 		if p.DispatchTimeout > 0 && now.Sub(p.DispatchedAt) >= p.DispatchTimeout {
-			return Result{Evaluation: standdown(fmt.Sprintf("dispatch presumed dead (no verdict after %s; run bound %s) — backlog will re-arm", p.DispatchTimeout, v1alpha1.OneShotRunBound)), NewArmedSha: ""}
+			return withPresence(standdown(fmt.Sprintf("dispatch presumed dead (no verdict after %s; run bound %s) — backlog will re-arm", p.DispatchTimeout, v1alpha1.OneShotRunBound)), "", time.Time{})
 		}
-		return Result{Evaluation: waiting("review in flight — dispatched, verdict pending"), NewArmedSha: pr.HeadSHA, NewArmedAt: armedAt}
+		return withPresence(waiting("review in flight — dispatched, verdict pending"), pr.HeadSHA, armedAt)
 	}
 
 	required, err := api.RequiredContexts(ctx, p.Repo, pr.Base)
 	if err != nil {
-		return Result{Evaluation: waiting("merge-rules fetch failed: " + err.Error()), NewArmedSha: pr.HeadSHA, NewArmedAt: armedAt}
+		return withPresence(waiting("merge-rules fetch failed: "+err.Error()), pr.HeadSHA, armedAt)
 	}
 	if len(required) == 0 {
 		// No merge-rule contexts defined: the label is the whole contract.
@@ -676,7 +714,7 @@ func Evaluate(ctx context.Context, api API, p Params) Result {
 
 	states, err := api.ContextStates(ctx, p.Repo, pr.HeadSHA)
 	if err != nil {
-		return Result{Evaluation: waiting("contexts fetch failed: " + err.Error()), NewArmedSha: pr.HeadSHA, NewArmedAt: armedAt}
+		return withPresence(waiting("contexts fetch failed: "+err.Error()), pr.HeadSHA, armedAt)
 	}
 
 	var pending, red, green []string
@@ -696,9 +734,9 @@ func Evaluate(ctx context.Context, api API, p Params) Result {
 		// Red CI is a silent non-event: the dev already sees red CI; a
 		// REQUEST_CHANGES verdict would be noise. Stay armed — the next
 		// push (synchronize) re-arms at the new head.
-		return Result{Evaluation: waiting("ci red at head (" + strings.Join(red, ", ") + ") — staying armed"), NewArmedSha: pr.HeadSHA, NewArmedAt: armedAt}
+		return withPresence(waiting("ci red at head ("+strings.Join(red, ", ")+") — staying armed"), pr.HeadSHA, armedAt)
 	case len(pending) > 0:
-		return Result{Evaluation: waiting("ci pending (" + strings.Join(pending, ", ") + ")"), NewArmedSha: pr.HeadSHA, NewArmedAt: armedAt}
+		return withPresence(waiting("ci pending ("+strings.Join(pending, ", ")+")"), pr.HeadSHA, armedAt)
 	default:
 		return proceed(p, pr, required, green)
 	}
@@ -706,6 +744,7 @@ func Evaluate(ctx context.Context, api API, p Params) Result {
 
 func proceed(p Params, pr *PullRequest, required, green []string) Result {
 	return Result{
+		LabelPresent: pr.HasLabel(p.Label), // proceed is only reached on the label-present path; computed, not asserted
 		Evaluation: Evaluation{
 			Decision: DecisionProceed,
 			Reason:   "label present, all required contexts green at head",
@@ -759,15 +798,6 @@ var verdictTrailer = regexp.MustCompile(`<!-- pr-review: (APPROVE|REQUEST_CHANGE
 func hasVerdict(comments []IssueComment) bool {
 	for _, c := range comments {
 		if verdictTrailer.MatchString(c.Body) {
-			return true
-		}
-	}
-	return false
-}
-
-func hasLabel(labels []string, want string) bool {
-	for _, l := range labels {
-		if l == want {
 			return true
 		}
 	}

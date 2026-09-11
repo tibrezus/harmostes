@@ -1,3 +1,5 @@
+//go:build integration
+
 package integration
 
 // The rendered-RBAC gate (PR #427 review, R2a): the UI's cluster-facing
@@ -9,16 +11,27 @@ package integration
 //
 // The golden is byte-pinned by the chart job, so parsing it here is testing
 // exactly what a cluster would receive from `helm template`.
+//
+// Assertions are written to be ABLE to fail (round-4 review): verbs and
+// resources match by membership (never index [0]), write verbs are banned
+// across EVERY harmostes.dev rule (a future rule cannot silently carry
+// them), and roleRef/subject identity including namespaces is asserted.
 
 import (
 	"os"
 	"strings"
 	"testing"
 
-	"sigs.k8s.io/yaml"
+	sigsyaml "sigs.k8s.io/yaml"
+
+	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
 )
 
 const goldenPath = "../../chart/ci/golden/full.yaml"
+
+// writeVerbs are the verbs that must never appear outside the one workflows
+// create rule the write path justifies.
+var writeVerbs = map[string]bool{"create": true, "update": true, "patch": true, "delete": true, "deletecollection": true}
 
 type goldenResource struct {
 	Kind     string           `json:"kind"`
@@ -41,7 +54,7 @@ func loadGoldenResources(t *testing.T) []goldenResource {
 			continue
 		}
 		var r goldenResource
-		if err := yaml.Unmarshal([]byte(doc), &r); err != nil {
+		if err := sigsyaml.Unmarshal([]byte(doc), &r); err != nil {
 			t.Fatalf("parse golden doc: %v", err)
 		}
 		if r.Kind != "" {
@@ -51,17 +64,15 @@ func loadGoldenResources(t *testing.T) []goldenResource {
 	return out
 }
 
-func findGolden(t *testing.T, kind, name string) *goldenResource {
+func findGolden(t *testing.T, kind, name string) goldenResource {
 	t.Helper()
-	resources := loadGoldenResources(t)
-	for i := range resources {
-		r := &resources[i]
+	for _, r := range loadGoldenResources(t) {
 		if r.Kind == kind && r.Metadata["name"] == name {
 			return r
 		}
 	}
 	t.Fatalf("golden render has no %s/%s", kind, name)
-	return nil
+	return goldenResource{}
 }
 
 func stringsOf(v any) []string {
@@ -75,7 +86,15 @@ func stringsOf(v any) []string {
 	return out
 }
 
-// TestGoldenUIRBAC pins the right-sized UI RBAC (ADR-0012 §5).
+func contains(list []string, want string) bool {
+	for _, s := range list {
+		if s == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestGoldenUIRBAC(t *testing.T) {
 	// ClusterRole: exactly one rule — get on the two harmostes CRDs, narrowed
 	// by resourceNames. Nothing cluster-scoped beyond that.
@@ -84,69 +103,89 @@ func TestGoldenUIRBAC(t *testing.T) {
 		t.Fatalf("ClusterRole rules = %d, want exactly 1", len(cr.Rules))
 	}
 	rule := cr.Rules[0]
-	if got := stringsOf(rule["apiGroups"]); len(got) != 1 || got[0] != "apiextensions.k8s.io" {
-		t.Errorf("ClusterRole apiGroups = %v", got)
+	if got := stringsOf(rule["apiGroups"]); !contains(got, "apiextensions.k8s.io") {
+		t.Errorf("ClusterRole apiGroups = %v, want apiextensions.k8s.io", got)
 	}
 	if got := stringsOf(rule["verbs"]); len(got) != 1 || got[0] != "get" {
 		t.Errorf("ClusterRole verbs = %v, want [get] only", got)
 	}
-	wantNames := []string{"workflows.harmostes.dev", "workflowtemplates.harmostes.dev"}
-	if got := stringsOf(rule["resourceNames"]); len(got) != 2 || got[0] != wantNames[0] || got[1] != wantNames[1] {
-		t.Errorf("ClusterRole resourceNames = %v, want %v", got, wantNames)
+	if got := stringsOf(rule["resourceNames"]); !contains(got, v1alpha1.WorkflowCRDName) || !contains(got, v1alpha1.WorkflowTemplateCRDName) {
+		t.Errorf("ClusterRole resourceNames = %v, want %s + %s", got, v1alpha1.WorkflowCRDName, v1alpha1.WorkflowTemplateCRDName)
 	}
 
-	// Role: workflows create + reads, NO lifecycle verbs, NO secrets/ESO.
+	// Role: membership-based. Every harmostes.dev rule must be read-only
+	// EXCEPT the workflows rule, whose only write verb may be create; secrets
+	// and externalsecrets must not appear anywhere; workflows must not carry
+	// lifecycle verbs.
 	role := findGolden(t, "Role", "harmostes-ui")
-	var wfRule map[string]any
-	for _, r := range role.Rules {
-		if groups, _ := r["apiGroups"].([]any); len(groups) > 0 && groups[0] == "harmostes.dev" {
-			if res, _ := r["resources"].([]any); len(res) > 0 && res[0] == "workflows" {
-				wfRule = r
+	if ns, ok := role.Metadata["namespace"]; !ok || ns != "harmostes-ci" {
+		t.Errorf("Role namespace = %v, want harmostes-ci (the golden values' namespace)", ns)
+	}
+	workflowsRuleFound := false
+	for i, r := range role.Rules {
+		groups := stringsOf(r["apiGroups"])
+		resources := stringsOf(r["resources"])
+		verbs := stringsOf(r["verbs"])
+		if !contains(groups, "harmostes.dev") {
+			continue
+		}
+		for _, res := range resources {
+			if res == "secrets" {
+				t.Errorf("rule %d grants secrets — the token manager is gone (#291)", i)
 			}
-			if res, _ := r["resources"].([]any); len(res) > 0 && res[0] == "secrets" {
-				t.Error("golden Role still grants secrets — the token manager is gone (#291)")
+			if res == "externalsecrets" {
+				t.Errorf("rule %d grants externalsecrets — dead privilege since ADR-0011", i)
 			}
-			if res, _ := r["resources"].([]any); len(res) > 0 && res[0] == "externalsecrets" {
-				t.Error("golden Role still grants externalsecrets — dead privilege since ADR-0011")
+		}
+		for _, v := range verbs {
+			if !writeVerbs[v] {
+				continue
+			}
+			isWorkflowsCreate := contains(resources, "workflows") && v == "create"
+			if !isWorkflowsCreate {
+				t.Errorf("rule %d (resources %v) carries write verb %q — write verbs are granted only to the workflows rule, create only", i, resources, v)
+			}
+		}
+		if contains(resources, "workflows") {
+			workflowsRuleFound = true
+			for _, forbidden := range []string{"update", "patch", "delete", "deletecollection"} {
+				if contains(verbs, forbidden) {
+					t.Errorf("workflows verb %q granted — lifecycle routes do not exist yet (#418/#419 re-add with their routes)", forbidden)
+				}
+			}
+			for _, want := range []string{"get", "list", "watch", "create"} {
+				if !contains(verbs, want) {
+					t.Errorf("workflows verbs %v missing %q", verbs, want)
+				}
 			}
 		}
 	}
-	if wfRule == nil {
+	if !workflowsRuleFound {
 		t.Fatal("golden Role has no workflows rule")
 	}
-	verbs := stringsOf(wfRule["verbs"])
-	for _, forbidden := range []string{"update", "patch", "delete"} {
-		for _, v := range verbs {
-			if v == forbidden {
-				t.Errorf("workflows verb %q granted — lifecycle routes do not exist yet (#418/#419 re-add with their routes)", forbidden)
-			}
-		}
-	}
-	for _, want := range []string{"get", "list", "watch", "create"} {
-		found := false
-		for _, v := range verbs {
-			if v == want {
-				found = true
-			}
-		}
-		if !found {
-			t.Errorf("workflows verbs %v missing %q", verbs, want)
-		}
-	}
 
-	// Both bindings must point the rules at the SA the ui pod runs as.
-	for _, kind := range []string{"RoleBinding", "ClusterRoleBinding"} {
-		var b *goldenResource
-		if kind == "RoleBinding" {
-			b = findGolden(t, kind, "harmostes-ui")
-		} else {
-			b = findGolden(t, kind, "harmostes-ui-crd-reader")
-		}
+	// Bindings: both point their rules at the SA the ui pod runs as, in the
+	// rendered namespace, with roleRefs naming the rendered roles.
+	rb := findGolden(t, "RoleBinding", "harmostes-ui")
+	if got, _ := rb.RoleRef["name"].(string); got != "harmostes-ui" {
+		t.Errorf("RoleBinding roleRef.name = %q, want harmostes-ui", got)
+	}
+	if got, _ := rb.RoleRef["kind"].(string); got != "Role" {
+		t.Errorf("RoleBinding roleRef.kind = %q, want Role", got)
+	}
+	crb := findGolden(t, "ClusterRoleBinding", "harmostes-ui-crd-reader")
+	if got, _ := crb.RoleRef["name"].(string); got != "harmostes-ui-crd-reader" {
+		t.Errorf("ClusterRoleBinding roleRef.name = %q, want harmostes-ui-crd-reader", got)
+	}
+	for kind, b := range map[string]goldenResource{"RoleBinding": rb, "ClusterRoleBinding": crb} {
 		if len(b.Subjects) != 1 {
 			t.Fatalf("%s subjects = %v, want exactly the ui SA", kind, b.Subjects)
 		}
 		if b.Subjects[0]["kind"] != "ServiceAccount" || b.Subjects[0]["name"] != "harmostes-ui" {
-			t.Errorf("%s subject = %v, want ServiceAccount/harmostes-ui (the SA the ui pod runs as)", kind, b.Subjects[0])
+			t.Errorf("%s subject = %v, want ServiceAccount/harmostes-ui", kind, b.Subjects[0])
+		}
+		if b.Subjects[0]["namespace"] != "harmostes-ci" {
+			t.Errorf("%s subject namespace = %v, want harmostes-ci", kind, b.Subjects[0]["namespace"])
 		}
 	}
 }

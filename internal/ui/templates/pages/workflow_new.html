@@ -45,8 +45,11 @@
 		</label>
 	</div>
 
-	{{/* Per-template scope fields — the template declares its own dialect;
-	     the form renders exactly what the selected template consumes. */}}
+	{{- /* Per-template scope fields — the template declares its own dialect;
+	     the form renders exactly what the selected template consumes.
+	     TODO(#416): this Go-rendered projection is interim — replace with
+	     typed forms driven by GET /api/schema when the editor island lands,
+	     so the CRD is the ONLY hand-maintained schema in the stack. */}}
 	{{- range .Templates}}
 	{{$t := .Name}}
 	<fieldset class="wf-new-scope" data-template="{{$t}}" {{if not (eq $t $.SelectedTemplate)}}hidden{{end}}>

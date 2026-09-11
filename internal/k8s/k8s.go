@@ -83,8 +83,9 @@ func (c ConfigMapTasks) Get(ctx context.Context, tt v1alpha1.TaskTemplate) (stri
 // Scheme returns a runtime.Scheme with the harmostes + core + batch types
 // registered (what both the controller and the worker need), plus the
 // apiextensions meta-types the UI's schema endpoint reads (GET /api/schema —
-// ADR-0012 §2: the schema is a live CRD projection). Registering extra types
-// is inert for the other components.
+// ADR-0012 §2). Registration is inert for the controller/worker binaries:
+// nothing in them decodes apiextensions types — scheme registration alone
+// neither grants RBAC nor starts watches.
 func Scheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = v1alpha1.AddToScheme(s)

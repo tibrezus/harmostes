@@ -105,14 +105,18 @@ func (s *Server) crdOpenAPISchema(ctx context.Context, name string) (*apiextensi
 }
 
 // schemaError maps schema-read failures to responses: a missing CRD is a 404
-// (the consumer's cue to degrade — no schema, no editor), anything else is a
-// 500.
+// (the consumer's cue to degrade — no schema, no editor); Forbidden is the
+// fingerprint of a drifted ClusterRoleBinding — surfaced as 403, not an
+// anonymous 500; anything else is a 500.
 func (s *Server) schemaError(w http.ResponseWriter, r *http.Request, crdName string, err error) {
 	s.logger.Error("schema endpoint", "crd", crdName, "err", err)
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	status := http.StatusInternalServerError
-	if apierrors.IsNotFound(err) {
+	switch {
+	case apierrors.IsNotFound(err):
 		status = http.StatusNotFound
+	case apierrors.IsForbidden(err):
+		status = http.StatusForbidden
 	}
 	http.Error(w, fmt.Sprintf("schema unavailable (%s)", crdName), status)
 }

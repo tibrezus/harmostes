@@ -111,8 +111,14 @@ func scopeConfigJSON(r *http.Request, tmpl *v1alpha1.WorkflowTemplate) ([]byte, 
 func (s *Server) handleWorkflowCreate(w http.ResponseWriter, r *http.Request) {
 	id := identityFromContext(r.Context())
 	if !s.mayWrite(id) {
-		s.logger.Warn("write rejected — identity provenance", "user", id.Username, "dev", id.Dev)
-		http.Error(w, "403 Forbidden — write actions require an authenticated session (your proxy supplied only legacy forwarded headers, or dev writes are disabled on this server)", http.StatusForbidden)
+		if id == nil {
+			s.logger.Warn("write rejected — no identity in context")
+		} else {
+			s.logger.Warn("write rejected — identity provenance", "user", id.Username, "dev", id.Dev)
+		}
+		// Generic body: no signal about WHICH provenance check failed or what
+		// the server's dev-write configuration is (PR #427 review, round 4).
+		http.Error(w, "403 Forbidden — this identity may not take write actions", http.StatusForbidden)
 		return
 	}
 	owner := id.Username
@@ -137,31 +143,31 @@ func (s *Server) handleWorkflowCreate(w http.ResponseWriter, r *http.Request) {
 
 	name := strings.TrimSpace(r.FormValue("name"))
 
-	// Validation
+	// Validation (status-coded: 400 client mistake, 409 conflict, 500 fault)
 	if name == "" {
-		s.renderError(w, r, "Workflow name is required")
+		s.renderErrorStatus(w, r, http.StatusBadRequest, "Workflow name is required")
 		return
 	}
 	if !workflowNameRe.MatchString(name) || len(name) > maxWorkflowNameLen {
-		s.renderError(w, r, "Invalid workflow name: must be lowercase, alphanumeric with hyphens, max 63 characters")
+		s.renderErrorStatus(w, r, http.StatusBadRequest, "Invalid workflow name: must be lowercase, alphanumeric with hyphens, max 63 characters")
 		return
 	}
 
 	templateRef := strings.TrimSpace(r.FormValue("templateRef"))
 	if templateRef == "" {
-		s.renderError(w, r, "A template must be selected — workflows are template instances")
+		s.renderErrorStatus(w, r, http.StatusBadRequest, "A template must be selected — workflows are template instances")
 		return
 	}
 
 	var tmpl v1alpha1.WorkflowTemplate
 	if err := s.k8sClient.Get(r.Context(), client.ObjectKey{Namespace: s.namespace, Name: templateRef}, &tmpl); err != nil {
-		s.renderError(w, r, "Unknown template: "+templateRef)
+		s.renderErrorStatus(w, r, http.StatusBadRequest, "Unknown template: "+templateRef)
 		return
 	}
 
 	cfg, err := scopeConfigJSON(r, &tmpl)
 	if err != nil {
-		s.renderError(w, r, "Failed to build config: "+err.Error())
+		s.renderErrorStatus(w, r, http.StatusBadRequest, "Failed to build config: "+err.Error())
 		return
 	}
 
@@ -185,16 +191,16 @@ func (s *Server) handleWorkflowCreate(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 	if err := v1alpha1.StampOwnerLabel(wf, owner); err != nil {
-		s.renderError(w, r, err.Error())
+		s.renderErrorStatus(w, r, http.StatusBadRequest, err.Error())
 		return
 	}
 	if err := s.k8sClient.Create(r.Context(), wf); err != nil {
 		if errors.IsAlreadyExists(err) {
-			s.renderError(w, r, "A workflow with that name already exists")
+			s.renderErrorStatus(w, r, http.StatusConflict, "A workflow with that name already exists")
 			return
 		}
 		s.logger.Error("create workflow", "owner", owner, "name", name, "err", err)
-		s.renderError(w, r, "Failed to create workflow: "+err.Error())
+		s.renderErrorStatus(w, r, http.StatusInternalServerError, "Failed to create workflow")
 		return
 	}
 	// Per the form contract (same reason no CSRF token beyond the origin

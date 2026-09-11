@@ -443,9 +443,10 @@ func TestWorkflowCreate_AntiSpoof(t *testing.T) {
 	}
 }
 
-// TestWorkflowCreate_ErrorCases pins the validation contract: unknown
-// template, invalid name, and duplicate name all render the error page
-// without creating anything.
+// TestWorkflowCreate_ErrorCases pins the validation contract WITH status
+// codes (PR #427 review round 4): 400 for client mistakes (unknown template,
+// invalid name, missing templateRef), 409 for the duplicate — never a
+// blanket 200.
 func TestWorkflowCreate_ErrorCases(t *testing.T) {
 	existing := &v1alpha1.Workflow{
 		ObjectMeta: metav1.ObjectMeta{
@@ -457,11 +458,12 @@ func TestWorkflowCreate_ErrorCases(t *testing.T) {
 
 	cases := []struct {
 		name, form, wantMsg string
+		wantCode            int
 	}{
-		{"unknown template", "name=w1&templateRef=nope", "Unknown template"},
-		{"invalid name", "name=UPPER&templateRef=pr-review", "Invalid workflow name"},
-		{"missing templateRef", "name=w2", "A template must be selected"},
-		{"duplicate name", "name=taken&templateRef=pr-review", "already exists"},
+		{"unknown template", "name=w1&templateRef=nope", "Unknown template", http.StatusBadRequest},
+		{"invalid name", "name=UPPER&templateRef=pr-review", "Invalid workflow name", http.StatusBadRequest},
+		{"missing templateRef", "name=w2", "A template must be selected", http.StatusBadRequest},
+		{"duplicate name", "name=taken&templateRef=pr-review", "already exists", http.StatusConflict},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -470,8 +472,11 @@ func TestWorkflowCreate_ErrorCases(t *testing.T) {
 			req.Header.Set("X-Authentik-Username", "alice")
 			rec := httptest.NewRecorder()
 			s.Routes().ServeHTTP(rec, req)
+			if rec.Code != tc.wantCode {
+				t.Errorf("status = %d, want %d", rec.Code, tc.wantCode)
+			}
 			if !strings.Contains(rec.Body.String(), tc.wantMsg) {
-				t.Errorf("error page missing %q (status %d)", tc.wantMsg, rec.Code)
+				t.Errorf("error page missing %q", tc.wantMsg)
 			}
 		})
 	}

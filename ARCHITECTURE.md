@@ -13,12 +13,15 @@ as a conventional pointer for readers who look for an `ARCHITECTURE.md`.
 
 **Vendored third-party extension** (`extensions/sol-pi`, #425): every fleet agent runs with NVIDIA's [SoL-Pi](https://github.com/NVlabs/SoL-Pi) efficiency
 extension (action fusion + observation pack; reducer/compact disabled in the
-shipped profile `extensions/sol-pi/sol-pi.json` — the effective runtime config.
-Three layers enforce that: `settings.json` pins `defaultProjectTrust: never`
-+ `projectTrusted: false`; `buildPiArgs` emits `--no-approve` on every
-invocation (the workspace is untrusted PR content); and the image build runs
-a trust probe proving a hostile workspace config loses under the shipped
-rules.) It is the one extension in
+shipped profile `extensions/sol-pi/sol-pi.json`). ONE control makes that
+profile effective for every workspace class: `buildPiArgs` emits
+`--no-approve` on every pi invocation — pi documents it as the run-level
+override of project trust (the twin of `--approve`), and pi 0.84.4
+auto-trusts a `.pi/sol-pi.json`-only workspace before `defaultProjectTrust`
+is ever consulted. The shipped `settings.json` (`defaultProjectTrust: never`)
+is a user-plane belt for the trust-requiring-resource class; the image
+build's two-arm trust gate asserts both the invariant and the probe's
+sensitivity. It is the one extension in
 `internal/piargs.Extensions` NOT in-tree-reviewed line-by-line — it is a
 vendored upstream checkout, so its provenance, bump protocol, and validation
 steps live in `extensions/sol-pi/UPSTREAM.md`, its shipped profile is pinned

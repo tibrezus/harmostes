@@ -125,11 +125,12 @@ var extensionTools = map[string]string{
 	// sol-pi's observation-pack registers obs_recall (its recall affordance
 	// for replaced large tool results). The shipped profile
 	// (extensions/sol-pi/sol-pi.json, observationPack=true) is THE effective
-	// runtime config on every agent run: buildPiArgs emits --no-approve
-	// unconditionally (the invocation plane — the control that holds for ALL
-	// workspace classes, including the auto-trusted .pi/sol-pi.json-only one;
-	// #426 r6), and settings.json's defaultProjectTrust=never gates the
-	// trust-requiring-resource class — making obs_recall always registered
+	// runtime config on every agent run because --no-approve (below) is the
+	// ONE control that holds for every workspace class: pi 0.84.4 auto-trusts
+	// a .pi/sol-pi.json-only workspace before defaultProjectTrust is ever
+	// consulted (r6, reviewer-probed), so settings.json's
+	// defaultProjectTrust=never is a user-plane belt with no project-plane
+	// brace — the invocation flag is what makes obs_recall always registered
 	// and therefore always allowlist-required: without this
 	// entry the --tools allowlist dropped obs_recall while the rewriting
 	// stayed active, destroying review evidence with the recall affordance
@@ -158,8 +159,10 @@ func buildPiArgs(skill, model string, tools []string, extensions []string, stat 
 	// run, so a hostile repo cannot flip the harness's own config (e.g.
 	// evidencePreservingReducer=true ships repo logs to a remote reducer
 	// model) even when pi's trust resolution would mark the workspace
-	// trusted. Belt-and-braces over the settings.json projectTrusted=false
-	// pin — the config plane and the invocation plane enforce the same rule.
+	// trusted. pi documents the flag as the run-level OVERRIDE of project
+	// trust (the twin of --approve); settings.json's defaultProjectTrust=
+	// never is a user-plane belt for the trust-requiring-resource class —
+	// THIS flag is the control that holds for every workspace class (r8 F2).
 	args := []string{"--skill", skill, "--model", model, "--no-approve"}
 	for _, ext := range extensions {
 		if _, err := stat(ext); err != nil {

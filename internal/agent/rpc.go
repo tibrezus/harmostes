@@ -241,15 +241,21 @@ func (r *RPC) Prompt(ctx context.Context, message, label string) (Event, int, Us
 				capture.ExtensionErrors++
 				// Named logf event (r7, the #338 r25 F11 rig precedent):
 				// "an extension is inert" is not actionable without the
-				// path — carry pi's extensionPath out of the raw event so
-				// the pool event stream attributes the throw to the exact
-				// extension (litellm-provider vs rig-query vs sol-pi vs
-				// pi-searxng) instead of reading as a pipeline change.
+				// path and the failing handler. pi's event carries
+				// extensionPath + event + error (docs/rpc.md); Raw is
+				// json:"-" (never marshalled), so the parsed fields ride
+				// Event.Message — the only payload consumers see.
 				var ee struct {
 					ExtensionPath string `json:"extensionPath"`
+					Event         string `json:"event"`
+					Err           string `json:"error"`
 				}
 				_ = json.Unmarshal(ev.Raw, &ee)
-				logf(r.log, pijsonl.Event{Type: "extension_degraded", ToolName: ee.ExtensionPath, Raw: ev.Raw})
+				logf(r.log, pijsonl.Event{
+					Type:     "extension_degraded",
+					ToolName: ee.ExtensionPath,
+					Message:  fmt.Sprintf("handler=%s error=%s", ee.Event, ee.Err),
+				})
 			case pijsonl.EvToolStart:
 				tools++
 				endTool() // close any prior (defensive; tools are sequential)

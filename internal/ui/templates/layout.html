@@ -13,6 +13,10 @@
 	<link rel="stylesheet" href="/static/css/components.css?v={{assetVersion}}">
 	<script src="/static/js/console.js?v={{assetVersion}}" defer></script>
 	<script>
+		// Cache-bust version for page-local static assets (the code island's
+		// worker fetches carry this suffix). Layout-owned: set once, before any
+		// deferred page script can read it.
+		window.__assetVersion = '{{assetVersion}}';
 		// Apply theme before paint to avoid flash.
 		(function() {
 			var t = localStorage.getItem('harmostes-theme') || 'dark';
@@ -61,7 +65,7 @@
 						<span class="user-badge-name">{{.User.Username}}</span>
 					</span>
 					{{- end}}
-					<button class="theme-toggle" onclick="document.documentElement.classList.toggle('dark'); localStorage.setItem('harmostes-theme', document.documentElement.classList.contains('dark') ? 'dark' : 'light');" title="Toggle light / dark theme">
+					<button class="theme-toggle" onclick="document.documentElement.classList.toggle('dark'); localStorage.setItem('harmostes-theme', document.documentElement.classList.contains('dark') ? 'dark' : 'light'); document.dispatchEvent(new CustomEvent('harmostes:theme-changed'));" title="Toggle light / dark theme">
 						<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1a7 7 0 100 14A7 7 0 008 1zm0 2a5 5 0 110 10V3z"></path></svg>
 					</button>
 				</span>

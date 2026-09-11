@@ -47,3 +47,29 @@ System stacks only. Display faces are retired.
 4. **Repetition is a defect.** Identical rows collapse into counts; recurring failures collapse into one alert.
 5. **Status color is the only decoration.** One blue accent for interactivity; every other hue is semantic.
 6. **k8s-native density.** Console rows, tabular numerals, relative time. Density is respect — but it is *organized* density.
+
+## Third-party Assets & the Workflow Code Island
+
+The console runs **no JavaScript build step** in development or CI: all
+third-party code is vendored as prebuilt artifacts under
+`internal/ui/static/` (htmx, Alpine, fonts) — a commit *is* the artifact.
+
+The **Workflow Code island** (Monaco + monaco-yaml, ADR-0012 §2, #416) is
+the one conscious amendment: no npm release of monaco-yaml ships UMD, so the
+island ships as **one committed esbuild bundle**
+(`internal/ui/static/vendor/code-island/`: `code-island.js`, the two workers,
+`code-island.css`, `codicon.ttf` — ~3.7 MB total, a bounded cost the ADR
+priced in). The build environment is pinned and reproducible in
+`tools/code-island/` (`npm ci && npm run build` there regenerates the
+artifact on version bumps); nothing in `make`, CI, or the dev loop invokes
+it. The bundle exports only `HarmostesCodeIsland.mount(opts) → handle` —
+all console logic (schema fetch, oklch→hex theme mapping from tokens.css,
+`window.harmostesCodeIsland` handle) stays in hand-written,
+unbundled `static/js/code-island-glue.js`.
+
+Island visual rules: colors come exclusively from `tokens.css`, read live
+via computed styles (the theme toggle re-maps without reload — no color
+literals in the island); monospace per the identifier rule; no minimap. The
+document renders **read-only** first (editing lands with #418's MR-bridge);
+validation markers and schema completion come from `/api/schema`, never a
+hand-written schema.

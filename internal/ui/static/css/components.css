@@ -668,3 +668,31 @@
 	font-size: var(--fs-xs);
 	overflow-x: auto;
 }
+
+/* Workflow Code island (#416, ADR-0012 §2) — the Monaco mount. Tokens.css
+   supplies every color (mapped live by the glue); this block only sizes the
+   container and blends the widget chrome with page surfaces. */
+.code-island {
+	min-height: 420px;
+	height: 480px;
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	overflow: hidden;
+	background: var(--bg-alt);
+}
+.code-island[data-island-state="loading"]::after {
+	content: "loading editor…";
+	display: block;
+	padding: var(--sp-3);
+	color: var(--fg-muted);
+	font-size: var(--fs-sm);
+}
+.code-island[data-island-state="schema-error"]::before {
+	content: "schema unavailable — validation disabled";
+	display: block;
+	padding: var(--sp-1) var(--sp-3);
+	border-bottom: 1px solid var(--border);
+	background: var(--bg-tertiary);
+	color: var(--fg-muted);
+	font-size: var(--fs-xs);
+}

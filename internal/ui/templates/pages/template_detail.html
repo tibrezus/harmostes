@@ -30,6 +30,29 @@
 		</div>
 	</section>
 
+	<!-- Workflow Code island (ADR-0012 §2, #416): the template document as
+	     YAML, validated against the CRD-derived schema from /api/schema.
+	     Read-only first — editing lands with the inspector / MR-bridge.
+	     Heavy assets load only on this page (defer), theme maps live from
+	     tokens.css via the glue. -->
+	<section class="tpl-section">
+		<h3 class="tpl-section-heading">Workflow Code <span class="chip chip--neutral" data-testid="code-island-readonly">read-only</span></h3>
+		<link rel="stylesheet" href="/static/vendor/code-island/code-island.css?v={{assetVersion}}">
+		<div id="code-island" class="code-island" data-testid="code-island" data-readonly="true" data-island-state="loading"></div>
+		<template id="code-island-source">{{.YAML}}</template>
+		<script defer src="/static/vendor/code-island/code-island.js?v={{assetVersion}}"></script>
+		<script defer src="/static/js/code-island-glue.js?v={{assetVersion}}"></script>
+		<script>
+			document.addEventListener('DOMContentLoaded', function () {
+				var el = document.getElementById('code-island');
+				if (!el || !window.harmostesMountCodeIsland) return;
+				var src = document.getElementById('code-island-source');
+				harmostesMountCodeIsland(el, src.content.textContent.trim() + '\n',
+					'{{.ModelPath}}', 'workflowtemplate', 'harmostes://workflowtemplate');
+			});
+		</script>
+	</section>
+
 	<!-- Feature panels -->
 	<div class="tpl-features-grid">
 		<!-- Agent capabilities -->
@@ -88,7 +111,7 @@
 
 	<!-- YAML reference -->
 	<section class="tpl-section">
-		<h3 class="tpl-section-heading">YAML Reference</h3>
+		<h3 class="tpl-section-heading">Usage — Workflow YAML</h3>
 		<pre class="tpl-yaml">apiVersion: harmostes.dev/v1alpha1
 kind: Workflow
 spec:

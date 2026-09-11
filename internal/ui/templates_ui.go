@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/yaml"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
 )
@@ -40,6 +41,27 @@ type templateDetailView struct {
 	// Usage
 	WorkflowCount int
 	Workflows     []string
+	// Workflow Code island (ADR-0012 §2, #416): the template document as
+	// YAML — the same artifact a future edit produces and reviews.
+	YAML      string
+	ModelPath string
+}
+
+// templateDocument is the canonical YAML projection of a WorkflowTemplate:
+// identity + spec, no status, no server bookkeeping (managedFields,
+// creationTimestamp). This is the document form — what an edit writes and
+// what a review diffs; live runtime state belongs to the attempt views.
+type templateDocument struct {
+	APIVersion string                        `json:"apiVersion"`
+	Kind       string                        `json:"kind"`
+	Metadata   templateDocumentMeta          `json:"metadata"`
+	Spec       v1alpha1.WorkflowTemplateSpec `json:"spec"`
+}
+
+type templateDocumentMeta struct {
+	Name      string            `json:"name"`
+	Namespace string            `json:"namespace,omitempty"`
+	Labels    map[string]string `json:"labels,omitempty"`
 }
 
 // listTemplates returns all WorkflowTemplate CRs in the namespace.
@@ -139,8 +161,32 @@ func (s *Server) handleTemplateDetail(w http.ResponseWriter, r *http.Request) {
 		AgentScope:    tmpl.Spec.Agent.Scope,
 		WorkflowCount: len(workflows),
 		Workflows:     workflows,
+		YAML:          templateYAML(tmpl),
+		ModelPath:     tmpl.Name + ".yaml",
 	}
 	s.render(w, r, "pages/template_detail.html", data)
+}
+
+// templateYAML renders the WorkflowTemplate as its canonical document YAML
+// (spec + identity only — see templateDocument). Marshal failure is a
+// programming error (structs with json tags); panicking would take the page
+// down, so fall back to an explicitly-marked placeholder instead.
+func templateYAML(tmpl *v1alpha1.WorkflowTemplate) string {
+	doc := templateDocument{
+		APIVersion: v1alpha1.SchemeGroupVersion.Identifier(),
+		Kind:       "WorkflowTemplate",
+		Metadata: templateDocumentMeta{
+			Name:      tmpl.Name,
+			Namespace: tmpl.Namespace,
+			Labels:    tmpl.Labels,
+		},
+		Spec: tmpl.Spec,
+	}
+	b, err := yaml.Marshal(doc)
+	if err != nil {
+		return "# template serialization failed: " + err.Error()
+	}
+	return string(b)
 }
 
 // listAllWorkflows returns all workflows in the namespace (for template usage).

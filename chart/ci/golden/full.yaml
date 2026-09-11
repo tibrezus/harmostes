@@ -4716,6 +4716,11 @@ data:
          "body": "## Adversarial Review\n... (pillar-structured)",
          "comments": [{"path": "...", "line": N, "body": "..."}]}
     
+    Every finding goes in "comments" — the deploy step publishes them as
+    native anchored review threads (the merge currency). Do NOT post the
+    threads yourself: the deploy owns publishing, and a self-post would
+    duplicate.
+    
     The body MUST end with the trailer (exact decision keyword, full SHA):
     
         <!-- pr-review: <DECISION> @ <reviewed_sha> -->

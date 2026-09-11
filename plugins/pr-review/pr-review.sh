@@ -36,9 +36,12 @@ review["decision"]=d
 # ── Session continuity (ADR-0010): rounds are ONE lineage. If a prior
 # verdict exists at an earlier head: previously-addressed findings stay
 # addressed; review the DELTA between heads; carry this ledger forward. ──
-# ── Inline review protocol — the merge currency, enforced by post-review:
-# a bullet list is NOT a review. EVERY finding goes in as a real inline
-# review comment anchored to the code, via the authenticated CLI:
+# ── Inline review protocol — the merge currency, published by post-review:
+# a bullet list is NOT a review. EVERY finding rides review.json's
+# "comments" array (path + line + body) — the DEPLOY step posts them as
+# native anchored threads deterministically. Do NOT post threads yourself:
+# a self-post duplicates what the deploy publishes. The CLI dialects below
+# are for the reply+resolve protocol on prior rounds:
 #   gh   (GitHub):  VERIFIED LIVE. Inline: gh api repos/{o}/{r}/pulls/$N/
 #        comments -f commit_id=$SHA -f path=F -F line=N -f body="…"
 #        reply: POST pulls/$N/comments -f body="…" -F in_reply_to=$ID
@@ -61,11 +64,11 @@ review["decision"]=d
 #        old_path,new_line}; reply: …/discussions/$ID/notes;
 #        resolve: PUT …/discussions/$ID {"resolved":true}
 #
-# Rules: one thread per finding; the verdict body SUMMARIZES with thread
-# links/ids. On a re-review of an addressed round: verify the fix in the
-# diff, REPLY on the thread with the fixing SHA, then RESOLVE it. An
-# APPROVE is lawful ONLY when zero threads remain unresolved — post-review
-# downgrades an APPROVE issued over open prior threads. ──
+# Rules: one comment-array entry per finding; the verdict body SUMMARIZES.
+# On a re-review of an addressed round: verify the fix in the diff, REPLY
+# on the thread with the fixing SHA (the CLI dialects above), then RESOLVE
+# it. An APPROVE is lawful ONLY when zero threads remain unresolved —
+# post-review downgrades an APPROVE issued over open prior threads. ──
 # the body must END with the verdict trailer — the merge-currency token.
 sha=review.get("reviewed_sha","")
 ctx_path=os.path.join(os.path.dirname(path),"pr-context.json")

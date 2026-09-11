@@ -318,6 +318,11 @@ func attemptAttemptFixture(t *testing.T, ctx context.Context, d *Dispatcher, wf 
 // the same silent failure one indirection later, and a missing entry means
 // the agent's CLI posts unauthenticated (inline threads die to prose).
 func TestJobEnvAllowlistCarriesCLIAliases(t *testing.T) {
+	for _, k := range jobEnvAllowlist {
+		if strings.HasSuffix(k, "_API_BASE") {
+			t.Errorf("%s must never be in jobEnvAllowlist: an API-base override in a Job env redirects a privileged token to an arbitrary origin (r3 P6 of #430)", k)
+		}
+	}
 	rows := []struct{ name, why string }{
 		{"FORGEJO_TOKEN", "the fj CLI's env fallback — without it the inline-thread protocol's Forgejo leg dies to prose"},
 		{"GH_TOKEN", "gh's native env — without it the protocol's GitHub leg dies to prose"},

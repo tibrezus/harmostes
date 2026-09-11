@@ -53,6 +53,7 @@ func RenderExtensions() (jsonArtifact []byte, pyBlock []byte, err error) {
 var Extensions = []string{
 	"/extensions/litellm-provider",
 	"/extensions/rig-query",
+	"/extensions/sol-pi",
 }
 
 // RigGraphPath is the ONE sanctioned location of the SHA-exact review-time

@@ -126,6 +126,30 @@ RUN LITELLM_URL=http://127.0.0.1:1 LITELLM_API_KEY=stub PI_SKIP_VERSION_CHECK=1 
     if [ $rc -ne 0 ]; then \
       echo "litellm-provider load probe failed (pi exit $rc):"; cat /tmp/pi-litellm-load.log; exit 1; \
     fi
+# sol-pi (#425): same pinned provisioning as the dev image — clone at SHA,
+# conservative default config validated with SoL-Pi's own schema check,
+# load probe gates the release build.
+ARG SOL_PI_REF=22277b7e0c3c46ba1259a6687f31fe39ade421a5
+RUN git clone --quiet https://github.com/NVlabs/SoL-Pi /tmp/sol-pi \
+    && git -C /tmp/sol-pi checkout --quiet ${SOL_PI_REF} \
+    && mkdir -p /extensions/sol-pi \
+    && cp -a /tmp/sol-pi/. /extensions/sol-pi/ \
+    && rm -rf /extensions/sol-pi/.git /tmp/sol-pi
+RUN mkdir -p /root/.pi/agent && printf '%s\n' \
+    '{' \
+    '  "version": 1,' \
+    '  "actionFusion": true,' \
+    '  "observationPack": true,' \
+    '  "evidencePreservingReducer": false,' \
+    '  "onlineContextCompact": false,' \
+    '  "cacheWriteReadRatio": 12.5' \
+    '}' > /root/.pi/agent/sol-pi.json \
+    && node /extensions/sol-pi/scripts/check-sol-pi-config.mjs --config /root/.pi/agent/sol-pi.json \
+    || { echo "sol-pi config check failed"; exit 1; }
+RUN PI_SKIP_VERSION_CHECK=1 timeout 60 pi -e /extensions/sol-pi --mode rpc </dev/null >/tmp/pi-solpi-load.log 2>&1; rc=$?; \
+    if [ $rc -ne 0 ]; then \
+      echo "sol-pi load probe failed (pi exit $rc):"; cat /tmp/pi-solpi-load.log; exit 1; \
+    fi
 
 WORKDIR /workspace
 

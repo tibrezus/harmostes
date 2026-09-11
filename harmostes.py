@@ -194,7 +194,8 @@ def main():
     EXTENSIONS_MANIFEST = {
         "extensions": [
             "/extensions/litellm-provider",
-            "/extensions/rig-query"
+            "/extensions/rig-query",
+            "/extensions/sol-pi"
         ],
         "tools": {
             "/extensions/rig-query": "rig"

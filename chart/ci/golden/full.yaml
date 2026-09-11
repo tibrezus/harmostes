@@ -25,7 +25,6 @@ metadata:
 # but Jobs created by the dispatcher never did (#281).
 imagePullSecrets:
   - name: ghcr-pull
-
 ---
 # Source: harmostes/templates/ui-rbac.yaml
 apiVersion: v1
@@ -36,7 +35,6 @@ metadata:
   labels:
     app.kubernetes.io/name: harmostes
     app.kubernetes.io/component: ui
-
 ---
 # Source: harmostes/templates/fork-conflict-resolver.yaml
 apiVersion: v1
@@ -714,8 +712,6 @@ data:
         ]
       }
     }
-    
-
 ---
 # Source: harmostes/templates/fork-maintenance.yaml
 apiVersion: v1
@@ -3289,8 +3285,6 @@ data:
     
       *) die "unknown command: $cmd (expected capture|reapply|verify)" ;;
     esac
-    
-
 ---
 # Source: harmostes/templates/fork-maintenance.yaml
 apiVersion: v1
@@ -3605,8 +3599,6 @@ data:
     
     echo "GATES GREEN (no markers + validation + signatures)"
     exit 0
-    
-
 ---
 # Source: harmostes/templates/fork-maintenance.yaml
 apiVersion: v1
@@ -3641,8 +3633,6 @@ data:
     echo "[signoz-hook] stripping ee/ (community-only build)"
     git rm -rf ee/ 2>/dev/null || true
     echo "[signoz-hook] done"
-    
-
 ---
 # Source: harmostes/templates/fork-maintenance.yaml
 apiVersion: v1
@@ -3685,8 +3675,6 @@ data:
       default_branch: rezus/main
       mirror_branch: main
       platform: forgejo
-    
-
 ---
 # Source: harmostes/templates/fork-maintenance.yaml
 apiVersion: v1
@@ -4711,15 +4699,17 @@ data:
     
     Write the review to /workspace/review.json via python3 (not a heredoc):
     
-        {"decision": "APPROVE|REQUEST_CHANGES|COMMENT",
+        {"decision": "APPROVE|REQUEST_CHANGES",
          "reviewed_sha": "<head SHA of /workspace/repo>",
-         "body": "## Adversarial Review\n... (pillar-structured)",
-         "comments": [{"path": "...", "line": N, "body": "..."}]}
+         "comments": [{"path": "...", "line": N, "body": "Blocking: ..."}]}
     
-    Every finding goes in "comments" — the deploy step publishes them as
-    native anchored review threads (the merge currency). Do NOT post the
-    threads yourself: the deploy owns publishing, and a self-post would
-    duplicate.
+    There is NO "body" field. The pillar analysis is your process, never
+    posted as prose. "comments" carries ONLY blocking findings (CRITICAL
+    or verified MAJOR) — each becomes a native anchored review thread that
+    must be closed before merge. MINOR/NIT findings are dropped, not
+    posted. Do NOT post the threads yourself: the deploy owns publishing,
+    and a self-post would duplicate. The deploy writes the one-line
+    verdict (decision + SHA + blocking count) — you write no prose.
     
     The body MUST end with the trailer (exact decision keyword, full SHA):
     
@@ -4786,7 +4776,6 @@ rules:
       - workflows.harmostes.dev
       - workflowtemplates.harmostes.dev
     verbs: ["get"]
-
 ---
 # Source: harmostes/templates/ui-rbac.yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -4804,7 +4793,6 @@ subjects:
   - kind: ServiceAccount
     name: harmostes-ui
     namespace: harmostes-ci
-
 ---
 # Source: harmostes/templates/rbac.yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -4844,7 +4832,6 @@ rules:
   - apiGroups: ["harmostes.dev"]
     resources: ["workflowtemplates"]
     verbs: ["get", "list", "watch"]
-
 ---
 # Source: harmostes/templates/ui-rbac.yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -4884,7 +4871,6 @@ rules:
   #    pruned (#291); credential sync is chart-rendered ExternalSecrets
   #    (ADR-0011). Verbs are granted only when a route needs them, never
   #    speculatively.
-
 ---
 # Source: harmostes/templates/rbac.yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -5184,7 +5170,6 @@ spec:
             name: litellm-provider-extension
         - name: home
           emptyDir: {}
-
 ---
 # Source: harmostes/templates/ui.yaml
 apiVersion: apps/v1
@@ -5263,7 +5248,6 @@ spec:
         - name: platforms-config
           configMap:
             name: harmostes-ui-platforms
-
 ---
 # Source: harmostes/templates/worker-pool.yaml
 apiVersion: apps/v1
@@ -5479,7 +5463,6 @@ spec:
 # same pattern as the rig-query fixture freshness check). The k8s-config
 # ConfigMap this replaces was exactly such a stale copy (#358 never reached
 # the resolver through it).
-
 ---
 # Source: harmostes/templates/fork-maintenance.yaml
 # ── Fork-maintenance engine payload (ADR-0011) ──────────────────────────────
@@ -5488,14 +5471,12 @@ spec:
 # declarative per-fork configuration. ConfigMap names match the worker-pool
 # mounts (forkMaintenance.*ConfigMap), so the worker pods see the same
 # /workspace layout the k8s-config kustomize generator used to produce.
-
 ---
 # Source: harmostes/templates/ui-platforms-configmap.yaml
 # Platform display configs (plug-and-play). This ConfigMap provides display
 # metadata (label, color, icon) for known git platforms. Any platform string
 # is accepted for token creation — this only enriches the UI. To add a new
 # platform, add an entry here (GitOps), no code change needed.
-
 ---
 # Source: harmostes/templates/ui-rbac.yaml
 # RBAC for harmostes-ui, right-sized to the ADR-0012 §5 write path: the UI
@@ -5504,14 +5485,12 @@ spec:
 # catalogs owner-scoped. Lifecycle mutations (update/patch/delete) return
 # with their own ADR-0012 issues (#418/#419) — until then the verbs are not
 # granted. Isolation is code-enforced: handlers filter by harmostes.dev/owner.
-
 ---
 # Source: harmostes/templates/ui.yaml
 # harmostes-ui: self-service web interface for managing Workflow CRs.
 # Authenticated via Authentik forward-auth (identity injected as headers).
 # The Go server reads X-Forwarded-Preferred-Username and filters all queries
 # by the harmostes.dev/owner label.
-
 ---
 # Source: harmostes/templates/dapr.yaml
 # Dapr components — the deterministic event-system application layer. State for
@@ -5542,7 +5521,6 @@ spec:
     # anyway.
     - name: keyPrefix
       value: "none"
-
 ---
 # Source: harmostes/templates/dapr.yaml
 apiVersion: dapr.io/v1alpha1
@@ -5563,7 +5541,6 @@ spec:
     # Per-namespace consumer isolation
     - name: consumerID
       value: harmostes
-
 ---
 # Source: harmostes/templates/dapr.yaml
 # Dapr secret store — wraps the cluster's k8s Secret backend so all apps (UI,
@@ -5582,7 +5559,6 @@ spec:
   metadata:
     - name: namespace
       value: harmostes-ci
-
 ---
 # Source: harmostes/templates/dapr.yaml
 # Dapr Configuration referenced by worker pods via dapr.io/config. The sentry
@@ -5678,7 +5654,6 @@ spec:
     kind: string
     label: Fork
     name: fork
-
 ---
 # Source: harmostes/templates/workflow-templates.yaml
 apiVersion: harmostes.dev/v1alpha1
@@ -5702,7 +5677,6 @@ spec:
   prepare:
     plugin:
       name: rig-emit
-
 ---
 # Source: harmostes/templates/workflow-templates.yaml
 apiVersion: harmostes.dev/v1alpha1
@@ -5754,7 +5728,6 @@ spec:
     kind: string
     label: Wiki repo
     name: wiki
-
 ---
 # Source: harmostes/templates/workflow-templates.yaml
 apiVersion: harmostes.dev/v1alpha1

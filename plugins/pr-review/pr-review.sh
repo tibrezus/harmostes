@@ -37,11 +37,15 @@ review["decision"]=d
 # verdict exists at an earlier head: previously-addressed findings stay
 # addressed; review the DELTA between heads; carry this ledger forward. ──
 # ── Inline review protocol — the merge currency, published by post-review:
-# a bullet list is NOT a review. EVERY finding rides review.json's
+# a bullet list is NOT a review. EVERY NEW finding rides review.json's
 # "comments" array (path + line + body) — the DEPLOY step posts them as
-# native anchored threads deterministically. Do NOT post threads yourself:
-# a self-post duplicates what the deploy publishes. The CLI dialects below
-# are for the reply+resolve protocol on prior rounds:
+# native anchored threads deterministically. NEVER post NEW findings via
+# the CLI yourself: a self-post duplicates what the deploy publishes.
+# You DO use the CLI dialects below on prior rounds: when the gate lists
+# open prior-round threads, REPLY on each with the fixing SHA and RESOLVE
+# it — that is N round-trips, so budget them alongside the review. An
+# APPROVE over an open prior thread is downgraded by post-review; the
+# reply+resolve is how threads close. Dialects:
 #   gh   (GitHub):  VERIFIED LIVE. Inline: gh api repos/{o}/{r}/pulls/$N/
 #        comments -f commit_id=$SHA -f path=F -F line=N -f body="…"
 #        reply: POST pulls/$N/comments -f body="…" -F in_reply_to=$ID
@@ -64,7 +68,10 @@ review["decision"]=d
 #        old_path,new_line}; reply: …/discussions/$ID/notes;
 #        resolve: PUT …/discussions/$ID {"resolved":true}
 #
-# Rules: one comment-array entry per finding; the verdict body SUMMARIZES.
+# Rules: comments[] carries ONLY blocking findings (CRITICAL/verified
+# MAJOR — each becomes a thread that must close before merge). MINOR/NIT
+# are dropped, not posted. There is NO long verdict body: the deploy step
+# writes the one-line verdict (decision + SHA + blocking count) itself.
 # On a re-review of an addressed round: verify the fix in the diff, REPLY
 # on the thread with the fixing SHA (the CLI dialects above), then RESOLVE
 # it. An APPROVE is lawful ONLY when zero threads remain unresolved —

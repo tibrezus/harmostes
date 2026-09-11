@@ -1,3 +1,4 @@
 [submodule ".agents"]
 	path = .agents
 	url = https://github.com/tibrezus/agents.git
+	branch = main

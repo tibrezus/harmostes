@@ -374,3 +374,44 @@ func TestComponent_EventsFragment_FullNarrative(t *testing.T) {
 		t.Error("mid-flight attempt must show gate.waiting")
 	}
 }
+
+// The Workflow Code island scaffold on template detail (#416): the mount
+// point, the serialized document source, and the asset wiring. The editor
+// itself is Chromium's job (e2e); here we pin that the page ships everything
+// the glue needs — the container, the document, the bundle, the schema key.
+func TestComponent_TemplateDetail_CodeIslandScaffold(t *testing.T) {
+	ts := newFixtureServer(t)
+	doc := getAsFixtureUser(t, ts, "/templates/pr-review")
+
+	island := testIDSelection(t, doc, "code-island")
+	if island.Length() != 1 {
+		t.Fatal("code island container must exist on template detail")
+	}
+	if ro, _ := island.Attr("data-readonly"); ro != "true" {
+		t.Error("island must mount read-only first (editing lands with #418)")
+	}
+	src := doc.Find("#code-island-source")
+	if src.Length() != 1 {
+		t.Fatal("the document source template must be embedded")
+	}
+	text := src.Text()
+	for _, want := range []string{
+		"apiVersion: harmostes.dev/v1alpha1",
+		"kind: WorkflowTemplate",
+		"name: pr-review",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("document YAML missing %q in:\n%s", want, text)
+		}
+	}
+	scripts := doc.Find("script[src*='code-island']")
+	if scripts.Length() != 2 {
+		t.Errorf("island asset scripts = %d, want 2 (bundle + glue)", scripts.Length())
+	}
+	// The schema key is the API contract between page and /api/schema —
+	// a typo here means silent no-completion, so pin it.
+	init := doc.Find("script:not([src])").Text()
+	if !strings.Contains(init, "'workflowtemplate'") {
+		t.Error("inline init must pass the workflowtemplate schema key")
+	}
+}

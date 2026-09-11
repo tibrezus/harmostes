@@ -298,7 +298,20 @@ func fixtureExtras(namespace string) []runtime.Object {
 					OpenAPIV3Schema: &apiextensionsv1.JSONSchemaProps{
 						Type: "object",
 						Properties: map[string]apiextensionsv1.JSONSchemaProps{
-							"spec": {Type: "object", Description: "the Workflow spec (fixture projection)"},
+							"spec": {
+								Type:        "object",
+								Description: "the Workflow spec (fixture projection)",
+								Properties: map[string]apiextensionsv1.JSONSchemaProps{
+									"templateRef": {Type: "string", Description: "the WorkflowTemplate this workflow instantiates"},
+									"source": {
+										Type: "object", Description: "the repo the workflow operates on",
+										Properties: map[string]apiextensionsv1.JSONSchemaProps{
+											"repo":   {Type: "string"},
+											"branch": {Type: "string"},
+										},
+									},
+								},
+							},
 						},
 					},
 				},
@@ -316,7 +329,23 @@ func fixtureExtras(namespace string) []runtime.Object {
 					OpenAPIV3Schema: &apiextensionsv1.JSONSchemaProps{
 						Type: "object",
 						Properties: map[string]apiextensionsv1.JSONSchemaProps{
-							"spec": {Type: "object", Description: "the WorkflowTemplate spec (fixture projection)"},
+							"spec": {
+								Type:        "object",
+								Description: "the WorkflowTemplate spec (fixture projection)",
+								Properties: map[string]apiextensionsv1.JSONSchemaProps{
+									"description": {Type: "string", Description: "human summary of what the template does"},
+									"scope": {
+										Type: "array", Description: "parameters the prepare plugin reads",
+										Items: &apiextensionsv1.JSONSchemaPropsOrArray{Schema: &apiextensionsv1.JSONSchemaProps{
+											Type: "object",
+											Properties: map[string]apiextensionsv1.JSONSchemaProps{
+												"name": {Type: "string"},
+												"kind": {Type: "string"},
+											}},
+										},
+									},
+								},
+							},
 						},
 					},
 				},

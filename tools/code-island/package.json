@@ -1,0 +1,14 @@
+{
+  "name": "harmostes-code-island",
+  "private": true,
+  "description": "Pinned build environment for the Workflow Code island bundle (ADR-0012 §2). The output in internal/ui/static/vendor/code-island/ is COMMITTED — regular development and CI never run a build step; this directory exists only to regenerate the artifact on version bumps (scripts/code-island/build.sh).",
+  "type": "module",
+  "scripts": {
+    "build": "bash build.sh"
+  },
+  "devDependencies": {
+    "esbuild": "0.24.2",
+    "monaco-editor": "0.52.2",
+    "monaco-yaml": "5.5.1"
+  }
+}

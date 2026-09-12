@@ -364,16 +364,6 @@ func layoutGraph(gs v1alpha1.GraphSpec, latest map[string]v1alpha1.NodeResultEnv
 	return views, edgeViews, geo.width, geo.height
 }
 
-func maxRows(columns [][]string) int {
-	m := 1
-	for _, c := range columns {
-		if len(c) > m {
-			m = len(c)
-		}
-	}
-	return m
-}
-
 func isExternalNode(nodes []v1alpha1.NodeSpec, id string) bool {
 	for _, n := range nodes {
 		if n.ID == id {

@@ -110,8 +110,7 @@ func TestFixture_GraphNodeTypeEnumMirrorsChartCRD(t *testing.T) {
 		t.Fatalf("parse chart CRD: %v", err)
 	}
 	// walk: spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.graph.properties.nodes.items.properties.type.enum
-	var walk func(node any, path ...string) any
-	walk = func(node any, path ...string) any {
+	walk := func(node any, path ...string) any {
 		for _, k := range path {
 			if list, ok := node.([]any); ok {
 				i := 0

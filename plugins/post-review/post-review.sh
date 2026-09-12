@@ -180,9 +180,15 @@ if cs and "resolvable" in cs[0]:
 else:
     # GitHub/Forgejo dialect: a thread is CLOSED by real resolve state
     # (C1 — a GraphQL-side resolve leaves no reply) or by a reply.
-    replied={c["in_reply_to"] for c in cs if c.get("in_reply_to")}
+    # Reply linkage is host-dialectal: GitHub REST names it
+    # in_reply_to_id, Forgejo in_reply_to — read both (the live review
+    # loop of #467 tripped this: replies never closed threads on GitHub,
+    # so every APPROVE downgraded on phantom open threads).
+    def reply_parent(c):
+        return c.get("in_reply_to_id") or c.get("in_reply_to")
+    replied={reply_parent(c) for c in cs if reply_parent(c)}
     open_threads=[c for c in cs
-        if not c.get("in_reply_to")
+        if not reply_parent(c)
         and c["id"] not in replied
         and not c.get("resolved")
         # No commit_id → round unattributable: never downgrade on it (C4).

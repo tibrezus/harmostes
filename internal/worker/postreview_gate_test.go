@@ -22,6 +22,10 @@ const (
 	ghOpenPrior        = `[{"id":1,"path":"a.go","line":10,"commit_id":"OLD","in_reply_to":null},{"id":2,"path":"b.go","line":20,"commit_id":"OLD","in_reply_to":1}]`
 	ghUnreplied        = `[{"id":1,"path":"a.go","line":10,"commit_id":"OLD","in_reply_to":null}]`
 	ghOpenCur          = `[{"id":1,"path":"a.go","line":10,"commit_id":"CUR","in_reply_to":null}]`
+	// GitHub REST names the reply linkage in_reply_to_id (the live #467
+	// loop: replies never closed threads under the in_reply_to-only read,
+	// so every APPROVE downgraded on phantom open threads).
+	ghRepliedRestField = `[{"id":1,"path":"a.go","line":10,"commit_id":"OLD","in_reply_to_id":2},{"id":2,"path":"b.go","line":20,"commit_id":"OLD","in_reply_to_id":null}]`
 	forgejoDialect     = `[{"id":7,"path":"x.go","line":1,"commit_id":"OLD","in_reply_to":null},{"id":8,"path":"x.go","line":1,"commit_id":"OLD","in_reply_to":7}]`
 	gitlabOpen         = `[{"id":12,"path":"z.go","line":6,"commit_id":"OLD","resolvable":true,"resolved":false}]`
 	gitlabResolved     = `[{"id":11,"path":"y.go","line":5,"commit_id":"OLD","resolvable":true,"resolved":true}]`
@@ -57,6 +61,7 @@ func TestPostReviewGateClassifier(t *testing.T) {
 		wantOpen string // the stdout count line ("" = don't assert)
 	}{
 		{"github: replied prior thread is closed", ghOpenPrior, "CUR", "APPROVE", "0"},
+		{"github: REST in_reply_to_id reply closes the thread", ghRepliedRestField, "CUR", "APPROVE", "0"},
 		{"github: unreplied prior thread downgrades", ghUnreplied, "CUR", "REQUEST_CHANGES", "1"},
 		{"github: current-round thread does not downgrade", ghOpenCur, "CUR", "APPROVE", "0"},
 		{"forgejo in_reply_to dialect closes threads", forgejoDialect, "OLD", "APPROVE", "0"},

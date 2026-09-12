@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -29,26 +31,56 @@ const (
 //
 //	{"workflow": <schema>, "workflowtemplate": <schema>}
 //
-// where each value is the CRD's storage version's openAPIV3Schema. The ETag
-// is derived from the CRDs' resourceVersions, so schema consumers get real
-// caching for free: an unchanged CRD pair answers If-None-Match with 304, and
-// a CRD rollout invalidates every cached copy on the next request — dev-first
-// correctness without a TTL to tune. CONTRACT: clients MUST treat the ETag
-// as opaque — the delimiter/format is an implementation detail that may
-// switch to a content hash without notice (PR #427 review, L2).
+// where each value is the CRD's storage version's openAPIV3Schema.
+//
+// Per-kind responses (#436): `?kind=workflow` / `?kind=workflowtemplate`
+// serve one half with its OWN ETag, so a rollout of one CRD no longer
+// invalidates the other — the template schema sits on the editor's critical
+// path and must not be invalidated by an unrelated CRD change.
+//
+// Memoization (#436): CRD reads and schema derivation are cached behind a
+// small TTL (schemaMemoTTL) so the editor's polling (#416) and conditional
+// revalidation do not pay live cluster reads on every hit. The trade is
+// deliberate and bounded: a CRD rollout invalidates cached copies within
+// the TTL, not on the very next request — the old no-TTL property bought
+// dev-first immediacy at the cost of a read per poll.
+// CONTRACT: clients MUST treat ETags as opaque — the delimiter/format is an
+// implementation detail that may switch to a content hash without notice
+// (PR #427 review, L2).
 func (s *Server) handleSchema(w http.ResponseWriter, r *http.Request) {
-	wfSchema, wfRV, err := s.crdOpenAPISchema(r.Context(), workflowsCRDName)
-	if err != nil {
-		s.schemaError(w, r, workflowsCRDName, err)
-		return
-	}
-	tmplSchema, tmplRV, err := s.crdOpenAPISchema(r.Context(), workflowTemplatesCRDName)
-	if err != nil {
-		s.schemaError(w, r, workflowTemplatesCRDName, err)
+	var wantWf, wantTmpl bool
+	switch kindParam := r.URL.Query().Get("kind"); kindParam {
+	case "":
+		wantWf, wantTmpl = true, true
+	case "workflow":
+		wantWf = true
+	case "workflowtemplate":
+		wantTmpl = true
+	default:
+		s.writeAPIError(w, http.StatusBadRequest, "unknown kind — want workflow or workflowtemplate")
 		return
 	}
 
-	etag := `"` + wfRV + "-" + tmplRV + `"`
+	wf, tmpl, errKind, err := s.schemaEntries(r.Context(), wantWf, wantTmpl)
+	if err != nil {
+		if errKind == workflowsCRDName || errKind == workflowTemplatesCRDName {
+			s.schemaError(w, r, errKind, err)
+			return
+		}
+		s.logger.Error("schema memo", "err", err)
+		s.writeAPIError(w, http.StatusInternalServerError, "schema cache failure")
+		return
+	}
+
+	var etag string
+	switch {
+	case wantWf && wantTmpl:
+		etag = `"` + wf.rv + "-" + tmpl.rv + `"`
+	case wantWf:
+		etag = `"wf-` + wf.rv + `"`
+	default:
+		etag = `"tmpl-` + tmpl.rv + `"`
+	}
 	w.Header().Set("ETag", etag)
 	// no-cache (not no-store): clients may KEEP the body but must revalidate
 	// — the ETag dance below is the intended traffic pattern, so proxies and
@@ -60,12 +92,79 @@ func (s *Server) handleSchema(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(map[string]any{
-		"workflow":         wfSchema,
-		"workflowtemplate": tmplSchema,
-	}); err != nil {
+	body := map[string]any{}
+	if wantWf {
+		body["workflow"] = wf.schema
+	}
+	if wantTmpl {
+		body["workflowtemplate"] = tmpl.schema
+	}
+	if err := json.NewEncoder(w).Encode(body); err != nil {
 		s.logger.Error("encode schema", "err", err)
 	}
+}
+
+// schemaNow is the memo's clock (injectable in tests); nil-safe because
+// test constructors may build the Server literal directly.
+func (s *Server) schemaNow() time.Time {
+	if s.now == nil {
+		return time.Now()
+	}
+	return s.now()
+}
+
+// schemaMemoCache is the Server's CRD cache for GET /api/schema.
+type schemaMemoCache struct {
+	mu      sync.Mutex
+	expires time.Time
+	wf      schemaEntry
+	tmpl    schemaEntry
+}
+
+// schemaEntry is one memoized CRD half: the storage version's schema and
+// the resourceVersion the ETag derives from.
+type schemaEntry struct {
+	schema *apiextensionsv1.JSONSchemaProps
+	rv     string
+}
+
+// schemaMemoTTL bounds how long the CRD cache may answer without re-reading
+// the cluster. Small on purpose: correctness on a CRD rollout lags at most
+// this long, and the editor (#416) revalidates far more often than that.
+const schemaMemoTTL = 30 * time.Second
+
+// schemaEntries returns the requested halves, serving from the memo while
+// it is fresh and re-reading (and refreshing) on expiry. On a read failure
+// the returned errKind names the CRD — the caller maps it to the per-kind
+// error response.
+func (s *Server) schemaEntries(ctx context.Context, wantWf, wantTmpl bool) (wf, tmpl schemaEntry, errKind string, err error) {
+	s.schemaMemo.mu.Lock()
+	defer s.schemaMemo.mu.Unlock()
+
+	if !s.schemaNow().Before(s.schemaMemo.expires) {
+		read := func(name string, e *schemaEntry) error {
+			schema, rv, err := s.crdOpenAPISchema(ctx, name)
+			if err != nil {
+				return err
+			}
+			*e = schemaEntry{schema: schema, rv: rv}
+			return nil
+		}
+		if wantWf {
+			errKind = workflowsCRDName
+			if err = read(workflowsCRDName, &s.schemaMemo.wf); err != nil {
+				return
+			}
+		}
+		if wantTmpl {
+			errKind = workflowTemplatesCRDName
+			if err = read(workflowTemplatesCRDName, &s.schemaMemo.tmpl); err != nil {
+				return
+			}
+		}
+		s.schemaMemo.expires = s.schemaNow().Add(schemaMemoTTL)
+	}
+	return s.schemaMemo.wf, s.schemaMemo.tmpl, "", nil
 }
 
 // etagMatches implements RFC 9110 §8.8.3.2 If-None-Match comparison for the

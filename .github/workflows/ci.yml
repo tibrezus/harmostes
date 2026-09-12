@@ -146,12 +146,15 @@ jobs:
             echo "::error::VENDOR.sha files: and vendor-patch.py output disagree — sync the declaration, the patcher, or both"
             exit 1
           fi
-          # 3. Upstream must have no .py outside the vendored set (coverage
-          #    cannot grow a hole).
+          # 3. Upstream's .py set minus the vendored set must never exceed
+          #    the not-vendored declarations in VENDOR.sha (coverage cannot
+          #    grow a hole; a new upstream file is a recorded decision).
           (cd /tmp/llm-wiki-core/.github/actions/repo-map \
             && find . -name '*.py' | sed 's|^\./||' | sort) > /tmp/upstream.txt
-          if ! diff -u /tmp/produced.txt /tmp/upstream.txt; then
-            echo "::error::upstream repo-map has .py files outside the vendored set — extend VENDOR.sha + vendor-patch.py deliberately"
+          awk '/^#   [a-z][a-z0-9-]*\.py /{sub(/^#   /,""); print $1}' plugins/rig-emit/VENDOR.sha | sort > /tmp/notvendored.txt
+          comm -13 /tmp/produced.txt /tmp/upstream.txt > /tmp/excluded.txt
+          if ! diff -u /tmp/notvendored.txt /tmp/excluded.txt; then
+            echo "::error::upstream repo-map has .py files outside the vendored set that VENDOR.sha does not declare — extend VENDOR.sha + vendor-patch.py deliberately"
             exit 1
           fi
           # 4. Byte-compare each.

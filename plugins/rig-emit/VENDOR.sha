@@ -14,6 +14,16 @@ files:
   rig/extractors/npm.py rig/extractors/python.py rig/extractors/zig.py
 # harmostes-owned, NOT vendored: rig-brief.py, rig-to-c4.py, rig-emit.sh,
 # test_validator.py, test_brief.py
+# Upstream .py files deliberately NOT vendored (the vendor-sync step asserts
+# upstream's .py set minus the vendored set never exceeds this list — an
+# addition upstream is a sync DECISION):
+#   rig-query.py   — the image's query surface is the pi extension
+#                    (extensions/rig-query) + rig-brief.py; a Python CLI
+#                    would be a third query path for the same data
+#   rig-to-c4.py   — harmostes-owned copy exists (evolved separately)
+#   rig-fitness.py — the fitness MODULE ships (rig/fitness.py); the CLI
+#                    wrapper has no in-image consumer (wiki-lint candidate)
+#   build-wiki-pages.py — llm-wiki docs-site builder, no harmostes role
 # ONE vendor patch on top (severity pin, rhesadox#1864): rig/validator.py
 #   upstream bytes | vendor-patch.py stdin>stdout  ==  vendored rig/validator.py
 # The CI vendor-sync step applies this script before the byte-compare.

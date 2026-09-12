@@ -114,8 +114,12 @@ test-sol-pi:
 ## test-rig-emit: the rig-emit plugin's Python validator — severity pin:
 ## circular deps WARN (the graph represents the codebase as it is; failing
 ## the emit left reviews graph-less, rhesadox#1864), the rest stay errors.
+## Plus rig-brief's contract tests (#443): the prepare-time context
+## enrichment must map changed files → components, name symbols with
+## file:line, compute blast radius, and fail open.
 test-rig-emit:
 	python3 plugins/rig-emit/test_validator.py
+	python3 plugins/rig-emit/test_brief.py
 
 ## test-integration: integration tier — the attempt ledger + review-claim
 ## lifecycles against a REAL API server (envtest) with the chart CRDs

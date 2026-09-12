@@ -4642,8 +4642,15 @@ data:
     
     - **PR context**: `cat /workspace/pr-context.json` — host, repo, number, title,
       body, head_sha, head_ref, issue (linked), milestone, ci_status, files_changed,
-      repo_dir, wiki_dir. If `rig_db` is set, an architecture graph exists — query
-      it with the `rig` tool (see toolkit) instead of grepping to orient.
+      repo_dir, wiki_dir.
+    - **Orientation — read `/workspace/rig-briefing.md` FIRST.** It is your
+      pre-computed context: the architecture graph's components and dependency
+      edges, which components THIS diff touches, their key symbols with
+      file:line, and the blast radius (who depends on what you are changing).
+      It pre-answers "where is X" and "what uses Y" — never grep to discover
+      what it already says. Use the `rig` tool only for symbol-level questions
+      the briefing does not answer. If pr-context has no `rig_briefing`, fall
+      back to `rig` (when `rig_db` is set), and only then to targeted greps.
       `rig_path`/`c4_path` are the wiki's synced copies (background reading only).
     - **Diff**: `cat /workspace/pr-diff.patch`
     - **Code**: `/workspace/repo` — checked out at the PR's head SHA

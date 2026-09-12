@@ -46,18 +46,21 @@ const jobDeathGrace = 2 * time.Minute
 
 // Verdict contract (r7, owner directive #431 — see
 // internal/worker/reviewgate_validation_test.go for the same lineage):
-// the reviewer's review.json carries blocking findings only — never a
-// body field, the deploy node composes the one-line verdict + provenance
-// trailer itself. A REQUEST_CHANGES verdict without ≥1 finding is
-// rejected (a blocking verdict must be actionable); the deploy's
-// APPROVE→REQUEST_CHANGES downgrade line is a different artifact — it is
-// deploy-composed (post-review.sh) about PRIOR-round threads, so the
-// ≥1-finding rule governs review.json, never that line. A consumed
-// verdict removes the reviewReady label (default "needs-review") so the
-// same head is never re-reviewed unless the label returns (the author's
-// explicit re-arm). A dead dispatch needs no exception: post-review never
-// ran, so the label is still present and the label-driven arming
-// (review_gate.go ListLabeledOpenPulls) re-reviews the same head.
+// the reviewer's review.json carries blocking findings only — the body
+// field is gone from the shape, and where a legacy body lingers the
+// validation tolerates it (ignored, not rejected) while a
+// REQUEST_CHANGES without ≥1 finding is rejected outright; the deploy
+// node composes the one-line verdict + provenance trailer itself. The
+// deploy's APPROVE→REQUEST_CHANGES downgrade line is a different
+// artifact — it is deploy-composed (post-review.sh) about PRIOR-round
+// threads, so the ≥1-finding rule governs review.json, never that
+// line. A consumed verdict removes the reviewReady label (default
+// "needs-review") so the same head is never re-reviewed unless the
+// label returns (the author's explicit re-arm). A dead dispatch needs
+// no exception only while the #328 dead-dispatch breaker is closed:
+// the label still present makes the head a candidate, but at
+// MaxDeadDispatchesPerHead ArmClaim refuses the re-arm (claim.go) and
+// only an explicit label re-apply (humanOverride) re-dispatches.
 // Enforced in plugins/pr-review/pr-review.sh (validation) and consumed
 // in plugins/post-review/post-review.sh (verdict line + label DELETE,
 // which also names verdictTrailer as the contract's canonical home —

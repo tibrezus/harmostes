@@ -49,7 +49,10 @@ const jobDeathGrace = 2 * time.Minute
 // the reviewer's review.json carries blocking findings only — never a
 // body field, the deploy node composes the one-line verdict + provenance
 // trailer itself. A REQUEST_CHANGES verdict without ≥1 finding is
-// rejected (a blocking verdict must be actionable), and a consumed
+// rejected (a blocking verdict must be actionable); the deploy's
+// APPROVE→REQUEST_CHANGES downgrade line is a different artifact — it is
+// deploy-composed (post-review.sh) about PRIOR-round threads, so the
+// ≥1-finding rule governs review.json, never that line. A consumed
 // verdict removes the reviewReady label (default "needs-review") so the
 // same head is never re-reviewed unless the label returns (the author's
 // explicit re-arm). A dead dispatch needs no exception: post-review never

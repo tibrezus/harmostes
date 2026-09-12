@@ -168,8 +168,9 @@ CLASSIFIER_PY=$(cat << 'GATE_PYEOF'
 import json, os, sys
 cs=json.load(sys.stdin)
 sha=os.environ.get("REVIEWED_SHA","")
+open_n=0
 if cs is None:
-    print("APPROVE"); raise SystemExit   # fetch failed — fail-open with a loud WARN upstream
+    print(0); print("APPROVE"); raise SystemExit   # fetch failed — fail-open with a loud WARN upstream
 dec="APPROVE"
 if cs and "resolvable" in cs[0]:
     # GitLab dialect: native resolve is authoritative.
@@ -187,22 +188,32 @@ else:
         # No commit_id → round unattributable: never downgrade on it (C4).
         and c.get("commit_id") not in (None, "")
         and str(c.get("commit_id"))!=sha]
+open_n=len(open_threads)
 if open_threads:
     dec="REQUEST_CHANGES"
     for c in open_threads[:10]:
         print(f"[post-review] unresolved thread {c.get('path','?')}:{c.get('line','?')} id={c.get('id')} — reply+resolve required before APPROVE", file=sys.stderr)
+# stdout: count line FIRST, decision LAST — the shell and the golden test
+# read the decision as the last line; the count feeds the downgrade verdict
+# line (DOWNGRADED path) so the two never drift into separate
+# implementations.
+print(open_n)
 print(dec)
 # GATE-CLASSIFIER-END
 GATE_PYEOF
 )
 
-NEWDEC=$(printf '%s' "$CS_JSON" | python3 -c "$CLASSIFIER_PY")
+# stdout of the classifier: count line first, decision last (the golden
+# test reads the decision as the last line — keep that invariant).
+CLASS_OUT=$(printf '%s' "$CS_JSON" | python3 -c "$CLASSIFIER_PY")
+NEWDEC=$(printf '%s\n' "$CLASS_OUT" | tail -n 1)
+OPEN_THREADS=$(printf '%s\n' "$CLASS_OUT" | head -n 1)
 
 if [ "$NEWDEC" != "$DEC" ]; then
-  log "APPROVE downgraded: unresolved prior-round threads"
+  log "APPROVE downgraded: $OPEN_THREADS unresolved prior-round thread(s)"
   DEC="$NEWDEC"
   DOWNGRADED=1
-  export DOWNGRADED   # the verdict-comment builder appends the downgrade note
+  export DOWNGRADED OPEN_THREADS   # the verdict builder emits the downgrade line
   # S1 (r26): the downgrade rewrites the whole verdict — the decision field
   # here AND the trailer of the posted verdict comment below (rebuilt from
   # decision + SHA, so the downgrade is visible to dw_wait_review).
@@ -230,13 +241,18 @@ import json, os
 with open(os.environ["REVIEW"]) as f: review=json.load(f)
 dec=review["decision"]; sha=review.get("reviewed_sha","")
 n=len(review.get("comments",[]) or [])
-if dec=="APPROVE":
+if os.environ.get("DOWNGRADED"):
+    # Deploy-composed downgrade: NOT the reviewer's verdict — the ≥1-finding
+    # rule (pr-review.sh validation) governs review.json, not this line. It
+    # must stay self-describing: the downgrade fires on PRIOR-round threads,
+    # so "N blocking findings" would be false here.
+    line=(f"{dec} at {sha} — downgraded: {os.environ.get('OPEN_THREADS','0')} unresolved "
+          "prior-round thread(s); reply with the fix SHA, resolve, then re-arm.")
+elif dec=="APPROVE":
     line=f"APPROVE at {sha} — all pillars clean, no blocking findings. Label consumed; re-arm with the label to review again."
 else:
     plural="finding" if n==1 else "findings"
     line=f"{dec} at {sha} — {n} blocking {plural} posted as review threads; close them, then re-arm with the label to re-review."
-if os.environ.get("DOWNGRADED"):
-    line += "\n\n**Downgraded from APPROVE: unresolved review threads from prior rounds exist.** Address each (reply with the fix SHA), resolve the thread, and re-arm."
 print(json.dumps({"body": line+"\n\n<!-- pr-review: "+dec+" @ "+sha+" -->"}))
 PYEOF
 )

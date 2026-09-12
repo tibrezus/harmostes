@@ -180,10 +180,11 @@ func runPlugin(t *testing.T, srv *httptest.Server, fj bool, review map[string]an
 }
 
 func baseReview(comments []any) map[string]any {
+	// r7 shape: NO top-level body field — the deploy builds the verdict line
+	// from decision + sha (the reviewer never writes analysis prose).
 	return map[string]any{
 		"decision":     "REQUEST_CHANGES",
 		"reviewed_sha": "deadbeef123",
-		"body":         "## Adversarial Review\n<!-- pr-review: REQUEST_CHANGES @ deadbeef123 -->",
 		"comments":     comments,
 	}
 }
@@ -620,4 +621,66 @@ func TestPostReviewForgejoDialect(t *testing.T) {
 		t.Fatalf("forgejo comments must anchor via new_position (new_line 500s), got %v", c)
 	}
 	assertInlineThreads(t, out, 1, 0, 0)
+}
+
+// TestPostReviewDowngradeIsR7Conforming is the mutation probe the r7 review
+// of 2e16f0c5 demanded: the APPROVE→REQUEST_CHANGES downgrade used to write
+// `r["body"]` — a field a conforming review.json no longer has — which
+// raised KeyError under `set -euo pipefail` and aborted the whole deploy
+// (no verdict comment, no label DELETE: the round was lost). This test
+// runs the SHIPPED plugin against an r7-shaped review (NO body) with one
+// unresolved prior-round thread and asserts the full downgrade flow.
+// Mutation probe: restore the `r["body"] = re.sub(...)` write — this test
+// goes red (KeyError → nonzero exit).
+func TestPostReviewDowngradeIsR7Conforming(t *testing.T) {
+	f := &fakeForge{}
+	mux := f.mux(t)
+	// reviewThreads for the resolve-state map (C1): one UNresolved thread
+	// whose only comment carries databaseId 77 — matching the prior-round
+	// comment seeded below (unresolved ⇒ it can downgrade an APPROVE).
+	mux.HandleFunc("/graphql", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[{"isResolved":false,"comments":{"nodes":[{"databaseId":77}]}}]}}}}}`))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	// Seed the prior-round open thread the classifier downgrades on:
+	// review comment id 77, anchored at a PRIOR commit (not the reviewed
+	// SHA), unreplied, and graphqlResolved=false (unresolved).
+	f.mu.Lock()
+	f.comments = []map[string]any{
+		{"id": 77, "path": "a.go", "line": 3, "commit_id": "old123", "in_reply_to": nil, "body": "prior-round finding"},
+	}
+	f.mu.Unlock()
+
+	// r7 shape: decision APPROVE, NO body — the legacy fixtures carried a
+	// body and thereby encoded the very shape that broke the writer.
+	out := runPlugin(t, srv, false, map[string]any{
+		"decision":     "APPROVE",
+		"reviewed_sha": "deadbeef123",
+		"comments":     []any{},
+	})
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !f.verdictPost {
+		t.Fatal("the downgrade verdict comment must still post (the gate's consume signal)")
+	}
+	if !f.labelGone {
+		t.Error("the downgrade must still consume the label")
+	}
+	vb := f.verdictBody
+	if !strings.Contains(vb, "<!-- pr-review: REQUEST_CHANGES @ deadbeef123 -->") {
+		t.Errorf("downgrade verdict must carry the REQUEST_CHANGES trailer (dw_wait_review's merge currency), got %q", vb)
+	}
+	if !strings.Contains(vb, "downgraded:") || !strings.Contains(vb, "1 unresolved prior-round thread") {
+		t.Errorf("downgrade verdict must be self-describing (no false findings count), got %q", vb)
+	}
+	if strings.Contains(vb, "0 blocking findings") {
+		t.Errorf("downgrade verdict must not inherit the findings count (nothing was posted this round), got %q", vb)
+	}
+	if strings.Count(vb, "\n") > 2 {
+		t.Errorf("verdict must stay one line + trailer (r7 briefness), got %d newlines: %q", strings.Count(vb, "\n"), vb)
+	}
+	_ = out
 }

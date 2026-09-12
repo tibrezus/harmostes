@@ -1,0 +1,61 @@
+{{define "pages/template_revisions.html"}}
+{{- /* template_revisions.html — the revision graph diff (ADR-0012 §3,
+      #417): two paintings of ONE union layout with delta classes, plus the
+      YAML diff pane (Kestra FlowRevisions pattern). Revision history is
+      annotation-carried until the MR-bridge (#420) renders it from git. */ -}}
+{{$t := .}}
+<div class="page-content">
+	<header class="tpl-detail-header">
+		<div class="tpl-detail-header-main">
+			<h1 class="tpl-detail-title"><a href="/templates/{{$t.Name}}">{{$t.Name}}</a> — revisions</h1>
+		</div>
+		{{if $t.Description}}<span class="tpl-card-gate">{{$t.Description}}</span>{{end}}
+	</header>
+
+	{{if $t.SingleRevision}}
+	<div class="ds-callout ds-callout--info" data-testid="revisions-empty">
+		This template has a single revision — no history to diff yet. Revision
+		history is stamped on write (annotation-carried) until the MR-bridge
+		renders it from git history.
+	</div>
+	{{end}}
+
+	{{if not $t.SingleRevision}}
+	<!-- Revision pair selector: any revision vs the live head -->
+	<nav class="rev-picker" data-testid="rev-picker" aria-label="revision pair">
+		{{range $t.Revs}}
+		{{if gt . 1}}<span class="rev-picker-sep" aria-hidden="true">·</span>{{end}}
+		<a class="rev-option{{if eq $t.From .}} rev-option--from{{end}}{{if eq $t.To .}} rev-option--to{{end}}"
+		   href="/templates/{{$t.Name}}/revisions?from={{.}}&amp;to={{$t.To}}"
+		   data-testid="rev-option" data-rev="{{.}}">r{{.}}</a>
+		{{end}}
+	</nav>
+	{{end}}
+
+	<div class="rev-diff-grid" data-testid="rev-graph-diff">
+		<section class="rev-pane" data-testid="topology-pane" data-pane="older">
+			<h3 class="rev-pane-heading">r{{$t.From}}{{if $t.FromDesc}} — {{$t.FromDesc}}{{end}}</h3>
+			{{template "pages/frag_topology.html" $t.TopologyOlder}}
+		</section>
+		<section class="rev-pane" data-testid="topology-pane" data-pane="newer">
+			<h3 class="rev-pane-heading">r{{$t.To}}{{if $t.ToDesc}} — {{$t.ToDesc}}{{end}} {{if eq $t.To $t.RevisionCount}}<span class="chip chip--neutral">head</span>{{end}}</h3>
+			{{template "pages/frag_topology.html" $t.TopologyNewer}}
+		</section>
+	</div>
+
+	{{if not $t.SingleRevision}}
+	<div class="rev-legend" data-testid="topology-legend">
+		<span class="rev-legend-item"><span class="rev-swatch rev-swatch--added"></span>added</span>
+		<span class="rev-legend-item"><span class="rev-swatch rev-swatch--removed"></span>removed</span>
+		<span class="rev-legend-item"><span class="rev-swatch rev-swatch--changed"></span>changed</span>
+		<span class="rev-legend-item"><span class="rev-swatch rev-swatch--ghost"></span>not in this revision</span>
+	</div>
+	{{end}}
+
+	<section class="tpl-section">
+		<h3 class="tpl-section-heading">YAML diff — spec</h3>
+		<pre class="ydiff" data-testid="yaml-diff">{{range $t.YAMLDiff}}<span class="ydiff-line ydiff-line--{{.Kind}}" data-testid="yaml-diff-line" data-diff="{{.Kind}}">{{if eq .Kind "added"}}+ {{else if eq .Kind "removed"}}- {{else}}  {{end}}{{.Text}}
+</span>{{end}}</pre>
+	</section>
+</div>
+{{end}}

@@ -45,6 +45,10 @@ type templateDetailView struct {
 	// YAML — the same artifact a future edit produces and reviews.
 	YAML      string
 	ModelPath string
+	// Topology (ADR-0012 §3, #417): the compiled graph as the layered SVG
+	// projection — the same geometry the run graph paints.
+	Topology      topologyView
+	RevisionCount int // history entries incl. the live head; >1 links the revisions view
 }
 
 // templateDocument is the canonical YAML projection of a WorkflowTemplate:
@@ -163,6 +167,8 @@ func (s *Server) handleTemplateDetail(w http.ResponseWriter, r *http.Request) {
 		Workflows:     workflows,
 		YAML:          templateYAML(tmpl),
 		ModelPath:     tmpl.Name + ".yaml",
+		Topology:      buildTopology(graphForTemplate(tmpl.Spec), s.nodeTypePalette(r.Context())),
+		RevisionCount: len(templateRevisions(tmpl)),
 	}
 	s.render(w, r, "pages/template_detail.html", data)
 }

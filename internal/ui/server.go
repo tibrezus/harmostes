@@ -261,6 +261,7 @@ func (s *Server) Routes() http.Handler {
 	// Templates — read-only catalog (WorkflowTemplate CRs discovered from the cluster)
 	pages.HandleFunc("GET /templates", s.handleTemplateList)
 	pages.HandleFunc("GET /templates/{name}", s.handleTemplateDetail)
+	pages.HandleFunc("GET /templates/{name}/revisions", s.handleTemplateRevisions)
 	pages.HandleFunc("GET /workflows/{name}", s.handleWorkflowDetail)
 	pages.HandleFunc("GET /workflows/{name}/runs/{job}", s.handleWorkflowRunRedirect)
 

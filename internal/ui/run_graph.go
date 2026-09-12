@@ -276,75 +276,22 @@ func buildTimingStrip(att *v1alpha1.Attempt, nodes []graphNodeView, latest map[s
 	return segs
 }
 
-// layoutGraph computes the layered layout: columns by longest-path depth,
-// deterministic order within columns, bezier edges right→left.
+// layoutGraph computes the run graph's painting over the shared layout
+// engine (topology.go): execution state per node, the pulsing live position,
+// timing anchors. Geometry itself is identical to the topology projection.
 func layoutGraph(gs v1alpha1.GraphSpec, latest map[string]v1alpha1.NodeResultEnvelope, inFlight bool) ([]graphNodeView, []graphEdgeView, int, int) {
 	// Deterministic node order.
 	nodes := make([]v1alpha1.NodeSpec, len(gs.Nodes))
 	copy(nodes, gs.Nodes)
 	sort.Slice(nodes, func(i, j int) bool { return nodes[i].ID < nodes[j].ID })
 
-	idSet := make(map[string]bool, len(nodes))
-	for _, n := range nodes {
-		idSet[n.ID] = true
-	}
-	// Edges reference only known nodes (spec noise guard).
-	edges := make([]v1alpha1.EdgeSpec, 0, len(gs.Edges))
-	preds := map[string][]string{}
-	for _, e := range gs.Edges {
-		if idSet[e.From] && idSet[e.To] {
-			edges = append(edges, e)
-			preds[e.To] = append(preds[e.To], e.From)
-		}
-	}
-
-	// Longest-path depth (memoized DFS; compiled graphs are DAGs — the visit
-	// cap guards against pathological specs).
-	depths := make(map[string]int, len(nodes))
-	var depth func(id string) int
-	depth = func(id string) int {
-		if d, ok := depths[id]; ok {
-			return d
-		}
-		depths[id] = 0 // cycle guard
-		d := 0
-		for _, p := range preds[id] {
-			if pd := depth(p) + 1; pd > d {
-				d = pd
-			}
-		}
-		depths[id] = d
-		return d
-	}
-	maxDepth := 0
-	for _, n := range nodes {
-		if d := depth(n.ID); d > maxDepth {
-			maxDepth = d
-		}
-	}
-
-	// Columns, rows deterministic by ID order.
-	columns := make([][]string, maxDepth+1)
-	for _, n := range nodes {
-		d := depths[n.ID]
-		columns[d] = append(columns[d], n.ID)
-	}
-	pos := map[string][2]int{}
-	for c, col := range columns {
-		for r, id := range col {
-			pos[id] = [2]int{c, r}
-		}
-	}
-	coord := func(id string) (int, int) {
-		cr := pos[id]
-		return cr[0], cr[1]
-	}
+	geo := layoutGraphGeometry(nodes, gs.Edges)
 
 	// Live position: first envelope-less executable node in topological
 	// order (columns already are a topo partition; scan column by column).
 	runningNode := ""
 	if inFlight {
-		for _, col := range columns {
+		for _, col := range geo.columns {
 			for _, id := range col {
 				if _, done := latest[id]; done {
 					continue
@@ -363,7 +310,7 @@ func layoutGraph(gs v1alpha1.GraphSpec, latest map[string]v1alpha1.NodeResultEnv
 
 	views := make([]graphNodeView, 0, len(nodes))
 	for _, n := range nodes {
-		c, r := coord(n.ID)
+		c, r := geo.pos[n.ID][0], geo.pos[n.ID][1]
 		status := graphStatePending
 		label := n.Label
 		if label == "" {
@@ -406,35 +353,15 @@ func layoutGraph(gs v1alpha1.GraphSpec, latest map[string]v1alpha1.NodeResultEnv
 		})
 	}
 
-	edgeViews := make([]graphEdgeView, 0, len(edges))
-	for _, e := range edges {
-		fc, fr := coord(e.From)
-		tc, tr := coord(e.To)
-		x1 := graphMargin + fc*(graphNodeW+graphColGap) + graphNodeW
-		y1 := graphMargin + fr*(graphNodeH+graphRowGap) + graphNodeH/2
-		x2 := graphMargin + tc*(graphNodeW+graphColGap)
-		y2 := graphMargin + tr*(graphNodeH+graphRowGap) + graphNodeH/2
-		mid := (x1 + x2) / 2
-		edgeViews = append(edgeViews, graphEdgeView{
-			From: e.From,
-			To:   e.To,
-			Path: fmt.Sprintf("M %d %d C %d %d, %d %d, %d %d", x1, y1, mid, y1, mid, y2, x2, y2),
-		})
-	}
-
-	width := graphMargin*2 + (maxDepth+1)*graphNodeW + maxDepth*graphColGap
-	height := graphMargin*2 + maxRows(columns)*graphNodeH + (maxRows(columns)-1)*graphRowGap
-	return views, edgeViews, width, height
-}
-
-func maxRows(columns [][]string) int {
-	m := 1
-	for _, c := range columns {
-		if len(c) > m {
-			m = len(c)
+	// Edges in spec order (noise-filtered by the engine), paths from the
+	// shared geometry — identical curves to the topology projection.
+	edgeViews := make([]graphEdgeView, 0, len(gs.Edges))
+	for _, e := range gs.Edges {
+		if p, ok := geo.edgeOf[e.From+"→"+e.To]; ok {
+			edgeViews = append(edgeViews, graphEdgeView{From: e.From, To: e.To, Path: p})
 		}
 	}
-	return m
+	return views, edgeViews, geo.width, geo.height
 }
 
 func isExternalNode(nodes []v1alpha1.NodeSpec, id string) bool {

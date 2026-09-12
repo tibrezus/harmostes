@@ -41,6 +41,15 @@
 	</section>
 	{{end}}
 
+	{{/* Topology (ADR-0012 §3, #417): the RESOLVED graph — thin instances
+	     render their merged shape (template defaults + instance config). */}}
+	{{with .Topology}}
+	<section class="tpl-section">
+		<h3 class="tpl-section-heading">Topology <span class="chip chip--neutral">resolved</span></h3>
+		{{template "pages/frag_topology.html" .}}
+	</section>
+	{{end}}
+
 	<!-- Feature panels -->
 	<div class="tpl-features-grid">
 		<!-- Source -->

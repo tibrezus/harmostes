@@ -1,11 +1,16 @@
 package fixture
 
 import (
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
+
+	"sigs.k8s.io/yaml"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
 	"github.com/tibrezus/harmostes/internal/ui"
@@ -17,8 +22,8 @@ func TestFixture_Objects(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Objects: %v", err)
 	}
-	if len(objs) != 2 {
-		t.Fatalf("objects = %d, want 2 workflows", len(objs))
+	if len(objs) != 3 {
+		t.Fatalf("objects = %d, want 3 workflows", len(objs))
 	}
 	names := map[string]bool{}
 	for _, o := range objs {
@@ -29,12 +34,15 @@ func TestFixture_Objects(t *testing.T) {
 		if wf.Labels[v1alpha1.OwnerLabel] != ui.DevOwnerPrefix+DevUser {
 			t.Errorf("workflow %s missing owner label", wf.Name)
 		}
-		if wf.Spec.Graph == nil || len(wf.Spec.Graph.Nodes) == 0 {
-			t.Errorf("workflow %s has no graph", wf.Name)
+		// Graph-native workflows carry their graph; the thin instance (r1 of
+		// the world) instead carries only a templateRef — its merged shape is
+		// resolved at render time (#417).
+		if wf.Spec.Graph == nil && wf.Spec.TemplateRef == "" {
+			t.Errorf("workflow %s has neither graph nor templateRef", wf.Name)
 		}
 		names[wf.Name] = true
 	}
-	for _, want := range []string{"pr-review-demo", "merge-sync-demo"} {
+	for _, want := range []string{"pr-review-demo", "merge-sync-demo", "pr-review-instance"} {
 		if !names[want] {
 			t.Errorf("workflow %q missing", want)
 		}
@@ -86,5 +94,69 @@ func TestFixture_NewServer_ServesWorld(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("GET /runs = %d, want 200", resp.StatusCode)
+	}
+}
+
+// The fixture's graph node-type enum must mirror the chart CRD's — the
+// topology palette (#417) derives from it, and drift here would make the
+// fixture world disagree with dev about what a node can be.
+func TestFixture_GraphNodeTypeEnumMirrorsChartCRD(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "chart", "crds", "workflows.harmostes.dev.yaml"))
+	if err != nil {
+		t.Fatalf("read chart CRD: %v", err)
+	}
+	var crd map[string]any
+	if err := yaml.Unmarshal(raw, &crd); err != nil {
+		t.Fatalf("parse chart CRD: %v", err)
+	}
+	// walk: spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.graph.properties.nodes.items.properties.type.enum
+	walk := func(node any, path ...string) any {
+		for _, k := range path {
+			if list, ok := node.([]any); ok {
+				i := 0
+				for _, c := range k {
+					if c < '0' || c > '9' {
+						i = -1
+						break
+					}
+					i = i*10 + int(c-'0')
+				}
+				if i >= 0 && i < len(list) {
+					node = list[i]
+					continue
+				}
+				return nil
+			}
+			if mm, ok := node.(map[string]any); ok {
+				node = mm[k]
+				continue
+			}
+			return nil
+		}
+		return node
+	}
+	enumNode := walk(crd, "spec", "versions", "0", "schema", "openAPIV3Schema",
+		"properties", "spec", "properties", "graph", "properties", "nodes",
+		"items", "properties", "type", "enum")
+	enumList, ok := enumNode.([]any)
+	if !ok || len(enumList) == 0 {
+		t.Fatal("chart CRD carries no graph.nodes.type enum — update the fixture helper deliberately")
+	}
+	got := map[string]bool{}
+	for _, e := range graphNodeTypeEnum() {
+		var name string
+		if err := json.Unmarshal(e.Raw, &name); err != nil {
+			t.Fatalf("unmarshal enum entry: %v", err)
+		}
+		got[name] = true
+	}
+	for _, want := range enumList {
+		w, ok := want.(string)
+		if !ok {
+			continue
+		}
+		if !got[w] {
+			t.Errorf("fixture enum missing %q (chart CRD has it)", w)
+		}
 	}
 }

@@ -80,6 +80,7 @@ func (s *Server) handleWorkflowList(w http.ResponseWriter, r *http.Request) {
 	s.render(w, r, "pages/workflows.html", map[string]any{
 		"Workflows":  workflows,
 		"GateGroups": groups,
+		"MayWrite":   s.mayWrite(identityFromContext(r.Context())),
 	})
 }
 
@@ -130,6 +131,7 @@ func (s *Server) handleWorkflowDetail(w http.ResponseWriter, r *http.Request) {
 		// Topology (ADR-0012 §3, #417): the resolved graph as the layered SVG
 		// projection — thin instances render their merged shape here.
 		"Topology": buildTopology(graphForWorkflow(&resolved), s.nodeTypePalette(r.Context())),
+		"MayWrite": s.mayWrite(identityFromContext(r.Context())),
 	})
 }
 

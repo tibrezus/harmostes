@@ -224,6 +224,11 @@ func (s *Server) Routes() http.Handler {
 		_, _ = w.Write([]byte("ok"))
 	})
 
+	// Metrics (no auth — the scraper is in-cluster and holds no identity,
+	// same trust level as the health probe). harmostes_ui_writes_total (#436,
+	// served from the package registry) is the write-path's public ledger.
+	mux.HandleFunc("GET /metrics", s.handleMetrics)
+
 	// Dapr pub/sub subscription endpoints (no auth — daprd is a trusted in-pod
 	// sidecar; it doesn't send Authentik forward-auth headers).
 	mux.HandleFunc("GET /dapr/subscribe", s.handleDaprSubscribe)
@@ -252,11 +257,16 @@ func (s *Server) Routes() http.Handler {
 	// Workflows — the catalog. Creation is a sanctioned ADR-0012 §5 surface:
 	// thin templateRef instances, owner stamped server-side from the
 	// authenticated identity (anti-spoof), so everything created is visible
-	// to its creator. Lifecycle mutations (trigger/toggle/delete) stay pruned
-	// (#291) until their ADR-0012 issues land them deliberately.
+	// to its creator. The lifecycle verbs (#418, ADR-0012 §7) complete the
+	// invariant — created ⇒ visible ⇒ operable — through the same guard
+	// chain (write-capable identity, owner isolation, writes counter).
 	pages.HandleFunc("GET /workflows", s.handleWorkflowList)
 	pages.HandleFunc("GET /workflows/new", s.handleWorkflowNew)
 	pages.HandleFunc("POST /workflows", s.handleWorkflowCreate)
+	pages.HandleFunc("POST /workflows/{name}/enable", s.handleWorkflowEnable)
+	pages.HandleFunc("POST /workflows/{name}/disable", s.handleWorkflowDisable)
+	pages.HandleFunc("POST /workflows/{name}/trigger", s.handleWorkflowTrigger)
+	pages.HandleFunc("POST /workflows/{name}/delete", s.handleWorkflowDelete)
 
 	// Templates — read-only catalog (WorkflowTemplate CRs discovered from the cluster)
 	pages.HandleFunc("GET /templates", s.handleTemplateList)
@@ -380,10 +390,11 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, page string, dat
 
 	layout := s.templates.Lookup("layout.html")
 	if err := layout.Execute(w, map[string]any{
-		"Page":    pageTitle(page),
-		"PageKey": pageKey(page),
-		"Content": template.HTML(buf.String()),
-		"User":    user,
+		"Page":     pageTitle(page),
+		"PageKey":  pageKey(page),
+		"Content":  template.HTML(buf.String()),
+		"User":     user,
+		"MayWrite": s.mayWrite(user),
 	}); err != nil {
 		s.logger.Error("render layout", "page", page, "err", err)
 	}

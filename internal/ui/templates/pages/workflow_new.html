@@ -5,10 +5,10 @@
 	<p class="ds-empty-text">
 		Pick a reusable template and give it a name plus its scope. The
 		instance is created <strong>paused</strong> — arming it is a separate,
-		deliberate act (run controls land with the lifecycle milestone). It
-		inherits its pipeline shape and cadence from the template and the
-		platform poll interval. Templates are chart-owned; the instance stays
-		thin.
+		deliberate act on the workflow's detail page (Arm, then trigger runs
+		or let the poll cadence take over). It inherits its pipeline shape and
+		cadence from the template. Templates are chart-owned; the instance
+		stays thin.
 	</p>
 </div>
 
@@ -37,6 +37,15 @@
 	</section>
 
 	<div class="wf-new-fields">
+		<fieldset class="wf-new-cadence" data-testid="wf-new-cadence">
+			<legend class="wf-new-scope-legend">Cadence</legend>
+			<label class="wf-new-field">
+				<span><input type="radio" name="sourceKind" value="schedule" checked> Scheduled — runs on the platform poll interval</span>
+			</label>
+			<label class="wf-new-field">
+				<span><input type="radio" name="sourceKind" value="webhook"> Webhook — waits for a push wake</span>
+			</label>
+		</fieldset>
 		<label class="wf-new-field">
 			<span>Name</span>
 			<input type="text" name="name" data-testid="wf-new-name" pattern="[a-z0-9]([-a-z0-9]*[a-z0-9])?" maxlength="63"

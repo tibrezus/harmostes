@@ -115,6 +115,15 @@ func TestTriggerReason(t *testing.T) {
 			want:        "webhook",
 		},
 		{
+			// The UI's wake (#418): the manual- prefix records a human ask,
+			// regardless of whether the revision was already processed — the
+			// type is a property of the ASK, not of the dedupe state.
+			name:        "manual UI trigger",
+			annotations: map[string]string{"harmostes.dev/trigger-revision": "manual-1700000000000000000"},
+			lastProc:    "manual-1700000000000000000",
+			want:        "manual",
+		},
+		{
 			name:   "spec change",
 			genObs: 1,
 			genCur: 2,

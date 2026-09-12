@@ -56,10 +56,14 @@ metadata:
   name: harmostes-ui
   namespace: {{ .Values.namespace }}
 rules:
-  # Workflows: create (the ADR-0012 §5 creation surface) + owner-scoped reads.
+  # Workflows: the full self-service lifecycle (ADR-0012 §5/§7, #418):
+  # create (composition) + enable/disable/trigger (arming + the manual wake
+  # annotation) + delete (instance removal). Reads stay owner-scoped in the
+  # handlers; k8s RBAC cannot express ownership, so verbs are granted here
+  # and isolation is enforced per-object in the UI's guard chain.
   - apiGroups: ["harmostes.dev"]
     resources: ["workflows"]
-    verbs: ["get", "list", "create"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
   # Read attempts (observability-first primary view — Attempt timeline).
   - apiGroups: ["harmostes.dev"]
     resources: ["attempts"]

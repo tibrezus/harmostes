@@ -27,6 +27,20 @@ const (
 	// controller (Job creation) and the UI (Job filtering) use this constant.
 	WorkflowLabel = "harmostes.dev/workflow"
 
+	// TriggerRevisionAnnotation is the wake contract: any writer (webhook
+	// sink, UI) sets it to a revision (or any value) not equal to
+	// status.lastProcessedRevision, and the next reconcile publishes a
+	// trigger and clears it. The value's prefix chooses the recorded trigger
+	// type — ManualTriggerPrefix means a human asked, from the UI.
+	TriggerRevisionAnnotation = "harmostes.dev/trigger-revision"
+
+	// ManualTriggerPrefix marks a TriggerRevisionAnnotation value as a UI
+	// initiated run ("manual-<unixnano>"): the controller's reason carve-out
+	// reports triggerType "manual" instead of "webhook", so the timeline
+	// records WHO asked honestly. The trigger/cooldown predicate is unchanged
+	// — any unprocessed annotation value wakes immediately.
+	ManualTriggerPrefix = "manual-"
+
 	// ReviewClaimLabel marks a review-claim Attempt as RELEASED. The label
 	// is the gate's list bound: LiveReviewClaims selects (workflow=X,
 	// review-claim DoesNotExist) server-side, so the released history — one

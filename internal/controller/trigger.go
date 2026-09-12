@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
 )
@@ -88,7 +89,12 @@ func (r *WorkflowReconciler) publishTrigger(ctx context.Context, wf *v1alpha1.Wo
 // the CloudEvent. This helps the worker and observability layer understand
 // WHY a run was triggered.
 func triggerReason(wf *v1alpha1.Workflow) string {
-	if triggerRev := wf.Annotations["harmostes.dev/trigger-revision"]; triggerRev != "" {
+	if triggerRev := wf.Annotations[v1alpha1.TriggerRevisionAnnotation]; triggerRev != "" {
+		// A UI-triggered wake (manual-<unixnano>, #418) is a human asking,
+		// not a webhook push — the timeline records the honest type.
+		if strings.HasPrefix(triggerRev, v1alpha1.ManualTriggerPrefix) {
+			return "manual"
+		}
 		if triggerRev != wf.Status.LastProcessedRevision {
 			return "webhook"
 		}

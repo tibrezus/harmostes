@@ -18,6 +18,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"strings"
+
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -135,7 +137,7 @@ func (r *WorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	// For webhook wakes the revision under review is the trigger annotation
 	// (the PR head SHA), not the last processed one.
-	wakeRev := wf.Annotations["harmostes.dev/trigger-revision"]
+	wakeRev := wf.Annotations[v1alpha1.TriggerRevisionAnnotation]
 	if wakeRev == "" {
 		wakeRev = wf.Status.LastProcessedRevision
 	}
@@ -152,7 +154,7 @@ func (r *WorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	// observeGeneration (below) triggers another reconcile, which sees the
 	// annotation again and schedules another worker — an infinite rapid-fire
 	// loop.
-	if triggerRev := wf.Annotations["harmostes.dev/trigger-revision"]; triggerRev != "" {
+	if triggerRev := wf.Annotations[v1alpha1.TriggerRevisionAnnotation]; triggerRev != "" {
 		// Lost-update discipline (#257): clear on a FRESH read under a
 		// resourceVersion precondition — the cached copy may predate another
 		// reconcile's writes, and metadata patches replace whole maps.
@@ -164,11 +166,11 @@ func (r *WorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			if err := r.Get(ctx, client.ObjectKeyFromObject(&wf), &fresh); err != nil {
 				return err
 			}
-			if fresh.Annotations["harmostes.dev/trigger-revision"] == "" {
+			if fresh.Annotations[v1alpha1.TriggerRevisionAnnotation] == "" {
 				return nil // already cleared by the winning reconcile
 			}
 			base := fresh.DeepCopy()
-			delete(fresh.Annotations, "harmostes.dev/trigger-revision")
+			delete(fresh.Annotations, v1alpha1.TriggerRevisionAnnotation)
 			// The PR pointer rode the TriggerEvent payload (Pr/Action); clearing
 			// here too prevents a stale wake from re-arming every poll cycle.
 			delete(fresh.Annotations, "harmostes.dev/trigger-pr")
@@ -229,7 +231,7 @@ func (r *WorkflowReconciler) claimTriggerSlot(ctx context.Context, wf *v1alpha1.
 		// the cadence #343 exists to bound. The two predicates must not
 		// drift; dueReason(&fresh) == "webhook" is the same test.
 		minInterval := scheduleInterval
-		if ann := fresh.Annotations["harmostes.dev/trigger-revision"]; ann != "" && ann != fresh.Status.LastProcessedRevision {
+		if ann := fresh.Annotations[v1alpha1.TriggerRevisionAnnotation]; ann != "" && ann != fresh.Status.LastProcessedRevision {
 			minInterval = webhookInterval
 		}
 		if !fresh.Status.LastRunAt.IsZero() && time.Since(fresh.Status.LastRunAt.Time) < minInterval {
@@ -258,7 +260,7 @@ func (r *WorkflowReconciler) claimTriggerSlot(ctx context.Context, wf *v1alpha1.
 // or a webhook trigger annotation is present.
 func (r *WorkflowReconciler) isDue(wf *v1alpha1.Workflow) (bool, time.Duration) {
 	// Webhook trigger: check for trigger-revision annotation
-	if triggerRev := wf.Annotations["harmostes.dev/trigger-revision"]; triggerRev != "" {
+	if triggerRev := wf.Annotations[v1alpha1.TriggerRevisionAnnotation]; triggerRev != "" {
 		// Trigger if revision changed from last processed
 		if triggerRev != wf.Status.LastProcessedRevision {
 			return true, 0 // Trigger immediately
@@ -301,8 +303,12 @@ func (r *WorkflowReconciler) isDue(wf *v1alpha1.Workflow) (bool, time.Duration) 
 }
 
 func dueReason(wf *v1alpha1.Workflow) string {
-	// Webhook trigger
-	if triggerRev := wf.Annotations["harmostes.dev/trigger-revision"]; triggerRev != "" {
+	// Wake annotation — manual prefix means a human asked from the UI
+	// (#418); anything else is a webhook push.
+	if triggerRev := wf.Annotations[v1alpha1.TriggerRevisionAnnotation]; triggerRev != "" {
+		if strings.HasPrefix(triggerRev, v1alpha1.ManualTriggerPrefix) {
+			return "manual"
+		}
 		return "webhook"
 	}
 	// Spec changed
@@ -357,7 +363,7 @@ func (r *WorkflowReconciler) SetupWithManager(mgr ctrl.Manager) error {
 // from a Workflow. Shared by the Attempt objective derivation and the worker
 // provenance env so the two agree on provenance.
 func triggerSourceOf(wf *v1alpha1.Workflow) string {
-	if wf.Annotations["harmostes.dev/trigger-revision"] != "" {
+	if wf.Annotations[v1alpha1.TriggerRevisionAnnotation] != "" {
 		return "webhook"
 	}
 	if wf.Spec.Source.Schedule != "" {
@@ -373,7 +379,7 @@ func triggerSourceOf(wf *v1alpha1.Workflow) string {
 // than blocking the run.
 func (r *WorkflowReconciler) resolveAttempt(ctx context.Context, wf *v1alpha1.Workflow) string {
 	obj := attempt.DeriveObjective(wf, attempt.TriggerContext{
-		Revision: wf.Annotations["harmostes.dev/trigger-revision"],
+		Revision: wf.Annotations[v1alpha1.TriggerRevisionAnnotation],
 		Source:   triggerSourceOf(wf),
 	})
 	att, _, err := attempt.ResolveOrCreate(ctx, r.Client, obj, attempt.ResolveOptions{

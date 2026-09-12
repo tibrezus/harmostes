@@ -17,6 +17,13 @@ const fixtureValuesFile = `# Chart values — the archetype registry the UI disc
 # Change a template here, release the chart, Flux reconciles.
 namespace: harmostes
 
+image:
+  controller: ghcr.io/tibrezus/harmostes-controller:0.6.0   # padded inline comment
+  worker: ghcr.io/tibrezus/harmostes-worker:0.4.2
+controller:
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+
 workflowTemplates:
   # Documentation sync — carefully worded comment that must survive.
   wiki-lint:
@@ -25,6 +32,7 @@ workflowTemplates:
       plugin:
         name: git-push
   # PR review (speed-primary role, user directive 2026-09-08).
+  # ROLLED BACK 01:5x — diagnosed: mtplx speed STALLS on long contexts.
   pr-review:
     description: PR review
     agent:
@@ -36,56 +44,90 @@ workflowTemplates:
     description: Fork sync
     agent:
       skill: /skills/fork/SKILL.md
+
+tasks:
+  arch-sync.txt: |
+    You are working in a wiki repository (your current directory).
+
+    These are DETERMINISTIC. Do NOT modify them.
+
+      cat raw/arch/<project>/rig.json
+
+    ## Step 5: Commit
+
+      git add -A && git commit -m 'docs(arch-sync): <project>'
 `
 
+// TestSpliceTemplateIntoValues_ReplacesOnlyTheTarget pins the byte-range
+// guarantee: everything OUTSIDE the edited entry survives VERBATIM — blank
+// lines, padded inline comments, flow mappings, and block scalars included
+// (a yaml.v3 tree re-marshal is lossy for all of these; caught live on
+// harmostes-dev where the first proposal reformatted the whole file).
 func TestSpliceTemplateIntoValues_ReplacesOnlyTheTarget(t *testing.T) {
 	newSpec := v1alpha1.WorkflowTemplateSpec{}
 	newSpec.Description = "PR review (edited)"
 	newSpec.Agent.Model = "llama3:8b"
+	newSpec.Agent.MaxFixes = 3
 
 	out, oldSpec, newSpecText, err := spliceTemplateIntoValues(fixtureValuesFile, "workflowTemplates", "pr-review", newSpec)
 	if err != nil {
 		t.Fatalf("splice: %v", err)
 	}
 
-	// The target changed.
-	if !strings.Contains(out, "llama3:8b") {
-		t.Error("spliced file lacks the new model")
+	// The edit landed inside the entry.
+	if !strings.Contains(out, "llama3:8b") || strings.Contains(out, "mistral-small-latest") {
+		t.Error("the entry was not replaced")
 	}
-	if strings.Contains(out, "mistral-small-latest") {
-		t.Error("spliced file still carries the old model")
+	if !strings.Contains(newSpecText, "llama3:8b") || strings.Contains(newSpecText, `"""`) {
+		t.Errorf("new canonical spec wrong or noisy: %q", newSpecText)
+	}
+	if !strings.Contains(oldSpec, "mistral-small-latest") {
+		t.Errorf("old canonical spec = %q, want the committed model", oldSpec)
 	}
 
-	// Untouched regions survive verbatim: the header comment, the wiki-lint
-	// comment and body, the fork-maintenance block.
-	for _, want := range []string{
+	// BYTE-IDENTITY of untouched regions: every line before the entry and
+	// every line from the next entry on must be unchanged. Assert the
+	// strongest form available: the untouched features appear EXACTLY as
+	// in the source (same spacing, same blank lines, same block scalar).
+	untouched := []string{
 		"# Chart values — the archetype registry the UI discovers.",
-		"# Documentation sync — carefully worded comment that must survive.",
-		"wiki-lint:",
-		"git-push",
-		"fork-maintenance:",
-		"/skills/fork/SKILL.md",
-	} {
+		"  controller: ghcr.io/tibrezus/harmostes-controller:0.6.0   # padded inline comment",
+		"    requests: { cpu: 100m, memory: 128Mi }",
+		"  # Documentation sync — carefully worded comment that must survive.",
+		"  # ROLLED BACK 01:5x — diagnosed: mtplx speed STALLS on long contexts.",
+		"  fork-maintenance:",
+		"      skill: /skills/fork/SKILL.md",
+		"tasks:",
+		"  arch-sync.txt: |",
+		"    You are working in a wiki repository (your current directory).",
+		"",
+		"    These are DETERMINISTIC. Do NOT modify them.",
+	}
+	for _, want := range untouched {
 		if !strings.Contains(out, want) {
-			t.Errorf("spliced file lost %q", want)
+			t.Errorf("untouched region lost or reformatted: %q", want)
 		}
 	}
-
-	// The old and new canonical specs came back for the MR-body diff.
-	if !strings.Contains(oldSpec, "mistral-small-latest") {
-		t.Errorf("old spec = %q, want the committed model", oldSpec)
+	// yaml.v3 re-marshal damage markers must NOT appear.
+	for _, damage := range []string{
+		"{cpu: 100m}",                      // flow-map spacing normalized
+		"arch-sync.txt: \"You are working", // block scalar collapsed to a quoted string
+		"0.6.0 # padded",                   // comment padding squeezed
+	} {
+		if strings.Contains(out, damage) {
+			t.Errorf("untouched region was reformatted: %q appeared", damage)
+		}
 	}
-	if !strings.Contains(newSpecText, "llama3:8b") {
-		t.Errorf("new canonical spec = %q, want the edited model", newSpecText)
+	// Structural sanity: the new entry sits between wiki-lint and
+	// fork-maintenance, properly indented under workflowTemplates.
+	wikiIdx := strings.Index(out, "  wiki-lint:")
+	prIdx := strings.Index(out, "  pr-review:")
+	forkIdx := strings.Index(out, "  fork-maintenance:")
+	if !(0 <= wikiIdx && wikiIdx < prIdx && prIdx < forkIdx) {
+		t.Errorf("entry ordering broken: wiki@%d pr@%d fork@%d", wikiIdx, prIdx, forkIdx)
 	}
-	// Sparse: the canonical form carries no zero-value noise.
-	if strings.Contains(newSpecText, `""`) {
-		t.Errorf("new canonical spec carries empty-string noise: %q", newSpecText)
-	}
-
-	// Still valid YAML, still carries the other templates as mappings.
-	if !strings.Contains(out, "workflowTemplates:") {
-		t.Error("spliced file lost the values key")
+	if !strings.Contains(out, "  pr-review:\n    agent:") {
+		t.Errorf("new entry not at the file's 2-space entry indent:\n%s", out)
 	}
 }
 

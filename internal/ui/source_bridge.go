@@ -273,12 +273,17 @@ func marshalSpecPlainOf(node *goyaml.Node) string {
 	return out.String()
 }
 
-// spliceTemplateIntoValues performs the surgical values edit: parse the
-// file into a yaml.Node tree, replace ONLY <ValuesKey>.<name> with the new
-// spec, re-marshal. Untouched mappings keep their comments, ordering, and
-// quoting — review diffs show the template, not a reformat of the world.
-// Returns the updated file text and the previous spec's YAML (for the MR
-// body diff).
+// spliceTemplateIntoValues performs the surgical values edit: locate the
+// <ValuesKey>.<name> entry, replace ONLY those source lines with the new
+// spec, and leave every other byte of the file untouched. The parse tree
+// (yaml.v3 nodes carry Line) is used purely for LOCATING the entry — the
+// file is spliced as text, because a node-tree re-marshal is lossy: it
+// drops blank lines, normalizes inline-comment padding, and rewrites block
+// scalars (caught live on harmostes-dev, #420). Everything outside the
+// entry — header comments, sibling templates, task prompts — survives
+// byte-for-byte.
+// Returns the updated file text plus the old and new spec in canonical
+// form (sorted keys, sparse) for the semantic no-op check and MR-body diff.
 func spliceTemplateIntoValues(raw, valuesKey, name string, spec v1alpha1.WorkflowTemplateSpec) (updated, oldSpecYAML, newSpecYAML string, err error) {
 	var root goyaml.Node
 	if err := goyaml.Unmarshal([]byte(raw), &root); err != nil {
@@ -292,10 +297,16 @@ func spliceTemplateIntoValues(raw, valuesKey, name string, spec v1alpha1.Workflo
 		return "", "", "", fmt.Errorf("source file is not a mapping — cannot splice templates")
 	}
 
+	// Locate the values-key mapping and its next sibling key's line (the
+	// parent block's end when the entry is its last child).
+	parentBlockEnd := len(strings.Split(raw, "\n")) + 1
 	var templatesNode *goyaml.Node
 	for i := 0; i+1 < len(top.Content); i += 2 {
 		if top.Content[i].Value == valuesKey {
 			templatesNode = top.Content[i+1]
+			if i+2 < len(top.Content) {
+				parentBlockEnd = top.Content[i+2].Line // 1-based Line of the next top-level key
+			}
 			break
 		}
 	}
@@ -303,10 +314,9 @@ func spliceTemplateIntoValues(raw, valuesKey, name string, spec v1alpha1.Workflo
 		return "", "", "", fmt.Errorf("no %q mapping in the source file", valuesKey)
 	}
 
-	// Marshal the new spec through the JSON-tag projection FIRST (the
-	// values file's keys are the struct's json names), then re-parse into a
-	// node tree and swap it in. The file itself stays goyaml so untouched
-	// nodes keep their comments, ordering, and quoting verbatim.
+	// Marshal the new spec through the JSON-tag projection (the values
+	// file's keys are the struct's json names), prune zero leaves, and
+	// render its canonical text (sorted keys, 2-space indent).
 	specYAML, err := sigsyaml.Marshal(spec)
 	if err != nil {
 		return "", "", "", fmt.Errorf("marshal spec: %w", err) // typed struct; unreachable
@@ -315,47 +325,78 @@ func spliceTemplateIntoValues(raw, valuesKey, name string, spec v1alpha1.Workflo
 	if err := goyaml.Unmarshal(specYAML, &specNode); err != nil {
 		return "", "", "", fmt.Errorf("re-parse spec: %w", err) // our own output
 	}
-	newMapping := specNode.Content[0] // the spec mapping itself
+	newMapping := specNode.Content[0]
 	pruneEmpty(newMapping)
 	newSpecYAML = marshalSpecPlainOf(newMapping)
 
-	var oldSpecText string
-	replaced := false
+	// Locate the target entry: its key line, and the first line before its
+	// next sibling (or the parent block's end when it is the last entry).
+	entryStart, entryEnd := -1, -1 // 0-based inclusive start, exclusive end
+	var oldValueNode *goyaml.Node
 	for i := 0; i+1 < len(templatesNode.Content); i += 2 {
 		key := templatesNode.Content[i]
+		nextStart := parentBlockEnd
+		if i+2 < len(templatesNode.Content) {
+			nextStart = templatesNode.Content[i+2].Line
+		}
 		if key.Value != name {
 			continue
 		}
-		// Canonicalize the previous entry the same way the new spec is
-		// marshaled (JSON-tag projection, sorted keys): the MR diff then
-		// compares semantics, not file-order artifacts.
-		var prev map[string]any
-		if err := templatesNode.Content[i+1].Decode(&prev); err == nil {
-			if b, err := sigsyaml.Marshal(prev); err == nil {
-				oldSpecText = string(b)
-			}
-		}
-		if oldSpecText == "" {
-			oldSpecText = marshalSpecPlainOf(templatesNode.Content[i+1])
-		}
-		templatesNode.Content[i+1] = newMapping
-		replaced = true
+		entryStart = key.Line - 1 // Line is 1-based
+		entryEnd = nextStart - 1  // exclusive
+		oldValueNode = templatesNode.Content[i+1]
 		break
 	}
-	if !replaced {
+	if oldValueNode == nil {
 		return "", "", "", fmt.Errorf("template %q is not present in the source file — the source has drifted; reconcile first", name)
 	}
 
+	// Canonical old spec for the semantic no-op check and the MR-body diff.
+	var prev map[string]any
+	if err := oldValueNode.Decode(&prev); err == nil {
+		if b, err := sigsyaml.Marshal(prev); err == nil {
+			oldSpecYAML = string(b)
+		}
+	}
+	if oldSpecYAML == "" {
+		oldSpecYAML = marshalSpecPlainOf(oldValueNode)
+	}
+
+	// Byte-range splice: everything before the entry and from the entry's
+	// end on stays VERBATIM. Trailing blank lines inside the replaced range
+	// are kept so block separation survives.
+	lines := strings.Split(raw, "\n")
+	if entryEnd > len(lines) {
+		entryEnd = len(lines)
+	}
+	indentLen := len(lines[entryStart]) - len(strings.TrimLeft(lines[entryStart], " "))
+	indent := strings.Repeat(" ", indentLen)
+
+	var body strings.Builder
+	for _, line := range strings.Split(strings.TrimSuffix(newSpecYAML, "\n"), "\n") {
+		if strings.TrimSpace(line) == "" {
+			body.WriteString("\n")
+		} else {
+			body.WriteString(indent + "  " + line + "\n")
+		}
+	}
+	trailing := ""
+	for entryEnd-1 > entryStart && strings.TrimSpace(lines[entryEnd-1]) == "" {
+		trailing = "\n" + trailing
+		entryEnd--
+	}
+
 	var out strings.Builder
-	enc := goyaml.NewEncoder(&out)
-	enc.SetIndent(2)
-	if err := enc.Encode(&root); err != nil {
-		return "", "", "", fmt.Errorf("re-marshal source file: %w", err)
+	if entryStart > 0 {
+		out.WriteString(strings.Join(lines[:entryStart], "\n") + "\n")
 	}
-	if err := enc.Close(); err != nil {
-		return "", "", "", fmt.Errorf("close encoder: %w", err)
+	out.WriteString(indent + name + ":\n")
+	out.WriteString(body.String())
+	out.WriteString(trailing)
+	if entryEnd < len(lines) {
+		out.WriteString(strings.Join(lines[entryEnd:], "\n"))
 	}
-	return out.String(), oldSpecText, newSpecYAML, nil
+	return out.String(), oldSpecYAML, newSpecYAML, nil
 }
 
 // ── forge client surface ─────────────────────────────────────────────────────

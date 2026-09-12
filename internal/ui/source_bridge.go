@@ -273,18 +273,6 @@ func marshalSpecPlainOf(node *goyaml.Node) string {
 	return out.String()
 }
 
-// marshalSpecPlain marshals just the spec — the MR body diffs the values
-// entry (the spec itself, no document wrapper), matching what spliceTemplate
-// extracts from the committed file. (topology.go's templateSpecYAML wraps in
-// a spec: key for the revisions pane — a different projection, not reused.)
-func marshalSpecPlain(spec v1alpha1.WorkflowTemplateSpec) string {
-	b, err := sigsyaml.Marshal(spec)
-	if err != nil {
-		return "(spec marshal failed)"
-	}
-	return string(b)
-}
-
 // spliceTemplateIntoValues performs the surgical values edit: parse the
 // file into a yaml.Node tree, replace ONLY <ValuesKey>.<name> with the new
 // spec, re-marshal. Untouched mappings keep their comments, ordering, and

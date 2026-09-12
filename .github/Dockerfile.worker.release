@@ -85,6 +85,7 @@ COPY plugins/noop/noop.sh          /usr/local/lib/harmostes/plugins/noop.sh
 COPY plugins/rig-emit/rig-emit.sh  /usr/local/lib/harmostes/plugins/rig-emit.sh
 COPY plugins/rig-emit/rig          /usr/local/lib/harmostes/plugins/rig
 COPY plugins/rig-emit/emit-rig.py  /usr/local/lib/harmostes/plugins/emit-rig.py
+COPY plugins/rig-emit/rig-brief.py /usr/local/lib/harmostes/plugins/rig-brief.py
 COPY plugins/rig-emit/emit-rig.sh  /usr/local/lib/harmostes/plugins/emit-rig.sh
 COPY plugins/rig-emit/rig-to-c4.py /usr/local/lib/harmostes/plugins/rig-to-c4.py
 COPY plugins/wiki-lint/wiki-lint.sh /usr/local/lib/harmostes/plugins/wiki-lint.sh

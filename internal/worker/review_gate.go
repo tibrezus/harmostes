@@ -44,6 +44,14 @@ const reDispatchGrace = 5 * time.Minute
 // tolerates) before a sweep treats a missing live Job as a dead run.
 const jobDeathGrace = 2 * time.Minute
 
+// Verdict contract (r7, owner directive #441): the reviewer's review.json
+// carries blocking findings only — never a body field, the deploy node
+// composes the one-line verdict + provenance trailer itself. A
+// REQUEST_CHANGES verdict without ≥1 finding is rejected by the gate (a
+// blocking verdict must be actionable), and a consumed verdict removes
+// the reviewReady label so the same head is never re-reviewed unless the
+// label returns (the author's explicit re-arm) or a dispatch dies.
+
 // newReviewAPI is the seam the tests swap for a server-pinned API.
 var newReviewAPI = func() review.API {
 	return &review.RESTAPI{Client: http.DefaultClient, TokenLookup: os.Getenv}

@@ -2,6 +2,8 @@ package k8s
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -19,6 +21,32 @@ import (
 // attemptGVK is the Attempt's fully-qualified kind (owner references).
 var attemptGVK = schema.GroupVersionKind{
 	Group: v1alpha1.GroupName, Version: v1alpha1.Version, Kind: "Attempt",
+}
+
+// DefaultSkillsRepo — the served-skills source of truth (the agents repo).
+// Must stay equal to the chart's skills.repo default (values.yaml): the pool
+// Deployment's sync-skills init container and the per-Attempt Jobs clone the
+// SAME repo, or pool-served and attempt-served skills diverge (#441).
+// HARMOSTES_SKILLS_REPO overrides both when the fleet forks the agents repo.
+const DefaultSkillsRepo = "https://github.com/tibrezus/agents.git"
+
+// SkillsRepo resolves the clone source for the served skills: the env set by
+// the chart (values.skills.repo passed through), else the shared default.
+func SkillsRepo() string {
+	if r := os.Getenv("HARMOSTES_SKILLS_REPO"); r != "" {
+		return r
+	}
+	return DefaultSkillsRepo
+}
+
+// skillsSyncCommand mirrors the chart's sync-skills init container byte for
+// byte in spirit: clone the agents repo fresh, copy skills/, write the
+// sha256 manifest the pool's startup check consumes. Every attempt therefore
+// serves agents main AS OF THE ATTEMPT — the owner directive "every update
+// should be available in the runtime" at the granularity agents actually
+// move (between pool pod restarts).
+func skillsSyncCommand(repo string) []string {
+	return []string{"sh", "-c", fmt.Sprintf("git clone --depth 1 %s /tmp/agents && mkdir -p /skills && cp -r /tmp/agents/skills/. /skills/ && { echo \"[sync-skills] served skills revision: $(git -C /tmp/agents rev-parse HEAD)\"; (find /skills -name 'SKILL.md' | sort | xargs -r sha256sum > /skills/.manifest) || echo \"[sync-skills] manifest write failed (non-fatal)\"; true; }", repo)}
 }
 
 // AttemptJobParams parameterize BuildJob — the per-Attempt Job pod shape
@@ -135,8 +163,18 @@ func BuildJob(p AttemptJobParams) *batchv1.Job {
 		}
 	}
 
-	volumes := []corev1.Volume{{Name: "workspace", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}}
-	mounts := []corev1.VolumeMount{{Name: "workspace", MountPath: "/workspace"}}
+	volumes := []corev1.Volume{
+		{Name: "workspace", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+		// Served skills (#441): the pool pod gets them from its sync-skills
+		// init container at POD start; attempts run for minutes against a
+		// repo that moves between restarts, so each Job clones fresh. The
+		// workflow's --skill path (/skills/...) resolves inside the attempt.
+		{Name: "skills", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+	}
+	mounts := []corev1.VolumeMount{
+		{Name: "workspace", MountPath: "/workspace"},
+		{Name: "skills", MountPath: "/skills"},
+	}
 	// Shared caches (#336): one RWX PVC, SubPath per workflow — concurrent
 	// review Jobs of the same repo share a warm GOCACHE (go's cache is
 	// concurrency-safe), and workflows never thrash each other's dirs.
@@ -222,6 +260,12 @@ func BuildJob(p AttemptJobParams) *batchv1.Job {
 				Spec: corev1.PodSpec{
 					ServiceAccountName: p.ServiceAccount,
 					RestartPolicy:      corev1.RestartPolicyNever,
+					InitContainers: []corev1.Container{{
+						Name:         "sync-skills",
+						Image:        p.Image,
+						Command:      skillsSyncCommand(SkillsRepo()),
+						VolumeMounts: []corev1.VolumeMount{{Name: "skills", MountPath: "/skills"}},
+					}},
 					Containers: []corev1.Container{{
 						Name:         "run",
 						Image:        p.Image,

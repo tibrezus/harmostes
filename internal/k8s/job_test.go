@@ -145,6 +145,86 @@ func TestBuildJobShape(t *testing.T) {
 	}
 }
 
+// #441: every Attempt Job clones the agents repo fresh (sync-skills init
+// container) — served skills move at ATTEMPT granularity, not pool-pod
+// restart. Without it the workflow's --skill /skills/... path resolves to
+// nothing inside the attempt and agents run on the task prompt alone (the
+// skill's methodology detail never reached a single production review run).
+func TestBuildJobServesFreshSkills(t *testing.T) {
+	job := BuildJob(AttemptJobParams{
+		Attempt:        jobTestAttempt(),
+		WorkflowName:   "pr-review-harmostes",
+		Namespace:      "harmostes",
+		Image:          "ghcr.io/tibrezus/harmostes-worker:1.2.3",
+		ServiceAccount: "harmostes-controller",
+	})
+	pod := job.Spec.Template.Spec
+
+	inits := pod.InitContainers
+	if len(inits) != 1 || inits[0].Name != "sync-skills" {
+		t.Fatalf("attempt pods must run exactly one sync-skills init container, got %+v", inits)
+	}
+	ic := inits[0]
+	if ic.Image != "ghcr.io/tibrezus/harmostes-worker:1.2.3" {
+		t.Fatalf("sync-skills must use the run container's image (same fj/gh tooling), got %q", ic.Image)
+	}
+	cmd := strings.Join(ic.Command, " ")
+	if !strings.Contains(cmd, "git clone --depth 1 "+DefaultSkillsRepo) {
+		t.Fatalf("sync-skills must clone the agents repo (default %s), got %q", DefaultSkillsRepo, cmd)
+	}
+	if !strings.Contains(cmd, "cp -r /tmp/agents/skills/. /skills/") || !strings.Contains(cmd, ".manifest") {
+		t.Fatalf("sync-skills must copy skills/ and write the sha256 manifest, got %q", cmd)
+	}
+	mountsSkills := false
+	for _, m := range ic.VolumeMounts {
+		if m.Name == "skills" && m.MountPath == "/skills" {
+			mountsSkills = true
+		}
+	}
+	if !mountsSkills {
+		t.Fatalf("sync-skills must mount /skills: %+v", ic.VolumeMounts)
+	}
+
+	// The skills volume exists and the run container sees it at /skills.
+	var skillsVol *corev1.Volume
+	for i := range pod.Volumes {
+		if pod.Volumes[i].Name == "skills" {
+			skillsVol = &pod.Volumes[i]
+		}
+	}
+	if skillsVol == nil || skillsVol.EmptyDir == nil {
+		t.Fatalf("skills volume must be a per-Job emptyDir, volumes: %+v", pod.Volumes)
+	}
+	run := pod.Containers[0]
+	seen := false
+	for _, m := range run.VolumeMounts {
+		if m.Name == "skills" && m.MountPath == "/skills" {
+			seen = true
+		}
+	}
+	if !seen {
+		t.Fatalf("run container must mount /skills (the --skill path resolves inside the attempt): %+v", run.VolumeMounts)
+	}
+}
+
+// #441: a forked fleet overrides values.skills.repo; the chart passes it to
+// the dispatcher as HARMOSTES_SKILLS_REPO and BuildJob must clone THAT repo,
+// not the default.
+func TestBuildJobSkillsRepoOverride(t *testing.T) {
+	t.Setenv("HARMOSTES_SKILLS_REPO", "https://git.rezus.cloud/tibrezus/agents.git")
+	job := BuildJob(AttemptJobParams{
+		Attempt: jobTestAttempt(), WorkflowName: "pr-review-harmostes", Namespace: "harmostes",
+		Image: "img", ServiceAccount: "sa",
+	})
+	cmd := strings.Join(job.Spec.Template.Spec.InitContainers[0].Command, " ")
+	if !strings.Contains(cmd, "git clone --depth 1 https://git.rezus.cloud/tibrezus/agents.git") {
+		t.Fatalf("skills repo override must reach the sync-skills clone, got %q", cmd)
+	}
+	if strings.Contains(cmd, "github.com/tibrezus/agents") {
+		t.Fatalf("default repo leaked past the override: %q", cmd)
+	}
+}
+
 // #270: no TTL configured → no TTL field rendered (the cluster default or
 // GC-by-owner applies; the builder must not invent a policy).
 func TestBuildJobTTLNilOmitted(t *testing.T) {

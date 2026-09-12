@@ -8,7 +8,7 @@ image:
   pullSecret: ghcr-pull   # set to "" to disable
 
 skills:
-  repo: https://github.com/tibrezus/agents.git   # cloned by init container into /skills on every worker pod
+  repo: https://github.com/tibrezus/agents.git   # cloned by the init container into /skills on every worker pod AND per-Attempt Job (#441, passed to the dispatcher as HARMOSTES_SKILLS_REPO; Go default: internal/k8s.DefaultSkillsRepo)
 
 controller:
   serviceAccount: harmostes-controller

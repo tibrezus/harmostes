@@ -25,7 +25,6 @@ metadata:
 # but Jobs created by the dispatcher never did (#281).
 imagePullSecrets:
   - name: ghcr-pull
-
 ---
 # Source: harmostes/templates/ui-rbac.yaml
 apiVersion: v1
@@ -36,7 +35,6 @@ metadata:
   labels:
     app.kubernetes.io/name: harmostes
     app.kubernetes.io/component: ui
-
 ---
 # Source: harmostes/templates/fork-conflict-resolver.yaml
 apiVersion: v1
@@ -714,8 +712,6 @@ data:
         ]
       }
     }
-    
-
 ---
 # Source: harmostes/templates/fork-maintenance.yaml
 apiVersion: v1
@@ -3289,8 +3285,6 @@ data:
     
       *) die "unknown command: $cmd (expected capture|reapply|verify)" ;;
     esac
-    
-
 ---
 # Source: harmostes/templates/fork-maintenance.yaml
 apiVersion: v1
@@ -3605,8 +3599,6 @@ data:
     
     echo "GATES GREEN (no markers + validation + signatures)"
     exit 0
-    
-
 ---
 # Source: harmostes/templates/fork-maintenance.yaml
 apiVersion: v1
@@ -3641,8 +3633,6 @@ data:
     echo "[signoz-hook] stripping ee/ (community-only build)"
     git rm -rf ee/ 2>/dev/null || true
     echo "[signoz-hook] done"
-    
-
 ---
 # Source: harmostes/templates/fork-maintenance.yaml
 apiVersion: v1
@@ -3685,8 +3675,6 @@ data:
       default_branch: rezus/main
       mirror_branch: main
       platform: forgejo
-    
-
 ---
 # Source: harmostes/templates/fork-maintenance.yaml
 apiVersion: v1
@@ -4788,7 +4776,6 @@ rules:
       - workflows.harmostes.dev
       - workflowtemplates.harmostes.dev
     verbs: ["get"]
-
 ---
 # Source: harmostes/templates/ui-rbac.yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -4806,7 +4793,6 @@ subjects:
   - kind: ServiceAccount
     name: harmostes-ui
     namespace: harmostes-ci
-
 ---
 # Source: harmostes/templates/rbac.yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -4846,7 +4832,6 @@ rules:
   - apiGroups: ["harmostes.dev"]
     resources: ["workflowtemplates"]
     verbs: ["get", "list", "watch"]
-
 ---
 # Source: harmostes/templates/ui-rbac.yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -4886,7 +4871,6 @@ rules:
   #    pruned (#291); credential sync is chart-rendered ExternalSecrets
   #    (ADR-0011). Verbs are granted only when a route needs them, never
   #    speculatively.
-
 ---
 # Source: harmostes/templates/rbac.yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -5186,7 +5170,6 @@ spec:
             name: litellm-provider-extension
         - name: home
           emptyDir: {}
-
 ---
 # Source: harmostes/templates/ui.yaml
 apiVersion: apps/v1
@@ -5265,7 +5248,6 @@ spec:
         - name: platforms-config
           configMap:
             name: harmostes-ui-platforms
-
 ---
 # Source: harmostes/templates/worker-pool.yaml
 apiVersion: apps/v1
@@ -5379,6 +5361,12 @@ spec:
                   # need it out-of-band (ops-managed via ExternalSecret from
                   # BSM); without it review posting on git.rezus.cloud fails.
                   optional: true
+            # Served-skills single source (#441): passed to the dispatcher so
+            # per-Attempt Jobs' sync-skills init containers clone the SAME
+            # repo the pool's own init container does. Empty = the Go default
+            # (internal/k8s.DefaultSkillsRepo — kept equal to values.skills.repo).
+            - name: HARMOSTES_SKILLS_REPO
+              value: "https://github.com/tibrezus/agents.git"
             # GH_TOKEN deliberately aliases the same secret the dispatch path
             # already mounts as HARMOSTES_GIT_TOKEN — the gh CLI wants its
             # canonical name; one credential, one secret, two env spellings.
@@ -5481,7 +5469,6 @@ spec:
 # same pattern as the rig-query fixture freshness check). The k8s-config
 # ConfigMap this replaces was exactly such a stale copy (#358 never reached
 # the resolver through it).
-
 ---
 # Source: harmostes/templates/fork-maintenance.yaml
 # ── Fork-maintenance engine payload (ADR-0011) ──────────────────────────────
@@ -5490,14 +5477,12 @@ spec:
 # declarative per-fork configuration. ConfigMap names match the worker-pool
 # mounts (forkMaintenance.*ConfigMap), so the worker pods see the same
 # /workspace layout the k8s-config kustomize generator used to produce.
-
 ---
 # Source: harmostes/templates/ui-platforms-configmap.yaml
 # Platform display configs (plug-and-play). This ConfigMap provides display
 # metadata (label, color, icon) for known git platforms. Any platform string
 # is accepted for token creation — this only enriches the UI. To add a new
 # platform, add an entry here (GitOps), no code change needed.
-
 ---
 # Source: harmostes/templates/ui-rbac.yaml
 # RBAC for harmostes-ui, right-sized to the ADR-0012 §5 write path: the UI
@@ -5506,14 +5491,12 @@ spec:
 # catalogs owner-scoped. Lifecycle mutations (update/patch/delete) return
 # with their own ADR-0012 issues (#418/#419) — until then the verbs are not
 # granted. Isolation is code-enforced: handlers filter by harmostes.dev/owner.
-
 ---
 # Source: harmostes/templates/ui.yaml
 # harmostes-ui: self-service web interface for managing Workflow CRs.
 # Authenticated via Authentik forward-auth (identity injected as headers).
 # The Go server reads X-Forwarded-Preferred-Username and filters all queries
 # by the harmostes.dev/owner label.
-
 ---
 # Source: harmostes/templates/dapr.yaml
 # Dapr components — the deterministic event-system application layer. State for
@@ -5544,7 +5527,6 @@ spec:
     # anyway.
     - name: keyPrefix
       value: "none"
-
 ---
 # Source: harmostes/templates/dapr.yaml
 apiVersion: dapr.io/v1alpha1
@@ -5565,7 +5547,6 @@ spec:
     # Per-namespace consumer isolation
     - name: consumerID
       value: harmostes
-
 ---
 # Source: harmostes/templates/dapr.yaml
 # Dapr secret store — wraps the cluster's k8s Secret backend so all apps (UI,
@@ -5584,7 +5565,6 @@ spec:
   metadata:
     - name: namespace
       value: harmostes-ci
-
 ---
 # Source: harmostes/templates/dapr.yaml
 # Dapr Configuration referenced by worker pods via dapr.io/config. The sentry
@@ -5680,7 +5660,6 @@ spec:
     kind: string
     label: Fork
     name: fork
-
 ---
 # Source: harmostes/templates/workflow-templates.yaml
 apiVersion: harmostes.dev/v1alpha1
@@ -5704,7 +5683,6 @@ spec:
   prepare:
     plugin:
       name: rig-emit
-
 ---
 # Source: harmostes/templates/workflow-templates.yaml
 apiVersion: harmostes.dev/v1alpha1
@@ -5756,7 +5734,6 @@ spec:
     kind: string
     label: Wiki repo
     name: wiki
-
 ---
 # Source: harmostes/templates/workflow-templates.yaml
 apiVersion: harmostes.dev/v1alpha1

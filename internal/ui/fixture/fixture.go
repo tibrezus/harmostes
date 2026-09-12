@@ -15,6 +15,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -28,6 +30,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
+	"github.com/tibrezus/harmostes/internal/crdwalk"
 	"github.com/tibrezus/harmostes/internal/k8s"
 	"github.com/tibrezus/harmostes/internal/ui"
 )
@@ -274,7 +277,11 @@ func daprStoreIngest(tl *FixTimeline, next http.Handler) http.Handler {
 // backs pod-log reads (no pods — log streaming degrades gracefully). DAPR
 // stays unwired; the dapr event endpoint still mutates the in-memory world,
 // which is exactly what E2E event-injection tests will use.
-func NewWorld(namespace string, logger *slog.Logger) (*World, error) {
+func NewWorld(namespace string, logger *slog.Logger, chartDir string) (*World, error) {
+	world, err := loadChartWorld(chartDir, namespace)
+	if err != nil {
+		return nil, err
+	}
 	scheme := Scheme()
 
 	objs, err := Objects(namespace)
@@ -292,7 +299,7 @@ func NewWorld(namespace string, logger *slog.Logger) (*World, error) {
 
 	k8sClient := fakectrl.NewClientBuilder().
 		WithScheme(scheme).
-		WithRuntimeObjects(append(runtimeObjs, fixtureExtras(namespace)...)...).
+		WithRuntimeObjects(append(runtimeObjs, fixtureExtras(world)...)...).
 		WithStatusSubresource(&v1alpha1.Attempt{}).
 		Build()
 
@@ -324,6 +331,95 @@ func NewWorld(namespace string, logger *slog.Logger) (*World, error) {
 	return &World{server: server, timeline: tl}, nil
 }
 
+// chartWorld holds what the fixture loads from the repo's chart directory:
+// the REAL CRDs (the schema endpoint's source) and the REAL pr-review
+// template (the creation form's catalog entry and the island's head
+// document). Loading them — instead of restating synthetic projections —
+// is what makes the fixture world track production by construction
+// (#436): values.yaml and the CRDs change, the fixture follows, and the
+// e2e tier keeps testing reality.
+type chartWorld struct {
+	template *v1alpha1.WorkflowTemplate
+	crds     []runtime.Object
+}
+
+// loadChartWorld reads <chartDir>/crds/*.yaml and <chartDir>/values.yaml.
+func loadChartWorld(chartDir, namespace string) (*chartWorld, error) {
+	if !strings.HasSuffix(chartDir, string(filepath.Separator)) {
+		chartDir += string(filepath.Separator)
+	}
+	crds, err := loadChartCRDs(chartDir + "crds" + string(filepath.Separator))
+	if err != nil {
+		return nil, err
+	}
+	tmpl, err := loadChartTemplate(chartDir+"values.yaml", namespace)
+	if err != nil {
+		return nil, err
+	}
+	return &chartWorld{template: tmpl, crds: crds}, nil
+}
+
+// loadChartCRDs wraps the real chart CRDs' v1alpha1 schemas into CRD
+// objects for the fake clientset — the schema endpoint then serves exactly
+// what a cluster running this chart would serve.
+func loadChartCRDs(crdDir string) ([]runtime.Object, error) {
+	files := []struct{ name, file, kind string }{
+		{v1alpha1.WorkflowCRDName, v1alpha1.WorkflowCRDFile, "Workflow"},
+		{v1alpha1.WorkflowTemplateCRDName, v1alpha1.WorkflowTemplateCRDFile, "WorkflowTemplate"},
+	}
+	out := make([]runtime.Object, 0, len(files))
+	for _, f := range files {
+		schemaMap, err := crdwalk.LoadSchema(crdDir, f.file)
+		if err != nil {
+			return nil, fmt.Errorf("fixture CRDs: %w", err)
+		}
+		raw, err := json.Marshal(schemaMap)
+		if err != nil {
+			return nil, err
+		}
+		var props apiextensionsv1.JSONSchemaProps
+		if err := json.Unmarshal(raw, &props); err != nil {
+			return nil, fmt.Errorf("%s: schema not JSONSchemaProps: %w", f.file, err)
+		}
+		out = append(out, &apiextensionsv1.CustomResourceDefinition{
+			ObjectMeta: metav1.ObjectMeta{Name: f.name, ResourceVersion: "42"},
+			Spec: apiextensionsv1.CustomResourceDefinitionSpec{
+				Group: "harmostes.dev",
+				Names: apiextensionsv1.CustomResourceDefinitionNames{Kind: f.kind},
+				Versions: []apiextensionsv1.CustomResourceDefinitionVersion{{
+					Name: "v1alpha1", Served: true, Storage: true,
+					Schema: &apiextensionsv1.CustomResourceValidation{OpenAPIV3Schema: &props},
+				}},
+			},
+		})
+	}
+	return out, nil
+}
+
+// loadChartTemplate reads workflowTemplates.pr-review out of the chart's
+// values.yaml — the same file the MR bridge edits, so the fixture's head
+// document IS the production template.
+func loadChartTemplate(valuesFile, namespace string) (*v1alpha1.WorkflowTemplate, error) {
+	raw, err := os.ReadFile(valuesFile)
+	if err != nil {
+		return nil, fmt.Errorf("fixture values: %w", err)
+	}
+	var doc struct {
+		WorkflowTemplates map[string]v1alpha1.WorkflowTemplateSpec `json:"workflowTemplates"`
+	}
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", valuesFile, err)
+	}
+	spec, ok := doc.WorkflowTemplates["pr-review"]
+	if !ok {
+		return nil, fmt.Errorf("%s: no workflowTemplates.pr-review — the fixture world tracks the chart's review template", valuesFile)
+	}
+	return &v1alpha1.WorkflowTemplate{
+		ObjectMeta: metav1.ObjectMeta{Name: "pr-review", Namespace: namespace},
+		Spec:       spec,
+	}, nil
+}
+
 // fixtureExtras seeds the objects the ADR-0012 write-path surfaces read: one
 // WorkflowTemplate (the creation form's catalog entry — the fixture workflows
 // are graph-native and reference no template) and the two CRDs the schema
@@ -339,142 +435,31 @@ type templateRevisionForFixture struct {
 	Spec        v1alpha1.WorkflowTemplateSpec `json:"spec"`
 }
 
-// graphNodeTypeEnum mirrors the workflow CRD's spec.graph.nodes.type enum —
-// the palette vocabulary (#417). Kept in lockstep with chart/crds by
-// fixture_test.go.
-func graphNodeTypeEnum() []apiextensionsv1.JSON {
-	names := []string{"plugin", "agent", "gate", "branch", "dapr-state-get", "dapr-state-set", "dapr-publish", "vela-app", "flux-reconcile", "http-call", "human-gate", "external"}
-	out := make([]apiextensionsv1.JSON, len(names))
-	for i, n := range names {
-		b, _ := json.Marshal(n)
-		out[i] = apiextensionsv1.JSON{Raw: b}
-	}
-	return out
-}
-
-func fixtureExtras(namespace string) []runtime.Object {
-	// The template's head spec mirrors the dev cluster's pr-review shape
-	// (fetch → agent+gate → post), and its revisions annotation carries the
-	// history the revisions view diffs (#417): r1 was deterministic-only with
-	// an older fetch plugin; the live spec is r2. Structurally truthful —
-	// the same contract the MR-bridge (#420) will stamp on write.
+// fixtureExtras seeds what the chart cannot provide: the pr-review entry
+// carries a revisions annotation whose r1 is the OLD shape
+// (deterministic-only, stale fetch) — the history the revisions view diffs
+// (#417), with r2 as the head copy exactly as the controller recorder
+// leaves it after a landing (#420). The head spec itself and the CRDs come
+// from loadChartWorld.
+func fixtureExtras(world *chartWorld) []runtime.Object {
 	noAgent := false
-	tmpl := &v1alpha1.WorkflowTemplate{
-		ObjectMeta: metav1.ObjectMeta{Name: "pr-review", Namespace: namespace},
+	revJSON, err := json.Marshal([]templateRevisionForFixture{{
+		Rev:         1,
+		Description: "deterministic-only, stale fetch",
 		Spec: v1alpha1.WorkflowTemplateSpec{
-			Description: "PR review (fixture)",
-			Prepare:     v1alpha1.PrepareSpec{Plugin: v1alpha1.PluginRef{Name: "pr-fetch"}},
-			Agent: v1alpha1.AgentSpec{
-				Model:        "mistral-small-latest",
-				Skill:        "/skills/pr-review/",
-				TaskTemplate: v1alpha1.TaskTemplate{Name: "pr-review"},
-				Gate:         v1alpha1.GateRef{Plugin: v1alpha1.PluginRef{Name: "pr-review"}},
-			},
-			Deploy: v1alpha1.DeploySpec{Plugin: v1alpha1.PluginRef{Name: "post-review"}},
-			Scope: []v1alpha1.ScopeParam{
-				{Name: "repos", Kind: "list", Label: "Repos", Description: "the scope the prepare plugin operates on"},
-				{Name: "label", Kind: "string", Label: "Label trigger", Default: "needs-review"},
-			},
+			Description: "PR review (fixture, r1)",
+			Prepare:     v1alpha1.PrepareSpec{Plugin: v1alpha1.PluginRef{Name: "pr-fetch-stale"}},
+			Agent:       v1alpha1.AgentSpec{Enabled: &noAgent},
+			Deploy:      v1alpha1.DeploySpec{Plugin: v1alpha1.PluginRef{Name: "post-review"}},
 		},
+	}, {
+		Rev:         2,
+		Description: "head — the chart's pr-review entry",
+		Spec:        world.template.Spec,
+	}})
+	if err != nil { // fixture construction error = programming error; degrade to headless
+		return []runtime.Object{world.template}
 	}
-	revJSON, err := json.Marshal([]templateRevisionForFixture{
-		{
-			Rev:         1,
-			Description: "deterministic-only, stale fetch",
-			Spec: v1alpha1.WorkflowTemplateSpec{
-				Description: "PR review (fixture, r1)",
-				Prepare:     v1alpha1.PrepareSpec{Plugin: v1alpha1.PluginRef{Name: "pr-fetch-stale"}},
-				Agent:       v1alpha1.AgentSpec{Enabled: &noAgent},
-				Deploy:      v1alpha1.DeploySpec{Plugin: v1alpha1.PluginRef{Name: "post-review"}},
-			},
-		},
-	})
-	if err == nil { // fixture construction error = programming error; degrade to headless
-		tmpl.Annotations = map[string]string{ui.RevisionsAnnotation: string(revJSON)}
-	}
-	workflowCRD := &apiextensionsv1.CustomResourceDefinition{
-		ObjectMeta: metav1.ObjectMeta{Name: "workflows.harmostes.dev", ResourceVersion: "42"},
-		Spec: apiextensionsv1.CustomResourceDefinitionSpec{
-			Group: "harmostes.dev",
-			Names: apiextensionsv1.CustomResourceDefinitionNames{Kind: "Workflow"},
-			Versions: []apiextensionsv1.CustomResourceDefinitionVersion{{
-				Name: "v1alpha1", Served: true, Storage: true,
-				Schema: &apiextensionsv1.CustomResourceValidation{
-					OpenAPIV3Schema: &apiextensionsv1.JSONSchemaProps{
-						Type: "object",
-						Properties: map[string]apiextensionsv1.JSONSchemaProps{
-							"spec": {
-								Type:        "object",
-								Description: "the Workflow spec (fixture projection)",
-								Properties: map[string]apiextensionsv1.JSONSchemaProps{
-									"templateRef": {Type: "string", Description: "the WorkflowTemplate this workflow instantiates"},
-									"source": {
-										Type: "object", Description: "the repo the workflow operates on",
-										Properties: map[string]apiextensionsv1.JSONSchemaProps{
-											"repo":   {Type: "string"},
-											"branch": {Type: "string"},
-										},
-									},
-									"graph": {
-										Type: "object", Description: "the graph-native pipeline (fixture projection)",
-										Properties: map[string]apiextensionsv1.JSONSchemaProps{
-											"nodes": {
-												Type: "array",
-												Items: &apiextensionsv1.JSONSchemaPropsOrArray{
-													Schema: &apiextensionsv1.JSONSchemaProps{
-														Type: "object",
-														Properties: map[string]apiextensionsv1.JSONSchemaProps{
-															// The node-type vocabulary the topology
-															// palette derives (#417) — mirrors the
-															// real CRD enum.
-															"type": {Type: "string", Enum: graphNodeTypeEnum()},
-														},
-													},
-												},
-											},
-										},
-									},
-								},
-							},
-						},
-					},
-				},
-			}},
-		},
-	}
-	templateCRD := &apiextensionsv1.CustomResourceDefinition{
-		ObjectMeta: metav1.ObjectMeta{Name: "workflowtemplates.harmostes.dev", ResourceVersion: "42"},
-		Spec: apiextensionsv1.CustomResourceDefinitionSpec{
-			Group: "harmostes.dev",
-			Names: apiextensionsv1.CustomResourceDefinitionNames{Kind: "WorkflowTemplate"},
-			Versions: []apiextensionsv1.CustomResourceDefinitionVersion{{
-				Name: "v1alpha1", Served: true, Storage: true,
-				Schema: &apiextensionsv1.CustomResourceValidation{
-					OpenAPIV3Schema: &apiextensionsv1.JSONSchemaProps{
-						Type: "object",
-						Properties: map[string]apiextensionsv1.JSONSchemaProps{
-							"spec": {
-								Type:        "object",
-								Description: "the WorkflowTemplate spec (fixture projection)",
-								Properties: map[string]apiextensionsv1.JSONSchemaProps{
-									"description": {Type: "string", Description: "human summary of what the template does"},
-									"scope": {
-										Type: "array", Description: "parameters the prepare plugin reads",
-										Items: &apiextensionsv1.JSONSchemaPropsOrArray{Schema: &apiextensionsv1.JSONSchemaProps{
-											Type: "object",
-											Properties: map[string]apiextensionsv1.JSONSchemaProps{
-												"name": {Type: "string"},
-												"kind": {Type: "string"},
-											}},
-										},
-									},
-								},
-							},
-						},
-					},
-				},
-			}},
-		},
-	}
-	return []runtime.Object{tmpl, workflowCRD, templateCRD}
+	world.template.Annotations = map[string]string{ui.RevisionsAnnotation: string(revJSON)}
+	return append([]runtime.Object{world.template}, world.crds...)
 }

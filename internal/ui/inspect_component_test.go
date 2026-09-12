@@ -56,7 +56,7 @@ func TestComponent_TemplateDetail_Inspector(t *testing.T) {
 	// Fields carry typed inputs + initial values for the change-diffing
 	// client script. The model is the template's own.
 	model := doc.Find(`input[name="agent.model"]`)
-	if v, _ := model.Attr("value"); v != "mistral-small-latest" {
+	if v, _ := model.Attr("value"); v != "litellm/ali/anthropic/qwen3.8-flash" {
 		t.Errorf("agent.model value = %q, want the template's model", v)
 	}
 	if _, ok := model.Attr("data-initial"); !ok {
@@ -109,7 +109,7 @@ func TestComponent_TemplateDetail_VersionSwitcher(t *testing.T) {
 	if opts := doc.Find(`[data-testid="rev-switch-option"]`); opts.Length() != 2 {
 		t.Fatalf("switcher options = %d, want 2 (r1 + head)", opts.Length())
 	}
-	if src := islandSource(t, doc); !strings.Contains(src, "mistral-small-latest") {
+	if src := islandSource(t, doc); !strings.Contains(src, "litellm/ali/anthropic/qwen3.8-flash") {
 		t.Error("head island document lacks the head model")
 	}
 

@@ -65,7 +65,7 @@ func TestComponent_WorkflowDetail_MergedTopology(t *testing.T) {
 	// Merged means MERGED: the agent label carries the template's model — a
 	// thin-spec compile (resolution skipped) would render a bare "agent".
 	// (graphLabelLimit truncates to 22 runes — assert the surviving prefix.)
-	if got := strings.TrimSpace(agent.Text()); !strings.Contains(got, "mistral-small") {
+	if got := strings.TrimSpace(agent.Text()); !strings.Contains(got, "litellm") {
 		t.Errorf("merged agent label = %q, want the template's model", got)
 	}
 }

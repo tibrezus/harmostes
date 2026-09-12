@@ -7,14 +7,12 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"sigs.k8s.io/yaml"
-
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
+	"github.com/tibrezus/harmostes/internal/crdwalk"
 	"github.com/tibrezus/harmostes/internal/timeline"
 	"github.com/tibrezus/harmostes/internal/ui"
 )
@@ -81,7 +79,7 @@ func TestFixture_Attempts(t *testing.T) {
 // the binary mounts; `-fixture` and the component tests ride identical code.
 func TestFixture_NewWorld_ServesWorld(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	srv, err := NewWorld("fixture-ns", logger)
+	srv, err := NewWorld("fixture-ns", logger, "../../../chart")
 	if err != nil {
 		t.Fatalf("NewWorld: %v", err)
 	}
@@ -106,7 +104,7 @@ func TestFixture_NewWorld_ServesWorld(t *testing.T) {
 // anything foreign or unmappable passes through without a row.
 func TestFixTimeline_Ingest(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	w, err := NewWorld("fixture-ns", logger)
+	w, err := NewWorld("fixture-ns", logger, "../../../chart")
 	if err != nil {
 		t.Fatalf("NewWorld: %v", err)
 	}
@@ -157,21 +155,44 @@ func TestFixTimeline_Ingest(t *testing.T) {
 	}
 }
 
-// The fixture's graph node-type enum must mirror the chart CRD's — the
-// topology palette (#417) derives from it, and drift here would make the
-// fixture world disagree with dev about what a node can be.
-func TestFixture_GraphNodeTypeEnumMirrorsChartCRD(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "chart", "crds", "workflows.harmostes.dev.yaml"))
+// The fixture serves the REAL chart CRDs (#436): what GET /api/schema
+// returns must equal crdwalk.LoadSchema's reading of chart/crds — the
+// e2e tier then validates against exactly what dev runs, by construction
+// rather than by a lockstep helper.
+func TestFixture_ServesChartCRDs(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	w, err := NewWorld("fixture-ns", logger, "../../../chart")
 	if err != nil {
-		t.Fatalf("read chart CRD: %v", err)
+		t.Fatalf("NewWorld: %v", err)
 	}
-	var crd map[string]any
-	if err := yaml.Unmarshal(raw, &crd); err != nil {
-		t.Fatalf("parse chart CRD: %v", err)
+	ts := httptest.NewServer(w.Server().Routes())
+	defer ts.Close()
+
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/api/schema", nil)
+	req.Header.Set("X-Harmostes-Dev-User", DevUser)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET /api/schema: %v", err)
 	}
-	// walk: spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.graph.properties.nodes.items.properties.type.enum
+	defer func() { _ = resp.Body.Close() }()
+	var body map[string]json.RawMessage
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode schema: %v", err)
+	}
+
+	// The workflow half must carry the chart's node-type enum verbatim —
+	// the topology palette's vocabulary (#417).
+	dir := filepath.Join("..", "..", "..", "chart", "crds") + string(filepath.Separator)
+	chartSchema, err := crdwalk.LoadSchema(dir, v1alpha1.WorkflowCRDFile)
+	if err != nil {
+		t.Fatalf("crdwalk: %v", err)
+	}
 	walk := func(node any, path ...string) any {
 		for _, k := range path {
+			if mm, ok := node.(map[string]any); ok {
+				node = mm[k]
+				continue
+			}
 			if list, ok := node.([]any); ok {
 				i := 0
 				for _, c := range k {
@@ -187,36 +208,66 @@ func TestFixture_GraphNodeTypeEnumMirrorsChartCRD(t *testing.T) {
 				}
 				return nil
 			}
-			if mm, ok := node.(map[string]any); ok {
-				node = mm[k]
-				continue
-			}
 			return nil
 		}
 		return node
 	}
-	enumNode := walk(crd, "spec", "versions", "0", "schema", "openAPIV3Schema",
-		"properties", "spec", "properties", "graph", "properties", "nodes",
-		"items", "properties", "type", "enum")
-	enumList, ok := enumNode.([]any)
-	if !ok || len(enumList) == 0 {
-		t.Fatal("chart CRD carries no graph.nodes.type enum — update the fixture helper deliberately")
+	wantEnum := walk(chartSchema, "properties", "spec", "properties", "graph",
+		"properties", "nodes", "items", "properties", "type", "enum")
+	var served map[string]any
+	if err := json.Unmarshal(body["workflow"], &served); err != nil {
+		t.Fatalf("decode workflow half: %v", err)
 	}
-	got := map[string]bool{}
-	for _, e := range graphNodeTypeEnum() {
-		var name string
-		if err := json.Unmarshal(e.Raw, &name); err != nil {
-			t.Fatalf("unmarshal enum entry: %v", err)
-		}
-		got[name] = true
+	gotEnum := walk(served, "properties", "spec", "properties", "graph",
+		"properties", "nodes", "items", "properties", "type", "enum")
+	if gotEnum == nil {
+		t.Fatal("served schema has no graph.nodes.type enum — the chart CRD did not load")
 	}
-	for _, want := range enumList {
-		w, ok := want.(string)
-		if !ok {
-			continue
+	wantJSON, _ := json.Marshal(wantEnum)
+	gotJSON, _ := json.Marshal(gotEnum)
+	if string(wantJSON) != string(gotJSON) {
+		t.Errorf("served enum != chart enum:\nserved: %s\nchart:  %s", gotJSON, wantJSON)
+	}
+}
+
+// The fixture's pr-review template IS the chart's — loaded from
+// chart/values.yaml, the same file the MR bridge edits. The revision
+// annotation's head copy (r2) must equal it: the reader treats the last
+// recorded entry as the head only when it matches the live spec (#451).
+func TestFixture_TemplateLockstepWithChartValues(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	w, err := NewWorld("fixture-ns", logger, "../../../chart")
+	if err != nil {
+		t.Fatalf("NewWorld: %v", err)
+	}
+	ts := httptest.NewServer(w.Server().Routes())
+	defer ts.Close()
+
+	// The template detail page serves the head document from the loaded
+	// spec — assert through the served page, not the struct.
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/templates/pr-review", nil)
+	req.Header.Set("X-Harmostes-Dev-User", DevUser)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET template: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	pageBytes, _ := io.ReadAll(resp.Body)
+	page := string(pageBytes)
+	for _, marker := range []string{
+		"litellm/ali/anthropic/qwen3.8-flash", // the chart's agent model
+		"name: workspace",                     // the chart's prepare plugin
+		"name: post-review",                   // the chart's deploy plugin
+		"name: wiki",                          // the chart's third scope field
+	} {
+		if !strings.Contains(page, marker) {
+			t.Errorf("served head document lacks chart marker %q", marker)
 		}
-		if !got[w] {
-			t.Errorf("fixture enum missing %q (chart CRD has it)", w)
-		}
+	}
+
+	// Annotation head-copy consistency: exactly 2 revisions (r1 + the head
+	// copy equal to the live spec — a phantom r3 would mean drift).
+	if opts := strings.Count(page, `data-testid="rev-switch-option"`); opts != 2 {
+		t.Errorf("switcher options = %d, want 2 — annotation head must equal the live spec", opts)
 	}
 }

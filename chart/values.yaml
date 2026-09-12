@@ -212,65 +212,47 @@ workflowTemplates:
       plugin:
         name: git-push
   pr-review:
-    description: PR review (fetch PR → agent → pr-review → post review)
-    scope:
-    - name: label
-      kind: string
-      label: Label trigger
-      description: only act when this label is present on a PR
-      default: needs-review
-    - name: repos
-      kind: list
-      label: Repos
-      description: the scope the prepare plugin operates on (owner/repo)
-    - name: wiki
-      kind: string
-      label: Wiki repo
-      description: context repo some agents use for design evidence
-    prepare:
-      plugin:
-        name: workspace
     agent:
-      # Speed-primary role (user directive 2026-09-08): mtplx speed variant
-      # primary. Smoke-verified 2/2 completions pre-flip; rollback pin =
-      # litellm/ali/anthropic/qwen3.8-flash (the 21:2x incident pin, kept in
-      # the fallbacks chain). Tripwire: retry-storm signature (multi-attempt
-      # deaths, 0 cache) → roll back + diagnose router serving group.
-      # ROLLED BACK 01:5x — diagnosed: mtplx speed STALLS on long contexts
-      # (HTTP timeout at 2k-word probes; review-scale ~20k tokens = 4-attempt
-      # retry storms, $0.0000). Tiny prompts pass — intermittent greens were
-      # the in-image flash fallback engaging. Re-flip only when the provider
-      # fixes long-context serving. (user speed directive 2026-09-08 stands
-      # as intent, blocked on this endpoint defect.)
-      # UPDATE #363: the platform re-promoted speed as the OPS review
-      # templates' primary (k8s-config 8c1fb609) — provider serving judged
-      # fixed. This chart default stays flash for now; the extension default
-      # carries an entry for every live primary (speed→flash, flash→glm,
-      # glm→flash), so whichever primary runs keeps failover. NOTE a
-      # LITELLM_FALLBACKS override REPLACES the whole map ('{}' = off).
-      model: litellm/ali/anthropic/qwen3.8-flash
-      # fallbacks chain lands with #364 (renderer not wired yet — a bare
-      # key here would be inert).
-      skill: /skills/pr-review/SKILL.md
-      tools: [read, bash, grep]
-      taskTemplate:
-        name: pr-review
-        configMap: harmostes-tasks
-        key: pr-review.txt
-      maxFixes: 1
-      # 1h agent budget: 30min killed every review of harmostes#344's 3-round,
-      # 600-line diff at exactly the deadline (3 dead dispatches tripped the
-      # #328 breaker). The breaker still bounds a hung agent.
-      timeout: 3600
       gate:
         plugin:
           name: pr-review
+      maxFixes: 3
+      model: litellm/ali/anthropic/qwen3.8-flash
+      skill: /skills/pr-review/SKILL.md
+      taskTemplate:
+        configMap: harmostes-tasks
+        key: pr-review.txt
+        name: pr-review
+      timeout: 3600
+      tools:
+        - read
+        - bash
+        - grep
     deploy:
       plugin:
         name: post-review
+    description: PR review (fetch PR → agent → pr-review → post review)
+    prepare:
+      plugin:
+        name: workspace
     reviewReady:
-      label: needs-review
+      dispatchTimeout: 45m
       horizon: 6h
+      label: needs-review
+    scope:
+      - default: needs-review
+        description: only act when this label is present on a PR
+        kind: string
+        label: Label trigger
+        name: label
+      - description: the scope the prepare plugin operates on (owner/repo)
+        kind: list
+        label: Repos
+        name: repos
+      - description: context repo some agents use for design evidence
+        kind: string
+        label: Wiki repo
+        name: wiki
   fork-maintenance:
     description: Fork maintenance (fork-sync → noop → noop)
     scope:

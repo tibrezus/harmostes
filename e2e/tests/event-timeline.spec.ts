@@ -51,8 +51,11 @@ test('a lifecycle event converges into the open timeline through SSE', async ({ 
   await page.getByTestId('event-timeline-tab').click();
 
   const rows = page.getByTestId('timeline-row');
+  // The tab click fires the htmx fetch asynchronously — wait for the
+  // initial fragment before reading the baseline count (CI is cold; a
+  // local warm server hides this race).
+  await expect(rows.first()).toBeVisible();
   const before = await rows.count();
-  expect(before).toBeGreaterThan(0);
 
   // In-place sentinel: a full reload would drop it; an SSE fragment swap
   // keeps it. The convergence assertion is worth nothing without this.

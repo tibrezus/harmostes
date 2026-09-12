@@ -11,11 +11,14 @@
 	<path class="tp-edge{{if .DiffClass}} tp-edge--{{.DiffClass}}{{end}}{{if .Ghost}} tp-edge--ghost{{end}}" d="{{.Path}}" data-testid="topology-edge" data-edge="{{.From}}→{{.To}}"{{if .DiffClass}} data-diff="{{.DiffClass}}"{{end}}></path>
 	{{end}}
 	{{range .Nodes}}
+	{{$link := index $.NodeLinks .ID}}
 	<g class="tp-node{{if .DiffClass}} tp-node--{{.DiffClass}}{{end}}{{if .Ghost}} tp-node--ghost{{end}}" data-testid="topology-node" data-node="{{.ID}}" data-type="{{.Type}}"{{if not .Known}} data-unknown-type="true"{{end}}{{if .DiffClass}} data-diff="{{.DiffClass}}"{{end}} tabindex="0">
-		<title>{{.ID}} — {{.Type}}{{if .DiffClass}} — {{.DiffClass}}{{end}}</title>
+		<title>{{.ID}} — {{.Type}}{{if .DiffClass}} — {{.DiffClass}}{{end}}{{if $link}} — inspect{{end}}</title>
+		{{- if $link}}<a href="{{$link}}" class="tp-nodelink" aria-label="inspect {{.ID}}">{{- end}}
 		<rect class="tp-box" x="{{.X}}" y="{{.Y}}" width="168" height="40" rx="6"></rect>
 		<text class="tp-label" x="{{.LabelX}}" y="{{.LabelY}}">{{.Label}}</text>
 		<text class="tp-type" x="{{.TypeX}}" y="{{.TypeY}}">{{.Type}}</text>
+		{{- if $link}}</a>{{- end}}
 	</g>
 	{{end}}
 </svg>

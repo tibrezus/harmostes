@@ -281,6 +281,12 @@ func (s *Server) Routes() http.Handler {
 	// typed forms render from. Never hand-written in the frontend.
 	pages.HandleFunc("GET /api/schema", s.handleSchema)
 
+	// Node inspector transform (#419, ADR-0012 §7): the STRUCTURED edit
+	// surface — whitelisted typed paths applied to the caller's document.
+	// Stateless by design: the working copy lives in the Workflow Code
+	// island; persistence is the MR-bridge's (#420) to own.
+	pages.HandleFunc("POST /api/inspect", s.handleInspectAPI)
+
 	// Read-only graph API (auto-generated from Workflow spec — no editing)
 	pages.HandleFunc("GET /api/workflows/{name}/graph", s.handleWorkflowGraphAPI)
 

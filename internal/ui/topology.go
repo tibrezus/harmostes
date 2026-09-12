@@ -73,6 +73,10 @@ type topologyView struct {
 	Height    int
 	Nodes     []topologyNodeView
 	Edges     []topologyEdgeView
+	// NodeLinks (#419): optional per-node hrefs — the template authoring
+	// view links each node to its inspector panel. Nil elsewhere (frag
+	// renders plain nodes).
+	NodeLinks map[string]string
 }
 
 // graphGeometry is the pure output of the shared layout engine: node grid

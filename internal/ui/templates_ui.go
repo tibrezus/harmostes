@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"net/http"
+	"strconv"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
@@ -46,9 +47,36 @@ type templateDetailView struct {
 	YAML      string
 	ModelPath string
 	// Topology (ADR-0012 §3, #417): the compiled graph as the layered SVG
-	// projection — the same geometry the run graph paints.
+	// projection — the same geometry the run graph paints. Its NodeLinks
+	// (when non-nil) make each node navigate to its inspector panel (#419).
 	Topology      topologyView
 	RevisionCount int // history entries incl. the live head; >1 links the revisions view
+
+	// Version switcher + inspector (#419, ADR-0012 §7): the selected
+	// revision drives EVERY projection on the page — pipeline, topology,
+	// document, inspector values — consistently.
+	Rev         int         // selected revision number (0 = head)
+	RevOptions  []revOption // switcher entries; rendered when >1
+	InspectNode string      // which node's panel is shown: template|prepare|agent|deploy
+	Inspect     []inspectFieldView
+	Historical  bool // viewing a non-head revision (inspector disabled)
+}
+
+// revOption is one entry of the version switcher.
+type revOption struct {
+	Rev         int // 0 = head
+	Label       string
+	Description string
+	Selected    bool
+}
+
+// inspectFieldView is an editable field rendered with its current value.
+type inspectFieldView struct {
+	Path     string
+	Label    string
+	Kind     string // string|bool|int — the input type
+	Value    string // rendered value ("" = unset)
+	Disabled bool   // historical revisions render read-only
 }
 
 // templateDocument is the canonical YAML projection of a WorkflowTemplate:
@@ -135,6 +163,38 @@ func (s *Server) handleTemplateDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Version switcher (#419, Conductor pattern): ?rev=N renders every
+	// projection — pipeline, topology, document, inspector — from THAT
+	// revision's spec, consistently. The head is the last revision; history
+	// is annotation-carried until #420. An explicit but unknown revision is
+	// a 404 (a mistyped URL must not silently show the wrong version).
+	revs := templateRevisions(tmpl)
+	selRev := 0
+	if rv := r.URL.Query().Get("rev"); rv != "" {
+		n, err := strconv.Atoi(rv)
+		if err != nil || n < 1 || n > len(revs) {
+			s.renderErrorStatus(w, r, http.StatusNotFound, "Unknown revision: "+rv)
+			return
+		}
+		selRev = n
+	}
+	spec := tmpl.Spec
+	if selRev > 0 {
+		spec = revs[selRev-1].Spec
+	}
+	historical := selRev > 0 && selRev != len(revs)
+
+	// Inspector node: ?node=<template|prepare|agent|deploy> — the topology
+	// nodes link here. Unknown nodes are 404s for the same reason.
+	inspectNode := r.URL.Query().Get("node")
+	if inspectNode == "" {
+		inspectNode = "agent" // the meaty panel is the default
+	}
+	if inspectNode != "template" && inspectNode != "prepare" && inspectNode != "agent" && inspectNode != "deploy" {
+		s.renderErrorStatus(w, r, http.StatusNotFound, "Unknown inspector node: "+inspectNode)
+		return
+	}
+
 	// Find workflows that use this template (by gate plugin name match).
 	var workflows []string
 	if wfs, err := s.listAllWorkflows(r); err == nil {
@@ -150,34 +210,118 @@ func (s *Server) handleTemplateDetail(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	topo := buildTopology(graphForTemplate(spec), s.nodeTypePalette(r.Context()))
+	topo.NodeLinks = nodeLinks(selRev) // the frag reads links off the view itself
 	data := templateDetailView{
 		Name:          tmpl.Name,
-		Description:   tmpl.Spec.Description,
-		Pipeline:      buildTemplatePipelineView(tmpl),
-		PreparePlugin: tmpl.Spec.Prepare.Plugin.Name,
-		GateName:      tmpl.Spec.Agent.Gate.Plugin.Name,
-		DeployPlugin:  tmpl.Spec.Deploy.Plugin.Name,
-		AgentModel:    tmpl.Spec.Agent.Model,
-		AgentSkill:    tmpl.Spec.Agent.Skill,
-		AgentTools:    tmpl.Spec.Agent.Tools,
-		AgentMaxFixes: tmpl.Spec.Agent.MaxFixes,
-		AgentTimeout:  tmpl.Spec.Agent.Timeout,
-		AgentScope:    tmpl.Spec.Agent.Scope,
+		Description:   spec.Description,
+		Pipeline:      buildPipelineView(graphForTemplate(spec)),
+		PreparePlugin: spec.Prepare.Plugin.Name,
+		GateName:      spec.Agent.Gate.Plugin.Name,
+		DeployPlugin:  spec.Deploy.Plugin.Name,
+		AgentModel:    spec.Agent.Model,
+		AgentSkill:    spec.Agent.Skill,
+		AgentTools:    spec.Agent.Tools,
+		AgentMaxFixes: spec.Agent.MaxFixes,
+		AgentTimeout:  spec.Agent.Timeout,
+		AgentScope:    spec.Agent.Scope,
 		WorkflowCount: len(workflows),
 		Workflows:     workflows,
-		YAML:          templateYAML(tmpl),
+		YAML:          templateYAMLOf(tmpl, spec),
 		ModelPath:     tmpl.Name + ".yaml",
-		Topology:      buildTopology(graphForTemplate(tmpl.Spec), s.nodeTypePalette(r.Context())),
-		RevisionCount: len(templateRevisions(tmpl)),
+		Topology:      topo,
+		RevisionCount: len(revs),
+		Rev:           selRev,
+		RevOptions:    revOptions(revs, selRev),
+		InspectNode:   inspectNode,
+		Inspect:       inspectFieldsFor(spec, inspectNode, historical),
+		Historical:    historical,
 	}
 	s.render(w, r, "pages/template_detail.html", data)
 }
 
-// templateYAML renders the WorkflowTemplate as its canonical document YAML
-// (spec + identity only — see templateDocument). Marshal failure is a
-// programming error (structs with json tags); panicking would take the page
-// down, so fall back to an explicitly-marked placeholder instead.
-func templateYAML(tmpl *v1alpha1.WorkflowTemplate) string {
+// nodeLinks maps each inspector node to its URL on this page (same revision
+// context). The topology fragment turns these into per-node links — only
+// the template's authoring view navigates.
+func nodeLinks(selRev int) map[string]string {
+	links := map[string]string{}
+	for _, n := range []string{"template", "prepare", "agent", "deploy"} {
+		href := "?node=" + n
+		if selRev > 0 {
+			href += "&rev=" + strconv.Itoa(selRev)
+		}
+		links[n] = href
+	}
+	return links
+}
+
+// revOptions builds the version-switcher entries: one per revision, head
+// last (the live CR spec), the selected one marked. Nil when there is no
+// history — a lone "head" entry is noise.
+func revOptions(revs []templateRevision, selRev int) []revOption {
+	if len(revs) <= 1 {
+		return nil
+	}
+	opts := make([]revOption, 0, len(revs)+1)
+	for _, r := range revs {
+		isHead := r.Rev == revs[len(revs)-1].Rev
+		opt := revOption{
+			Rev:         r.Rev,
+			Label:       "head",
+			Description: r.Description,
+			Selected:    r.Rev == selRev || (selRev == 0 && isHead),
+		}
+		if !isHead {
+			opt.Label = fmt.Sprintf("r%d", r.Rev)
+		}
+		opts = append(opts, opt)
+	}
+	return opts
+}
+
+// inspectFieldsFor renders the inspector panel for one node: the whitelisted
+// fields with their values from the selected spec. Historical revisions
+// render the panel disabled — the values are what that revision declared.
+func inspectFieldsFor(spec v1alpha1.WorkflowTemplateSpec, node string, historical bool) []inspectFieldView {
+	out := []inspectFieldView{}
+	for _, f := range inspectFields {
+		if f.Node != node {
+			continue
+		}
+		v := inspectFieldView{Path: f.Path, Label: f.Label, Kind: f.Kind, Disabled: historical}
+		switch f.Path {
+		case "description":
+			v.Value = spec.Description
+		case "prepare.plugin.name":
+			v.Value = spec.Prepare.Plugin.Name
+		case "agent.enabled":
+			// EFFECTIVE value: nil reads as enabled (the compile default).
+			v.Value = strconv.FormatBool(spec.Agent.EnabledOrDefault())
+		case "agent.model":
+			v.Value = spec.Agent.Model
+		case "agent.skill":
+			v.Value = spec.Agent.Skill
+		case "agent.gate.plugin.name":
+			v.Value = spec.Agent.Gate.Plugin.Name
+		case "agent.maxFixes":
+			if spec.Agent.MaxFixes > 0 {
+				v.Value = strconv.Itoa(spec.Agent.MaxFixes)
+			}
+		case "deploy.plugin.name":
+			v.Value = spec.Deploy.Plugin.Name
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
+// templateYAMLOf renders the WorkflowTemplate as its canonical document
+// YAML (spec + identity only — see templateDocument) for an explicit spec —
+// the version switcher (#419) renders historical revision specs through the
+// same document shape. Labels stay the live CR's (identity is not
+// revisioned). Marshal failure is a programming error (structs with json
+// tags); fall back to an explicitly-marked placeholder instead of panicking.
+func templateYAMLOf(tmpl *v1alpha1.WorkflowTemplate, spec v1alpha1.WorkflowTemplateSpec) string {
 	doc := templateDocument{
 		APIVersion: v1alpha1.SchemeGroupVersion.Identifier(),
 		Kind:       "WorkflowTemplate",
@@ -186,7 +330,7 @@ func templateYAML(tmpl *v1alpha1.WorkflowTemplate) string {
 			Namespace: tmpl.Namespace,
 			Labels:    tmpl.Labels,
 		},
-		Spec: tmpl.Spec,
+		Spec: spec,
 	}
 	b, err := yaml.Marshal(doc)
 	if err != nil {

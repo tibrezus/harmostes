@@ -294,6 +294,11 @@ const (
 type PiSessionMeta struct {
 	Bytes   int    `json:"bytes"`   // raw (pre-compression) size
 	SavedAt string `json:"savedAt"` // RFC3339
+	// Rig-usage telemetry (#452 D3): the review-graph acceptance metric
+	// (orientation = 1 rig call, discovery ≤ 3) measured from this very
+	// session. Counted before redaction — tool names/commands are not
+	// sensitive, but the count must describe the uploaded bytes.
+	ToolUsage
 }
 
 // SavePiSession uploads the newest pi session file for a run: redacted (the
@@ -343,10 +348,11 @@ func SavePiSession(ctx context.Context, dc dapr.Client, store, workflow, run str
 		return err
 	}
 	base := fmt.Sprintf("%s:%s:pi-session", workflow, run)
+	usage := countToolUsage(raw)
 	if err := dc.SaveState(ctx, store, base+piSessionDataSuffix, string(payloadJSON)); err != nil {
 		return err
 	}
-	meta, _ := json.Marshal(PiSessionMeta{Bytes: len(raw), SavedAt: time.Now().UTC().Format(time.RFC3339)})
+	meta, _ := json.Marshal(PiSessionMeta{Bytes: len(raw), SavedAt: time.Now().UTC().Format(time.RFC3339), ToolUsage: usage})
 	if err := dc.SaveState(ctx, store, base, string(meta)); err != nil {
 		return err // blob already stored; a missing metadata key just hides the button
 	}

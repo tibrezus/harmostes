@@ -32,10 +32,12 @@ func TestSavePiSessionRoundTripAndRedaction(t *testing.T) {
 	old := filepath.Join(dir, "2026-08-25T10-00-00Z_old.jsonl")
 	newest := filepath.Join(dir, "2026-08-25T11-00-00Z_new.jsonl")
 	secret := `{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"fetched https://alice:hunter2@git.example/repo.git ok"}]}}`
+	// A toolCall line (pi v3 dialect): the usage telemetry must count it.
+	toolcall := `{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","name":"rig","arguments":{"command":"overview"}}]}}`
 	if err := os.WriteFile(old, []byte(`{"old":true}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(newest, []byte(secret), 0o644); err != nil {
+	if err := os.WriteFile(newest, []byte(secret+"\n"+toolcall), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -52,8 +54,13 @@ func TestSavePiSessionRoundTripAndRedaction(t *testing.T) {
 	if err := json.Unmarshal([]byte(metaRaw), &meta); err != nil {
 		t.Fatalf("metadata not JSON: %v", err)
 	}
-	if meta.Bytes != len(secret) {
-		t.Errorf("meta.Bytes = %d, want %d", meta.Bytes, len(secret))
+	if meta.Bytes != len(secret)+1+len(toolcall) {
+		t.Errorf("meta.Bytes = %d, want %d", meta.Bytes, len(secret)+1+len(toolcall))
+	}
+	// Usage telemetry (#452 D3): counted from the same bytes that uploaded.
+	if meta.ToolCalls != 1 || meta.RigCalls != 1 || meta.GrepCalls != 0 {
+		t.Errorf("meta.ToolUsage = {tool:%d rig:%d grep:%d}, want {1 1 0}",
+			meta.ToolCalls, meta.RigCalls, meta.GrepCalls)
 	}
 	// Data key: a JSON string at the client interface. Dapr wraps it again
 	// on store; the UI read strips exactly two layers (client GetState

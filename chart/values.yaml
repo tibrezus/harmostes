@@ -382,14 +382,16 @@ tasks:
     latency. A good review fits in ~12 calls. The methodology (9 pillars) is
     inlined below — NEVER search the filesystem for skill or pillar files.
 
-    - `rig` — the architecture graph, when pr-context.json has `rig_db`. Start
-      with {command:"overview"}: every component, dependency edge and entry
-      point in one screen. Locate code with {command:"search",target:"<term>"}
-      — it returns file:line for symbol names, signatures and docs; read exactly
-      that range, nothing more. `component`/`deps` give a component's files and
-      blast radius. NEVER run grep/find/ls expeditions to answer "where is X"
-      or "what uses Y" — one rig search replaces a dozen of them. No `rig_db`?
-      fall back to grep, and say so in the review.
+    - `rig` — the architecture graph, when pr-context.json has `rig_db`. It is
+      SHA-exact at the reviewed head (generated at prepare time, verified — a
+      stale graph cannot reach you). Orientation is NOT its job: the briefing
+      already did that. Use it only for symbol-level questions the briefing
+      does not answer: {command:"search",target:"<term>*"} locates symbols
+      (file:line, signatures, docs), {command:"component"}/{command:"deps"}
+      give one component's files and blast radius. NEVER run grep/find/ls
+      expeditions to answer "where is X" or "what uses Y" — one rig search
+      replaces a dozen of them. No `rig_db`? fall back to grep, and say so in
+      the review.
     - `read` / `grep` — read WHOLE files (`cat file`), never sed line windows;
       never re-read a file you have already read. Prefer one call that prints
       3 files over three calls.

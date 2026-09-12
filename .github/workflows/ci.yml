@@ -115,6 +115,40 @@ jobs:
       - name: rig-emit validator
         run: make test-rig-emit
 
+      # Vendor sync (#452 D2): plugins/rig-emit/{emit-rig.py,rig/} is a
+      # byte-equivalent vendored copy of llm-wiki-core's repo-map action at
+      # the sha pinned in VENDOR.sha, plus exactly the deviations
+      # vendor-patch.py applies (severity pin, cycle reporting, warnings
+      # persistence). Any other drift fails here — sync = cp + re-pin.
+      - name: rig-emit vendor sync (byte-parity at VENDOR.sha)
+        run: |
+          PIN_SHA=$(sed -n 's/^sha: //p' plugins/rig-emit/VENDOR.sha)
+          [ -n "$PIN_SHA" ] || { echo "::error::VENDOR.sha has no sha pin"; exit 1; }
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git clone --quiet --filter=blob:none --no-checkout \
+            https://github.com/tibrezus/llm-wiki-core /tmp/llm-wiki-core
+          git -C /tmp/llm-wiki-core checkout --quiet "$PIN_SHA"
+          rm -rf /tmp/vendored-out
+          python3 plugins/rig-emit/vendor-patch.py \
+            /tmp/llm-wiki-core/.github/actions/repo-map /tmp/vendored-out
+          # Compare ONLY the vendored set — the rest of plugins/rig-emit is
+          # harmostes-owned (VENDOR.sha lists it).
+          drift=0
+          for f in emit-rig.py rig/builder.py rig/calls.py rig/clones.py \
+                   rig/db.py rig/fitness.py rig/__init__.py rig/model.py \
+                   rig/symbols.py rig/validator.py \
+                   rig/extractors/base.py rig/extractors/cargo.py \
+                   rig/extractors/cmake.py rig/extractors/generic.py \
+                   rig/extractors/go.py rig/extractors/__init__.py \
+                   rig/extractors/npm.py rig/extractors/python.py \
+                   rig/extractors/zig.py; do
+            if ! cmp -s "/tmp/vendored-out/$f" "plugins/rig-emit/$f"; then
+              echo "::error::vendor drift: plugins/rig-emit/$f differs from pinned upstream (apply vendor-patch.py output or re-pin VENDOR.sha)"
+              drift=1
+            fi
+          done
+          exit $drift
+
       # Compares the COMMITTED fixture's canonical hash against a fresh build
       # in a tempdir — it must NOT regenerate the committed file first, or the
       # gate could only ever catch producer/library skew, never committed

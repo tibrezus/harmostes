@@ -70,17 +70,13 @@ CREATE TABLE component_files(
   seq INTEGER NOT NULL,
   PRIMARY KEY (component_id, path)
 );
--- NOTE: the consumer (extensions/rig-query) asserts db_schema_version — a bump
--- hard-fails every agent until the worker image is rebuilt; roll them together.
--- TODO(consumer-scale)(consumer-scale): symbols(name), deps(dst) and
--- component_files(component_id) indexes when graphs outgrow ~1k symbols —
--- rig-query's search/list arms are leading-LIKE scans today (#338 r9).
 CREATE TABLE symbols(
   seq INTEGER PRIMARY KEY,
   file TEXT NOT NULL,
   name TEXT NOT NULL,
   kind TEXT,
   line INTEGER,
+  line_end INTEGER,
   signature TEXT,
   doc TEXT
 );
@@ -88,6 +84,18 @@ CREATE TABLE calls(
   caller TEXT NOT NULL,
   callee TEXT NOT NULL,
   PRIMARY KEY (caller, callee)
+);
+
+-- Near-clone edges (MinHash+LSH over symbol bodies, rig/clones.py).
+-- Endpoints are "file:name" keys, like calls. scope ∈ same-file |
+-- same-component | cross-component. Deterministic content — covered by
+-- the canonical hash.
+CREATE TABLE similar(
+  src TEXT NOT NULL,
+  dst TEXT NOT NULL,
+  jaccard REAL NOT NULL,
+  scope TEXT NOT NULL,
+  PRIMARY KEY (src, dst)
 );
 CREATE TABLE artifacts(
   component_id TEXT NOT NULL,
@@ -244,12 +252,12 @@ def add_symbols(db_path: Path, symbols: list[dict]) -> None:
         start = con.execute("SELECT COALESCE(MAX(seq), 0) FROM symbols").fetchone()[0]
         rows = [
             (start + i + 1, s["file"], s["name"], s.get("kind"),
-             s.get("line"), s.get("signature"), s.get("doc"))
+             s.get("line"), s.get("line_end"), s.get("signature"), s.get("doc"))
             for i, s in enumerate(symbols)
         ]
         con.executemany(
-            "INSERT INTO symbols(seq, file, name, kind, line, signature, doc) "
-            "VALUES (?,?,?,?,?,?,?)", rows)
+            "INSERT INTO symbols(seq, file, name, kind, line, line_end, signature, doc) "
+            "VALUES (?,?,?,?,?,?,?,?)", rows)
         con.commit()
         if _fts5_available(con):
             con.execute("INSERT INTO symbols_fts(symbols_fts) VALUES('rebuild')")
@@ -276,6 +284,52 @@ def add_files(db_path: Path, files: list[dict]) -> None:
         con.close()
 
 
+def add_similar(db_path: Path, rows: list[dict]) -> None:
+    """Store near-clone edges (src/dst/jaccard/scope dicts).
+
+    Caller pre-sorts; PRIMARY KEY dedups; INSERT OR IGNORE makes reruns
+    idempotent. Content is deterministic (rig/clones.py), so the canonical
+    hash stays stable.
+    """
+    con = sqlite3.connect(db_path)
+    try:
+        con.executemany(
+            "INSERT OR IGNORE INTO similar(src, dst, jaccard, scope) VALUES (?,?,?,?)",
+            [(r["src"], r["dst"], r["jaccard"], r["scope"]) for r in rows])
+        con.commit()
+        con.execute("VACUUM")
+    finally:
+        con.close()
+
+
+def set_meta(db_path: Path, key: str, value: str) -> None:
+    """Upsert a meta row (e.g. calls_source provenance)."""
+    con = sqlite3.connect(db_path)
+    try:
+        con.execute("INSERT OR REPLACE INTO meta(key, value) VALUES (?,?)",
+                    (key, value))
+        con.commit()
+        con.execute("VACUUM")
+    finally:
+        con.close()
+
+
+def add_call_edges(db_path: Path, edges: list[tuple[str, str]]) -> None:
+    """Insert call edges (endpoints "file:name"). The single writer for the
+    calls table — regex-v1 extraction and archmap ingestion both land here."""
+    if not edges:
+        return
+    con = sqlite3.connect(db_path)
+    try:
+        con.executemany(
+            "INSERT OR IGNORE INTO calls(caller, callee) VALUES (?,?)",
+            edges)
+        con.commit()
+        con.execute("VACUUM")
+    finally:
+        con.close()
+
+
 def add_archmap(db_path: Path, graph: dict) -> None:
     """Ingest an archmap graph.json (files/decls/calls) into symbols + calls.
 
@@ -291,20 +345,16 @@ def add_archmap(db_path: Path, graph: dict) -> None:
             "name": d.get("name", ""),
             "kind": d.get("kind", ""),
             "line": d.get("line"),
+            "line_end": d.get("line_end"),
             "signature": d.get("signature") or d.get("name", ""),
             "doc": d.get("doc"),
         })
     add_symbols(db_path, symbols)
-    con = sqlite3.connect(db_path)
-    try:
-        con.executemany(
-            "INSERT OR IGNORE INTO calls(caller, callee) VALUES (?,?)",
-            [(c.get("caller", ""), c.get("callee", ""))
-             for c in graph.get("calls", [])])
-        con.commit()
-        con.execute("VACUUM")
-    finally:
-        con.close()
+    add_call_edges(db_path, [(c.get("caller", ""), c.get("callee", ""))
+                             for c in graph.get("calls", [])])
+    # Provenance: archmap data is compiler-grade; tag supersedes regex-v1.
+    if graph.get("calls"):
+        set_meta(db_path, "calls_source", "archmap")
 
 
 # ── Read ─────────────────────────────────────────────────────────────
@@ -433,6 +483,7 @@ def load_rig(path: Path) -> dict:
 
 CANONICAL_TABLES = [
     "meta", "components", "deps", "files", "component_files", "symbols", "calls",
+    "similar",
     "artifacts", "packages", "component_packages", "evidence", "component_evidence",
     "aggregators", "aggregator_deps", "aggregator_evidence",
     "runners", "runner_deps", "runner_evidence",
@@ -475,9 +526,7 @@ def _write_meta(con, rig: dict) -> None:
         ("build_system", repo.get("build_system", "")),
         ("generator", repo.get("generator", "")),
     ]
-    # Generation warnings travel WITH the artifact (#346 r2 P7): a rig.db
-    # whose repo has an import cycle must be able to say so — the graph is
-    # honest about what it represents.
+    # VENDOR-PATCH (#346 r2 P7): generation warnings travel WITH the artifact.
     warnings = rig.get("warnings") or []
     if warnings:
         rows.append(("warnings", json.dumps(warnings)))
@@ -570,7 +619,8 @@ def _write_tests(con, rig: dict) -> None:
     con.executemany(
         "INSERT OR IGNORE INTO test_covers VALUES (?,?,?)",
         [(t["id"], c, j) for t in tests
-         for j, c in enumerate(t.get("components_being_tested_ids", []))])
+         for j, c in enumerate(t.get("covers_ids")
+                            or t.get("components_being_tested_ids", []))])
     con.executemany(
         "INSERT OR IGNORE INTO test_files VALUES (?,?,?)",
         [(t["id"], f, j) for t in tests

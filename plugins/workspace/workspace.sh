@@ -198,7 +198,7 @@ fi
 # tool reports absence and the agent falls back to bash) — prepare never
 # fails here. Put AFTER pr-context.json exists: we stamp the path in.
 if [ -f /usr/local/lib/harmostes/plugins/emit-rig.py ]; then
-  if ( cd "$REPO_DIR" && timeout 180 python3 /usr/local/lib/harmostes/plugins/emit-rig.py "$WORKDIR/rig.json" ) > "$WORKDIR/rig-emit.log" 2>&1 && [ -f "$WORKDIR/rig.db" ]; then
+  if ( cd "$REPO_DIR" && timeout 180 python3 /usr/local/lib/harmostes/plugins/emit-rig.py "$WORKDIR/rig.json" --source-sha "$HEAD_SHA" ) > "$WORKDIR/rig-emit.log" 2>&1 && [ -f "$WORKDIR/rig.db" ]; then
     log "rig.db generated from $HEAD_SHA: $(wc -c < "$WORKDIR/rig.db") bytes"
     echo -n "$HEAD_SHA" > "$WORKDIR/rig.db.sha"  # ADR-0009 provenance: the rig-query extension warns on mismatch
     jq --arg db "$WORKDIR/rig.db" '. + {rig_db:$db}' "$WORKDIR/pr-context.json" > "$WORKDIR/pr-context.json.tmp" && mv "$WORKDIR/pr-context.json.tmp" "$WORKDIR/pr-context.json"

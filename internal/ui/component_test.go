@@ -32,11 +32,11 @@ const fixtureNamespace = "fixture-ns"
 func newFixtureServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	srv, err := fixture.NewServer(fixtureNamespace, logger)
+	srv, err := fixture.NewWorld(fixtureNamespace, logger)
 	if err != nil {
 		t.Fatalf("fixture server: %v", err)
 	}
-	ts := httptest.NewServer(srv.Routes())
+	ts := httptest.NewServer(srv.Server().Routes())
 	t.Cleanup(ts.Close)
 	return ts
 }
@@ -267,11 +267,11 @@ func TestComponent_RunsList_DefaultWindow(t *testing.T) {
 // that keeps its auth-bypass nature out of the production path.
 func TestComponent_Routes_RejectsAnonymous(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	srv, err := fixture.NewServer(fixtureNamespace, logger)
+	srv, err := fixture.NewWorld(fixtureNamespace, logger)
 	if err != nil {
 		t.Fatalf("fixture server: %v", err)
 	}
-	ts := httptest.NewServer(srv.Routes()) // exactly as production mounts it
+	ts := httptest.NewServer(srv.Server().Routes()) // exactly as production mounts it
 	t.Cleanup(ts.Close)
 
 	resp, err := http.Get(ts.URL + "/runs")
@@ -289,11 +289,11 @@ func TestComponent_Routes_RejectsAnonymous(t *testing.T) {
 // owner-scoped cards with no headers at all.
 func TestComponent_DevIdentity_ZeroSetup(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	srv, err := fixture.NewServer(fixtureNamespace, logger)
+	srv, err := fixture.NewWorld(fixtureNamespace, logger)
 	if err != nil {
 		t.Fatalf("fixture server: %v", err)
 	}
-	ts := httptest.NewServer(fixture.DevIdentity(srv.Routes()))
+	ts := httptest.NewServer(fixture.DevIdentity(srv.Server().Routes()))
 	t.Cleanup(ts.Close)
 
 	resp, err := http.Get(ts.URL + "/") // deliberately no identity header

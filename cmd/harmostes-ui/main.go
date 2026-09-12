@@ -67,12 +67,12 @@ func main() {
 	// path production uses — the -fixture contract is that page behavior is
 	// identical, only the data source differs.
 	if fixtureMode {
-		fixtureServer, err := fixture.NewServer(namespace, logger)
+		fixtureServer, err := fixture.NewWorld(namespace, logger)
 		if err != nil {
 			logger.Error("seed fixture world", "err", err)
 			os.Exit(1)
 		}
-		serve(logger, addr, fixture.DevIdentity(fixtureServer.Routes()), namespace, true)
+		serve(logger, addr, fixtureServer.Routes(), namespace, true)
 		return
 	}
 

@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { islandReady } from './helpers';
 
 // Propose via MR (#420, ADR-0012 §5): the bridge itself is covered against a
 // fake forge in the component tier; this tier pins the GLUE on the real
@@ -21,7 +22,7 @@ test('propose panel posts the island document and links the MR', async ({ page }
   });
 
   await page.goto('/templates/pr-review');
-  await expect(page.getByTestId('code-island')).toHaveAttribute('data-island-state', 'ready', { timeout: 15000 });
+  await islandReady(page, 'code-island', 15000);
   await expect(page.getByTestId('propose-panel')).toBeVisible();
   await expect(page.getByTestId('propose-source')).toContainText('github:golden-owner/golden-repo');
 
@@ -47,7 +48,7 @@ test('rejected proposals surface the reason', async ({ page }) => {
   });
 
   await page.goto('/templates/pr-review');
-  await expect(page.getByTestId('code-island')).toHaveAttribute('data-island-state', 'ready', { timeout: 15000 });
+  await islandReady(page, 'code-island', 15000);
   await page.getByTestId('propose-button').click();
   await expect(page.getByTestId('propose-status')).toContainText('rejected:');
 });

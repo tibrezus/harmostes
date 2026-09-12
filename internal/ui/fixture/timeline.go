@@ -16,18 +16,112 @@ import (
 	"context"
 	"encoding/json"
 	"sort"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/tibrezus/harmostes/internal/timeline"
+	"github.com/tibrezus/harmostes/internal/ui"
 )
 
-// fixTimeline is the fake reader over one seeded narrative.
-type fixTimeline struct {
+// FixTimeline is the fake reader over one seeded narrative — plus the
+// fixture's ingest seam: in production the timeline store is written by the
+// graph executor through Dapr; here the store GROWS from the same cloud
+// events the /dapr/events ingress receives (see daprStoreIngest), so the
+// E2E tier can drive real SSE convergence: inject → store row → hub wake →
+// fragment re-render — the production event path end to end.
+type FixTimeline struct {
+	mu     sync.Mutex
 	events []timeline.Event
+	extra  []timeline.Event
+	// seededMax and lastIngest drive the append clock: the seeded world
+	// spans ~14h from the process-start hour, so wall-clock now can sit
+	// INSIDE it — ingested rows must land after every seeded row, not at
+	// now.
+	seededMax  time.Time
+	lastIngest time.Time
 }
 
-// NewTimelineReader returns the fixture's seeded timeline.Reader.
-func NewTimelineReader() timeline.Reader {
+// storeKinds maps lifecycle event names onto the store row kinds they
+// become. Only node-level events map: a run-level CE carries no node id, and
+// the fixture derives the run name from the attempt name + node
+// (<workflow>-<suffix>-<node>), mirroring how attempts name their runs.
+var storeKinds = map[string]string{
+	"node.started":   timeline.KindNodeStarted,
+	"node.completed": timeline.KindNodeCompleted,
+}
+
+// Ingest appends a store row for a lifecycle event and reports whether one
+// was written. Unmappable or foreign events are ignored — the fake store
+// only knows its own world.
+func (f *FixTimeline) Ingest(ev ui.Event) bool {
+	kind, ok := storeKinds[ev.Event]
+	if !ok || ev.Attempt == "" || ev.Node == "" || !strings.HasPrefix(ev.Attempt, "attempt-") {
+		return false
+	}
+	payload := map[string]any{}
+	if ev.NodeType != "" {
+		payload["type"] = ev.NodeType
+	}
+	if ev.Status != "" {
+		payload["status"] = ev.Status
+	}
+	if ev.DurationMs > 0 {
+		payload["durationMs"] = ev.DurationMs
+	}
+	if ev.Feedback != "" {
+		payload["feedback"] = ev.Feedback
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		b = []byte("{}")
+	}
+	at := ev.Timestamp
+	if at.IsZero() {
+		at = f.appendAt()
+	}
+	row := timeline.Event{
+		At: at, Attempt: ev.Attempt,
+		Run:  strings.TrimPrefix(ev.Attempt, "attempt-") + "-" + ev.Node,
+		Node: ev.Node, Kind: kind, Payload: b,
+		Subject: timeline.Subject{Kind: "pr", Ref: "demo-rezuscloud/harmostes#42", Title: "Fixture narrative"},
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.extra = append(f.extra, row)
+	if at.After(f.lastIngest) {
+		f.lastIngest = at
+	}
+	return true
+}
+
+// appendAt returns the next ingest timestamp: now, but never at or before
+// the last row the store holds (seeded or ingested) — the story appends.
+func (f *FixTimeline) appendAt() time.Time {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	at := time.Now().UTC()
+	if floor := f.seededMax.Add(time.Second); at.Before(floor) {
+		at = floor
+	}
+	if at.Before(f.lastIngest) {
+		at = f.lastIngest
+	}
+	return at
+}
+
+// snapshot merges the seeded narrative with ingested rows (oldest first).
+func (f *FixTimeline) snapshot() []timeline.Event {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]timeline.Event, 0, len(f.events)+len(f.extra))
+	out = append(out, f.events...)
+	out = append(out, f.extra...)
+	return out
+}
+
+// NewTimelineReader returns the fixture's seeded store.
+func NewTimelineReader() *FixTimeline {
 	ev := func(at time.Time, attempt, run, node, kind string, payload map[string]any) timeline.Event {
 		b, err := json.Marshal(payload)
 		if err != nil {
@@ -105,17 +199,23 @@ func NewTimelineReader() timeline.Reader {
 			map[string]any{"type": "agent"}),
 	)
 
-	return &fixTimeline{events: events}
+	var seededMax time.Time
+	for _, ev := range events {
+		if ev.At.After(seededMax) {
+			seededMax = ev.At
+		}
+	}
+	return &FixTimeline{events: events, seededMax: seededMax}
 }
 
 // Attempt implements timeline.Reader over the seeded narrative.
-func (f *fixTimeline) Attempt(ctx context.Context, attempt string, runs []string, fltr timeline.Filter) ([]timeline.Event, error) {
+func (f *FixTimeline) Attempt(ctx context.Context, attempt string, runs []string, fltr timeline.Filter) ([]timeline.Event, error) {
 	runSet := make(map[string]bool, len(runs))
 	for _, r := range runs {
 		runSet[r] = true
 	}
 	var out []timeline.Event
-	for _, ev := range f.events {
+	for _, ev := range f.snapshot() {
 		if ev.Attempt != attempt || ev.Run == "" || !runSet[ev.Run] {
 			continue
 		}
@@ -128,9 +228,9 @@ func (f *fixTimeline) Attempt(ctx context.Context, attempt string, runs []string
 // GateEvents implements timeline.Reader: gate-keyed events for one attempt
 // (the real store keeps them under timeline/<attempt>/gate/<seq>, outside
 // any run keyset; the fake separates them by empty Run).
-func (f *fixTimeline) GateEvents(ctx context.Context, attempt string, fltr timeline.Filter) ([]timeline.Event, error) {
+func (f *FixTimeline) GateEvents(ctx context.Context, attempt string, fltr timeline.Filter) ([]timeline.Event, error) {
 	var out []timeline.Event
-	for _, ev := range f.events {
+	for _, ev := range f.snapshot() {
 		if ev.Attempt == attempt && ev.Run == "" {
 			out = append(out, ev)
 		}
@@ -140,7 +240,7 @@ func (f *fixTimeline) GateEvents(ctx context.Context, attempt string, fltr timel
 }
 
 // Subjects implements timeline.Reader: one indexed subject per attempt.
-func (f *fixTimeline) Subjects(ctx context.Context, attempts []string) (map[string]timeline.Subject, error) {
+func (f *FixTimeline) Subjects(ctx context.Context, attempts []string) (map[string]timeline.Subject, error) {
 	out := make(map[string]timeline.Subject, len(attempts))
 	for _, a := range attempts {
 		out[a] = timeline.Subject{Kind: "pr", Ref: "demo-rezuscloud/harmostes#42", Title: "Fixture narrative"}

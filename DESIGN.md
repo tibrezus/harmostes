@@ -73,3 +73,27 @@ literals in the island); monospace per the identifier rule; no minimap. The
 document renders **read-only** first (editing lands with #418's MR-bridge);
 validation markers and schema completion come from `/api/schema`, never a
 hand-written schema.
+
+## data-testid Registry (ADR-0012 §6, #421)
+
+Every island and dynamic fragment the tests hook carries a `data-testid`.
+**The template is the source of truth**: renaming or removing a hook here is
+a code change that must update the specs (and this registry) in the same PR
+— never a style tweak. New hooks get added here when they ship. The E2E
+specs share helpers (`e2e/tests/helpers.ts`) so wait policy and identity
+headers change in one place; `data-island-state="ready"` plus the
+`window.harmostesCodeIsland` handle are the island's two additional hooks.
+
+| Hook | Template | Hooked by |
+| --- | --- | --- |
+| `graph-tab`, `event-timeline-tab`, `event-timeline-pane` | `pages/attempt_detail.html` | event-timeline, run-detail specs |
+| `run-link`, `subject-cell`, `tab-*` (all/failed/inflight/verdicts) | `pages/attempts.html` | runs spec |
+| `wf-controls`, `wf-trigger`, `wf-enable`, `wf-disable`, `wf-delete` | `pages/detail.html` | lifecycle spec |
+| `event-timeline`, `event-timeline-empty`, `timeline-row`, `timeline-row-{kind,time,details,payload}` | `pages/frag_event_timeline.html` | event-timeline specs |
+| `graph-node`, `timing-lane` | `pages/frag_run_graph.html` | run-detail, live-event specs |
+| `topology`, `topology-node`, `topology-edge` | `pages/frag_topology.html` | topology, inspector specs |
+| `wall-card`, `wall-card-title`, `wall-alert` | `pages/frag_wall.html` | wall spec |
+| `code-island`, `inspector`, `inspector-field`, `inspector-apply`, `inspector-status`, `propose-button`, `propose-link`, `propose-panel`, `propose-source`, `propose-status`, `rev-historical`, `revisions-link`, `rev-switch`, `rev-switch-option` | `pages/template_detail.html` | code-island, inspector, propose specs |
+| `rev-option`, `rev-picker`, `rev-graph-diff`, `revisions-empty`, `topology-pane`, `topology-legend`, `yaml-diff`, `yaml-diff-line` | `pages/template_revisions.html` | topology diff assertions |
+| `wf-new-{link,form,name,cadence,template,templates,submit}` | `pages/workflow_new.html`, `pages/workflows.html` | workflows spec |
+| `data-island-state` (attribute), `window.harmostesCodeIsland` (JS handle) | island glue | code-island, inspector, propose specs |

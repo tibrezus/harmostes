@@ -8,9 +8,11 @@
 package fixture
 
 import (
+	"bytes"
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -225,12 +227,54 @@ func DevIdentity(next http.Handler) http.Handler {
 	})
 }
 
+// World is the fixture's assembled runtime: the UI server over the seeded
+// in-memory world, plus the handles its middleware stack drives.
+type World struct {
+	server   *ui.Server
+	timeline *FixTimeline
+}
+
+// Server returns the UI server (component tests drive it directly).
+func (w *World) Server() *ui.Server { return w.server }
+
+// Routes returns the fixture's full handler stack over the UI server's
+// routes: the dapr-ingest store growth first (the fake store must see the
+// row before the hub wake re-renders), then dev identity. Production mounts
+// bare Routes() and never composes either wrapper (both are fixture-only).
+func (w *World) Routes() http.Handler {
+	return DevIdentity(daprStoreIngest(w.timeline, w.server.Routes()))
+}
+
+// daprStoreIngest grows the fixture's fake timeline store from the cloud
+// events production's ingress receives. In the fixture there is no Dapr
+// sidecar and no store writer, so the ingress IS the store's write path —
+// mirroring production, where the events that reach /dapr/events are the
+// ones that end up in the store. The event is appended BEFORE delegation so
+// the hub wake's re-render already sees the row (SSE convergence, #421).
+func daprStoreIngest(tl *FixTimeline, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/dapr/events" {
+			body, err := io.ReadAll(r.Body)
+			r.Body = io.NopCloser(bytes.NewReader(body))
+			if err == nil {
+				var ce struct {
+					Data ui.Event `json:"data"`
+				}
+				if json.Unmarshal(body, &ce) == nil {
+					tl.Ingest(ce.Data)
+				}
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // NewServer constructs a ui.Server over an in-memory seeded world: the fake
 // controller-runtime client carries the fixture objects, the fake clientset
 // backs pod-log reads (no pods — log streaming degrades gracefully). DAPR
 // stays unwired; the dapr event endpoint still mutates the in-memory world,
 // which is exactly what E2E event-injection tests will use.
-func NewServer(namespace string, logger *slog.Logger) (*ui.Server, error) {
+func NewWorld(namespace string, logger *slog.Logger) (*World, error) {
 	scheme := Scheme()
 
 	objs, err := Objects(namespace)
@@ -273,9 +317,11 @@ func NewServer(namespace string, logger *slog.Logger) (*ui.Server, error) {
 		Host: "github", Owner: "golden-owner", Repo: "golden-repo",
 		BaseBranch: "main", Path: "chart/values.yaml", ValuesKey: "workflowTemplates",
 	})
-	// Event Timeline (ADR-0012 §4): the seeded fake reader (no sidecar here).
-	server.SetTimelineReader(NewTimelineReader())
-	return server, nil
+	// Event Timeline (ADR-0012 §4): the seeded fake reader (no sidecar here) —
+	// kept as a *FixTimeline so Routes()' ingest middleware can grow it.
+	tl := NewTimelineReader()
+	server.SetTimelineReader(tl)
+	return &World{server: server, timeline: tl}, nil
 }
 
 // fixtureExtras seeds the objects the ADR-0012 write-path surfaces read: one

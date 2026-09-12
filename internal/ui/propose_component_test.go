@@ -126,17 +126,17 @@ func newProposeServer(t *testing.T) (*httptest.Server, *fakeForge) {
 	t.Cleanup(forgeSrv.Close)
 
 	logger := discardLogger(t)
-	srv, err := fixture.NewServer(fixtureNamespace, logger)
+	srv, err := fixture.NewWorld(fixtureNamespace, logger)
 	if err != nil {
 		t.Fatalf("fixture server: %v", err)
 	}
-	srv.SetTemplateSource(&ui.TemplateSource{
+	srv.Server().SetTemplateSource(&ui.TemplateSource{
 		Host: "github", Owner: "golden-owner", Repo: "golden-repo",
 		BaseBranch: "main", Path: "chart/values.yaml", ValuesKey: "workflowTemplates",
 		APIBase: forgeSrv.URL,
 	})
-	srv.SetSourceToken(forge.secret)
-	ts := httptest.NewServer(srv.Routes())
+	srv.Server().SetSourceToken(forge.secret)
+	ts := httptest.NewServer(srv.Server().Routes())
 	t.Cleanup(ts.Close)
 	return ts, forge
 }
@@ -302,12 +302,12 @@ spec:
 // unsets it explicitly.
 func TestComponent_Propose_Unconfigured(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	srv, err := fixture.NewServer(fixtureNamespace, logger)
+	srv, err := fixture.NewWorld(fixtureNamespace, logger)
 	if err != nil {
 		t.Fatalf("fixture server: %v", err)
 	}
-	srv.SetTemplateSource(nil)
-	ts := httptest.NewServer(srv.Routes())
+	srv.Server().SetTemplateSource(nil)
+	ts := httptest.NewServer(srv.Server().Routes())
 	t.Cleanup(ts.Close)
 
 	if code, body := postPropose(t, ts, "pr-review", editedDocument); code != http.StatusNotImplemented {

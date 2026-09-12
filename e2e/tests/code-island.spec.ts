@@ -4,13 +4,13 @@
 // actually DRIVING the editor — completion offers schema properties, schema
 // violations raise markers, and the shipped fixture world is enough for both.
 import { test, expect } from '@playwright/test';
+import { islandReady } from './helpers';
 
 test('Workflow Code island renders, completes, and validates schema-driven', async ({ page }) => {
   await page.goto('/templates/pr-review');
 
-  const island = page.getByTestId('code-island');
   // The bundle is 2.3 MB; state flips to ready once mount() ran.
-  await expect(island).toHaveAttribute('data-island-state', 'ready', { timeout: 20000 });
+  const island = await islandReady(page);
 
   // The document itself is visible in the editor surface.
   await expect(island.locator('.view-lines')).toContainText('kind: WorkflowTemplate');

@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { WRITER, OTHER, READER } from './helpers';
 
 // Run-with-inputs round-trip (#418, ADR-0012 §7): create → visible → arm →
 // trigger → delete, driven as a browser through the real HTTP surface.
@@ -13,9 +14,6 @@ import { test, expect } from '@playwright/test';
 // created object behind, so afterAll re-issues the delete (404 tolerated).
 
 const NAME = 'e2e-created-418';
-const WRITER = { 'X-Harmostes-Dev-User': 'writer' };
-const OTHER = { 'X-Harmostes-Dev-User': 'someoneelse' };
-const READER = { 'X-Forwarded-User': 'browsing-mallory' };
 
 test.describe.serial('run-with-inputs round-trip', () => {
   test.afterAll(async ({ request }) => {

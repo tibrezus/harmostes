@@ -202,6 +202,14 @@ if [ -f /usr/local/lib/harmostes/plugins/emit-rig.py ]; then
     log "rig.db generated from $HEAD_SHA: $(wc -c < "$WORKDIR/rig.db") bytes"
     echo -n "$HEAD_SHA" > "$WORKDIR/rig.db.sha"  # ADR-0009 provenance: the rig-query extension warns on mismatch
     jq --arg db "$WORKDIR/rig.db" '. + {rig_db:$db}' "$WORKDIR/pr-context.json" > "$WORKDIR/pr-context.json.tmp" && mv "$WORKDIR/pr-context.json.tmp" "$WORKDIR/pr-context.json"
+    # Context enrichment (#443): pre-digest the graph into the agent's
+    # orientation — overview, the diff's touched components, their symbols
+    # (file:line) and blast radius. The r4 forensics showed the model ignores
+    # "query rig first" and burns 30+ greps rediscovering the graph before
+    # dying of context exhaustion; the briefing removes the need to ask.
+    if [ -f /usr/local/lib/harmostes/plugins/rig-brief.py ]; then
+      timeout 60 python3 /usr/local/lib/harmostes/plugins/rig-brief.py "$WORKDIR/rig.db" "$WORKDIR/pr-context.json" "$WORKDIR" 2>&1 | sed 's/^/[rig-brief] /' || true
+    fi
   else
     log "WARN: rig.db generation failed (tail of $WORKDIR/rig-emit.log): $(tail -2 "$WORKDIR/rig-emit.log" 2>/dev/null | tr '\n' ' ')"
   fi

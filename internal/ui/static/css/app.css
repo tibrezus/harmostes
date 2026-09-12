@@ -2176,3 +2176,32 @@ code, pre {
 .ydiff-line { display: block; white-space: pre; }
 .ydiff-line--added { color: var(--ds-positive, #2e7d32); background: color-mix(in oklab, var(--ds-positive, #2e7d32) 8%, transparent); }
 .ydiff-line--removed { color: var(--ds-negative, #c62828); background: color-mix(in oklab, var(--ds-negative, #c62828) 8%, transparent); text-decoration: line-through; text-decoration-thickness: 1px; text-decoration-color: color-mix(in oklab, var(--ds-negative, #c62828) 45%, transparent); }
+
+/* ---- Workflow lifecycle controls (#418, ADR-0012 §7) ---- */
+.wf-controls {
+	display: flex;
+	gap: 0.4rem;
+	align-items: center;
+}
+.wf-controls-form {
+	display: contents;
+}
+.ds-button--danger {
+	color: var(--ds-negative, #c62828);
+	border-color: color-mix(in oklab, var(--ds-negative, #c62828) 45%, transparent);
+}
+.ds-button--danger:hover {
+	background: color-mix(in oklab, var(--ds-negative, #c62828) 10%, transparent);
+}
+.wf-new-cadence {
+	border: 1px solid var(--ds-border-faint);
+	border-radius: 6px;
+	padding: 0.5rem 0.75rem;
+	margin: 0 0 0.75rem;
+}
+.wf-new-cadence .wf-new-field span {
+	display: flex;
+	align-items: center;
+	gap: 0.45rem;
+	font-size: 0.85rem;
+}

@@ -262,10 +262,13 @@ func TestNavShrinksToThree(t *testing.T) {
 }
 
 // Standalone destinations whose engines were absorbed (#290 kill list) 404.
+// /metrics left the kill list in #418: the route is back, deliberately, as
+// the UI's own Prometheus endpoint (harmostes_ui_writes_total, #436) —
+// different purpose, same path; pinned by TestMetricsServesWritesCounter.
 func TestStandaloneDestinationsRemoved(t *testing.T) {
 	s := wallTestServer(t)
 	for _, path := range []string{
-		"/map", "/timeline", "/metrics", "/sessions", "/api/metrics",
+		"/map", "/timeline", "/sessions", "/api/metrics",
 		"/api/timeline/events",
 	} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)

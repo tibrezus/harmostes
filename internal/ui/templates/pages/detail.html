@@ -9,14 +9,33 @@
 		</div>
 		<div class="tpl-detail-actions">
 			{{if $wf.Spec.Disabled}}
-			<span class="status-badge status-badge--muted">Disabled</span>
+			<span class="status-badge status-badge--muted">Paused</span>
 			{{else if eq $wf.Status.GateStatus "green"}}
 			<span class="status-badge status-badge--green">Green</span>
 			{{else if eq $wf.Status.GateStatus "failed"}}
 			<span class="status-badge status-badge--red">Failed</span>
 			{{else}}
-			<span class="status-badge status-badge--muted">Unknown</span>
+			<span class="status-badge status-badge--muted">Armed</span>
 			{{end}}
+			{{- if .MayWrite}}
+			<div class="wf-controls" data-testid="wf-controls">
+				{{- if $wf.Spec.Disabled}}
+				<form method="POST" action="/workflows/{{$wf.Name}}/enable" class="wf-controls-form">
+					<button type="submit" class="ds-button ds-button--primary" data-testid="wf-enable">Arm</button>
+				</form>
+				{{- else}}
+				<form method="POST" action="/workflows/{{$wf.Name}}/trigger" class="wf-controls-form">
+					<button type="submit" class="ds-button ds-button--primary" data-testid="wf-trigger">Trigger run</button>
+				</form>
+				<form method="POST" action="/workflows/{{$wf.Name}}/disable" class="wf-controls-form">
+					<button type="submit" class="ds-button" data-testid="wf-disable">Pause</button>
+				</form>
+				{{- end}}
+				<form method="POST" action="/workflows/{{$wf.Name}}/delete" class="wf-controls-form" id="wf-delete-form">
+					<button type="submit" class="ds-button ds-button--danger" data-testid="wf-delete">Delete</button>
+				</form>
+			</div>
+			{{- end}}
 		</div>
 	</header>
 
@@ -120,4 +139,18 @@
 		{{end}}
 	</section>
 </div>
+<script>
+	// Delete confirm: the destructive verb is one POST — make a mis-click
+	// recoverable (the inline-script pattern of the creation form, kept
+	// framework-free).
+	(function () {
+		var form = document.getElementById('wf-delete-form');
+		if (!form) return;
+		form.addEventListener('submit', function (e) {
+			if (!window.confirm('Delete workflow ' + form.action.split('/').slice(-2, -1)[0] + '? Its runs history stays on the runs pages.')) {
+				e.preventDefault();
+			}
+		});
+	})();
+</script>
 {{end}}

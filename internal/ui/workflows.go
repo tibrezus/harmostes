@@ -27,6 +27,13 @@ const maxWorkflowNameLen = 63
 // same declaration the create handler enforces: only parameters the selected
 // template declares (spec.scope) are ever stored in spec.config.
 func (s *Server) handleWorkflowNew(w http.ResponseWriter, r *http.Request) {
+	// The form exists to create: a read-only identity gets the catalog
+	// instead of a form that can only 403 on submit (the CTA is likewise
+	// hidden — #436).
+	if !s.mayWrite(identityFromContext(r.Context())) {
+		http.Redirect(w, r, "/workflows", http.StatusSeeOther)
+		return
+	}
 	templates, err := s.listTemplates(r)
 	if err != nil {
 		s.logger.Error("list templates for workflow form", "err", err)
@@ -115,6 +122,14 @@ func scopeConfigJSON(r *http.Request, tmpl *v1alpha1.WorkflowTemplate) ([]byte, 
 // client input — so every created workflow is visible to its creator by
 // construction.
 func (s *Server) handleWorkflowCreate(w http.ResponseWriter, r *http.Request) {
+	const action = "create"
+	// One funnel for every rejection/success — harmostes_ui_writes_total
+	// (#436): rejections stopped being log-only when the lifecycle verbs
+	// re-armed (#418).
+	fail := func(code int, msg string) {
+		recordWrite(action, "error")
+		s.renderErrorStatus(w, r, code, msg)
+	}
 	id := identityFromContext(r.Context())
 	if !s.mayWrite(id) {
 		if id == nil {
@@ -124,6 +139,7 @@ func (s *Server) handleWorkflowCreate(w http.ResponseWriter, r *http.Request) {
 		}
 		// Generic body: no signal about WHICH provenance check failed or what
 		// the server's dev-write configuration is (PR #427 review, round 4).
+		recordWrite(action, "forbidden")
 		http.Error(w, "403 Forbidden — this identity may not take write actions", http.StatusForbidden)
 		return
 	}
@@ -147,12 +163,13 @@ func (s *Server) handleWorkflowCreate(w http.ResponseWriter, r *http.Request) {
 		u, err := url.Parse(origin)
 		if err != nil || u.Host != r.Host {
 			s.logger.Warn("write rejected — cross-origin", "origin", origin, "host", r.Host)
+			recordWrite(action, "forbidden")
 			http.Error(w, "403 Forbidden — cross-origin write", http.StatusForbidden)
 			return
 		}
 	}
 	if err := r.ParseForm(); err != nil {
-		s.renderError(w, r, "Invalid form data")
+		fail(http.StatusBadRequest, "Invalid form data")
 		return
 	}
 
@@ -160,29 +177,43 @@ func (s *Server) handleWorkflowCreate(w http.ResponseWriter, r *http.Request) {
 
 	// Validation (status-coded: 400 client mistake, 409 conflict, 500 fault)
 	if name == "" {
-		s.renderErrorStatus(w, r, http.StatusBadRequest, "Workflow name is required")
+		fail(http.StatusBadRequest, "Workflow name is required")
 		return
 	}
 	if !workflowNameRe.MatchString(name) || len(name) > maxWorkflowNameLen {
-		s.renderErrorStatus(w, r, http.StatusBadRequest, "Invalid workflow name: must be lowercase, alphanumeric with hyphens, max 63 characters")
+		fail(http.StatusBadRequest, "Invalid workflow name: must be lowercase, alphanumeric with hyphens, max 63 characters")
 		return
 	}
 
 	templateRef := strings.TrimSpace(r.FormValue("templateRef"))
 	if templateRef == "" {
-		s.renderErrorStatus(w, r, http.StatusBadRequest, "A template must be selected — workflows are template instances")
+		fail(http.StatusBadRequest, "A template must be selected — workflows are template instances")
 		return
 	}
 
 	var tmpl v1alpha1.WorkflowTemplate
 	if err := s.k8sClient.Get(r.Context(), client.ObjectKey{Namespace: s.namespace, Name: templateRef}, &tmpl); err != nil {
-		s.renderErrorStatus(w, r, http.StatusBadRequest, "Unknown template: "+templateRef)
+		fail(http.StatusBadRequest, "Unknown template: "+templateRef)
+		return
+	}
+
+	// Cadence: the two source kinds the self-service surface supports
+	// (ADR-0012 §7). "schedule" runs on the platform poll interval;
+	// "webhook" waits for a push wake. Anything else (git/event, cron
+	// strings) is an operator-level dialect the UI form must not pretend to
+	// offer — the controller never parses a cron string (PR #427 review).
+	sourceKind := r.FormValue("sourceKind")
+	if sourceKind == "" {
+		sourceKind = "schedule" // the form's checked default — absent on old posts too
+	}
+	if sourceKind != "schedule" && sourceKind != "webhook" {
+		fail(http.StatusBadRequest, "Invalid source kind: "+sourceKind+" (schedule or webhook)")
 		return
 	}
 
 	cfg, err := scopeConfigJSON(r, &tmpl)
 	if err != nil {
-		s.renderErrorStatus(w, r, http.StatusBadRequest, "Failed to build config: "+err.Error())
+		fail(http.StatusBadRequest, "Failed to build config: "+err.Error())
 		return
 	}
 
@@ -190,9 +221,10 @@ func (s *Server) handleWorkflowCreate(w http.ResponseWriter, r *http.Request) {
 	// claim sweep treats non-webhook kinds as non-wake) — but it is also the
 	// kind the controller DUES every PollInterval: creation must not arm an
 	// unattended agent loop nobody asked to run. So every UI-created instance
-	// starts DISABLED: it is inert until armed through the run controls that
-	// #418 ships (or deliberately, out-of-band, by an operator). Creation is
-	// composition; arming is a separate, deliberate act.
+	// starts DISABLED: it is inert until armed through the run controls on
+	// its detail page (#418 lifecycle routes — enable, then trigger or let
+	// the poll cadence take over). Creation is composition; arming is a
+	// separate, deliberate act.
 	wf := &v1alpha1.Workflow{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
@@ -200,30 +232,30 @@ func (s *Server) handleWorkflowCreate(w http.ResponseWriter, r *http.Request) {
 		},
 		Spec: v1alpha1.WorkflowSpec{
 			TemplateRef: templateRef,
-			Source:      v1alpha1.SourceSpec{Kind: "schedule"},
+			Source:      v1alpha1.SourceSpec{Kind: sourceKind},
 			Config:      cfg,
 			Disabled:    true,
 		},
 	}
 	if err := v1alpha1.StampOwnerLabel(wf, owner); err != nil {
-		s.renderErrorStatus(w, r, http.StatusBadRequest, err.Error())
+		fail(http.StatusBadRequest, err.Error())
 		return
 	}
 	if err := s.k8sClient.Create(r.Context(), wf); err != nil {
 		if errors.IsAlreadyExists(err) {
-			s.renderErrorStatus(w, r, http.StatusConflict, "A workflow with that name already exists")
+			fail(http.StatusConflict, "A workflow with that name already exists")
 			return
 		}
 		s.logger.Error("create workflow", "owner", owner, "name", name, "err", err)
-		s.renderErrorStatus(w, r, http.StatusInternalServerError, "Failed to create workflow")
+		fail(http.StatusInternalServerError, "Failed to create workflow")
 		return
 	}
 	// Per the form contract (same reason no CSRF token beyond the origin
 	// check): the form posts same-site, urlencoded, and the owner is
 	// server-stamped — a forgery can at worst create a DISABLED workflow
-	// under the victim's own identity, visible to them. Removal is currently
-	// out-of-band (kubectl by a cluster admin) until #419 ships lifecycle
-	// routes.
-	s.logger.Info("workflow created (template instance, disabled)", "owner", owner, "name", name, "template", templateRef)
+	// under the victim's own identity, visible to them. Removal is one POST
+	// away on the detail page (#418 lifecycle routes).
+	s.logger.Info("workflow created (template instance, disabled)", "owner", owner, "name", name, "template", templateRef, "source", sourceKind)
+	recordWrite(action, "created")
 	http.Redirect(w, r, "/workflows/"+name, http.StatusSeeOther)
 }

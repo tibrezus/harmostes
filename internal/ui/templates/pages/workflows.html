@@ -5,7 +5,7 @@
 </div>
 <div class="ds-section ds-section--row">
 	<p class="ds-empty-text">Workflows are created here — instantiate a reusable template. Every workflow you create is owner-stamped from your session and visible to you.</p>
-	<a href="/workflows/new" class="ds-button ds-button--primary" data-testid="wf-new-link">New Workflow</a>
+	{{if .MayWrite}}<a href="/workflows/new" class="ds-button ds-button--primary" data-testid="wf-new-link">New Workflow</a>{{end}}
 </div>
 {{- if not .Workflows}}
 <div class="ds-empty">

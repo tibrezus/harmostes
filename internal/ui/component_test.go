@@ -32,7 +32,7 @@ const fixtureNamespace = "fixture-ns"
 func newFixtureServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	srv, err := fixture.NewWorld(fixtureNamespace, logger)
+	srv, err := fixture.NewWorld(fixtureNamespace, logger, "../../chart")
 	if err != nil {
 		t.Fatalf("fixture server: %v", err)
 	}
@@ -267,7 +267,7 @@ func TestComponent_RunsList_DefaultWindow(t *testing.T) {
 // that keeps its auth-bypass nature out of the production path.
 func TestComponent_Routes_RejectsAnonymous(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	srv, err := fixture.NewWorld(fixtureNamespace, logger)
+	srv, err := fixture.NewWorld(fixtureNamespace, logger, "../../chart")
 	if err != nil {
 		t.Fatalf("fixture server: %v", err)
 	}
@@ -289,7 +289,7 @@ func TestComponent_Routes_RejectsAnonymous(t *testing.T) {
 // owner-scoped cards with no headers at all.
 func TestComponent_DevIdentity_ZeroSetup(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	srv, err := fixture.NewWorld(fixtureNamespace, logger)
+	srv, err := fixture.NewWorld(fixtureNamespace, logger, "../../chart")
 	if err != nil {
 		t.Fatalf("fixture server: %v", err)
 	}

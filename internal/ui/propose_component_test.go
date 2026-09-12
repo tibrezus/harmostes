@@ -126,7 +126,7 @@ func newProposeServer(t *testing.T) (*httptest.Server, *fakeForge) {
 	t.Cleanup(forgeSrv.Close)
 
 	logger := discardLogger(t)
-	srv, err := fixture.NewWorld(fixtureNamespace, logger)
+	srv, err := fixture.NewWorld(fixtureNamespace, logger, "../../chart")
 	if err != nil {
 		t.Fatalf("fixture server: %v", err)
 	}
@@ -302,7 +302,7 @@ spec:
 // unsets it explicitly.
 func TestComponent_Propose_Unconfigured(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	srv, err := fixture.NewWorld(fixtureNamespace, logger)
+	srv, err := fixture.NewWorld(fixtureNamespace, logger, "../../chart")
 	if err != nil {
 		t.Fatalf("fixture server: %v", err)
 	}

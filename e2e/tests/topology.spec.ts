@@ -64,7 +64,7 @@ test.describe('topology projection', () => {
     await expect(newer.locator('[data-testid="topology-edge"][data-diff="removed"]')).toHaveCount(1);
 
     // The YAML diff pane carries added and removed lines with real deltas.
-    await expect(page.locator('[data-testid="yaml-diff-line"][data-diff="added"]').filter({ hasText: 'mistral-small-latest' })).toHaveCount(1);
+    await expect(page.locator('[data-testid="yaml-diff-line"][data-diff="added"]').filter({ hasText: 'litellm/ali/anthropic/qwen3.8-flash' })).toHaveCount(1);
     await expect(page.locator('[data-testid="yaml-diff-line"][data-diff="removed"]').filter({ hasText: 'pr-fetch-stale' })).toHaveCount(1);
 
     // The legend explains the vocabulary.

@@ -47,11 +47,13 @@ func main() {
 		namespace       string
 		platformsConfig string
 		fixtureMode     bool
+		chartDir        string
 	)
 	flag.StringVar(&addr, "addr", envOr("HARMOSTES_UI_ADDR", ":8083"), "HTTP listen address")
 	flag.StringVar(&namespace, "namespace", envOr("HARMOSTES_NAMESPACE", "harmostes"), "k8s namespace to query")
 	flag.StringVar(&platformsConfig, "platforms-config", envOr("HARMOSTES_PLATFORMS_CONFIG_FILE", ""), "path to JSON platform display config file")
 	flag.BoolVar(&fixtureMode, "fixture", false, "serve the deterministic in-memory fixture world instead of a cluster")
+	flag.StringVar(&chartDir, "chart", "chart", "chart directory the fixture world loads its CRDs and pr-review template from (fixture mode only)")
 	flag.Parse()
 
 	// Loopback default for the fixture server (#436): the fixture world is
@@ -73,7 +75,7 @@ func main() {
 	// path production uses — the -fixture contract is that page behavior is
 	// identical, only the data source differs.
 	if fixtureMode {
-		fixtureServer, err := fixture.NewWorld(namespace, logger)
+		fixtureServer, err := fixture.NewWorld(namespace, logger, chartDir)
 		if err != nil {
 			logger.Error("seed fixture world", "err", err)
 			os.Exit(1)

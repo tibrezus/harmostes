@@ -39,9 +39,13 @@ test('Workflow Code island renders, completes, and validates schema-driven', asy
     .toBeGreaterThan(0);
 
   // Restoring a valid document clears the markers — the verdict is live,
-  // not a one-shot lint.
+  // not a one-shot lint. The document must satisfy the REAL CRD now served
+  // (#436): spec requires description, prepare, agent and deploy — the
+  // three markers above were exactly those missing keys.
   await page.evaluate(() =>
-    window.harmostesCodeIsland.setText('apiVersion: harmostes.dev/v1alpha1\nkind: WorkflowTemplate\nspec:\n  description: ok\n'),
+    window.harmostesCodeIsland.setText(
+      'apiVersion: harmostes.dev/v1alpha1\nkind: WorkflowTemplate\nspec:\n  description: ok\n  prepare:\n    plugin:\n      name: workspace\n  agent:\n    model: any\n  deploy:\n    plugin:\n      name: post-review\n',
+    ),
   );
   await expect
     .poll(() => page.evaluate(() => window.harmostesCodeIsland.markers().length), { timeout: 10000 })

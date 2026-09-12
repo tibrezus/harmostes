@@ -16,11 +16,11 @@ test.describe('node inspector', () => {
     // The island mounted and carries the head document.
     await islandReady(page, 'code-island', 15000);
     const before = await page.evaluate(() => window.harmostesCodeIsland.getText());
-    expect(before).toContain('mistral-small-latest');
+    expect(before).toContain('litellm/ali/anthropic/qwen3.8-flash');
 
     // Edit the agent model in the inspector (default panel) and apply.
     const model = page.locator('input[name="agent.model"]');
-    await expect(model).toHaveValue('mistral-small-latest');
+    await expect(model).toHaveValue('litellm/ali/anthropic/qwen3.8-flash');
     await model.fill('llama3:8b');
     await page.getByTestId('inspector-apply').click();
     await expect(page.getByTestId('inspector-status')).toContainText('applied 1 change');
@@ -29,14 +29,14 @@ test.describe('node inspector', () => {
     // the document came back from the structured transform.
     const after = await page.evaluate(() => window.harmostesCodeIsland.getText());
     expect(after).toContain('llama3:8b');
-    expect(after).not.toContain('mistral-small-latest');
+    expect(after).not.toContain('litellm/ali/anthropic/qwen3.8-flash');
 
     // The server-side projections did NOT move: the edit lives in the
     // working document only (persistence is #420's bridge). A fresh load
     // shows the head model again.
     await page.reload();
     await islandReady(page, 'code-island', 15000);
-    expect(await page.evaluate(() => window.harmostesCodeIsland.getText())).toContain('mistral-small-latest');
+    expect(await page.evaluate(() => window.harmostesCodeIsland.getText())).toContain('litellm/ali/anthropic/qwen3.8-flash');
 
     // The cleared-value path: emptying a field writes an explicit empty
     // string — the typed marshal's honest output (non-pointer strings carry
@@ -77,7 +77,7 @@ test.describe('version switcher', () => {
     await page.goto('/templates/pr-review');
     await islandReady(page, 'code-island', 15000);
     await expect(page.getByTestId('topology-node')).toHaveCount(3);
-    expect(await page.evaluate(() => window.harmostesCodeIsland.getText())).toContain('mistral-small-latest');
+    expect(await page.evaluate(() => window.harmostesCodeIsland.getText())).toContain('litellm/ali/anthropic/qwen3.8-flash');
 
     // Switch to r1: topology (2 nodes — deterministic-only), document
     // (stale fetch, no agent), and inspector values (model empty, enabled
@@ -96,7 +96,7 @@ test.describe('version switcher', () => {
     await page.locator('[data-testid="rev-switch-option"][data-rev="2"]').click();
     await expect(page.getByTestId('topology-node')).toHaveCount(3);
     await islandReady(page, 'code-island', 15000);
-    expect(await page.evaluate(() => window.harmostesCodeIsland.getText())).toContain('mistral-small-latest');
+    expect(await page.evaluate(() => window.harmostesCodeIsland.getText())).toContain('litellm/ali/anthropic/qwen3.8-flash');
     await expect(page.getByTestId('inspector-apply')).toHaveCount(1);
     await expect(page.getByTestId('rev-historical')).toHaveCount(0);
   });

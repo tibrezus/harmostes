@@ -1,47 +1,41 @@
 # harmostes framework chart — install once per cluster. Workflows are applied as
 # Workflow CRs (see examples/).
 namespace: harmostes
-
 image:
-  controller: ghcr.io/tibrezus/harmostes-controller:0.6.0   # Phase 0: requires --daprd-image/--otlp-insecure flags (≥0.6.0)
+  controller: ghcr.io/tibrezus/harmostes-controller:0.6.0 # Phase 0: requires --daprd-image/--otlp-insecure flags (≥0.6.0)
   worker: ghcr.io/tibrezus/harmostes-worker:0.4.2
-  pullSecret: ghcr-pull   # set to "" to disable
-
+  pullSecret: ghcr-pull # set to "" to disable
 skills:
-  repo: https://github.com/tibrezus/agents.git   # cloned by the init container into /skills on every worker pod AND per-Attempt Job (#441, passed to the dispatcher as HARMOSTES_SKILLS_REPO; Go default: internal/k8s.DefaultSkillsRepo)
-
+  repo: https://github.com/tibrezus/agents.git # cloned by the init container into /skills on every worker pod AND per-Attempt Job (#441, passed to the dispatcher as HARMOSTES_SKILLS_REPO; Go default: internal/k8s.DefaultSkillsRepo)
 controller:
   serviceAccount: harmostes-controller
-  pollInterval: 5m        # default run cadence for Workflows without a schedule
-                          # churn-budget note: MaxDispatchLostReleases=3 ≈ 3 sweeps
-                          # at THIS interval (~15m) before a never-dispatching head
-                          # is refused (api/v1alpha1.MaxDispatchLostReleases)
+  pollInterval: 5m # default run cadence for Workflows without a schedule
+  # churn-budget note: MaxDispatchLostReleases=3 ≈ 3 sweeps
+  # at THIS interval (~15m) before a never-dispatching head
+  # is refused (api/v1alpha1.MaxDispatchLostReleases)
   resources:
-    requests: { cpu: 100m, memory: 128Mi }
-    limits:   { cpu: 1, memory: 512Mi }
-
+    requests: {cpu: 100m, memory: 128Mi}
+    limits: {cpu: 1, memory: 512Mi}
 dapr:
   # Dapr is the deterministic event-system application layer. Reuse the cluster's
   # Valkey with an isolated DB so harmostes never crosses llm-wiki (DB 0/1) or
   # fork-maintenance (DB 2).
   stateStore: statestore
   pubSub: pubsub
-  secretStore: harmostes-secret-store   # Dapr secret store component (type: secretstores.kubernetes)
+  secretStore: harmostes-secret-store # Dapr secret store component (type: secretstores.kubernetes)
   valkeyHost: valkey.llm-wiki.svc.cluster.local:6379
   valkeyDB: "3"
-  injectWorker: true    # Dapr sidecar injected into worker Jobs (events/state + clean shutdown)
-
+  injectWorker: true # Dapr sidecar injected into worker Jobs (events/state + clean shutdown)
 # Worker deployment-node RBAC (G6: vela-app, flux-reconcile). Opt-in —
 # grants cluster-wide access to KubeVela Application + Flux CRs.
 worker:
   deployRBAC:
     enabled: false
-  job:                     # per-Attempt Job pods (ADR-0007)
-    maxConcurrent: 3       # fleet default; spec.reviewReady.maxConcurrent overrides per Workflow
+  job: # per-Attempt Job pods (ADR-0007)
+    maxConcurrent: 3 # fleet default; spec.reviewReady.maxConcurrent overrides per Workflow
     attemptRetention: 720h # GC attempts terminal/statusless older than this (#385); 0 means the default — GC cannot be disabled. Bounds the per-attempt audit ledger.
     cancelOnSupersede: true # delete the review Job of a claim released superseded/closed (#402); false = let dead-head reviews burn the run bound (pre-#402 behavior)
     ttlSecondsAfterFinished: 3600
-
   # cache (#336): renders a shared RWX PVC the per-Attempt Jobs mount at
   # /cache/<workflow-name> when a Workflow (or its template) declares
   # spec.cache.pvc: <claim>. Enabled=false keeps the chart render identical —
@@ -49,18 +43,16 @@ worker:
   cache:
     enabled: false
     size: 20Gi
-    storageClass: ""       # "" = cluster default
-
+    storageClass: "" # "" = cluster default
 # workerPool: event-driven worker pool (Dapr pub/sub consumer).
 # A long-running Deployment subscribes to the harmostes-triggers topic via
 # daprd and processes trigger events. This is the single execution model —
 # the controller no longer creates batchv1.Jobs.
 workerPool:
-  enabled: true        # always on (the single trigger model)
-  replicas: 1          # fixed replica count (KEDA scale-to-zero in a follow-up)
-  pubsubName: pubsub   # Dapr pub/sub component name
-  topic: harmostes-triggers  # topic the controller publishes to
-
+  enabled: true # always on (the single trigger model)
+  replicas: 1 # fixed replica count (KEDA scale-to-zero in a follow-up)
+  pubsubName: pubsub # Dapr pub/sub component name
+  topic: harmostes-triggers # topic the controller publishes to
 # forkMaintenance: the fork-maintenance sync engine (ADR-0011). The engine —
 # sync/subtree/mapping scripts, checks, post-merge hooks, resolver skill — is
 # CODE and ships inside this chart (chart/fork-maintenance/); the chart renders
@@ -110,16 +102,14 @@ forkMaintenance:
     # litellm-provider extension (unqualified ids are unreachable).
     model: litellm/zai/glm-4.7
     resources:
-      requests: { cpu: 200m, memory: 1Gi }
-      limits: { cpu: "2", memory: 8Gi }
-
+      requests: {cpu: 200m, memory: 1Gi}
+      limits: {cpu: "2", memory: 8Gi}
 # pluginConfigMaps: LEGACY escape hatch — additional ConfigMaps to mount under
 # /plugins/ in the worker pod (resolved as PluginRef{Name: "<key-without-.sh>",
 # ConfigMap: "<name>"}). ADR-0011 moved every production plugin (workspace,
 # pr-review, post-review, fork-sync) into the worker image as built-ins; only
 # use this for out-of-tree plugins that cannot ship in the image.
 pluginConfigMaps: []
-
 # harmostes-ui: self-service multi-tenant web interface (HTMX + Go templates).
 # Authenticated via Authentik forward-auth. Each user sees only workflows
 # labeled harmostes.dev/owner=<their-username>; members of ui.adminGroups see
@@ -130,7 +120,7 @@ ui:
   adminGroups: "harmostes-admins"
   image: ghcr.io/tibrezus/harmostes-ui:dev
   serviceAccount: harmostes-ui
-  host: harmostes.rezus.cloud   # Gateway API HTTPRoute hostname (behind Authentik forward-auth)
+  host: harmostes.rezus.cloud # Gateway API HTTPRoute hostname (behind Authentik forward-auth)
   # Dev-identity writes (X-Harmostes-Dev-User → POST /workflows): leave false
   # in production. The header is client-suppliable if a request reaches the
   # pod directly; enabling this flag is what makes that path write-capable,
@@ -138,8 +128,8 @@ ui:
   # — never a runtime assumption (PR #427 adversarial review, Pillar 6).
   devWrite: false
   resources:
-    requests: { cpu: 50m, memory: 64Mi }
-    limits:   { cpu: 500m, memory: 256Mi }
+    requests: {cpu: 50m, memory: 64Mi}
+    limits: {cpu: 500m, memory: 256Mi}
   # Template MR bridge (#420, ADR-0012 §5). Where this environment's
   # template values live — the file the UI proposes template changes against
   # (branch + commit + MR via the forge REST API). Empty/absent = the
@@ -176,10 +166,10 @@ ui:
 # (tracing off, Prometheus scrape only).
 observability:
   enabled: true
-  daprdImage: ghcr.io/rezuscloud/daprd:otel-metrics-latest-amd64   # arm64 edge nodes: ...-arm64. Digest-pin (@sha256:) for IfNotPresent re-pull.
+  daprdImage: ghcr.io/rezuscloud/daprd:otel-metrics-latest-amd64 # arm64 edge nodes: ...-arm64. Digest-pin (@sha256:) for IfNotPresent re-pull.
   otlpEndpoint: signoz-otel-collector.signoz.svc.cluster.local:4317 # SigNoz OTLP collector (signoz namespace)
-  otlpInsecure: true   # GetIsSecure() defaults to TLS; cluster-internal collector uses plain gRPC
-  samplingRate: "0.5"  # Dapr tracing sample fraction (traces are rare; bump for debugging)
+  otlpInsecure: true # GetIsSecure() defaults to TLS; cluster-internal collector uses plain gRPC
+  samplingRate: "0.5" # Dapr tracing sample fraction (traces are rare; bump for debugging)
   # Opt the controller Deployment into the forked daprd sidecar (decision #5).
   # The controller app does not itself use Dapr building blocks: webhook triggers
   # arrive via direct HTTP (:8082), and the controller's own telemetry goes through
@@ -212,72 +202,54 @@ workflowTemplates:
       plugin:
         name: git-push
   pr-review:
-    description: PR review (fetch PR → agent → pr-review → post review)
-    scope:
-    - name: label
-      kind: string
-      label: Label trigger
-      description: only act when this label is present on a PR
-      default: needs-review
-    - name: repos
-      kind: list
-      label: Repos
-      description: the scope the prepare plugin operates on (owner/repo)
-    - name: wiki
-      kind: string
-      label: Wiki repo
-      description: context repo some agents use for design evidence
-    prepare:
-      plugin:
-        name: workspace
     agent:
-      # Speed-primary role (user directive 2026-09-08): mtplx speed variant
-      # primary. Smoke-verified 2/2 completions pre-flip; rollback pin =
-      # litellm/ali/anthropic/qwen3.8-flash (the 21:2x incident pin, kept in
-      # the fallbacks chain). Tripwire: retry-storm signature (multi-attempt
-      # deaths, 0 cache) → roll back + diagnose router serving group.
-      # ROLLED BACK 01:5x — diagnosed: mtplx speed STALLS on long contexts
-      # (HTTP timeout at 2k-word probes; review-scale ~20k tokens = 4-attempt
-      # retry storms, $0.0000). Tiny prompts pass — intermittent greens were
-      # the in-image flash fallback engaging. Re-flip only when the provider
-      # fixes long-context serving. (user speed directive 2026-09-08 stands
-      # as intent, blocked on this endpoint defect.)
-      # UPDATE #363: the platform re-promoted speed as the OPS review
-      # templates' primary (k8s-config 8c1fb609) — provider serving judged
-      # fixed. This chart default stays flash for now; the extension default
-      # carries an entry for every live primary (speed→flash, flash→glm,
-      # glm→flash), so whichever primary runs keeps failover. NOTE a
-      # LITELLM_FALLBACKS override REPLACES the whole map ('{}' = off).
-      model: litellm/ali/anthropic/qwen3.8-flash
-      # fallbacks chain lands with #364 (renderer not wired yet — a bare
-      # key here would be inert).
-      skill: /skills/pr-review/SKILL.md
-      tools: [read, bash, grep]
-      taskTemplate:
-        name: pr-review
-        configMap: harmostes-tasks
-        key: pr-review.txt
-      maxFixes: 1
-      # 1h agent budget: 30min killed every review of harmostes#344's 3-round,
-      # 600-line diff at exactly the deadline (3 dead dispatches tripped the
-      # #328 breaker). The breaker still bounds a hung agent.
-      timeout: 3600
       gate:
         plugin:
           name: pr-review
+      maxFixes: 3
+      model: litellm/ali/anthropic/qwen3.8-flash
+      skill: /skills/pr-review/SKILL.md
+      taskTemplate:
+        configMap: harmostes-tasks
+        key: pr-review.txt
+        name: pr-review
+      timeout: 3600
+      tools:
+        - read
+        - bash
+        - grep
     deploy:
       plugin:
         name: post-review
+    description: PR review (fetch PR → agent → pr-review → post review)
+    prepare:
+      plugin:
+        name: workspace
     reviewReady:
-      label: needs-review
+      dispatchTimeout: 45m
       horizon: 6h
+      label: needs-review
+    scope:
+      - default: needs-review
+        description: only act when this label is present on a PR
+        kind: string
+        label: Label trigger
+        name: label
+      - description: the scope the prepare plugin operates on (owner/repo)
+        kind: list
+        label: Repos
+        name: repos
+      - description: context repo some agents use for design evidence
+        kind: string
+        label: Wiki repo
+        name: wiki
   fork-maintenance:
     description: Fork maintenance (fork-sync → noop → noop)
     scope:
-    - name: fork
-      kind: string
-      label: Fork
-      description: fork-maintenance registry name (forks/<name>.yaml)
+      - name: fork
+        kind: string
+        label: Fork
+        description: fork-maintenance registry name (forks/<name>.yaml)
     prepare:
       plugin:
         name: fork-sync
@@ -305,69 +277,12 @@ workflowTemplates:
     deploy:
       plugin:
         name: git-push
-
 # ── Agent task prompts (ADR-0011) ────────────────────────────────────────────
 # The agent's task text per template, rendered into the harmostes-tasks
 # ConfigMap. Key = ConfigMap key (referenced by agent.taskTemplate), value =
 # prompt text. Override or add per environment via values.
 tasks:
-  arch-sync.txt: |
-    You are working in a wiki repository (your current directory). The deterministic prepare step has just generated the FULL artifact set under raw/arch/<project>/: 
-      - rig.json   (component graph, evidence-backed)
-      - model.c4   (LikeC4 C4 model, deterministic from RIG)
-      - *.mmd      (Mermaid diagrams, deterministic from model.c4)
-
-    These are DETERMINISTIC. Do NOT modify, regenerate, or "fix" them. Your job is to update wiki PROSE based on what changed.
-
-    ## Step 1: Read the RIG and summarize changes
-
-      cat raw/arch/<project>/rig.json
-
-    Identify what changed since last sync:
-      - New components (added executables, libraries)
-      - Removed components
-      - Changed dependencies (new edges, broken edges)
-      - New external packages
-
-    ## Step 2: Update the llm-wiki entity page (C4 LEVEL ONLY)
-
-    Read the existing page FIRST (cat wiki/entities/<project>.md). Preserve ALL manual content (deployment notes, config, operational knowledge).
-
-    Update the architecture section:
-      1. Read the .mmd files: cat raw/arch/<project>/*.mmd
-      2. Embed them as ```mermaid blocks (copy the diagram content verbatim)
-      3. Write a SHORT summary of what changed (1-3 sentences)
-      4. Do NOT list every component, file, or dependency — that's in the RIG
-
-    C4 BOUNDARY: the llm-wiki carries context/container/component level ONLY. Code-level details (file paths, function signatures, implementation specifics) do NOT belong here.
-
-    ## Step 3: Offload low-level details to the platform wiki
-
-    If the RIG contains details that are too low-level for the llm-wiki (new modules with many source files, implementation notes, API reference), push them to the PROJECT's platform wiki:
-
-      - GitHub repos: gh api --method POST repos/<owner>/<repo>/wiki/pages ...
-        Or clone the wiki: git clone https://github.com/<owner>/<repo>.wiki.git
-      - Forgejo/Codeberg: fj wiki ...
-
-    This keeps the llm-wiki unbloated. C4 concepts here; details there.
-
-    ## Step 4: Bookkeeping
-
-      - Update index.md if pages were added/removed
-      - Append to log.md: operation 'arch-sync', project name, component count
-
-    ## Step 5: Commit (do NOT push)
-
-      git add -A && git commit -m 'docs(arch-sync): <project>'
-
-    A validation gate runs next. If it fails, fix lint errors and commit again.
-
-    ## Rules
-
-      - Do NOT write model.c4 or run likec4 — deterministic, already done
-      - Do NOT invent architecture from memory — everything comes from the RIG
-      - C4 level only in llm-wiki; push details to platform wiki
-      - Preserve manual content
+  arch-sync.txt: "You are working in a wiki repository (your current directory). The deterministic prepare step has just generated the FULL artifact set under raw/arch/<project>/: \n  - rig.json   (component graph, evidence-backed)\n  - model.c4   (LikeC4 C4 model, deterministic from RIG)\n  - *.mmd      (Mermaid diagrams, deterministic from model.c4)\n\nThese are DETERMINISTIC. Do NOT modify, regenerate, or \"fix\" them. Your job is to update wiki PROSE based on what changed.\n\n## Step 1: Read the RIG and summarize changes\n\n  cat raw/arch/<project>/rig.json\n\nIdentify what changed since last sync:\n  - New components (added executables, libraries)\n  - Removed components\n  - Changed dependencies (new edges, broken edges)\n  - New external packages\n\n## Step 2: Update the llm-wiki entity page (C4 LEVEL ONLY)\n\nRead the existing page FIRST (cat wiki/entities/<project>.md). Preserve ALL manual content (deployment notes, config, operational knowledge).\n\nUpdate the architecture section:\n  1. Read the .mmd files: cat raw/arch/<project>/*.mmd\n  2. Embed them as ```mermaid blocks (copy the diagram content verbatim)\n  3. Write a SHORT summary of what changed (1-3 sentences)\n  4. Do NOT list every component, file, or dependency — that's in the RIG\n\nC4 BOUNDARY: the llm-wiki carries context/container/component level ONLY. Code-level details (file paths, function signatures, implementation specifics) do NOT belong here.\n\n## Step 3: Offload low-level details to the platform wiki\n\nIf the RIG contains details that are too low-level for the llm-wiki (new modules with many source files, implementation notes, API reference), push them to the PROJECT's platform wiki:\n\n  - GitHub repos: gh api --method POST repos/<owner>/<repo>/wiki/pages ...\n    Or clone the wiki: git clone https://github.com/<owner>/<repo>.wiki.git\n  - Forgejo/Codeberg: fj wiki ...\n\nThis keeps the llm-wiki unbloated. C4 concepts here; details there.\n\n## Step 4: Bookkeeping\n\n  - Update index.md if pages were added/removed\n  - Append to log.md: operation 'arch-sync', project name, component count\n\n## Step 5: Commit (do NOT push)\n\n  git add -A && git commit -m 'docs(arch-sync): <project>'\n\nA validation gate runs next. If it fails, fix lint errors and commit again.\n\n## Rules\n\n  - Do NOT write model.c4 or run likec4 — deterministic, already done\n  - Do NOT invent architecture from memory — everything comes from the RIG\n  - C4 level only in llm-wiki; push details to platform wiki\n  - Preserve manual content\n"
   pr-review.txt: |
     You are a pillar-driven adversarial PR reviewer, triggered by the harmostes
     pr-review workflow. The pr-review skill (loaded as your skill) provides the

@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"reflect"
 	"sort"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -411,10 +412,18 @@ func templateRevisions(tmpl *v1alpha1.WorkflowTemplate) []v1alpha1.TemplateRevis
 			revs = parsed
 		}
 	}
-	revs = append(revs, v1alpha1.TemplateRevision{
-		Rev:  len(revs) + 1,
-		Spec: tmpl.Spec,
-	})
+	// The live spec is the head ONLY when it differs from the last recorded
+	// entry. The recorder writes the new spec into the annotation as part of
+	// landing it, so a reconciled template's annotation already ends with a
+	// copy of the live spec — appending unconditionally would duplicate the
+	// head (caught live on harmostes-dev: the default revisions diff became
+	// new-vs-new, all-same).
+	if n := len(revs); n == 0 || !reflect.DeepEqual(revs[n-1].Spec, tmpl.Spec) {
+		revs = append(revs, v1alpha1.TemplateRevision{
+			Rev:  n + 1,
+			Spec: tmpl.Spec,
+		})
+	}
 	return revs
 }
 

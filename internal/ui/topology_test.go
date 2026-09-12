@@ -233,6 +233,34 @@ func TestTemplateRevisions(t *testing.T) {
 	}
 }
 
+func TestTemplateRevisions_HeadDedup(t *testing.T) {
+	// The recorder lands the new spec INTO the annotation, so a reconciled
+	// template's annotation already ends with a copy of the live spec. The
+	// reader must not append a duplicate head — otherwise the default
+	// revisions diff becomes new-vs-new (all-same) and the switcher offers
+	// a phantom revision (caught live on harmostes-dev, #420).
+	head := &v1alpha1.WorkflowTemplate{}
+	head.Spec.Description = "new"
+	head.Spec.Agent.MaxFixes = 3
+	head.Annotations = map[string]string{RevisionsAnnotation: `[
+		{"rev":1,"spec":{"description":"old","agent":{"maxFixes":1}}},
+		{"rev":2,"spec":{"description":"new","agent":{"maxFixes":3}}}
+	]`}
+	revs := templateRevisions(head)
+	if len(revs) != 2 {
+		t.Fatalf("history = %d entries, want 2 — the live spec already IS rev 2", len(revs))
+	}
+	if revs[0].Spec.Agent.MaxFixes != 1 || revs[1].Spec.Agent.MaxFixes != 3 {
+		t.Errorf("history wrong: %+v", revs)
+	}
+	// A genuinely newer live spec (recorder lag) still appends.
+	head.Spec.Description = "newer"
+	revs = templateRevisions(head)
+	if len(revs) != 3 || revs[2].Spec.Description != "newer" {
+		t.Fatalf("live spec newer than recorded head must append: %+v", revs)
+	}
+}
+
 func TestLineDiff(t *testing.T) {
 	d := lineDiff("a: 1\nb: 2\nc: 3\n", "a: 1\nb: 22\nd: 4\n")
 	kinds := map[string]int{}

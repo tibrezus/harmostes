@@ -5746,7 +5746,7 @@ spec:
     gate:
       plugin:
         name: pr-review
-    maxFixes: 1
+    maxFixes: 3
     model: litellm/ali/anthropic/qwen3.8-flash
     skill: /skills/pr-review/SKILL.md
     taskTemplate:
@@ -5766,6 +5766,7 @@ spec:
     plugin:
       name: workspace
   reviewReady:
+    dispatchTimeout: 45m
     horizon: 6h
     label: needs-review
   scope:

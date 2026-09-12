@@ -25,14 +25,14 @@ func usageLine(name, command string) string {
 
 func TestCountToolUsageCategorizes(t *testing.T) {
 	lines := []string{
-		usageLine("rig", `{"command":"brief"}`),                // orientation
-		usageLine("rig", "overview"),                           // orientation again
-		usageLine("bash", "grep -rn pick_victim cuda/"),        // discovery
-		usageLine("grep", "pick_victim cuda/"),                 // discovery (native tool)
-		usageLine("bash", "sed -n '727,830p' cuda/expert.cu"),  // reading
-		usageLine("bash", "cat /workspace/pr-context.json"),    // fixed
-		"not json at all {",                                    // malformed — skipped
-		`{"message":{"content":"plain string"}}`,               // no tool_use — nothing
+		usageLine("rig", `{"command":"brief"}`),               // orientation
+		usageLine("rig", "overview"),                          // orientation again
+		usageLine("bash", "grep -rn pick_victim cuda/"),       // discovery
+		usageLine("grep", "pick_victim cuda/"),                // discovery (native tool)
+		usageLine("bash", "sed -n '727,830p' cuda/expert.cu"), // reading
+		usageLine("bash", "cat /workspace/pr-context.json"),   // fixed
+		"not json at all {",                                   // malformed — skipped
+		`{"message":{"content":"plain string"}}`,              // no tool_use — nothing
 	}
 	usage := countToolUsage([]byte(strings.Join(lines, "\n")))
 	if usage.ToolCalls != 6 {

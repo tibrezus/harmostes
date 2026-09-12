@@ -315,17 +315,12 @@ func inspectFieldsFor(spec v1alpha1.WorkflowTemplateSpec, node string, historica
 	return out
 }
 
-// templateYAML renders the WorkflowTemplate as its canonical document YAML
-// (spec + identity only — see templateDocument). Marshal failure is a
-// programming error (structs with json tags); panicking would take the page
-// down, so fall back to an explicitly-marked placeholder instead.
-func templateYAML(tmpl *v1alpha1.WorkflowTemplate) string {
-	return templateYAMLOf(tmpl, tmpl.Spec)
-}
-
-// templateYAMLOf is templateYAML for an explicit spec — the version
-// switcher (#419) renders historical revision specs through the same
-// document shape. Labels stay the live CR's (identity is not revisioned).
+// templateYAMLOf renders the WorkflowTemplate as its canonical document
+// YAML (spec + identity only — see templateDocument) for an explicit spec —
+// the version switcher (#419) renders historical revision specs through the
+// same document shape. Labels stay the live CR's (identity is not
+// revisioned). Marshal failure is a programming error (structs with json
+// tags); fall back to an explicitly-marked placeholder instead of panicking.
 func templateYAMLOf(tmpl *v1alpha1.WorkflowTemplate, spec v1alpha1.WorkflowTemplateSpec) string {
 	doc := templateDocument{
 		APIVersion: v1alpha1.SchemeGroupVersion.Identifier(),

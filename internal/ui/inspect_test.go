@@ -12,7 +12,7 @@ import (
 )
 
 // inspectDoc is the canonical document the island loads — identical shape
-// to what templateYAML marshals.
+// to what templateYAMLOf marshals.
 func inspectDoc(t *testing.T, spec v1alpha1.WorkflowTemplateSpec) string {
 	t.Helper()
 	b, err := yaml.Marshal(templateDocument{
@@ -203,8 +203,7 @@ func TestInspectFieldsMatchChartCRD(t *testing.T) {
 	if err := yaml.Unmarshal(raw, &crd); err != nil {
 		t.Fatalf("parse chart CRD: %v", err)
 	}
-	var walk func(node any, path ...string) any
-	walk = func(node any, path ...string) any {
+	walk := func(node any, path ...string) any {
 		for _, k := range path {
 			if list, ok := node.([]any); ok {
 				i := 0

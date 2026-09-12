@@ -64,7 +64,7 @@ type inspectRequest struct {
 }
 
 // applyTemplateEdits parses the document into the SAME typed shape
-// templateYAML marshals (round-trip by construction), applies the edits,
+// templateYAMLOf marshals (round-trip by construction), applies the edits,
 // and re-marshals. Every rejection is a typed error message (the inspector
 // surfaces it verbatim); the document is never partially applied — parse
 // and type errors abort before the first mutation lands in output.

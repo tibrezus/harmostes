@@ -59,7 +59,9 @@ type templateDetailView struct {
 	RevOptions  []revOption // switcher entries; rendered when >1
 	InspectNode string      // which node's panel is shown: template|prepare|agent|deploy
 	Inspect     []inspectFieldView
-	Historical  bool // viewing a non-head revision (inspector disabled)
+	Historical  bool           // viewing a non-head revision (inspector disabled)
+	Propose     *sourceSummary // configured git source (#420); nil = propose surface absent
+	MayWrite    bool           // gates the propose panel (the inspector fields gate themselves)
 }
 
 // revOption is one entry of the version switcher.
@@ -236,6 +238,8 @@ func (s *Server) handleTemplateDetail(w http.ResponseWriter, r *http.Request) {
 		InspectNode:   inspectNode,
 		Inspect:       inspectFieldsFor(spec, inspectNode, historical),
 		Historical:    historical,
+		Propose:       sourceSummaryOf(s.templateSource),
+		MayWrite:      s.mayWrite(identityFromContext(r.Context())),
 	}
 	s.render(w, r, "pages/template_detail.html", data)
 }
@@ -258,7 +262,7 @@ func nodeLinks(selRev int) map[string]string {
 // revOptions builds the version-switcher entries: one per revision, head
 // last (the live CR spec), the selected one marked. Nil when there is no
 // history — a lone "head" entry is noise.
-func revOptions(revs []templateRevision, selRev int) []revOption {
+func revOptions(revs []v1alpha1.TemplateRevision, selRev int) []revOption {
 	if len(revs) <= 1 {
 		return nil
 	}

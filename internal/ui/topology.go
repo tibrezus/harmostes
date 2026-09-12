@@ -33,9 +33,12 @@ import (
 )
 
 // revisionsAnnotation carries a template's prior specs on the CR until the
-// MR-bridge (#420) renders revisions from git history — interim by design,
-// honest on dev (kubectl stamps it) and in the fixture world.
-const RevisionsAnnotation = "template.harmostes.dev/revisions"
+// The revision history is annotation-carried, but no longer interim-stamped
+// by hand: the template-history recorder (controller, #420) appends an entry
+// whenever Flux delivers a spec change — git lands, the CR records it. The
+// annotation name and entry type live on the api package (one contract for
+// the controller's writer and this reader).
+const RevisionsAnnotation = v1alpha1.TemplateRevisionsAnnotation
 
 // topologyNodeView is one node of the topology projection. Known reports
 // whether the node's type is in the CRD schema's vocabulary (the palette is
@@ -397,26 +400,18 @@ func nodeFingerprint(n v1alpha1.NodeSpec) string {
 	return string(b)
 }
 
-// templateRevision is one entry of the revisions annotation. Rev is the
-// revision number (ascending); the CR's live spec is the head revision.
-type templateRevision struct {
-	Rev         int                           `json:"rev"`
-	Description string                        `json:"description"`
-	Spec        v1alpha1.WorkflowTemplateSpec `json:"spec"`
-}
-
 // templateRevisions returns the template's revision history ascending, with
 // the CR's live spec as the head entry. A missing/invalid annotation is not
 // an error: the history is just the head.
-func templateRevisions(tmpl *v1alpha1.WorkflowTemplate) []templateRevision {
-	revs := []templateRevision{}
+func templateRevisions(tmpl *v1alpha1.WorkflowTemplate) []v1alpha1.TemplateRevision {
+	revs := []v1alpha1.TemplateRevision{}
 	if raw := tmpl.Annotations[RevisionsAnnotation]; raw != "" {
-		var parsed []templateRevision
+		var parsed []v1alpha1.TemplateRevision
 		if err := json.Unmarshal([]byte(raw), &parsed); err == nil {
 			revs = parsed
 		}
 	}
-	revs = append(revs, templateRevision{
+	revs = append(revs, v1alpha1.TemplateRevision{
 		Rev:  len(revs) + 1,
 		Spec: tmpl.Spec,
 	})

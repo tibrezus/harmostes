@@ -101,6 +101,18 @@ func main() {
 	// Authentik groups whose members see across all owner labels (see
 	// Server.SetAdminGroups — owner labels have churned before; without the
 	// bypass one mismatch bricks every page for the operator).
+	// Template MR bridge (#420, ADR-0012 §5): where this environment's
+	// template values live. Unset = the propose surface is absent, never an
+	// error. The token rides separately (sourceTokenEnv) from an
+	// ExternalSecret — server-side only, never rendered.
+	ts, err := ui.ParseTemplateSource(os.Getenv("HARMOSTES_TEMPLATE_SOURCE"))
+	if err != nil {
+		logger.Error("template source", "err", err)
+		os.Exit(1)
+	}
+	server.SetTemplateSource(ts)
+	server.SetSourceToken(os.Getenv(ui.SourceTokenEnv))
+
 	if groups := ui.ParseAdminGroups(os.Getenv("HARMOSTES_UI_ADMIN_GROUPS")); len(groups) > 0 {
 		server.SetAdminGroups(groups)
 		logger.Info("admin groups configured", "groups", groups)

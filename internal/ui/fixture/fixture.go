@@ -266,6 +266,13 @@ func NewServer(namespace string, logger *slog.Logger) (*ui.Server, error) {
 	// path — dev-identity writes are on by construction here (the production
 	// binary never enables them; see Server.SetDevWriteEnabled).
 	server.SetDevWriteEnabled(true)
+	// Template MR bridge (#420): the fixture world proposes against a
+	// fictional source — the e2e tier intercepts the route, so only the
+	// panel's DOM and the glue run; a real POST fails honestly at the forge.
+	server.SetTemplateSource(&ui.TemplateSource{
+		Host: "github", Owner: "golden-owner", Repo: "golden-repo",
+		BaseBranch: "main", Path: "chart/values.yaml", ValuesKey: "workflowTemplates",
+	})
 	// Event Timeline (ADR-0012 §4): the seeded fake reader (no sidecar here).
 	server.SetTimelineReader(NewTimelineReader())
 	return server, nil

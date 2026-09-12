@@ -4842,10 +4842,14 @@ rules:
     resources: ["secrets"]
     verbs: ["get"]
   # WorkflowTemplates — the worker resolves spec.templateRef at run start and
-  # inherits prepare/agent/deploy defaults (thin Workflow instances).
+  # inherits prepare/agent/deploy defaults (thin Workflow instances). The
+  # update/patch pair belongs to the template-history recorder (#420,
+  # ADR-0012 §5): when Flux delivers a spec change, the controller records
+  # the revision window into template.harmostes.dev/revisions — annotations
+  # only, never spec; git stays the authoring source of truth.
   - apiGroups: ["harmostes.dev"]
     resources: ["workflowtemplates"]
-    verbs: ["get", "list", "watch"]
+    verbs: ["get", "list", "watch", "update", "patch"]
 
 ---
 # Source: harmostes/templates/ui-rbac.yaml
@@ -5238,6 +5242,18 @@ spec:
               value: harmostes-ci
             - name: HARMOSTES_UI_ADMIN_GROUPS
               value: "harmostes-admins"
+            # Template MR bridge (#420, ADR-0012 §5): where this
+            # environment's template values live. The bridge composes a
+            # branch + MR against that file; it NEVER writes templates
+            # in-cluster. The token rides from an ExternalSecret via a
+            # secretKeyRef — server-side only, never rendered to a client.
+            - name: HARMOSTES_TEMPLATE_SOURCE
+              value: "{\"baseBranch\":\"main\",\"host\":\"github\",\"owner\":\"golden-username\",\"path\":\"chart/values.yaml\",\"repo\":\"golden-harmostes\",\"valuesKey\":\"workflowTemplates\"}"
+            - name: HARMOSTES_TEMPLATE_SOURCE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: golden-ui-source-token
+                  key: token
           ports:
             - name: http
               containerPort: 8083

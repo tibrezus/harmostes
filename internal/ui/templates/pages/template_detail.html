@@ -82,8 +82,17 @@
 			<span class="inspector-status" data-testid="inspector-status" role="status"></span>
 			{{- end}}
 		</form>
-		<p class="ds-empty-text">Edits patch the loaded document (Workflow Code, above) — nothing is saved until the MR-bridge lands.</p>
+		<p class="ds-empty-text">Edits patch the loaded document (Workflow Code, above). Proposing opens a merge request against the template's git source — the cluster receives changes only after it merges and Flux reconciles.</p>
 	</section>
+	{{- if and $t.Propose $t.MayWrite (not $t.Historical)}}
+	<section class="propose-panel" data-testid="propose-panel" aria-label="Propose template change">
+		<h2>Propose change</h2>
+		<p class="propose-source" data-testid="propose-source">Source of truth: <code>{{$t.Propose.Label}}</code></p>
+		<button type="button" class="ds-button ds-button--primary" data-testid="propose-button">Propose via MR</button>
+		<span class="inspector-status" data-testid="propose-status" role="status"></span>
+		<a class="propose-link" data-testid="propose-link" hidden></a>
+	</section>
+	{{- end}}
 	<script>
 		// Inspector apply: collect CHANGED fields (vs their initial values),
 		// hand them to the structured-edit endpoint, write the transformed
@@ -130,6 +139,45 @@
 						say('applied ' + edits.length + ' change' + (edits.length > 1 ? 's' : '') + ' to the document');
 					});
 				}).catch(function (err) { say('failed: ' + err); });
+			});
+		})();
+	</script>
+	<script>
+		// Propose via MR (#420): the island's current document goes to the
+		// bridge as a PROPOSAL — branch + commit + merge request on the
+		// template's git source. The cluster never sees a write; the token
+		// never leaves the server. History updates when Flux reconciles the
+		// merged change, and the version switcher reads it from there.
+		(function () {
+			var button = document.querySelector('[data-testid="propose-button"]');
+			if (!button) return;
+			button.addEventListener('click', function () {
+				var island = window.harmostesCodeIsland;
+				var status = document.querySelector('[data-testid="propose-status"]');
+				var link = document.querySelector('[data-testid="propose-link"]');
+				function say(msg) { if (status) status.textContent = msg; }
+				if (!island || !island.getText) { say('editor not ready'); return; }
+				button.disabled = true;
+				say('proposing…');
+				fetch(window.location.pathname.replace(/\/$/, '') + '/propose', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ document: island.getText() })
+				}).then(function (resp) {
+					return resp.text().then(function (text) {
+						button.disabled = false;
+						if (!resp.ok) { say('rejected: ' + text); return; }
+						var out = JSON.parse(text);
+						say('merge request opened on branch ' + out.branch);
+						if (link) {
+							link.href = out.url;
+							link.textContent = 'open the merge request →';
+							link.target = '_blank';
+							link.rel = 'noopener';
+							link.hidden = false;
+						}
+					});
+				}).catch(function (err) { button.disabled = false; say('failed: ' + err); });
 			});
 		})();
 	</script>

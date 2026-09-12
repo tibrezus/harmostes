@@ -63,6 +63,21 @@ credentials:
         remoteRef:
           key: GOLDEN_URL
 
+# ui.templateSource (#420): the MR bridge's env rendering — JSON source
+# config + token secretKeyRef — is pinned in the golden like every other
+# gated layer. The bridge proposes MRs against the template git source; it
+# never writes templates in-cluster (the RBAC gate enforces that shape).
+ui:
+  templateSource:
+    host: github
+    owner: golden-username
+    repo: golden-harmostes
+    baseBranch: main
+    path: chart/values.yaml
+    valuesKey: workflowTemplates
+    secretName: golden-ui-source-token
+    secretKey: token
+
 # worker.cache (#336): exercised so the golden locks the PVC template's shape
 # (RWX, size, conditional storageClass) — the disabled render is byte-stable
 # by construction (the template renders nothing).

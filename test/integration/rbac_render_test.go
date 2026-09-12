@@ -114,9 +114,12 @@ func TestGoldenUIRBAC(t *testing.T) {
 	}
 
 	// Role: membership-based. Every harmostes.dev rule must be read-only
-	// EXCEPT the workflows rule, whose only write verb may be create; secrets
-	// and externalsecrets must not appear anywhere; workflows must not carry
-	// lifecycle verbs.
+	// EXCEPT the workflows rule, whose write verbs are exactly the lifecycle
+	// surface (#418: create + update/patch for the arm/pause toggle and the
+	// manual wake, delete for instance removal); secrets and
+	// externalsecrets must not appear anywhere. Verbs are granted only when a
+	// route needs them — deletecollection stays out (no bulk route exists),
+	// and any NEW write verb must arrive in the PR that ships its route.
 	role := findGolden(t, "Role", "harmostes-ui")
 	if ns, ok := role.Metadata["namespace"]; !ok || ns != "harmostes-ci" {
 		t.Errorf("Role namespace = %v, want harmostes-ci (the golden values' namespace)", ns)
@@ -147,19 +150,20 @@ func TestGoldenUIRBAC(t *testing.T) {
 			if !writeVerbs[v] {
 				continue
 			}
-			isWorkflowsCreate := contains(resources, "workflows") && v == "create"
-			if !isWorkflowsCreate {
-				t.Errorf("rule %d (resources %v) carries write verb %q — write verbs are granted only to the workflows rule, create only", i, resources, v)
+			isWorkflowLifecycle := contains(resources, "workflows") &&
+				(v == "create" || v == "update" || v == "patch" || v == "delete")
+			if !isWorkflowLifecycle {
+				t.Errorf("rule %d (resources %v) carries write verb %q — write verbs are granted only to the workflows lifecycle set (create/update/patch/delete)", i, resources, v)
 			}
 		}
 		if contains(resources, "workflows") {
 			workflowsRuleFound = true
-			for _, forbidden := range []string{"update", "patch", "delete", "deletecollection"} {
+			for _, forbidden := range []string{"deletecollection"} {
 				if contains(verbs, forbidden) {
-					t.Errorf("workflows verb %q granted — lifecycle routes do not exist yet (#418/#419 re-add with their routes)", forbidden)
+					t.Errorf("workflows verb %q granted — no bulk route exists; verbs are granted only when a route needs them", forbidden)
 				}
 			}
-			for _, want := range []string{"get", "list", "create"} {
+			for _, want := range []string{"get", "list", "create", "update", "patch", "delete"} {
 				if !contains(verbs, want) {
 					t.Errorf("workflows verbs %v missing %q", verbs, want)
 				}

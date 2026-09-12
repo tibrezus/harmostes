@@ -3,12 +3,10 @@
 Mirrors Spade's rig_validator (github.com/Greenfuze/spade) adapted to run
 against the RIGBuilder's output (or a loaded JSON dict).
 
-Severity (r5, #345): dangling refs, duplicate IDs and missing evidence are
-ERRORS; circular dependencies and completeness (uncovered source files)
-are WARNINGS. `check_source_existence=False` skips the completeness walk
-(which reads the CWD filesystem) — the unit pin relies on that hermeticity.
-The wiki-side validate-rig.py keeps its own severities; drift between the
-copies is a tracked llm-wiki concern.
+Key difference from the wiki-side validate-rig.py: this runs **in the
+project repo** where source files exist, so it can enforce the paper's
+source-file existence invariant.  Completeness (every repo source file
+in a component) is an ERROR here, not a warning.
 """
 
 from __future__ import annotations
@@ -22,21 +20,20 @@ def validate_rig(rig: dict, *, check_source_existence: bool = True) -> tuple[lis
     """Validate a RIG dict. Returns (errors, warnings) — both empty = valid.
 
     Hard errors (dangling refs, duplicate IDs, missing evidence) fail the
-    build.  Completeness (uncovered source files) and CIRCULAR DEPENDENCIES
-    are WARNINGs: a cycle is a fact about the codebase the graph must
-    represent, not an emission failure — refusing to emit because the code
-    has a cycle left reviews graph-LESS (observed live: rhesadox#1864, where
-    the emit failure degraded ADR-0009 navigation to grep archaeology). The
-    deps table is navigable with cycles; consumers surface the warning.
+    build.  CIRCULAR DEPENDENCIES are a WARNING (VENDOR-PATCH, rhesadox#1864):
+    a cycle is a fact about the codebase the graph must represent, not an
+    emission failure — refusing to emit left reviews graph-less. Completeness
+    (uncovered source files) is a WARNING, gated behind check_source_existence
+    (VENDOR-PATCH: the unit pin relies on that hermeticity).
     """
     errors: list[str] = []
     warnings: list[str] = []
 
     errors.extend(_check_dangling_refs(rig))
-    warnings.extend(_check_circular_deps(rig))
+    warnings.extend(_check_circular_deps(rig))  # VENDOR-PATCH (rhesadox#1864)
     errors.extend(_check_duplicate_ids(rig))
     errors.extend(_check_evidence(rig))
-    if check_source_existence:
+    if check_source_existence:  # VENDOR-PATCH: hermetic unit pin
         warnings.extend(_check_completeness(rig))
 
     return errors, warnings

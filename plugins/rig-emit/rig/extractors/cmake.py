@@ -96,8 +96,15 @@ class StandaloneCExtractor(Extractor):
 
     def extract(self, builder: RIGBuilder) -> None:
         by_lang = find_source_files()
+        # Files already claimed by a build-system extractor (e.g. the Zig
+        # extractor's native c-kernels/cuda-backend) must not be re-grouped
+        # into phantom twins — emit only the unclaimed remainder, and nothing
+        # when every file of a language is already owned.
+        claimed = {str(f).replace("\\", "/")
+                   for c in builder.components for f in c.source_files}
         for lang in ("c", "cpp", "cuda"):
-            files = by_lang.get(lang, [])
+            files = [f for f in by_lang.get(lang, [])
+                     if str(f).replace("\\", "/") not in claimed]
             if not files:
                 continue
             source_files = sorted(str(f).replace("\\", "/") for f in files)

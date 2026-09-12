@@ -130,6 +130,30 @@ def main() -> int:
         if rc != 0:
             failures.append(f"fail-open: unrelated diff must exit 0, got {rc}")
 
+    # 5c. THE PRODUCTION SHAPE (#456 r1 CRITICAL): workspace.sh sends
+    # files_changed as objects ({status, filename, additions, deletions}) —
+    # the exact key set of workspace.sh:88. The original contract test fed
+    # strings, so the generator shipped inert in production while CI stayed
+    # green (SQL binding died on the dict and the briefing never fired).
+    # The object shape must brief; a falsy entry must be skipped, not fatal.
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        db = tmp / "rig.db"
+        write_db(rig_dict(), db)
+        add_symbols(db, symbols())
+        ctx = {"files_changed": [
+            {"status": "changed", "filename": "internal/kernel/run.go", "additions": 3, "deletions": 1},
+            {"status": "added", "filename": "docs/new.md", "additions": 12, "deletions": 0},
+            {"filename": None},  # falsy entry: skipped, never bound to SQL
+        ], "repo_dir": str(tmp / "repo")}
+        rc, brief = run_brief(tmp, db, ctx)
+        if rc != 0:
+            failures.append(f"production shape: generator exited {rc}: {brief[:200]}")
+        if "rig_briefing" not in json.loads((tmp / "pr-context.json").read_text()):
+            failures.append("production shape: pr-context.json not stamped")
+        if "This diff touches" not in brief or "Kernel" not in brief:
+            failures.append("production shape: touched-component section missing from the briefing")
+
     if failures:
         print("TEST FAILURES:", *failures, sep="\n  - ", file=sys.stderr)
         return 1

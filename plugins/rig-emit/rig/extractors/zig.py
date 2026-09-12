@@ -30,6 +30,50 @@ def _line_of(text: str, offset: int) -> int:
     return text.count("\n", 0, offset) + 1
 
 
+def strip_zig_line_comments(text: str) -> str:
+    """Remove // line comments, honoring string literals (llm-wiki-core#3).
+
+    Zig has no block comments; the only form is `//` to end of line.
+    `//` inside a double-quoted string (with backslash escapes) is data,
+    not a comment. Multiline-string continuation lines (starting with
+    `\\`) are left untouched — conservative: never corrupts a literal,
+    and pre-#3 behavior for those lines is identical.
+    """
+    out: list[str] = []
+    for line in text.splitlines(keepends=True):
+        if line.lstrip().startswith("\\"):
+            out.append(line)
+            continue
+        res: list[str] = []
+        i, n = 0, len(line)
+        in_str = False
+        while i < n:
+            ch = line[i]
+            if in_str:
+                res.append(ch)
+                if ch == "\\" and i + 1 < n:
+                    res.append(line[i + 1])
+                    i += 2
+                    continue
+                if ch == '"':
+                    in_str = False
+                i += 1
+                continue
+            if ch == '"':
+                in_str = True
+                res.append(ch)
+                i += 1
+                continue
+            if ch == "/" and i + 1 < n and line[i + 1] == "/":
+                if line.endswith("\n"):
+                    res.append("\n")  # keep the line terminator
+                break  # comment runs to end of line
+            res.append(ch)
+            i += 1
+        out.append("".join(res))
+    return "".join(out)
+
+
 def trace_zig_imports(root_file: Path, seen: set[str] | None = None) -> set[str]:
     """Recursively trace @import("*.zig") from a root file."""
     if seen is None:
@@ -42,7 +86,7 @@ def trace_zig_imports(root_file: Path, seen: set[str] | None = None) -> set[str]
         content = root_file.read_text(encoding="utf-8", errors="replace")
     except Exception:
         return seen
-    for m in re.finditer(r'@import\s*\(\s*"([^"]+)"\s*\)', content):
+    for m in re.finditer(r'@import\s*\(\s*"([^"]+)"\s*\)', strip_zig_line_comments(content)):
         target = m.group(1)
         if not target.endswith(".zig"):
             continue
@@ -240,7 +284,10 @@ class ZigExtractor(Extractor):
                         txt = Path(sf).read_text(encoding="utf-8", errors="replace")
                     except Exception:
                         continue
-                    for im in re.finditer(r'@import\s*\(\s*"([^"]+)"\s*\)', txt):
+                    for im in re.finditer(
+                        r'@import\s*\(\s*"([^"]+)"\s*\)',
+                        strip_zig_line_comments(txt),
+                    ):
                         target = im.group(1)
                         if target.endswith(".zig"):
                             continue

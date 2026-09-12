@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"regexp"
@@ -294,6 +295,11 @@ const (
 type PiSessionMeta struct {
 	Bytes   int    `json:"bytes"`   // raw (pre-compression) size
 	SavedAt string `json:"savedAt"` // RFC3339
+	// Rig-usage telemetry (#452 D3): the review-graph acceptance metric
+	// (orientation = 1 rig call, discovery ≤ 3) measured from this very
+	// session. Counted before redaction — tool names/commands are not
+	// sensitive, but the count must describe the uploaded bytes.
+	ToolUsage
 }
 
 // SavePiSession uploads the newest pi session file for a run: redacted (the
@@ -343,10 +349,19 @@ func SavePiSession(ctx context.Context, dc dapr.Client, store, workflow, run str
 		return err
 	}
 	base := fmt.Sprintf("%s:%s:pi-session", workflow, run)
+	usage := countToolUsage(raw)
+	if len(raw) > 0 && usage.ToolCalls == 0 {
+		// The metric's failure mode must be loud, not green-on-broken (#456
+		// r1): a parser that misses every line (pi session-format drift —
+		// the #239 precedent) would store an empty ToolUsage that reads
+		// exactly like a pre-telemetry run, and 0/0 passes the acceptance
+		// thresholds. One line of signal: drift turns into a greppable log.
+		log.Printf("pi session usage: 0 tool calls parsed from %d bytes — session-format drift? telemetry is blind for %s/%s", len(raw), workflow, run)
+	}
 	if err := dc.SaveState(ctx, store, base+piSessionDataSuffix, string(payloadJSON)); err != nil {
 		return err
 	}
-	meta, _ := json.Marshal(PiSessionMeta{Bytes: len(raw), SavedAt: time.Now().UTC().Format(time.RFC3339)})
+	meta, _ := json.Marshal(PiSessionMeta{Bytes: len(raw), SavedAt: time.Now().UTC().Format(time.RFC3339), ToolUsage: usage})
 	if err := dc.SaveState(ctx, store, base, string(meta)); err != nil {
 		return err // blob already stored; a missing metadata key just hides the button
 	}

@@ -115,6 +115,58 @@ jobs:
       - name: rig-emit validator
         run: make test-rig-emit
 
+      # Vendor sync (#452 D2): plugins/rig-emit/{emit-rig.py,rig/} is a
+      # byte-equivalent vendored copy of llm-wiki-core's repo-map action at
+      # the sha pinned in VENDOR.sha, plus exactly the deviations
+      # vendor-patch.py applies (severity pin, cycle reporting, warnings
+      # persistence). The compared set is DERIVED from the patcher's output
+      # — never restated (a hardcoded third copy could shrink silently,
+      # #456 r1) — and cross-checked three ways: the produced tree must
+      # equal the VENDOR.sha list, upstream must have no .py outside it,
+      # and every produced file must byte-match the vendored copy.
+      - name: rig-emit vendor sync (byte-parity at VENDOR.sha)
+        run: |
+          PIN_SHA=$(sed -n 's/^sha: //p' plugins/rig-emit/VENDOR.sha)
+          [ -n "$PIN_SHA" ] || { echo "::error::VENDOR.sha has no sha pin"; exit 1; }
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git clone --quiet --filter=blob:none --no-checkout \
+            https://github.com/tibrezus/llm-wiki-core /tmp/llm-wiki-core
+          git -C /tmp/llm-wiki-core checkout --quiet "$PIN_SHA"
+          rm -rf /tmp/vendored-out
+          python3 plugins/rig-emit/vendor-patch.py \
+            /tmp/llm-wiki-core/.github/actions/repo-map /tmp/vendored-out >/dev/null
+          # 1. The patcher's output IS the vendored set — one source of truth.
+          (cd /tmp/vendored-out && find . -name '*.py' | sed 's|^\./||' | sort) > /tmp/produced.txt
+          # 2. It must equal the VENDOR.sha declaration (a new upstream .py
+          #    or a dropped one is a DECISION, recorded in VENDOR.sha + the
+          #    patcher — never absorbed silently).
+          awk '/^files:/{f=1;next} /^#/{f=0} f' plugins/rig-emit/VENDOR.sha \
+            | tr ' ' '\n' | sed '/^$/d' | sort > /tmp/declared.txt
+          if ! diff -u /tmp/declared.txt /tmp/produced.txt; then
+            echo "::error::VENDOR.sha files: and vendor-patch.py output disagree — sync the declaration, the patcher, or both"
+            exit 1
+          fi
+          # 3. Upstream's .py set minus the vendored set must never exceed
+          #    the not-vendored declarations in VENDOR.sha (coverage cannot
+          #    grow a hole; a new upstream file is a recorded decision).
+          (cd /tmp/llm-wiki-core/.github/actions/repo-map \
+            && find . -name '*.py' | sed 's|^\./||' | sort) > /tmp/upstream.txt
+          awk '/^#   [a-z][a-z0-9-]*\.py /{sub(/^#   /,""); print $1}' plugins/rig-emit/VENDOR.sha | sort > /tmp/notvendored.txt
+          comm -13 /tmp/produced.txt /tmp/upstream.txt > /tmp/excluded.txt
+          if ! diff -u /tmp/notvendored.txt /tmp/excluded.txt; then
+            echo "::error::upstream repo-map has .py files outside the vendored set that VENDOR.sha does not declare — extend VENDOR.sha + vendor-patch.py deliberately"
+            exit 1
+          fi
+          # 4. Byte-compare each.
+          drift=0
+          while read -r f; do
+            if ! cmp -s "/tmp/vendored-out/$f" "plugins/rig-emit/$f"; then
+              echo "::error::vendor drift: plugins/rig-emit/$f differs from pinned upstream (apply vendor-patch.py output or re-pin VENDOR.sha)"
+              drift=1
+            fi
+          done < /tmp/produced.txt
+          exit $drift
+
       # Compares the COMMITTED fixture's canonical hash against a fresh build
       # in a tempdir — it must NOT regenerate the committed file first, or the
       # gate could only ever catch producer/library skew, never committed

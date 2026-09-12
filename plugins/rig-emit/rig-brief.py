@@ -68,9 +68,21 @@ def build_briefing(db_path: str, ctx: dict) -> str:
         out.append(f"- **{short_name(name)}** ({ctype or 'component'}, {lang or '?'}, {counts.get(cid, 0)} files) → deps: {deps}{mark}")
 
     # 2. The diff's footprint — changed file → owning component(s).
+    # workspace.sh sends entries as OBJECTS ({status, filename, additions,
+    # deletions}) — accept the plain-string shape too (older contexts,
+    # tests), skip falsy: a shape mismatch here used to die mid-SQL binding
+    # and fail open with no briefing at all (the #456 r1 finding — the
+    # generator's own test was the only place strings ever shipped).
     changed = ctx.get("files_changed") or []
     if isinstance(changed, dict):
         changed = list(changed.keys())
+    paths: list[str] = []
+    for entry in changed:
+        if isinstance(entry, dict):
+            entry = entry.get("filename")
+        if entry:
+            paths.append(entry)
+    changed = paths
     touched: dict[str, list[str]] = {}
     unmapped: list[str] = []
     for path in changed[:60]:

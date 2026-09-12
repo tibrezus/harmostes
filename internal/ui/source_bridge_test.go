@@ -36,10 +36,12 @@ workflowTemplates:
   pr-review:
     description: PR review
     agent:
+      # speed-primary: chosen after the mtplx stall diagnosis (#420)
       model: mistral-small-latest
+      maxFixes: 1   # keep low — review latency SLO
       gate:
         plugin:
-          name: pr-review
+          name: pr-review   # verdict poster
   fork-maintenance:
     description: Fork sync
     agent:
@@ -128,6 +130,59 @@ func TestSpliceTemplateIntoValues_ReplacesOnlyTheTarget(t *testing.T) {
 	}
 	if !strings.Contains(out, "  pr-review:\n    agent:") {
 		t.Errorf("new entry not at the file's 2-space entry indent:\n%s", out)
+	}
+}
+
+// Entry-internal comments survive the canonical rewrite (#458): keyed by
+// structural path, re-attached to the surviving keys — above the key and on
+// the key's line. A comment on a key the edit REMOVED goes with the key.
+func TestSpliceTemplateIntoValues_PreservesEntryComments(t *testing.T) {
+	newSpec := v1alpha1.WorkflowTemplateSpec{}
+	newSpec.Description = "PR review (edited)"
+	newSpec.Agent.Model = "llama3:8b"
+	newSpec.Agent.MaxFixes = 3 // survives, keeps its inline comment
+	// newSpec.Agent.Gate stays zero → pruned → its comments are dropped.
+
+	out, _, newSpecText, err := spliceTemplateIntoValues(fixtureValuesFile, "workflowTemplates", "pr-review", newSpec)
+	if err != nil {
+		t.Fatalf("splice: %v", err)
+	}
+
+	// HeadComment above a surviving key, at entry-relative indent.
+	if !strings.Contains(out, "      # speed-primary: chosen after the mtplx stall diagnosis (#420)\n      model: llama3:8b") {
+		t.Errorf("head comment above the surviving key lost or misplaced:\n%s", out)
+	}
+	// LineComment rides the surviving key.
+	if !strings.Contains(out, "maxFixes: 3 # keep low — review latency SLO") {
+		t.Errorf("line comment not re-attached: %s", out)
+	}
+	// The pruned key and its comments are both gone.
+	if strings.Contains(out, "gate:") || strings.Contains(out, "verdict poster") {
+		t.Errorf("pruned key or its comment survived:\n%s", out)
+	}
+	// The canonical spec text returned for the MR body stays comment-free.
+	if strings.Contains(newSpecText, "#") {
+		t.Errorf("newSpecYAML must stay comment-free (no-op contract): %q", newSpecText)
+	}
+}
+
+// A semantically identical spec on a comment-rich entry is still a no-op:
+// the no-op comparison runs on comment-free canonical text, so restoring
+// comments in place cannot manufacture an MR (handler-tier pin in
+// propose_component_test.go).
+func TestSpliceTemplateIntoValues_NoOpStaysCommentFree(t *testing.T) {
+	var oldSpec v1alpha1.WorkflowTemplateSpec
+	oldSpec.Description = "PR review"
+	oldSpec.Agent.Model = "mistral-small-latest"
+	oldSpec.Agent.MaxFixes = 1
+	oldSpec.Agent.Gate.Plugin.Name = "pr-review"
+
+	_, oldText, newText, err := spliceTemplateIntoValues(fixtureValuesFile, "workflowTemplates", "pr-review", oldSpec)
+	if err != nil {
+		t.Fatalf("splice: %v", err)
+	}
+	if oldText != newText {
+		t.Errorf("identical specs must produce identical canonical text:\nold=%q\nnew=%q", oldText, newText)
 	}
 }
 

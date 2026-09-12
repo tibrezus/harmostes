@@ -29,6 +29,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -273,6 +274,81 @@ func marshalSpecPlainOf(node *goyaml.Node) string {
 	return out.String()
 }
 
+// commentSet holds one node's captured comments, keyed by structural path
+// (mapping keys and sequence indices, joined with "/").
+type commentSet struct{ head, line, foot string }
+
+// captureComments records every comment in a subtree. HeadComment lives on
+// the mapping KEY node (lines above it); LineComment and FootComment on the
+// VALUE node (`key: v # c`). The entry key's own HeadComment is NOT here:
+// those lines sit above the entry and already survive the splice verbatim.
+func captureComments(n *goyaml.Node, path string, into map[string]commentSet) {
+	switch n.Kind {
+	case goyaml.MappingNode:
+		for i := 0; i+1 < len(n.Content); i += 2 {
+			k, v := n.Content[i], n.Content[i+1]
+			p := path + "/" + k.Value
+			into[p] = commentSet{head: k.HeadComment, line: v.LineComment, foot: v.FootComment}
+			captureComments(v, p, into)
+		}
+	case goyaml.SequenceNode:
+		for j, item := range n.Content {
+			p := path + "/" + strconv.Itoa(j)
+			into[p] = commentSet{head: item.HeadComment, line: item.LineComment, foot: item.FootComment}
+			captureComments(item, p, into)
+		}
+	}
+}
+
+// attachComments mirrors the capture walk over the canonical rewrite,
+// re-attaching every comment whose structural path still exists. Paths that
+// the edit removed (pruned keys) keep no comment — the comment described
+// content that is gone. Never overwrites a comment the rewrite already
+// carries.
+func attachComments(n *goyaml.Node, path string, from map[string]commentSet) {
+	apply := func(node *goyaml.Node, cs commentSet) {
+		if node.HeadComment == "" {
+			node.HeadComment = cs.head
+		}
+		if node.LineComment == "" {
+			node.LineComment = cs.line
+		}
+		if node.FootComment == "" {
+			node.FootComment = cs.foot
+		}
+	}
+	if cs, ok := from[path]; ok {
+		apply(n, cs)
+	}
+	switch n.Kind {
+	case goyaml.MappingNode:
+		for i := 0; i+1 < len(n.Content); i += 2 {
+			k, v := n.Content[i], n.Content[i+1]
+			p := path + "/" + k.Value
+			if cs, ok := from[p]; ok {
+				if k.HeadComment == "" {
+					k.HeadComment = cs.head
+				}
+				if v.LineComment == "" {
+					v.LineComment = cs.line
+				}
+				if v.FootComment == "" {
+					v.FootComment = cs.foot
+				}
+			}
+			attachComments(v, p, from)
+		}
+	case goyaml.SequenceNode:
+		for j, item := range n.Content {
+			p := path + "/" + strconv.Itoa(j)
+			if cs, ok := from[p]; ok {
+				apply(item, cs)
+			}
+			attachComments(item, p, from)
+		}
+	}
+}
+
 // spliceTemplateIntoValues performs the surgical values edit: locate the
 // <ValuesKey>.<name> entry, replace ONLY those source lines with the new
 // spec, and leave every other byte of the file untouched. The parse tree
@@ -351,6 +427,21 @@ func spliceTemplateIntoValues(raw, valuesKey, name string, spec v1alpha1.Workflo
 		return "", "", "", fmt.Errorf("template %q is not present in the source file — the source has drifted; reconcile first", name)
 	}
 
+	// Comment preservation (#458): the canonical rewrite would drop the
+	// entry's internal commentary. Capture it from the old subtree by
+	// structural path and re-attach it to the rewrite — the splice then
+	// renders the entry from the comment-attached tree, while newSpecYAML
+	// stays comment-free so the semantic no-op comparison is unaffected.
+	comments := map[string]commentSet{}
+	captureComments(oldValueNode, "", comments)
+	entryKeyLineComment := ""
+	for i := 0; i+1 < len(templatesNode.Content); i += 2 {
+		if templatesNode.Content[i].Value == name {
+			entryKeyLineComment = templatesNode.Content[i].LineComment
+			break
+		}
+	}
+
 	// Canonical old spec for the semantic no-op check and the MR-body diff.
 	var prev map[string]any
 	if err := oldValueNode.Decode(&prev); err == nil {
@@ -373,7 +464,12 @@ func spliceTemplateIntoValues(raw, valuesKey, name string, spec v1alpha1.Workflo
 	indent := strings.Repeat(" ", indentLen)
 
 	var body strings.Builder
-	for _, line := range strings.Split(strings.TrimSuffix(newSpecYAML, "\n"), "\n") {
+	entryText := newSpecYAML
+	if len(comments) > 0 {
+		attachComments(newMapping, "", comments)
+		entryText = marshalSpecPlainOf(newMapping)
+	}
+	for _, line := range strings.Split(strings.TrimSuffix(entryText, "\n"), "\n") {
 		if strings.TrimSpace(line) == "" {
 			body.WriteString("\n")
 		} else {
@@ -390,7 +486,11 @@ func spliceTemplateIntoValues(raw, valuesKey, name string, spec v1alpha1.Workflo
 	if entryStart > 0 {
 		out.WriteString(strings.Join(lines[:entryStart], "\n") + "\n")
 	}
-	out.WriteString(indent + name + ":\n")
+	entryKey := indent + name + ":"
+	if entryKeyLineComment != "" {
+		entryKey += " " + entryKeyLineComment
+	}
+	out.WriteString(entryKey + "\n")
 	out.WriteString(body.String())
 	out.WriteString(trailing)
 	if entryEnd < len(lines) {

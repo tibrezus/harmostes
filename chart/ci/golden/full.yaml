@@ -5379,6 +5379,12 @@ spec:
                   # need it out-of-band (ops-managed via ExternalSecret from
                   # BSM); without it review posting on git.rezus.cloud fails.
                   optional: true
+            # Served-skills single source (#441): passed to the dispatcher so
+            # per-Attempt Jobs' sync-skills init containers clone the SAME
+            # repo the pool's own init container does. Empty = the Go default
+            # (internal/k8s.DefaultSkillsRepo — kept equal to values.skills.repo).
+            - name: HARMOSTES_SKILLS_REPO
+              value: "https://github.com/tibrezus/agents.git"
             # GH_TOKEN deliberately aliases the same secret the dispatch path
             # already mounts as HARMOSTES_GIT_TOKEN — the gh CLI wants its
             # canonical name; one credential, one secret, two env spellings.

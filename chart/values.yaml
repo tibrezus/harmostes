@@ -140,6 +140,19 @@ ui:
   resources:
     requests: { cpu: 50m, memory: 64Mi }
     limits:   { cpu: 500m, memory: 256Mi }
+  # Template MR bridge (#420, ADR-0012 §5). Where this environment's
+  # template values live — the file the UI proposes template changes against
+  # (branch + commit + MR via the forge REST API). Empty/absent = the
+  # propose surface is not rendered at all. Hosts: github | gitlab.
+  # templateSource:
+  #   host: github
+  #   owner: tibrezus
+  #   repo: harmostes
+  #   baseBranch: main
+  #   path: chart/values.yaml
+  #   valuesKey: workflowTemplates
+  #   secretName: harmostes-ui-source-token   # ExternalSecret → env token
+  #   secretKey: token
   # Platform display configs (plug-and-play). Any platform string is accepted
   # for token creation — this only provides display metadata (label, color).
   # Add new platforms here (GitOps); no code change needed.

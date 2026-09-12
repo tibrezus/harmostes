@@ -61,6 +61,23 @@ spec:
             - name: HARMOSTES_UI_ADMIN_GROUPS
               value: {{ .Values.ui.adminGroups | quote }}
             {{- end }}
+            {{- with .Values.ui.templateSource }}
+            # Template MR bridge (#420, ADR-0012 §5): where this
+            # environment's template values live. The bridge composes a
+            # branch + MR against that file; it NEVER writes templates
+            # in-cluster. The token rides from an ExternalSecret via a
+            # secretKeyRef — server-side only, never rendered to a client.
+            {{- $source := dict "host" .host "owner" .owner "repo" .repo "baseBranch" .baseBranch "path" .path "valuesKey" .valuesKey }}
+            - name: HARMOSTES_TEMPLATE_SOURCE
+              value: {{ toJson $source | quote }}
+            {{- if .secretName }}
+            - name: HARMOSTES_TEMPLATE_SOURCE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .secretName }}
+                  key: {{ .secretKey | default "token" }}
+            {{- end }}
+            {{- end }}
           ports:
             - name: http
               containerPort: 8083

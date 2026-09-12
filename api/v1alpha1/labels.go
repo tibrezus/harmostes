@@ -41,6 +41,20 @@ const (
 	// — any unprocessed annotation value wakes immediately.
 	ManualTriggerPrefix = "manual-"
 
+	// TemplateRevisionsAnnotation carries a WorkflowTemplate's revision
+	// history as JSON ([]TemplateRevision, ascending, head = the live spec).
+	// The template-history recorder (controller) appends an entry whenever
+	// Flux delivers a spec change (ADR-0012 §5: git is the authoring source;
+	// this annotation is the system's record of what landed — the UI reads
+	// it, and never writes templates). Bounded: the recorder keeps the most
+	// recent MaxTemplateRevisions entries.
+	TemplateRevisionsAnnotation = "template.harmostes.dev/revisions"
+
+	// MaxTemplateRevisions bounds the recorder's history — templates are
+	// small, but a CR is not a git log. The full history lives in the
+	// template's git source; the CR carries the recent window only.
+	MaxTemplateRevisions = 5
+
 	// ReviewClaimLabel marks a review-claim Attempt as RELEASED. The label
 	// is the gate's list bound: LiveReviewClaims selects (workflow=X,
 	// review-claim DoesNotExist) server-side, so the released history — one

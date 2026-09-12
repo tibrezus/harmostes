@@ -155,6 +155,16 @@ func main() {
 		os.Exit(1)
 	}
 
+	// The template-history recorder (#420, ADR-0012 §5): git is the
+	// authoring source; this reconciler records delivered spec changes into
+	// the revisions annotation so the UI's diff/switcher read real history.
+	if err := (&controller.TemplateHistoryReconciler{
+		Client: mgr.GetClient(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog("template history setup", err)
+		os.Exit(1)
+	}
+
 	setupLogMsg("starting harmostes controller (poll=%s webhook=%s)", pollInterval, webhookAddr)
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		setupLog("manager exited", err)

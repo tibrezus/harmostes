@@ -49,10 +49,14 @@ rules:
     resources: ["secrets"]
     verbs: ["get"]
   # WorkflowTemplates — the worker resolves spec.templateRef at run start and
-  # inherits prepare/agent/deploy defaults (thin Workflow instances).
+  # inherits prepare/agent/deploy defaults (thin Workflow instances). The
+  # update/patch pair belongs to the template-history recorder (#420,
+  # ADR-0012 §5): when Flux delivers a spec change, the controller records
+  # the revision window into template.harmostes.dev/revisions — annotations
+  # only, never spec; git stays the authoring source of truth.
   - apiGroups: ["harmostes.dev"]
     resources: ["workflowtemplates"]
-    verbs: ["get", "list", "watch"]
+    verbs: ["get", "list", "watch", "update", "patch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

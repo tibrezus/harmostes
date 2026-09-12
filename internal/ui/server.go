@@ -44,19 +44,21 @@ type logFetchFunc func(ctx context.Context, namespace, podName, container string
 
 // Server is the harmostes-ui HTTP server.
 type Server struct {
-	k8sClient   client.Client
-	logFetch    logFetchFunc
-	namespace   string
-	logger      *slog.Logger
-	templates   *template.Template
-	hub         *EventHub
-	platforms   *platformRegistry // display config for git platforms (plug-and-play)
-	dapr        DaprClient        // optional: reads session transcripts + usage from worker state store
-	wallMu      sync.Mutex
-	wallMeta    map[string]*wallUsage // workflow → cached agent metadata (live wall)
-	adminGroups map[string]bool       // identities in any of these groups see across all owner labels
-	devWrite    bool                  // dev-identity writes enabled — set ONLY for explicit dev/fixture servers
-	timeline    timeline.Reader       // timeline-store reader (nil = Event Timeline renders an explicit empty-state)
+	k8sClient      client.Client
+	logFetch       logFetchFunc
+	namespace      string
+	logger         *slog.Logger
+	templates      *template.Template
+	hub            *EventHub
+	platforms      *platformRegistry // display config for git platforms (plug-and-play)
+	dapr           DaprClient        // optional: reads session transcripts + usage from worker state store
+	wallMu         sync.Mutex
+	wallMeta       map[string]*wallUsage // workflow → cached agent metadata (live wall)
+	adminGroups    map[string]bool       // identities in any of these groups see across all owner labels
+	devWrite       bool                  // dev-identity writes enabled — set ONLY for explicit dev/fixture servers
+	templateSource *TemplateSource       // the environment's template git source (nil = propose surface absent, #420)
+	sourceToken    string                // forge token (ExternalSecret → env → server-side only)
+	timeline       timeline.Reader       // timeline-store reader (nil = Event Timeline renders an explicit empty-state)
 }
 
 // SetAdminGroups configures the Authentik groups whose members see every
@@ -272,6 +274,7 @@ func (s *Server) Routes() http.Handler {
 	pages.HandleFunc("GET /templates", s.handleTemplateList)
 	pages.HandleFunc("GET /templates/{name}", s.handleTemplateDetail)
 	pages.HandleFunc("GET /templates/{name}/revisions", s.handleTemplateRevisions)
+	pages.HandleFunc("POST /templates/{name}/propose", s.handleTemplatePropose)
 	pages.HandleFunc("GET /workflows/{name}", s.handleWorkflowDetail)
 	pages.HandleFunc("GET /workflows/{name}/runs/{job}", s.handleWorkflowRunRedirect)
 

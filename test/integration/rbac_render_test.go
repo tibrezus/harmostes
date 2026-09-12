@@ -174,6 +174,51 @@ func TestGoldenUIRBAC(t *testing.T) {
 		t.Fatal("golden Role has no workflows rule")
 	}
 
+	// Template read-only shape (#420): the UI proposes template changes via
+	// MRs against the template's GIT source — it must carry NO write verb on
+	// workflowtemplates. If a write verb appears here, an in-cluster
+	// mutation path for templates exists, and the bridge's contract is
+	// broken. Verbs are exactly get/list (+watch is rejected above).
+	for i, r := range role.Rules {
+		if !contains(stringsOf(r["apiGroups"]), "harmostes.dev") || !contains(stringsOf(r["resources"]), "workflowtemplates") {
+			continue
+		}
+		for _, v := range stringsOf(r["verbs"]) {
+			if writeVerbs[v] {
+				t.Errorf("UI Role rule %d grants %q on workflowtemplates — templates are never mutated in-cluster; changes go through the git MR bridge (#420)", i, v)
+			}
+		}
+	}
+
+	// The controller's history recorder (#420) is the ONE justified writer
+	// on workflowtemplates: when Flux delivers a spec change it appends the
+	// revision window to the CR's annotation. Its verbs must be exactly
+	// get/list/watch (the worker's read set) + update/patch (the recorder) —
+	// anything wider (delete!) is drift. The controller Role is rendered in
+	// the same namespace; find it by its harmostes.dev rules.
+	ctrlRole := findGolden(t, "Role", "harmostes-controller")
+	recorderRuleFound := false
+	for i, r := range ctrlRole.Rules {
+		if !contains(stringsOf(r["apiGroups"]), "harmostes.dev") || !contains(stringsOf(r["resources"]), "workflowtemplates") {
+			continue
+		}
+		recorderRuleFound = true
+		verbs := stringsOf(r["verbs"])
+		for _, want := range []string{"get", "list", "watch", "update", "patch"} {
+			if !contains(verbs, want) {
+				t.Errorf("controller Role rule %d (workflowtemplates) missing %q — the history recorder needs read + annotation update", i, want)
+			}
+		}
+		for _, v := range verbs {
+			if v == "delete" || v == "deletecollection" || v == "create" {
+				t.Errorf("controller Role rule %d grants %q on workflowtemplates — the recorder only annotates; it never creates or deletes templates", i, v)
+			}
+		}
+	}
+	if !recorderRuleFound {
+		t.Fatal("controller Role has no workflowtemplates rule")
+	}
+
 	// Bindings: both point their rules at the SA the ui pod runs as, in the
 	// rendered namespace, with roleRefs naming the rendered roles.
 	rb := findGolden(t, "RoleBinding", "harmostes-ui")

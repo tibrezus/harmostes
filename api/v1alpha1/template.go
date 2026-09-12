@@ -106,3 +106,13 @@ func ApplyTemplateDefaults(wf *Workflow, tmpl *WorkflowTemplate) {
 		}
 	}
 }
+
+// TemplateRevision is one entry of the TemplateRevisionsAnnotation history
+// (ascending; the CR's live spec is the head — readers derive it as
+// Rev = len(entries)+1, never stored redundantly). Description is free text
+// for humans; the recorder leaves it empty.
+type TemplateRevision struct {
+	Rev         int                  `json:"rev"`
+	Description string               `json:"description,omitempty"`
+	Spec        WorkflowTemplateSpec `json:"spec"`
+}

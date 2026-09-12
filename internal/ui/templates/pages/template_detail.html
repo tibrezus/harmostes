@@ -11,6 +11,20 @@
 	</header>
 	<p class="tpl-detail-desc">{{$t.Description}}</p>
 
+	{{if $t.RevOptions}}
+	<!-- Version switcher (#419, Conductor pattern): one selection drives
+	     every projection — pipeline, topology, document, inspector —
+	     consistently. History is annotation-carried until #420. -->
+	<nav class="rev-switch" data-testid="rev-switch" aria-label="Template revision">
+		<span class="rev-switch-label">Revision:</span>
+		{{- range $opt := $t.RevOptions}}
+		<a class="rev-option{{if $opt.Selected}} rev-option--selected{{end}}" data-testid="rev-switch-option" data-rev="{{$opt.Rev}}"
+			{{if $opt.Selected}}aria-current="page" {{end}}href="?rev={{$opt.Rev}}&node={{$t.InspectNode}}" title="{{$opt.Description}}">{{$opt.Label}}</a>
+		{{- end}}
+		{{- if $t.Historical}}<span class="chip chip--neutral" data-testid="rev-historical">historical — read-only</span>{{- end}}
+	</nav>
+	{{- end}}
+
 	<!-- Pipeline graph (dynamic — adapts to any topology) -->
 	<section class="tpl-section">
 		<h3 class="tpl-section-heading">Pipeline</h3>
@@ -37,8 +51,88 @@
 		<h3 class="tpl-section-heading">Topology
 			{{if gt $t.RevisionCount 1}}<a class="tpl-revisions-link" href="/templates/{{$t.Name}}/revisions" data-testid="revisions-link">{{ $t.RevisionCount }} revisions — diff view</a>{{end}}
 		</h3>
+		<p class="ds-empty-text">Click a node to inspect its parameters.</p>
 		{{template "pages/frag_topology.html" $t.Topology}}
 	</section>
+
+	<!-- Node inspector (#419, ADR-0012 §7): typed forms over the STRUCTURED
+	     edit surface — never text diffs on YAML. Apply patches the island's
+	     document in place (same document, two projections); persistence is
+	     the MR-bridge's (#420). -->
+	<section class="tpl-section tpl-inspector" data-testid="inspector">
+		<h3 class="tpl-section-heading">Inspector <span class="chip chip--neutral">{{$t.InspectNode}}</span></h3>
+		<form id="inspector-form" data-testid="inspector-form" data-node="{{$t.InspectNode}}">
+			{{- if not $t.Inspect}}
+			<p class="ds-empty-text">This node takes no parameters.</p>
+			{{- end}}
+			{{- range $f := $t.Inspect}}
+			<label class="wf-new-field inspector-field">
+				<span>{{$f.Label}}</span>
+				{{- if eq $f.Kind "bool"}}
+				<input type="checkbox" name="{{$f.Path}}" data-testid="inspector-field" data-initial="{{$f.Value}}"{{if eq $f.Value "true"}} checked{{end}}{{if $f.Disabled}} disabled{{end}}>
+				{{- else if eq $f.Kind "int"}}
+				<input type="number" step="1" min="0" name="{{$f.Path}}" data-testid="inspector-field" data-initial="{{$f.Value}}" value="{{$f.Value}}"{{if $f.Disabled}} disabled{{end}}>
+				{{- else}}
+				<input type="text" name="{{$f.Path}}" data-testid="inspector-field" data-initial="{{$f.Value}}" value="{{$f.Value}}"{{if $f.Disabled}} disabled{{end}}>
+				{{- end}}
+			</label>
+			{{- end}}
+			{{- if not $t.Historical}}
+			<button type="submit" class="ds-button ds-button--primary" data-testid="inspector-apply">Apply to document</button>
+			<span class="inspector-status" data-testid="inspector-status" role="status"></span>
+			{{- end}}
+		</form>
+		<p class="ds-empty-text">Edits patch the loaded document (Workflow Code, above) — nothing is saved until the MR-bridge lands.</p>
+	</section>
+	<script>
+		// Inspector apply: collect CHANGED fields (vs their initial values),
+		// hand them to the structured-edit endpoint, write the transformed
+		// document back into the island via its handle. No text diffing —
+		// the server applies typed edits to the typed spec.
+		(function () {
+			var form = document.getElementById('inspector-form');
+			if (!form) return;
+			form.addEventListener('submit', function (e) {
+				e.preventDefault();
+				var island = window.harmostesCodeIsland;
+				var status = form.querySelector('[data-testid="inspector-status"]');
+				function say(msg) { if (status) status.textContent = msg; }
+				if (!island || !island.getText) { say('editor not ready'); return; }
+				var edits = [];
+				form.querySelectorAll('[data-testid="inspector-field"]').forEach(function (input) {
+					var initial = input.getAttribute('data-initial') || '';
+					var now, value;
+					if (input.type === 'checkbox') {
+						now = input.checked ? 'true' : 'false';
+						value = input.checked;
+					} else if (input.type === 'number') {
+						now = input.value;
+						value = input.value === '' ? 0 : Number(input.value);
+					} else {
+						now = input.value;
+						value = input.value;
+					}
+					if (now !== initial) edits.push({ path: input.name, value: value });
+				});
+				if (edits.length === 0) { say('no changes'); return; }
+				fetch('/api/inspect', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ document: island.getText(), edits: edits })
+				}).then(function (resp) {
+					return resp.text().then(function (text) {
+						if (!resp.ok) { say('rejected: ' + text); return; }
+						var out = JSON.parse(text);
+						island.setText(out.document);
+						form.querySelectorAll('[data-testid="inspector-field"]').forEach(function (input) {
+							input.setAttribute('data-initial', input.type === 'checkbox' ? (input.checked ? 'true' : 'false') : input.value);
+						});
+						say('applied ' + edits.length + ' change' + (edits.length > 1 ? 's' : '') + ' to the document');
+					});
+				}).catch(function (err) { say('failed: ' + err); });
+			});
+		})();
+	</script>
 
 	<!-- Workflow Code island (ADR-0012 §2, #416): the template document as
 	     YAML, validated against the CRD-derived schema from /api/schema.

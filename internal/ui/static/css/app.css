@@ -2205,3 +2205,47 @@ code, pre {
 	gap: 0.45rem;
 	font-size: 0.85rem;
 }
+
+/* ---- Version switcher + node inspector (#419) ---- */
+.rev-switch {
+	display: flex;
+	gap: 0.35rem;
+	align-items: baseline;
+	margin: 0.5rem 0;
+}
+.rev-switch-label {
+	font-size: 0.78rem;
+	color: var(--ds-text-muted);
+}
+.rev-option--selected {
+	background: color-mix(in oklab, var(--ds-accent, #3b82f6) 14%, transparent);
+	border-color: var(--ds-accent, #3b82f6);
+	font-weight: 600;
+}
+.rev-switch .chip {
+	margin-left: 0.5rem;
+}
+.tp-nodelink .tp-box {
+	fill: var(--ds-bg-elevated, var(--ds-bg, #fff));
+}
+.tp-nodelink:hover .tp-box,
+.tp-nodelink:focus .tp-box {
+	stroke: var(--ds-accent, #3b82f6);
+	stroke-width: 2;
+}
+.tpl-inspector .wf-new-field {
+	display: grid;
+	grid-template-columns: 10rem 1fr;
+	gap: 0.5rem;
+	align-items: center;
+	margin-bottom: 0.5rem;
+}
+.tpl-inspector .wf-new-field span {
+	font-size: 0.85rem;
+	color: var(--ds-text-muted);
+}
+.inspector-status {
+	font-size: 0.8rem;
+	color: var(--ds-text-muted);
+	margin-left: 0.5rem;
+}

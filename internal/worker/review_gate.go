@@ -52,7 +52,9 @@ const jobDeathGrace = 2 * time.Minute
 // rejected (a blocking verdict must be actionable), and a consumed
 // verdict removes the reviewReady label (default "needs-review") so the
 // same head is never re-reviewed unless the label returns (the author's
-// explicit re-arm) or a dispatch dies.
+// explicit re-arm). A dead dispatch needs no exception: post-review never
+// ran, so the label is still present and the label-driven arming
+// (review_gate.go ListLabeledOpenPulls) re-reviews the same head.
 // Enforced in plugins/pr-review/pr-review.sh (validation) and consumed
 // in plugins/post-review/post-review.sh (verdict line + label DELETE,
 // which also names verdictTrailer as the contract's canonical home —

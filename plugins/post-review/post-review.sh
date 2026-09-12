@@ -201,16 +201,19 @@ NEWDEC=$(printf '%s' "$CS_JSON" | python3 -c "$CLASSIFIER_PY")
 if [ "$NEWDEC" != "$DEC" ]; then
   log "APPROVE downgraded: unresolved prior-round threads"
   DEC="$NEWDEC"
-  # S1 (r26): the downgrade must rewrite the WHOLE verdict — decision field
-  # AND the trailer in the body — or dw_wait_review keeps polling APPROVE
-  # and merges over open threads. The trailer shape is review.go:733's
-  # verdictTrailer (the contract's canonical home) — keep both in step.
+  DOWNGRADED=1
+  export DOWNGRADED   # the verdict-comment builder appends the downgrade note
+  # S1 (r26): the downgrade rewrites the whole verdict — the decision field
+  # here AND the trailer of the posted verdict comment below (rebuilt from
+  # decision + SHA, so the downgrade is visible to dw_wait_review).
+  # r7: review.json has NO body field — the reviewer no longer writes one,
+  # so the downgrade marker rides the decision field + the comment note
+  # (DOWNGRADED), not a body rewrite. verdictTrailer in internal/review/review.go
+  # is the contract's canonical home — keep both in step.
   python3 - "$REVIEW" "$DEC" << 'PYEOF'
-import json,re,sys
+import json,sys
 p,newdec=sys.argv[1],sys.argv[2]; r=json.load(open(p))
 r["decision"]=newdec
-r["body"]=re.sub(r"pr-review:\s*[A-Z_]+", f"pr-review: {newdec}", r["body"])
-r["body"] += "\n\n---\n\n**Downgraded from APPROVE: unresolved review threads from prior rounds exist.** Address each (reply with the fix SHA), resolve the thread, and re-arm.\n"
 json.dump(r, open(p,"w"))
 PYEOF
 fi
@@ -232,6 +235,8 @@ if dec=="APPROVE":
 else:
     plural="finding" if n==1 else "findings"
     line=f"{dec} at {sha} — {n} blocking {plural} posted as review threads; close them, then re-arm with the label to re-review."
+if os.environ.get("DOWNGRADED"):
+    line += "\n\n**Downgraded from APPROVE: unresolved review threads from prior rounds exist.** Address each (reply with the fix SHA), resolve the thread, and re-arm."
 print(json.dumps({"body": line+"\n\n<!-- pr-review: "+dec+" @ "+sha+" -->"}))
 PYEOF
 )

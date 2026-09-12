@@ -123,7 +123,7 @@ func TestSpliceTemplateIntoValues_ReplacesOnlyTheTarget(t *testing.T) {
 	wikiIdx := strings.Index(out, "  wiki-lint:")
 	prIdx := strings.Index(out, "  pr-review:")
 	forkIdx := strings.Index(out, "  fork-maintenance:")
-	if !(0 <= wikiIdx && wikiIdx < prIdx && prIdx < forkIdx) {
+	if wikiIdx < 0 || wikiIdx >= prIdx || prIdx >= forkIdx {
 		t.Errorf("entry ordering broken: wiki@%d pr@%d fork@%d", wikiIdx, prIdx, forkIdx)
 	}
 	if !strings.Contains(out, "  pr-review:\n    agent:") {

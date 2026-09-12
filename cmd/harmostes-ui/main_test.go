@@ -27,3 +27,21 @@ func TestResolveDaprEndpoint(t *testing.T) {
 		})
 	}
 }
+
+func TestFixtureListenAddr(t *testing.T) {
+	cases := []struct {
+		mode bool
+		in   string
+		want string
+	}{
+		{true, ":8083", "127.0.0.1:8083"},            // the wrong default, narrowed
+		{true, "127.0.0.1:18099", "127.0.0.1:18099"}, // explicit wins
+		{true, "0.0.0.0:8083", "0.0.0.0:8083"},       // explicit all-interfaces is a choice
+		{false, ":8083", ":8083"},                    // production untouched
+	}
+	for _, tc := range cases {
+		if got := fixtureListenAddr(tc.mode, tc.in); got != tc.want {
+			t.Errorf("fixtureListenAddr(%v, %q) = %q, want %q", tc.mode, tc.in, got, tc.want)
+		}
+	}
+}

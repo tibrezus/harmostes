@@ -119,7 +119,11 @@ jobs:
       # byte-equivalent vendored copy of llm-wiki-core's repo-map action at
       # the sha pinned in VENDOR.sha, plus exactly the deviations
       # vendor-patch.py applies (severity pin, cycle reporting, warnings
-      # persistence). Any other drift fails here — sync = cp + re-pin.
+      # persistence). The compared set is DERIVED from the patcher's output
+      # — never restated (a hardcoded third copy could shrink silently,
+      # #456 r1) — and cross-checked three ways: the produced tree must
+      # equal the VENDOR.sha list, upstream must have no .py outside it,
+      # and every produced file must byte-match the vendored copy.
       - name: rig-emit vendor sync (byte-parity at VENDOR.sha)
         run: |
           PIN_SHA=$(sed -n 's/^sha: //p' plugins/rig-emit/VENDOR.sha)
@@ -130,23 +134,34 @@ jobs:
           git -C /tmp/llm-wiki-core checkout --quiet "$PIN_SHA"
           rm -rf /tmp/vendored-out
           python3 plugins/rig-emit/vendor-patch.py \
-            /tmp/llm-wiki-core/.github/actions/repo-map /tmp/vendored-out
-          # Compare ONLY the vendored set — the rest of plugins/rig-emit is
-          # harmostes-owned (VENDOR.sha lists it).
+            /tmp/llm-wiki-core/.github/actions/repo-map /tmp/vendored-out >/dev/null
+          # 1. The patcher's output IS the vendored set — one source of truth.
+          (cd /tmp/vendored-out && find . -name '*.py' | sed 's|^\./||' | sort) > /tmp/produced.txt
+          # 2. It must equal the VENDOR.sha declaration (a new upstream .py
+          #    or a dropped one is a DECISION, recorded in VENDOR.sha + the
+          #    patcher — never absorbed silently).
+          awk '/^files:/{f=1;next} /^#/{f=0} f' plugins/rig-emit/VENDOR.sha \
+            | tr ' ' '\n' | sed '/^$/d' | sort > /tmp/declared.txt
+          if ! diff -u /tmp/declared.txt /tmp/produced.txt; then
+            echo "::error::VENDOR.sha files: and vendor-patch.py output disagree — sync the declaration, the patcher, or both"
+            exit 1
+          fi
+          # 3. Upstream must have no .py outside the vendored set (coverage
+          #    cannot grow a hole).
+          (cd /tmp/llm-wiki-core/.github/actions/repo-map \
+            && find . -name '*.py' | sed 's|^\./||' | sort) > /tmp/upstream.txt
+          if ! diff -u /tmp/produced.txt /tmp/upstream.txt; then
+            echo "::error::upstream repo-map has .py files outside the vendored set — extend VENDOR.sha + vendor-patch.py deliberately"
+            exit 1
+          fi
+          # 4. Byte-compare each.
           drift=0
-          for f in emit-rig.py rig/builder.py rig/calls.py rig/clones.py \
-                   rig/db.py rig/fitness.py rig/__init__.py rig/model.py \
-                   rig/symbols.py rig/validator.py \
-                   rig/extractors/base.py rig/extractors/cargo.py \
-                   rig/extractors/cmake.py rig/extractors/generic.py \
-                   rig/extractors/go.py rig/extractors/__init__.py \
-                   rig/extractors/npm.py rig/extractors/python.py \
-                   rig/extractors/zig.py; do
+          while read -r f; do
             if ! cmp -s "/tmp/vendored-out/$f" "plugins/rig-emit/$f"; then
               echo "::error::vendor drift: plugins/rig-emit/$f differs from pinned upstream (apply vendor-patch.py output or re-pin VENDOR.sha)"
               drift=1
             fi
-          done
+          done < /tmp/produced.txt
           exit $drift
 
       # Compares the COMMITTED fixture's canonical hash against a fresh build

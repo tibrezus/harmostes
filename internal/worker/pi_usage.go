@@ -14,7 +14,12 @@ import (
 // uploaded, so the numbers describe what the reviewer actually did and
 // travel beside the blob they describe.
 type ToolUsage struct {
-	ToolCalls int `json:"toolCalls,omitempty"` // every tool invocation
+	// ToolCalls has NO omitempty, deliberately (#456 r1 finding): a dead
+	// parser (pi session-format drift — the #239 precedent) returns zeros
+	// that would serialize to nothing and read exactly like a pre-telemetry
+	// run — and under the acceptance thresholds 0/0 PASSES. The total being
+	// always-present makes "did we parse anything" a fact, not an inference.
+	ToolCalls int `json:"toolCalls"`
 	RigCalls  int `json:"rigCalls,omitempty"`  // orientation (rig) calls
 	GrepCalls int `json:"grepCalls,omitempty"` // discovery (grep/rg) calls
 }

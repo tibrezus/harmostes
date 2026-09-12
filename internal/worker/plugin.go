@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"regexp"
@@ -349,6 +350,14 @@ func SavePiSession(ctx context.Context, dc dapr.Client, store, workflow, run str
 	}
 	base := fmt.Sprintf("%s:%s:pi-session", workflow, run)
 	usage := countToolUsage(raw)
+	if len(raw) > 0 && usage.ToolCalls == 0 {
+		// The metric's failure mode must be loud, not green-on-broken (#456
+		// r1): a parser that misses every line (pi session-format drift —
+		// the #239 precedent) would store an empty ToolUsage that reads
+		// exactly like a pre-telemetry run, and 0/0 passes the acceptance
+		// thresholds. One line of signal: drift turns into a greppable log.
+		log.Printf("pi session usage: 0 tool calls parsed from %d bytes — session-format drift? telemetry is blind for %s/%s", len(raw), workflow, run)
+	}
 	if err := dc.SaveState(ctx, store, base+piSessionDataSuffix, string(payloadJSON)); err != nil {
 		return err
 	}

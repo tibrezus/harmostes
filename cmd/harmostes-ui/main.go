@@ -54,6 +54,12 @@ func main() {
 	flag.BoolVar(&fixtureMode, "fixture", false, "serve the deterministic in-memory fixture world instead of a cluster")
 	flag.Parse()
 
+	// Loopback default for the fixture server (#436): the fixture world is
+	// write-capable and unauthenticated by construction (DevIdentity), so
+	// binding it to all interfaces by accident is the one wrong default.
+	// An explicit -addr always wins; the e2e harness passes its own.
+	addr = fixtureListenAddr(fixtureMode, addr)
+
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
 	})).With("component", "harmostes-ui", "version", version.Version)
@@ -181,4 +187,17 @@ func resolveDaprEndpoint() string {
 		return "http://127.0.0.1:" + p
 	}
 	return "http://127.0.0.1:3500"
+}
+
+// fixtureListenAddr narrows the fixture default to loopback (#436): the
+// fixture world is write-capable and unauthenticated by construction, so
+// `:8083` on all interfaces is the wrong default for it. Only the DEFAULT
+// moves — an explicit -addr / HARMOSTES_UI_ADDR is respected verbatim, and
+// non-fixture servers keep the wide default (production sits behind the
+// outpost and needs the Service's cluster IP to reach it).
+func fixtureListenAddr(fixtureMode bool, addr string) string {
+	if fixtureMode && addr == ":8083" {
+		return "127.0.0.1:8083"
+	}
+	return addr
 }

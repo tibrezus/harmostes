@@ -59,12 +59,19 @@ const jobDeathGrace = 2 * time.Minute
 // label returns (the author's explicit re-arm). A dead dispatch needs
 // no exception only while the #328 dead-dispatch breaker is closed:
 // the label still present makes the head a candidate, but at
-// MaxDeadDispatchesPerHead ArmClaim refuses the re-arm (claim.go) and
-// only an explicit label re-apply (humanOverride) re-dispatches.
+// MaxDeadDispatchesPerHead (3) ArmClaim refuses the re-arm (claim.go)
+// — with one reachable caveat: humanOverride fires when the review
+// label is present at ANY label touch (#423 breadth, review_gate.go
+// humanOverride), so a bot adding an unrelated label resets the
+// counter and spends a fresh dispatch — defeatable until #408 lands.
+// A new head push clears DeadDispatches (claim.go), making the head a
+// candidate again on its own merits.
 // Enforced in plugins/pr-review/pr-review.sh (validation) and consumed
 // in plugins/post-review/post-review.sh (verdict line + label DELETE,
-// which also names verdictTrailer as the contract's canonical home —
-// keep all of these in step).
+// which also names verdictTrailer as the contract's canonical home);
+// the shape reaches the agent through the review prompt template
+// (chart/values.yaml, golden-rendered in chart/ci/golden/full.yaml) —
+// keep all of these in step.
 
 // newReviewAPI is the seam the tests swap for a server-pinned API.
 var newReviewAPI = func() review.API {

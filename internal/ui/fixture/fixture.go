@@ -9,6 +9,7 @@ package fixture
 
 import (
 	_ "embed"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -276,16 +277,67 @@ func NewServer(namespace string, logger *slog.Logger) (*ui.Server, error) {
 // endpoint serves as a projection of the cluster's actual CRDs (ADR-0012 §2).
 // The schemas are compact but structurally truthful: type object, a spec
 // object, marker descriptions the E2E tier asserts on.
+// templateRevisionForFixture mirrors the ui package's revision annotation
+// entry shape (rev/description/spec) — the fixture stamps history without
+// importing ui internals.
+type templateRevisionForFixture struct {
+	Rev         int                           `json:"rev"`
+	Description string                        `json:"description"`
+	Spec        v1alpha1.WorkflowTemplateSpec `json:"spec"`
+}
+
+// graphNodeTypeEnum mirrors the workflow CRD's spec.graph.nodes.type enum —
+// the palette vocabulary (#417). Kept in lockstep with chart/crds by
+// fixture_test.go.
+func graphNodeTypeEnum() []apiextensionsv1.JSON {
+	names := []string{"plugin", "agent", "gate", "branch", "dapr-state-get", "dapr-state-set", "dapr-publish", "vela-app", "flux-reconcile", "http-call", "human-gate", "external"}
+	out := make([]apiextensionsv1.JSON, len(names))
+	for i, n := range names {
+		b, _ := json.Marshal(n)
+		out[i] = apiextensionsv1.JSON{Raw: b}
+	}
+	return out
+}
+
 func fixtureExtras(namespace string) []runtime.Object {
+	// The template's head spec mirrors the dev cluster's pr-review shape
+	// (fetch → agent+gate → post), and its revisions annotation carries the
+	// history the revisions view diffs (#417): r1 was deterministic-only with
+	// an older fetch plugin; the live spec is r2. Structurally truthful —
+	// the same contract the MR-bridge (#420) will stamp on write.
+	noAgent := false
 	tmpl := &v1alpha1.WorkflowTemplate{
 		ObjectMeta: metav1.ObjectMeta{Name: "pr-review", Namespace: namespace},
 		Spec: v1alpha1.WorkflowTemplateSpec{
 			Description: "PR review (fixture)",
+			Prepare:     v1alpha1.PrepareSpec{Plugin: v1alpha1.PluginRef{Name: "pr-fetch"}},
+			Agent: v1alpha1.AgentSpec{
+				Model:        "mistral-small-latest",
+				Skill:        "/skills/pr-review/",
+				TaskTemplate: v1alpha1.TaskTemplate{Name: "pr-review"},
+				Gate:         v1alpha1.GateRef{Plugin: v1alpha1.PluginRef{Name: "pr-review"}},
+			},
+			Deploy: v1alpha1.DeploySpec{Plugin: v1alpha1.PluginRef{Name: "post-review"}},
 			Scope: []v1alpha1.ScopeParam{
 				{Name: "repos", Kind: "list", Label: "Repos", Description: "the scope the prepare plugin operates on"},
 				{Name: "label", Kind: "string", Label: "Label trigger", Default: "needs-review"},
 			},
 		},
+	}
+	revJSON, err := json.Marshal([]templateRevisionForFixture{
+		{
+			Rev:         1,
+			Description: "deterministic-only, stale fetch",
+			Spec: v1alpha1.WorkflowTemplateSpec{
+				Description: "PR review (fixture, r1)",
+				Prepare:     v1alpha1.PrepareSpec{Plugin: v1alpha1.PluginRef{Name: "pr-fetch-stale"}},
+				Agent:       v1alpha1.AgentSpec{Enabled: &noAgent},
+				Deploy:      v1alpha1.DeploySpec{Plugin: v1alpha1.PluginRef{Name: "post-review"}},
+			},
+		},
+	})
+	if err == nil { // fixture construction error = programming error; degrade to headless
+		tmpl.Annotations = map[string]string{ui.RevisionsAnnotation: string(revJSON)}
 	}
 	workflowCRD := &apiextensionsv1.CustomResourceDefinition{
 		ObjectMeta: metav1.ObjectMeta{Name: "workflows.harmostes.dev", ResourceVersion: "42"},
@@ -308,6 +360,25 @@ func fixtureExtras(namespace string) []runtime.Object {
 										Properties: map[string]apiextensionsv1.JSONSchemaProps{
 											"repo":   {Type: "string"},
 											"branch": {Type: "string"},
+										},
+									},
+									"graph": {
+										Type: "object", Description: "the graph-native pipeline (fixture projection)",
+										Properties: map[string]apiextensionsv1.JSONSchemaProps{
+											"nodes": {
+												Type: "array",
+												Items: &apiextensionsv1.JSONSchemaPropsOrArray{
+													Schema: &apiextensionsv1.JSONSchemaProps{
+														Type: "object",
+														Properties: map[string]apiextensionsv1.JSONSchemaProps{
+															// The node-type vocabulary the topology
+															// palette derives (#417) — mirrors the
+															// real CRD enum.
+															"type": {Type: "string", Enum: graphNodeTypeEnum()},
+														},
+													},
+												},
+											},
 										},
 									},
 								},

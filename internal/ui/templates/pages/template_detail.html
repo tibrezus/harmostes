@@ -30,6 +30,16 @@
 		</div>
 	</section>
 
+	<!-- Topology (ADR-0012 §3, #417): the compiled graph as the layered SVG
+	     projection — the same geometry the run graph paints, no client JS.
+	     Revision history (annotation-carried until #420) links the diff view. -->
+	<section class="tpl-section">
+		<h3 class="tpl-section-heading">Topology
+			{{if gt $t.RevisionCount 1}}<a class="tpl-revisions-link" href="/templates/{{$t.Name}}/revisions" data-testid="revisions-link">{{ $t.RevisionCount }} revisions — diff view</a>{{end}}
+		</h3>
+		{{template "pages/frag_topology.html" $t.Topology}}
+	</section>
+
 	<!-- Workflow Code island (ADR-0012 §2, #416): the template document as
 	     YAML, validated against the CRD-derived schema from /api/schema.
 	     Read-only first — editing lands with the inspector / MR-bridge.

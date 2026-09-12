@@ -60,3 +60,16 @@ spec:
     edges:
       - from: prepare
         to: deploy
+---
+apiVersion: harmostes.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: pr-review-instance
+spec:
+  # Thin instance (issue #417): templateRef only — the merged shape (template
+  # defaults + instance source) is what runs, and what the detail page's
+  # topology renders. The stored CR stays thin.
+  templateRef: pr-review
+  source:
+    kind: webhook
+    repo: demo-rezuscloud-harmostes

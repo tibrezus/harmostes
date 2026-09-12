@@ -2042,3 +2042,137 @@ code, pre {
 .rg-timing-bar.rg-state-failed { fill: var(--ds-negative, #c62828); opacity: 0.9; }
 .rg-timing-bar.rg-state-skipped { fill: var(--ink-soft, #888); opacity: 0.5; }
 .rg-timing-bar.rg-state-running { fill: var(--ink, #222); opacity: 0.85; }
+
+/* ---- Topology projection (#417, ADR-0012 §3) ----
+   Same visual language as the run graph (shared geometry engine), painted
+   for authoring: no execution state, vocabulary types solid, unknown types
+   dashed. Diff classes (revisions view) are semantic color only — added
+   positive, removed negative, changed warning; ghosts dim. */
+.tp-svg {
+	max-width: 100%;
+	height: auto;
+}
+.tp-node {
+	cursor: default;
+}
+.tp-node:focus {
+	outline: none;
+}
+.tp-node .tp-box {
+	fill: var(--ds-bg-elevated, var(--ds-bg, #fff));
+	stroke: var(--ds-border);
+	stroke-width: 1.5;
+}
+.tp-node[data-unknown-type="true"] .tp-box {
+	stroke-dasharray: 2 3;
+}
+.tp-label {
+	font-size: 13px;
+	fill: var(--ds-text);
+	font-family: var(--ds-font-mono, monospace);
+}
+.tp-type {
+	font-size: 10px;
+	fill: var(--ds-text-muted);
+	text-anchor: end;
+	font-family: var(--ds-font-mono, monospace);
+}
+.tp-edge {
+	stroke: var(--ds-border);
+	stroke-width: 1.5;
+	fill: none;
+}
+.tp-node--ghost {
+	opacity: 0.38;
+}
+.tp-edge--ghost {
+	stroke-dasharray: 3 4;
+	opacity: 0.38;
+}
+.tp-node--added .tp-box { stroke: var(--ds-positive, #2e7d32); stroke-width: 2; }
+.tp-edge--added { stroke: var(--ds-positive, #2e7d32); }
+.tp-node--removed .tp-box { stroke: var(--ds-negative, #c62828); stroke-width: 2; stroke-dasharray: 5 3; }
+.tp-edge--removed { stroke: var(--ds-negative, #c62828); stroke-dasharray: 5 3; }
+.tp-node--changed .tp-box { stroke: var(--ds-warning, #ef6c00); stroke-width: 2; }
+
+/* Revisions view layout: two panes over the shared union geometry, the
+   picker, the legend, the YAML diff pane. */
+.tpl-revisions-link {
+	font-size: 0.78rem;
+	font-weight: 400;
+	margin-left: 0.75rem;
+	color: var(--ds-accent, #3b82f6);
+}
+.rev-picker {
+	display: flex;
+	gap: 0.35rem;
+	align-items: baseline;
+	margin: 0.5rem 0 1rem;
+	font-family: var(--ds-font-mono, monospace);
+}
+.rev-option {
+	font-size: 0.8rem;
+	padding: 0.1rem 0.45rem;
+	border-radius: 4px;
+	border: 1px solid var(--ds-border);
+	color: var(--ds-text);
+	text-decoration: none;
+}
+.rev-option--from { border-color: var(--ds-warning, #ef6c00); }
+.rev-option--to { border-color: var(--ds-positive, #2e7d32); }
+.rev-picker-sep { color: var(--ds-text-muted); }
+.rev-diff-grid {
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	gap: 1rem;
+	align-items: start;
+}
+@media (max-width: 900px) {
+	.rev-diff-grid { grid-template-columns: 1fr; }
+}
+.rev-pane {
+	border: 1px solid var(--ds-border-faint);
+	border-radius: 6px;
+	padding: 0.6rem 0.75rem;
+	overflow-x: auto;
+	background: var(--ds-bg-elevated, transparent);
+}
+.rev-pane-heading {
+	font-size: 0.8rem;
+	font-weight: 600;
+	margin-bottom: 0.5rem;
+}
+.rev-legend {
+	display: flex;
+	gap: 1rem;
+	margin: 0.75rem 0 1.25rem;
+	font-size: 0.75rem;
+	color: var(--ds-text-muted);
+}
+.rev-swatch {
+	display: inline-block;
+	width: 1.1em;
+	height: 0.75em;
+	border-radius: 3px;
+	border: 2px solid var(--ds-border);
+	vertical-align: baseline;
+	margin-right: 0.3rem;
+}
+.rev-swatch--added { border-color: var(--ds-positive, #2e7d32); }
+.rev-swatch--removed { border-color: var(--ds-negative, #c62828); border-style: dashed; }
+.rev-swatch--changed { border-color: var(--ds-warning, #ef6c00); }
+.rev-swatch--ghost { opacity: 0.4; }
+.ydiff {
+	font-family: var(--ds-font-mono, monospace);
+	font-size: 0.78rem;
+	line-height: 1.45;
+	background: var(--ds-bg-elevated, transparent);
+	border: 1px solid var(--ds-border-faint);
+	border-radius: 6px;
+	padding: 0.6rem 0.75rem;
+	overflow-x: auto;
+	margin: 0;
+}
+.ydiff-line { display: block; white-space: pre; }
+.ydiff-line--added { color: var(--ds-positive, #2e7d32); background: color-mix(in oklab, var(--ds-positive, #2e7d32) 8%, transparent); }
+.ydiff-line--removed { color: var(--ds-negative, #c62828); background: color-mix(in oklab, var(--ds-negative, #c62828) 8%, transparent); text-decoration: line-through; text-decoration-thickness: 1px; text-decoration-color: color-mix(in oklab, var(--ds-negative, #c62828) 45%, transparent); }

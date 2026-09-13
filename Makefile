@@ -65,7 +65,8 @@ test-extensions:
 		extensions/rig-query/queries.test.ts \
 		extensions/rig-query/index.parse.test.ts \
 		extensions/rig-query/index.runtime.test.ts \
-		extensions/litellm-provider/fallbacks.test.ts
+		extensions/litellm-provider/fallbacks.test.ts \
+		extensions/turn-budget/policy.test.ts
 	@node --experimental-strip-types -e 'await import("./extensions/litellm-provider/index.ts")'
 	python3 extensions/rig-query/fixtures/freshness.py
 	@# Chart copy drift gate: the resolver's litellm-provider ConfigMap source

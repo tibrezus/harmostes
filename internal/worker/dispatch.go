@@ -440,6 +440,12 @@ var jobEnvAllowlist = []string{
 	// on a deployment → the extension is inert and reviews run uncapped
 	// (the pre-#484 status quo).
 	"PI_TOOL_BUDGET",
+	// PI_TOOL_BUDGET_ALLOW: the turn-budget extension's finalize lane —
+	// post-cap bash commands touching any of these substrings still execute
+	// (v2: v1 blocked everything except a `write` tool that is not
+	// registered in review sessions, bricking the run — 4 failed gate
+	// attempts, no review.json, attempt 57a1232749c0).
+	"PI_TOOL_BUDGET_ALLOW",
 }
 
 // jobCredentialEnv forwards the allowlisted deployment-level vars from the

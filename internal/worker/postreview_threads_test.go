@@ -697,8 +697,6 @@ func TestPostReviewForgejoZeroFindingsPostsNativeApproval(t *testing.T) {
 	})
 	mux.HandleFunc("/repos/git.rezus.cloud/tibrez/rhesadox/issues/99/labels/needs-review", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
-		mu.Lock()
-		mu.Unlock()
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)

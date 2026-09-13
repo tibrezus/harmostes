@@ -14,8 +14,8 @@ package agent
 
 import (
 	"context"
-	"os"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -59,6 +59,7 @@ type CmdGate struct {
 	Command string
 	Dir     string
 }
+
 func (g CmdGate) Run(ctx context.Context) (bool, string, error) {
 	_, span := observability.Tracer().Start(ctx, "gate.shell")
 	defer span.End()

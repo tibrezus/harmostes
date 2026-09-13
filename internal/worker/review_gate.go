@@ -44,6 +44,39 @@ const reDispatchGrace = 5 * time.Minute
 // tolerates) before a sweep treats a missing live Job as a dead run.
 const jobDeathGrace = 2 * time.Minute
 
+// Verdict contract (r7, owner directive #431 — see
+// internal/worker/reviewgate_validation_test.go for the same lineage):
+// the reviewer's review.json carries blocking findings only — the body
+// field is gone from the shape, and where a legacy body lingers the
+// validation tolerates it (ignored, not rejected) while a
+// REQUEST_CHANGES without ≥1 finding is rejected outright; the deploy
+// node composes the one-line verdict + provenance trailer itself. The
+// deploy's APPROVE→REQUEST_CHANGES downgrade line is a different
+// artifact — it is deploy-composed (post-review.sh) about PRIOR-round
+// threads, so the ≥1-finding rule governs review.json, never that
+// line. A consumed verdict removes the reviewReady label (default
+// "needs-review") so the same head is never re-reviewed unless the
+// label returns (the author's explicit re-arm). A dead dispatch needs
+// no exception only while the #328 dead-dispatch breaker is closed:
+// the label still present makes the head a candidate, but at
+// MaxDeadDispatchesPerHead (3) ArmClaim refuses the re-arm (claim.go)
+// — with one reachable caveat: humanOverride fires when the review
+// label is present at ANY label touch (#423 breadth, review_gate.go
+// humanOverride), so a bot adding an unrelated label resets the
+// counter and spends a fresh dispatch — defeatable until #408 lands.
+// A new head push clears DeadDispatches (claim.go), making the head a
+// candidate again on its own merits.
+// Enforced in plugins/pr-review/pr-review.sh (validation) and consumed
+// in plugins/post-review/post-review.sh (verdict line + label DELETE,
+// which also names verdictTrailer as the contract's canonical home);
+// the shape reaches the agent through the review prompt template
+// (chart/values.yaml, golden-rendered in chart/ci/golden/full.yaml) and
+// the pr-review skill (cloned from the agents repo at RUNTIME by the
+// sync-skills initContainer — no image rebuild); where agent-facing
+// text claims to own the contract, verdictTrailer wins. Keep every
+// listed home in step: prompt-vs-validator drift is how the #2085
+// 4-attempt loop happened.
+
 // newReviewAPI is the seam the tests swap for a server-pinned API.
 var newReviewAPI = func() review.API {
 	return &review.RESTAPI{Client: http.DefaultClient, TokenLookup: os.Getenv}

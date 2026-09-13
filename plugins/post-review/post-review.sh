@@ -168,49 +168,90 @@ CLASSIFIER_PY=$(cat << 'GATE_PYEOF'
 import json, os, sys
 cs=json.load(sys.stdin)
 sha=os.environ.get("REVIEWED_SHA","")
-if cs is None:
-    print("APPROVE"); raise SystemExit   # fetch failed — fail-open with a loud WARN upstream
+open_n=0
+if not isinstance(cs, list):
+    print(0); print("APPROVE"); raise SystemExit   # fetch failed — fail-open with a loud WARN upstream
 dec="APPROVE"
-if cs and "resolvable" in cs[0]:
+# Degraded-read posture (r7 review of 90a24e63): a shape this program
+# cannot classify must DEGRADE (treat as unresolvable-but-not-open), never
+# KeyError — the classifier runs under `set -e` inside the APPROVE branch,
+# and a crash there aborts the deploy before the verdict + label DELETE
+# (the exact lost-round signature this plugin exists to prevent). Anything
+# whose dialect/identity we cannot read is counted as CLOSED-BY-DEFAULT
+# here: a false APPROVE re-reviews next round, a crash wedges the head.
+if cs and isinstance(cs[0], dict) and "resolvable" in cs[0]:
     # GitLab dialect: native resolve is authoritative.
     open_threads=[c for c in cs
-        if c["resolvable"] and not c["resolved"]
+        if isinstance(c, dict)
+        and c.get("resolvable") and not c.get("resolved")
         and str(c.get("commit_id") or "")!=sha]
 else:
     # GitHub/Forgejo dialect: a thread is CLOSED by real resolve state
     # (C1 — a GraphQL-side resolve leaves no reply) or by a reply.
-    replied={c["in_reply_to"] for c in cs if c.get("in_reply_to")}
+    # Reply linkage is host-dialectal: GitHub REST names it
+    # in_reply_to_id, Forgejo in_reply_to — read both (the live review
+    # loop of #467 tripped this: replies never closed threads on GitHub,
+    # so every APPROVE downgraded on phantom open threads).
+    def reply_parent(c):
+        return c.get("in_reply_to_id") or c.get("in_reply_to")
+    replied={reply_parent(c) for c in cs if isinstance(c, dict) and reply_parent(c)}
     open_threads=[c for c in cs
-        if not c.get("in_reply_to")
-        and c["id"] not in replied
+        if isinstance(c, dict)
+        and not reply_parent(c)
+        and c.get("id") not in replied
         and not c.get("resolved")
         # No commit_id → round unattributable: never downgrade on it (C4).
         and c.get("commit_id") not in (None, "")
         and str(c.get("commit_id"))!=sha]
+open_n=len(open_threads)
 if open_threads:
     dec="REQUEST_CHANGES"
     for c in open_threads[:10]:
         print(f"[post-review] unresolved thread {c.get('path','?')}:{c.get('line','?')} id={c.get('id')} — reply+resolve required before APPROVE", file=sys.stderr)
+# stdout: count line FIRST, decision LAST — the shell and the golden test
+# read the decision as the last line; the count feeds the downgrade verdict
+# line (DOWNGRADED path) so the two never drift into separate
+# implementations.
+print(open_n)
 print(dec)
 # GATE-CLASSIFIER-END
 GATE_PYEOF
 )
 
-NEWDEC=$(printf '%s' "$CS_JSON" | python3 -c "$CLASSIFIER_PY")
+# stdout of the classifier: count line first, decision last (the golden
+# test reads the decision as the last line — keep that invariant). If the
+# classifier itself dies, the gate was NOT evaluated: apply the r6 P1
+# posture (skip the verdict + label removal, next cycle retries) instead
+# of posting a verdict from an unknown decision.
+CLASS_OUT=$(printf '%s' "$CS_JSON" | python3 -c "$CLASSIFIER_PY") || {
+  log "WARN: gate classifier failed — gate not evaluated; skipping verdict post and label removal; next cycle retries"
+  echo "{\"artifact\":\"pr-$HOST-$REPO-$PR_NUM\",\"status\":\"ok\",\"event\":{\"host\":\"$HOST\",\"repo\":\"$REPO\",\"number\":$PR_NUM,\"decision\":\"$DEC\",\"thread_gate\":\"classifier-crash\",\"skipped\":\"gate-unavailable\"}}"
+  exit 0
+}
+NEWDEC=$(printf '%s\n' "$CLASS_OUT" | tail -n 1)
+OPEN_THREADS=$(printf '%s\n' "$CLASS_OUT" | head -n 1)
+if [ -z "$NEWDEC" ] || [ "$NEWDEC" != "APPROVE" ] && [ "$NEWDEC" != "REQUEST_CHANGES" ]; then
+  log "WARN: gate classifier produced no decision — gate not evaluated; skipping verdict post and label removal; next cycle retries"
+  echo "{\"artifact\":\"pr-$HOST-$REPO-$PR_NUM\",\"status\":\"ok\",\"event\":{\"host\":\"$HOST\",\"repo\":\"$REPO\",\"number\":$PR_NUM,\"decision\":\"$DEC\",\"thread_gate\":\"classifier-crash\",\"skipped\":\"gate-unavailable\"}}"
+  exit 0
+fi
 
 if [ "$NEWDEC" != "$DEC" ]; then
-  log "APPROVE downgraded: unresolved prior-round threads"
+  log "APPROVE downgraded: $OPEN_THREADS unresolved prior-round thread(s)"
   DEC="$NEWDEC"
-  # S1 (r26): the downgrade must rewrite the WHOLE verdict — decision field
-  # AND the trailer in the body — or dw_wait_review keeps polling APPROVE
-  # and merges over open threads. The trailer shape is review.go:733's
-  # verdictTrailer (the contract's canonical home) — keep both in step.
+  DOWNGRADED=1
+  export DOWNGRADED OPEN_THREADS   # the verdict builder emits the downgrade line
+  # S1 (r26): the downgrade rewrites the whole verdict — the decision field
+  # here AND the trailer of the posted verdict comment below (rebuilt from
+  # decision + SHA, so the downgrade is visible to dw_wait_review).
+  # r7: review.json has NO body field — the reviewer no longer writes one,
+  # so the downgrade marker rides the decision field + the comment note
+  # (DOWNGRADED), not a body rewrite. verdictTrailer in internal/review/review.go
+  # is the contract's canonical home — keep both in step.
   python3 - "$REVIEW" "$DEC" << 'PYEOF'
-import json,re,sys
+import json,sys
 p,newdec=sys.argv[1],sys.argv[2]; r=json.load(open(p))
 r["decision"]=newdec
-r["body"]=re.sub(r"pr-review:\s*[A-Z_]+", f"pr-review: {newdec}", r["body"])
-r["body"] += "\n\n---\n\n**Downgraded from APPROVE: unresolved review threads from prior rounds exist.** Address each (reply with the fix SHA), resolve the thread, and re-arm.\n"
 json.dump(r, open(p,"w"))
 PYEOF
 fi
@@ -227,7 +268,14 @@ import json, os
 with open(os.environ["REVIEW"]) as f: review=json.load(f)
 dec=review["decision"]; sha=review.get("reviewed_sha","")
 n=len(review.get("comments",[]) or [])
-if dec=="APPROVE":
+if os.environ.get("DOWNGRADED"):
+    # Deploy-composed downgrade: NOT the reviewer's verdict — the ≥1-finding
+    # rule (pr-review.sh validation) governs review.json, not this line. It
+    # must stay self-describing: the downgrade fires on PRIOR-round threads,
+    # so "N blocking findings" would be false here.
+    line=(f"{dec} at {sha} — downgraded: {os.environ.get('OPEN_THREADS','0')} unresolved "
+          "prior-round thread(s); reply with the fix SHA, resolve, then re-arm.")
+elif dec=="APPROVE":
     line=f"APPROVE at {sha} — all pillars clean, no blocking findings. Label consumed; re-arm with the label to review again."
 else:
     plural="finding" if n==1 else "findings"

@@ -586,6 +586,21 @@ func runOneShot() {
 			Shadow:         shadow,
 			State:          wf.Name,
 			ExtraEnv:       extraEnv,
+			ExtraEnvForNode: func(node v1alpha1.NodeSpec, base []string) []string {
+				// #480: the bot review credential is scoped to the deploy
+				// phase — the only node whose plugin (post-review) reads it.
+				// base is already scrubbed at the source (above); every
+				// non-deploy node runs inside or beside the untrusted PR
+				// clone (prepare's emit-rig → go mod inherits env
+				// verbatim) and must not see it.
+				if node.ID != "deploy" {
+					return base
+				}
+				if bt := os.Getenv("HARMOSTES_FORGEJO_BOT_TOKEN"); bt != "" {
+					return append(append([]string{}, base...), "HARMOSTES_FORGEJO_BOT_TOKEN="+bt)
+				}
+				return base
+			},
 		}),
 	)
 

@@ -167,6 +167,24 @@ type WorkflowContext struct {
 	Shadow         string   // push target branch (parallel/dry-run)
 	State          string   // Dapr state key prefix for this workflow
 	ExtraEnv       []string // extra env vars propagated to all plugin nodes
+	// ExtraEnvForNode, when set, scopes per-node env at NodeEnv build time:
+	// called once per node with the shared base slice; returning nil means
+	// "use ExtraEnv unchanged". Credential-scoping policies live behind this
+	// hook (#480: the bot review credential reaches the deploy node only —
+	// prepare runs untrusted-PR tooling whose child processes inherit env
+	// verbatim) — the kernel itself stays credential-agnostic.
+	ExtraEnvForNode func(node v1alpha1.NodeSpec, base []string) []string
+}
+
+// extraEnvFor resolves the per-node env slice: the hook (when set) scopes
+// ExtraEnv for this node; nil hook means the shared slice for everyone.
+func (c *WorkflowContext) extraEnvFor(node v1alpha1.NodeSpec) []string {
+	if c.ExtraEnvForNode != nil {
+		if scoped := c.ExtraEnvForNode(node, c.ExtraEnv); scoped != nil {
+			return scoped
+		}
+	}
+	return c.ExtraEnv
 }
 
 // GraphExecutorOption configures a GraphExecutor.
@@ -367,7 +385,7 @@ func (e *GraphExecutor) Execute(ctx context.Context, graph v1alpha1.GraphSpec, p
 			WorkspaceDir:   e.wfCtx.WorkspaceDir,
 			Shadow:         e.wfCtx.Shadow,
 			State:          e.wfCtx.State,
-			ExtraEnv:       e.wfCtx.ExtraEnv,
+			ExtraEnv:       e.wfCtx.extraEnvFor(node),
 		}
 
 		// Capability Policy enforcement (ADR-0003, ADR-0001): the deterministic

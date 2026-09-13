@@ -10,6 +10,14 @@ image:
 skills:
   repo: https://github.com/tibrezus/agents.git   # cloned by the init container into /skills on every worker pod AND per-Attempt Job (#441, passed to the dispatcher as HARMOSTES_SKILLS_REPO; Go default: internal/k8s.DefaultSkillsRepo)
 
+agent:
+  # Hard tool-call cap per agent session (#484): the turn-budget extension
+  # blocks every call past the cap (write stays available so the agent can
+  # still produce its output artifact). Turn COUNT is the review's wall
+  # clock — 47 calls ≈ 43 min at ~55s of model latency per call. Empty or
+  # 0 = uncapped (the extension is inert).
+  toolBudget: "24"
+
 controller:
   serviceAccount: harmostes-controller
   pollInterval: 5m        # default run cadence for Workflows without a schedule
@@ -378,9 +386,12 @@ tasks:
 
     ## Your toolkit (use selectively)
 
-    You have a round-trip budget: every tool call costs ~25 seconds of model
-    latency. A good review fits in ~12 calls. The methodology (9 pillars) is
-    inlined below — NEVER search the filesystem for skill or pillar files.
+    You have a round-trip budget: every tool call costs ~1 minute of model
+    latency, and the HARNESS ENFORCES the cap — after PI_TOOL_BUDGET calls
+    (24 by default) every tool except `write` is refused with a finalize
+    instruction. A good review fits in ~12 calls; budget as if the cap were
+    15. The methodology (9 pillars) is inlined below — NEVER search the
+    filesystem for skill or pillar files.
 
     - `rig` — the architecture graph, when pr-context.json has `rig_db`. It is
       SHA-exact at the reviewed head (generated at prepare time, verified — a

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { decide, parseAllow, parseBudget, DEFAULT_ALLOW, finalizeReason } from "./policy.ts";
+import { decide, eventArgs, parseAllow, parseBudget, DEFAULT_ALLOW, finalizeReason } from "./policy.ts";
 
 test("no/0/unparsable budget is inert", () => {
 	for (const raw of [undefined, "", "0", "-3", "abc", "  "]) {
@@ -72,4 +72,25 @@ test("finalizeReason names the count, the cap, and the lane", () => {
 	const msg = finalizeReason(31, 30, "/workspace/review.json");
 	assert.match(msg, /31 calls > 30 allowed/);
 	assert.match(msg, /\/workspace\/review\.json/);
+});
+
+test("eventArgs reads pi's `input` key (types.d.ts) with `args` fallback", () => {
+	// the shape that bricked attempt 55de07e6351f: command under `input`
+	assert.deepEqual(eventArgs({ input: { command: "cat > /workspace/review.json" } }), { command: "cat > /workspace/review.json" });
+	assert.deepEqual(eventArgs({ args: { command: "ls" } }), { command: "ls" });
+	// JSON-string form parses defensively
+	assert.deepEqual(eventArgs({ input: JSON.stringify({ command: "ls" }) }), { command: "ls" });
+	assert.deepEqual(eventArgs({ input: "not json" }), {});
+	assert.deepEqual(eventArgs(undefined), {});
+	assert.deepEqual(eventArgs({}), {});
+});
+
+test("live regression: post-cap write via input-carried command opens the lane", () => {
+	// exact shape from the 55de07e6351f failure: pi delivers the command
+	// under `input`; the heredoc write must be ALLOWED at 33 > 32
+	const d = decide("bash", eventArgs({ input: { command: "cat > /workspace/review.json <<'EOF'\n{}\nEOF" } }), 33, 32, parseAllow("/workspace/review.json"));
+	assert.deepEqual(d, { allow: true });
+	// and a non-lane command still blocks
+	const b = decide("bash", eventArgs({ input: { command: "grep -rn x /workspace/repo" } }), 33, 32, parseAllow("/workspace/review.json"));
+	assert.equal(b.allow, false);
 });

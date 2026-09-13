@@ -1,0 +1,81 @@
+name: Preview Artifacts
+
+# Per-PR container images for the harmostes preview environments
+# (k8s-config platform/harmostes/preview, issue k8s-config#40). A
+# `preview`-labeled PR gets an ephemeral environment whose vela Application
+# renders the PR's CHART from the repo at the PR SHA — only the IMAGES need
+# publishing, tagged pr-<id>-<sha> and consumed by the preview's values
+# overrides.
+#
+# Same-repo PRs only: GHCR push needs packages:write (fork PRs get a
+# read-only token), and a fork's preview would run unreviewed code.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: preview-artifacts-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  images:
+    name: Build + push PR images
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      TAG: pr-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      # Mirrors .github/goreleaser.yaml `builds` (same flags + ldflags; the
+      # version is the PR's — the binaries self-report it). The worker image
+      # bundles worker + agent (goreleaser ids: [worker, agent]).
+      - name: Build binaries
+        run: |
+          set -euo pipefail
+          V="0.0.0-pr${{ github.event.pull_request.number }}"
+          SHA="$(git rev-parse --short HEAD)"
+          NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          LDFLAGS="-s -w -X github.com/tibrezus/harmostes/version.Version=$V -X github.com/tibrezus/harmostes/version.GitCommit=$SHA -X github.com/tibrezus/harmostes/version.BuildTime=$NOW"
+          mkdir -p dist/linux/amd64
+          CGO_ENABLED=0 go build -trimpath -ldflags "$LDFLAGS" -o dist/linux/amd64/harmostes-controller ./cmd/harmostes-controller
+          CGO_ENABLED=0 go build -trimpath -ldflags "$LDFLAGS" -o dist/linux/amd64/harmostes-worker ./cmd/harmostes-worker
+          CGO_ENABLED=0 go build -trimpath -ldflags "$LDFLAGS" -o dist/linux/amd64/harmostes-agent ./cmd/harmostes-agent
+
+      # The release Dockerfiles COPY from goreleaser's context shape:
+      # binaries at linux/amd64/, plus plugins/ + extensions/ for the worker
+      # (goreleaser extra_files). One shared context serves all three images.
+      - name: Assemble build contexts (goreleaser dockers_v2 shape)
+        run: |
+          set -euo pipefail
+          mkdir -p previewctx/linux/amd64
+          cp dist/linux/amd64/harmostes-* previewctx/linux/amd64/
+          cp -r plugins extensions previewctx/
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          # Packages are user-owned (tibrezus/*) — GITHUB_TOKEN can't push.
+          username: x-access-token
+          password: ${{ secrets.HARMOSTES_GITHUB_TOKEN }}
+
+      - name: Build + push images
+        run: |
+          set -euo pipefail
+          for img in controller ui worker; do
+            docker build -f ".github/Dockerfile.$img.release" -t "ghcr.io/tibrezus/harmostes-$img:$TAG" previewctx
+            docker push "ghcr.io/tibrezus/harmostes-$img:$TAG"
+            echo "pushed ghcr.io/tibrezus/harmostes-$img:$TAG"
+          done

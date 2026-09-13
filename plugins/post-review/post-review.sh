@@ -307,6 +307,16 @@ echo '{"posted":0,"rejected":0,"capped":0}' > "$THREAD_STATUS_FILE"; export THRE
 # guard silently stops recognising its own posts.
 SHA8="$(echo "${REVIEWED_SHA:-}" | cut -c1-8)"; export SHA8
 MARKER="automated review of $SHA8"; export MARKER
+# The verdict's native review state (#470): the thread gate has already
+# passed, so an APPROVE carries zero unresolved threads and submits as a
+# native APPROVED review — the whitelisted bot identity then SATISFIES
+# required_approvals=1 (rhesadox main) and the merge unblocks without a
+# human re-click. REQUEST_CHANGES submits REQUEST_REVIEW:
+# block_on_rejected_reviews holds the PR until re-review clears it, and
+# dismiss_stale_approvals (branch protection) keeps the approval bound to
+# the reviewed head. The whitelist deliberately contains the bot: review
+# and approval are the same adversarial identity, by decision.
+REVIEW_EVENT="REQUEST_REVIEW"; [ "$DEC" = "APPROVE" ] && REVIEW_EVENT="APPROVED"; export REVIEW_EVENT
 # The threads anchor at reviewed_sha: an absent/malformed SHA cannot anchor
 # (r3 P5 — trailers allow 7-40 hex, so validate, never assume full length).
 if echo "${REVIEWED_SHA:-}" | grep -qE '^[0-9a-f]{7,40}$'; then
@@ -414,7 +424,7 @@ if fj:
     # Forgejo accepts a comments ARRAY in one create-pull-review — batch
     # first (one review object on the UI), fall back per finding on
     # rejection so one bad line cannot kill the batch (r2 P7).
-    payload={"event":"COMMENT","commit_id":sha,"body":marker,
+    payload={"event":os.environ["REVIEW_EVENT"],"commit_id":sha,"body":marker,
              "comments":[{"path":p,"new_position":l,"body":b} for p,l,_,b in valid]}
     ok, reason = curl(f"/repos/{repo}/pulls/{pr}/reviews", payload)
     if ok:
@@ -422,7 +432,7 @@ if fj:
     else:
         print(f"[post-review] WARN: batch publish rejected ({reason[:120]}) — falling back per finding", file=sys.stderr)
         for p,l,_,b in valid:
-            ok2, reason2 = curl(f"/repos/{repo}/pulls/{pr}/reviews", {"event":"COMMENT","commit_id":sha,"body":marker,
+            ok2, reason2 = curl(f"/repos/{repo}/pulls/{pr}/reviews", {"event":os.environ["REVIEW_EVENT"],"commit_id":sha,"body":marker,
                                      "comments":[{"path":p,"new_position":l,"body":b}]})
             if ok2: posted+=1
             else:
@@ -446,6 +456,17 @@ with open(os.environ["THREAD_STATUS_FILE"],"w") as f:
     json.dump(summary, f)
 PYTHREADS
   fi
+elif [ "$REVIEW_EVENT" = "APPROVED" ]; then
+  # APPROVE with zero blocking findings (#470): the thread publisher above
+  # never runs (nothing to anchor), so the native APPROVED review — the
+  # whitelisted bot identity satisfying required_approvals — is posted
+  # here. body carries the same MARKER the dedupe scan recognises.
+  curl -fsS --max-time 20 -X POST \
+    -H "authorization: token $TOKEN" -H "content-type: application/json" \
+    -d "{\"event\":\"APPROVED\",\"commit_id\":\"$REVIEWED_SHA\",\"body\":\"$MARKER\"}" \
+    "$API_BASE/repos/$REPO/pulls/$PR_NUM/reviews" >/dev/null 2>&1 \
+    && echo '{"posted":1,"rejected":0,"capped":0}' > "$THREAD_STATUS_FILE" \
+    || echo '{"posted":0,"rejected":1,"capped":0,"skipped":"approval-post-failed"}' > "$THREAD_STATUS_FILE"
 fi
 THREADS=$(cat "$THREAD_STATUS_FILE")
 # The scan-failed flag (written by the dedupe scan on failure) splices into

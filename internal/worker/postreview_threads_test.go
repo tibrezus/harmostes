@@ -54,6 +54,17 @@ func (f *fakeForge) mux(t *testing.T) *http.ServeMux {
 	})
 	mux.HandleFunc("/repos/tibrezus/harmostes/pulls/99/reviews", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
+		if r.Method == http.MethodPost {
+			// Record native review submissions (#470): the APPROVE verdict's
+			// APPROVED event is exactly what the tests must assert.
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			f.reviews = append(f.reviews, body)
+			f.mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte("{}"))
+			return
+		}
 		out, _ := json.Marshal(f.reviews)
 		f.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
@@ -278,9 +289,15 @@ func TestPostReviewZeroFindingsArtifactValid(t *testing.T) {
 	review["body"] = "## Adversarial Review\n<!-- pr-review: APPROVE @ deadbeef123 -->"
 	out := runPlugin(t, srv, false, review)
 
-	assertInlineThreads(t, out, 0, 0, 0)
+	assertInlineThreads(t, out, 1, 0, 0)
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	// #470: an APPROVE with zero findings submits the native APPROVED review
+	// — the whitelisted bot identity satisfying required_approvals — instead
+	// of posting nothing.
+	if len(f.reviews) != 1 || f.reviews[0]["event"] != "APPROVED" {
+		t.Fatalf("zero-findings APPROVE must post one APPROVED review, got %v", f.reviews)
+	}
 	if !f.verdictPost || !f.labelGone {
 		t.Fatal("zero findings must still deliver the verdict and consume the label")
 	}
@@ -606,8 +623,10 @@ func TestPostReviewForgejoDialect(t *testing.T) {
 	}
 	out := string(outBytes)
 	p := reviewPosts[0]
-	if p["event"] != "COMMENT" || p["commit_id"] != "deadbeef123" {
-		t.Fatalf("forgejo review must be COMMENT at the reviewed SHA, got %v", p)
+	if p["event"] != "REQUEST_REVIEW" || p["commit_id"] != "deadbeef123" {
+		// #470: the verdict's native state rides the review — REQUEST_CHANGES
+		// submits REQUEST_REVIEW, which block_on_rejected_reviews enforces.
+		t.Fatalf("forgejo REQUEST_CHANGES review must be REQUEST_REVIEW at the reviewed SHA, got %v", p)
 	}
 	cs, _ := p["comments"].([]any)
 	if len(cs) != 1 {

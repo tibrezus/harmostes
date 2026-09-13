@@ -412,6 +412,12 @@ var jobEnvAllowlist = []string{
 	// post as harmostes-bot — the primary token is the PR author's, and the
 	// forge 422s self-reviews. Optional secret; absent = primary token only.
 	"HARMOSTES_FORGEJO_BOT_TOKEN",
+	// The other half of the #480 r3 t5 pair: the gate matches the pr-context
+	// host against this value EXACTLY (post-review.sh). Forwarding the token
+	// without the host halves the contract — the Job-side script would
+	// compare against its compiled-in default and a non-default botHost
+	// would silently never match.
+	"HARMOSTES_FORGEJO_BOT_HOST",
 	// CLI-canonical alias names (#374 protocol): the chart aliases the
 	// shared forge secrets at the exact names the agent CLIs read natively
 	// (worker-pool.yaml "CLI aliases" block) — the review agents drive

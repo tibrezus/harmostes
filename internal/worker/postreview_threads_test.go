@@ -196,7 +196,7 @@ func runPlugin(t *testing.T, srv *httptest.Server, fj bool, review map[string]an
 	}
 	cmd := exec.Command("bash", script)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(),
+	cmd.Env = hermeticEnv(os.Environ(),
 		"HARMOSTES_WORKDIR="+dir,
 		"HARMOSTES_GITHUB_TOKEN=fake-token",
 		"IS_FJ="+fjFlag,
@@ -207,6 +207,38 @@ func runPlugin(t *testing.T, srv *httptest.Server, fj bool, review map[string]an
 		t.Fatalf("plugin run failed (non-fatal publish means the deploy itself must not exit 1 on thread errors): %v\n%s", err, out)
 	}
 	return string(out)
+}
+
+// hermeticEnv scrubs every ambient credential/test-seam variable the plugin
+// (or the host lib's token chains) could resolve, then applies the fixtures.
+// #480 r3 t6, reproduced live inside a dogfood attempt Job: without the
+// scrub an ambient HARMOSTES_GIT_TOKEN outranks the fixture's
+// HARMOSTES_GITHUB_TOKEN (host::token chains are first-non-empty-wins) and
+// the security pins assert against a REAL credential. Never let os.Environ
+// leak into a plugin test env unscrubbed.
+var pluginEnvScrub = []string{
+	"HARMOSTES_GIT_TOKEN", "HARMOSTES_GITHUB_TOKEN",
+	"HARMOSTES_FORGEJO_TOKEN", "HARMOSTES_FORGEJO_BOT_TOKEN",
+	"HARMOSTES_FORGEJO_BOT_HOST",
+	"HARMOSTES_CODEBERG_TOKEN", "LLM_WIKI_CODEBERG_TOKEN",
+	"HARMOSTES_RZC_USERNAME", "HARMOSTES_RZC_PASSWORD",
+	"HARMOSTES_TEST_GITHUB_API_BASE", "HARMOSTES_TEST_FORGEJO_API_BASE",
+	"HARMOSTES_TEST_CODEBERG_API_BASE",
+}
+
+func hermeticEnv(ambient []string, fixtures ...string) []string {
+	skip := map[string]bool{}
+	for _, k := range pluginEnvScrub {
+		skip[k] = true
+	}
+	out := make([]string, 0, len(ambient)+len(fixtures))
+	for _, kv := range ambient {
+		if k, _, ok := strings.Cut(kv, "="); ok && skip[k] {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return append(out, fixtures...)
 }
 
 // runPluginEnv is runPlugin with extra env (needed when a test pins env the
@@ -269,7 +301,7 @@ func runPluginEnvCtx(t *testing.T, srv *httptest.Server, hostOverride string, fj
 		apiBase = "HARMOSTES_TEST_FORGEJO_API_BASE=" + srv.URL
 		tokName = "HARMOSTES_FORGEJO_TOKEN=fake-token"
 	}
-	env := append(os.Environ(),
+	env := hermeticEnv(os.Environ(),
 		"HARMOSTES_WORKDIR="+dir,
 		tokName,
 		"IS_FJ="+fjFlag,
@@ -1113,6 +1145,13 @@ func TestPostReviewGitHubIgnoresForgejoBotToken(t *testing.T) {
 	f := &fakeForge{}
 	srv := httptest.NewServer(f.mux(t))
 	t.Cleanup(srv.Close)
+
+	// #480 r3 t6: ambient decoys. Without hermeticEnv both outrank the
+	// fixtures (host::token chains are first-non-empty-wins; the seam base
+	// is a valid loopback URL that routes posts to a dead port) and the pin
+	// below fails exactly the way the dogfood Job reproduced it.
+	t.Setenv("HARMOSTES_GIT_TOKEN", "ambient-git-decoy")
+	t.Setenv("HARMOSTES_TEST_GITHUB_API_BASE", "http://127.0.0.1:9")
 
 	runPluginEnv(t, srv, false, baseReview([]any{
 		map[string]any{"path": "a.go", "line": 7, "body": "finding one"},

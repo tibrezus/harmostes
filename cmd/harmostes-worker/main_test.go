@@ -13,6 +13,7 @@ import (
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
 	"github.com/tibrezus/harmostes/internal/observability"
 	"github.com/tibrezus/harmostes/internal/timeline"
+	"github.com/tibrezus/harmostes/internal/worker"
 )
 
 // TestFlushTelemetryCallsShutdown: the worker's exit path flushes telemetry —
@@ -456,5 +457,38 @@ func TestFilterEnvScrubBotToken(t *testing.T) {
 	}
 	if !found {
 		t.Error("filterEnv must drop the exact key only — a same-prefix key was collateral damage")
+	}
+}
+
+// #480 r4 t7: the source-level scrub must cover the PLUGIN env slice —
+// prepare/gate run tooling inside the untrusted PR clone (workspace.sh →
+// emit-rig → go mod inherits env verbatim), so the bot credential may not
+// ride extraEnv into any node except deploy, whose helper re-injects it.
+func TestBotTokenScrubCoversPluginEnvDeployReinjects(t *testing.T) {
+	t.Setenv("HARMOSTES_FORGEJO_BOT_TOKEN", "bot-secret")
+
+	pluginEnv := filterEnv(os.Environ(), "HARMOSTES_FORGEJO_BOT_TOKEN")
+	for _, kv := range pluginEnv {
+		if kv == "HARMOSTES_FORGEJO_BOT_TOKEN=bot-secret" {
+			t.Error("bot token leaked into the plugin/gate env slice (prepare/gate run untrusted-PR tooling)")
+		}
+	}
+
+	dep := worker.DeployExtraEnv(pluginEnv)
+	found := false
+	for _, kv := range dep {
+		if kv == "HARMOSTES_FORGEJO_BOT_TOKEN=bot-secret" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("deploy env must re-inject the bot credential — post-review is its sole reader")
+	}
+
+	// and the reinjection must not mutate the shared base slice
+	for _, kv := range pluginEnv {
+		if kv == "HARMOSTES_FORGEJO_BOT_TOKEN=bot-secret" {
+			t.Error("deployExtraEnv mutated the base slice")
+		}
 	}
 }

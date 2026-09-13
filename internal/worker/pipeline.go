@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/tibrezus/harmostes/internal/timeline"
@@ -268,7 +269,7 @@ func Run(ctx context.Context, deps Deps, opts Options) (res Result, err error) {
 		return failPhase(dctx, deploySpan, deps, name, "resolve deploy plugin: "+derr.Error(), derr)
 	}
 	depSpec, _ := json.Marshal(wf.Spec.Deploy)
-	depRes, depOut, depErr := runPluginTraced(dctx, "deploy", wf.Spec.Deploy.Plugin.Name, depCmd, depArgs, envFor("deploy", string(depSpec)), opts.ExtraEnv)
+	depRes, depOut, depErr := runPluginTraced(dctx, "deploy", wf.Spec.Deploy.Plugin.Name, depCmd, depArgs, envFor("deploy", string(depSpec)), DeployExtraEnv(opts.ExtraEnv))
 	if depErr != nil {
 		return failPhase(dctx, deploySpan, deps, name, "deploy plugin failed: "+tailN(depOut, 400), depErr)
 	}
@@ -351,6 +352,18 @@ func publish(ctx context.Context, deps Deps, wf *v1alpha1.Workflow, field string
 	if err := deps.Dapr.Publish(ctx, pubsub, topic, string(b)); err != nil {
 		deps.log()("warn: publish %s/%s: %v", pubsub, topic, err)
 	}
+}
+
+// deployExtraEnv re-injects the bot review credential into the deploy
+// phase only (#480 r4 t7): the source-level scrub in cmd/harmostes-worker
+// keeps it out of prepare/gate/agent envs (the untrusted-PR trust boundary
+// — workspace.sh runs emit-rig and the Go toolchain inside the clone), and
+// post-review is its sole reader.
+func DeployExtraEnv(base []string) []string {
+	if bt := os.Getenv("HARMOSTES_FORGEJO_BOT_TOKEN"); bt != "" {
+		return append(append([]string{}, base...), "HARMOSTES_FORGEJO_BOT_TOKEN="+bt)
+	}
+	return base
 }
 
 func patchStatus(ctx context.Context, deps Deps, name string, mutate func(*v1alpha1.WorkflowStatus)) {

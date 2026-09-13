@@ -509,8 +509,14 @@ func runOneShot() {
 	// Pass HARMOSTES_LAST_RIG_HASH so the rig-emit plugin can do a cross-run
 	// deterministic skip (structure unchanged → changed=false → graph skips
 	// agent/deploy). Also propagate the full process env so plugins inherit
-	// credentials and Dapr endpoints.
-	extraEnv := os.Environ()
+	// credentials and Dapr endpoints — MINUS the bot review credential
+	// (#480 r4 t7): prepare/gate run extractor and gate tooling inside the
+	// cloned PR's trust boundary (workspace.sh → emit-rig.py → go mod
+	// download/list inherit the env verbatim), and a token whose whole
+	// purpose is approving third-party PRs must not sit in
+	// untrusted-content-driven process env. The deploy phase re-injects it
+	// (pipeline.go deployExtraEnv) — post-review is its only reader.
+	extraEnv := filterEnv(os.Environ(), "HARMOSTES_FORGEJO_BOT_TOKEN")
 	if wf.Status.LastRigHash != "" {
 		extraEnv = append(extraEnv, "HARMOSTES_LAST_RIG_HASH="+wf.Status.LastRigHash)
 	}

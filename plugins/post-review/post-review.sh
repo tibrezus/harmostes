@@ -476,6 +476,7 @@ if fj:
     if ok:
         posted += len(valid)
     else:
+        last_error = reason  # r5 t12: the artifact must carry the host's reason (the #480 symptom was an unattributable rejection)
         print(f"[post-review] WARN: batch publish rejected ({reason[:120]}) — falling back per finding", file=sys.stderr)
         for p,l,_,b in valid:
             ok2, reason2 = curl(f"/repos/{repo}/pulls/{pr}/reviews", {"event":os.environ["REVIEW_EVENT"],"commit_id":sha,"body":marker,
@@ -483,6 +484,8 @@ if fj:
             if ok2: posted+=1
             else:
                 rejected+=1
+                if not last_error:
+                    last_error = reason2
                 print(f"[post-review] WARN: inline thread {p}:{l} rejected — {reason2}", file=sys.stderr)
 else:
     for p,l,side,b in valid:
@@ -491,6 +494,8 @@ else:
         if ok: posted+=1
         else:
             rejected+=1
+            if not last_error:
+                last_error = reason
             print(f"[post-review] WARN: inline thread {p}:{l} rejected — {reason}", file=sys.stderr)
 dropped=[c.get("path","?") for c in all_cs[len(cs):]]
 if dropped:

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 
 	"context"
@@ -11,9 +12,9 @@ import (
 	"time"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
+	"github.com/tibrezus/harmostes/internal/agent"
 	"github.com/tibrezus/harmostes/internal/observability"
 	"github.com/tibrezus/harmostes/internal/timeline"
-	"github.com/tibrezus/harmostes/internal/worker"
 )
 
 // TestFlushTelemetryCallsShutdown: the worker's exit path flushes telemetry —
@@ -438,7 +439,7 @@ func TestFilterEnvScrubBotToken(t *testing.T) {
 		"HARMOSTES_FORGEJO_BOT_TOKEN_SUFFIX=x", // same prefix, different key: must survive
 		"HOME=/root",
 	}
-	got := filterEnv(base, "HARMOSTES_FORGEJO_BOT_TOKEN")
+	got := agent.FilterEnv(base, "HARMOSTES_FORGEJO_BOT_TOKEN")
 
 	for _, kv := range got {
 		if kv == "HARMOSTES_FORGEJO_BOT_TOKEN=bot-secret" {
@@ -467,14 +468,18 @@ func TestFilterEnvScrubBotToken(t *testing.T) {
 func TestBotTokenScrubCoversPluginEnvDeployReinjects(t *testing.T) {
 	t.Setenv("HARMOSTES_FORGEJO_BOT_TOKEN", "bot-secret")
 
-	pluginEnv := filterEnv(os.Environ(), "HARMOSTES_FORGEJO_BOT_TOKEN")
+	pluginEnv := agent.FilterEnv(os.Environ(), "HARMOSTES_FORGEJO_BOT_TOKEN")
 	for _, kv := range pluginEnv {
 		if kv == "HARMOSTES_FORGEJO_BOT_TOKEN=bot-secret" {
 			t.Error("bot token leaked into the plugin/gate env slice (prepare/gate run untrusted-PR tooling)")
 		}
 	}
 
-	dep := worker.DeployExtraEnv(pluginEnv)
+	// the grant follows the CONSUMER (plugin name post-review), not the node
+	// ID — graph-native CR-authored node names must not matter (#480 r6 t10)
+	deployNode := v1alpha1.NodeSpec{ID: "whatever-a-cr-names-it", Type: "plugin",
+		Config: json.RawMessage(`{"name":"post-review"}`)}
+	dep := botTokenEnvForNode(deployNode, pluginEnv)
 	found := false
 	for _, kv := range dep {
 		if kv == "HARMOSTES_FORGEJO_BOT_TOKEN=bot-secret" {
@@ -482,13 +487,22 @@ func TestBotTokenScrubCoversPluginEnvDeployReinjects(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Error("deploy env must re-inject the bot credential — post-review is its sole reader")
+		t.Error("the post-review node must re-inject the bot credential — post-review is its sole reader")
 	}
 
-	// and the reinjection must not mutate the shared base slice
+	// and the grant must not mutate the shared base slice
 	for _, kv := range pluginEnv {
 		if kv == "HARMOSTES_FORGEJO_BOT_TOKEN=bot-secret" {
-			t.Error("deployExtraEnv mutated the base slice")
+			t.Error("botTokenEnvForNode mutated the base slice")
+		}
+	}
+
+	// a non-post-review plugin node gets the scrubbed base even if named deploy
+	other := botTokenEnvForNode(v1alpha1.NodeSpec{ID: "deploy", Type: "plugin",
+		Config: json.RawMessage(`{"name":"wiki-lint"}`)}, pluginEnv)
+	for _, kv := range other {
+		if kv == "HARMOSTES_FORGEJO_BOT_TOKEN=bot-secret" {
+			t.Error("a non-post-review plugin must not receive the bot credential")
 		}
 	}
 }

@@ -51,6 +51,24 @@ type RPC struct {
 // SessionFiles returns the pi session files this RPC wrote, oldest first.
 // Empty when session persistence is off or pi wrote nothing (crash, abort
 // before first flush). Callers should read them after Abort.
+// FilterEnv returns env without KEY=… entries whose key is exactly any of
+// the given keys. Exported for entrypoints that must prove (testably) which
+// credentials never reach the pi child env.
+func FilterEnv(env []string, keys ...string) []string {
+	drop := make(map[string]bool, len(keys))
+	for _, k := range keys {
+		drop[k] = true
+	}
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		if k, _, ok := strings.Cut(kv, "="); ok && drop[k] {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
+}
+
 func (r *RPC) SessionFiles() []string {
 	if r.sessionDir == "" {
 		return nil
@@ -138,7 +156,12 @@ func NewRPC(ctx context.Context, opts RPCOptions) (*RPC, error) {
 	}
 	cmd := exec.CommandContext(ctx, pi, args...)
 	cmd.Dir = opts.Workdir
-	cmd.Env = opts.Env
+	// #480 r5 t9: scrub the approval-capable bot credential at the shared
+	// pi-spawn leaf — BOTH entrypoints (harmostes-worker and
+	// harmostes-agent) route through NewRPC, and pi's input includes
+	// untrusted PR content. The deploy plugin (post-review) reads the
+	// credential from its own exec env, which does not pass through here.
+	cmd.Env = FilterEnv(opts.Env, "HARMOSTES_FORGEJO_BOT_TOKEN")
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err

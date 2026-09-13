@@ -76,16 +76,27 @@ func graphPresenceLine(graphPath string) (string, bool) {
 	return "", false
 }
 
-// filterEnv returns base without any KEY=… entry whose key is key.
-func filterEnv(base []string, key string) []string {
-	out := make([]string, 0, len(base))
-	for _, kv := range base {
-		if k, _, ok := strings.Cut(kv, "="); ok && k == key {
-			continue
-		}
-		out = append(out, kv)
+// botTokenEnvForNode is the #480 credential-scoping policy: the bot review
+// credential rides ONLY the node whose plugin is post-review — its sole
+// reader — regardless of what the node is named in the graph (compiled
+// "deploy" or CR-authored IDs; r5 t10). Every other node (prepare runs
+// emit-rig + the Go toolchain inside the untrusted PR clone) gets the
+// scrubbed base. The token itself is scrubbed from the process env at the
+// agent spawn leaf (agent.FilterEnv) and from this extraEnv slice.
+func botTokenEnvForNode(node v1alpha1.NodeSpec, base []string) []string {
+	if node.Type != "plugin" {
+		return base
 	}
-	return out
+	var cfg struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(node.Config, &cfg); err != nil || cfg.Name != "post-review" {
+		return base
+	}
+	if bt := os.Getenv("HARMOSTES_FORGEJO_BOT_TOKEN"); bt != "" {
+		return append(append([]string{}, base...), "HARMOSTES_FORGEJO_BOT_TOKEN="+bt)
+	}
+	return base
 }
 
 // spawnEnv extends the pi child env with the ADR-0009 rig freshness
@@ -429,7 +440,7 @@ func runOneShot() {
 	// and the bot token can satisfy required_approvals — it must not sit in
 	// an LLM loop's env. The deploy plugin (post-review) reads it from the
 	// process env, which this filter does not touch.
-	piEnv := filterEnv(os.Environ(), "HARMOSTES_FORGEJO_BOT_TOKEN")
+	piEnv := agent.FilterEnv(os.Environ(), "HARMOSTES_FORGEJO_BOT_TOKEN")
 	logfFn("%s", piargs.ExtensionsLogLine())
 	deps.Agent = worker.RPCAgentRunner{
 		// The rig freshness contract arms at AGENT-NODE SPAWN, not run
@@ -516,7 +527,7 @@ func runOneShot() {
 	// purpose is approving third-party PRs must not sit in
 	// untrusted-content-driven process env. The deploy phase re-injects it
 	// (pipeline.go deployExtraEnv) — post-review is its only reader.
-	extraEnv := filterEnv(os.Environ(), "HARMOSTES_FORGEJO_BOT_TOKEN")
+	extraEnv := agent.FilterEnv(os.Environ(), "HARMOSTES_FORGEJO_BOT_TOKEN")
 	if wf.Status.LastRigHash != "" {
 		extraEnv = append(extraEnv, "HARMOSTES_LAST_RIG_HASH="+wf.Status.LastRigHash)
 	}
@@ -587,19 +598,7 @@ func runOneShot() {
 			State:          wf.Name,
 			ExtraEnv:       extraEnv,
 			ExtraEnvForNode: func(node v1alpha1.NodeSpec, base []string) []string {
-				// #480: the bot review credential is scoped to the deploy
-				// phase — the only node whose plugin (post-review) reads it.
-				// base is already scrubbed at the source (above); every
-				// non-deploy node runs inside or beside the untrusted PR
-				// clone (prepare's emit-rig → go mod inherits env
-				// verbatim) and must not see it.
-				if node.ID != "deploy" {
-					return base
-				}
-				if bt := os.Getenv("HARMOSTES_FORGEJO_BOT_TOKEN"); bt != "" {
-					return append(append([]string{}, base...), "HARMOSTES_FORGEJO_BOT_TOKEN="+bt)
-				}
-				return base
+				return botTokenEnvForNode(node, base)
 			},
 		}),
 	)

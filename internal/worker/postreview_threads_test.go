@@ -1252,3 +1252,20 @@ func TestPostReviewBotTokenExactHostGate(t *testing.T) {
 		}
 	}
 }
+
+func TestPostReviewThreadsPublisherSpeaksRejectionReason(t *testing.T) {
+	// r5 t12: a bare rejected:N hid the #480 root cause for hours — the
+	// artifact must carry the host's rejection reason (last_error), matching
+	// the approval leg's speak contract.
+	srv, _ := forgejoBotFixture(t, true) // every POST /reviews → 422 self-review shape
+
+	review := baseReview([]any{
+		map[string]any{"path": "a.go", "line": 7, "body": "finding one"},
+	})
+	review["decision"] = "REQUEST_CHANGES"
+	out := runPluginEnv(t, srv, true, review)
+
+	if !strings.Contains(out, "last_error") {
+		t.Errorf("the threads summary must carry last_error when the host rejects the batch, out:\n%s", out)
+	}
+}

@@ -52,6 +52,7 @@ jobs:
           CGO_ENABLED=0 go build -trimpath -ldflags "$LDFLAGS" -o dist/linux/amd64/harmostes-controller ./cmd/harmostes-controller
           CGO_ENABLED=0 go build -trimpath -ldflags "$LDFLAGS" -o dist/linux/amd64/harmostes-worker ./cmd/harmostes-worker
           CGO_ENABLED=0 go build -trimpath -ldflags "$LDFLAGS" -o dist/linux/amd64/harmostes-agent ./cmd/harmostes-agent
+          CGO_ENABLED=0 go build -trimpath -ldflags "$LDFLAGS" -o dist/linux/amd64/harmostes-ui ./cmd/harmostes-ui
 
       # The release Dockerfiles COPY from goreleaser's context shape:
       # binaries at linux/amd64/, plus plugins/ + extensions/ for the worker

@@ -85,3 +85,16 @@ This primitive is what the agent worker runs internally, driven from a Workflow
 CR instead of CLI flags.
 
 <!-- test trigger for adversarial pr-review 1784298180 -->
+
+## Preview environments
+
+Label a PR **`preview`** and an ephemeral environment is provisioned
+automatically (k8s-config `platform/harmostes/preview/`): the PR's chart
+rendered from the repo at the PR SHA, with the PR's images, served at
+
+    https://harmostes-pr<id>.dev.rezus.cloud
+
+The URL is commented on the PR once the images are pushed. Pages 401
+until an identity header is presented (the app's header-credential — the
+same capability model as the port-forward path); merge or close the PR
+and the environment is garbage-collected, namespace included.

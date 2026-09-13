@@ -70,8 +70,12 @@ const jobDeathGrace = 2 * time.Minute
 // in plugins/post-review/post-review.sh (verdict line + label DELETE,
 // which also names verdictTrailer as the contract's canonical home);
 // the shape reaches the agent through the review prompt template
-// (chart/values.yaml, golden-rendered in chart/ci/golden/full.yaml) —
-// keep all of these in step.
+// (chart/values.yaml, golden-rendered in chart/ci/golden/full.yaml) and
+// the pr-review skill (cloned from the agents repo at RUNTIME by the
+// sync-skills initContainer — no image rebuild); where agent-facing
+// text claims to own the contract, verdictTrailer wins. Keep every
+// listed home in step: prompt-vs-validator drift is how the #2085
+// 4-attempt loop happened.
 
 // newReviewAPI is the seam the tests swap for a server-pinned API.
 var newReviewAPI = func() review.API {

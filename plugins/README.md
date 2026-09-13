@@ -12,7 +12,7 @@ See the [Plugin Interface](https://github.com/tibrezus/harmostes/wiki/Plugin-Int
 | `raw-copy` | prepare | llm-wiki (generic) | `rsync` of source into `raw/<project>/` |
 | `fork-sync` | prepare | fork-maintenance | `sync-fork.sh` entry point (merge/subtree/mapping modes; built-in since ADR-0011) |
 | `workspace` | prepare | pr-review | PR workspace provisioning (context, diff, CI, head-SHA clone) |
-| `pr-review` | gate | pr-review | review.json output contract (decision + reviewed_sha + verdict trailer) |
+| `pr-review` | gate | pr-review | review.json output contract (decision + reviewed_sha + blocking comments[]; no body — the deploy writes the verdict + trailer) |
 | `post-review` | deploy | pr-review | verdict comment + label consume (moved-head guard) |
 | `wiki-lint` | gate | llm-wiki | `gate-lint.sh` → full `ci-lint.sh` (markdownlint, mdlint, remark, mermaid, likec4, health, RIG compliance) |
 | `fork-maintenance` | gate | fork-maintenance | `gate-resolved.sh` (markers + `validate-fork.sh` + patch signatures) |

@@ -17,6 +17,7 @@ on:
 permissions:
   contents: read
   packages: write
+  pull-requests: write # the preview-URL comment
 
 concurrency:
   group: preview-artifacts-${{ github.event.pull_request.number }}
@@ -80,3 +81,12 @@ jobs:
             docker push "ghcr.io/tibrezus/harmostes-$img:$TAG"
             echo "pushed ghcr.io/tibrezus/harmostes-$img:$TAG"
           done
+
+      # Point at the preview: the k8s-config ResourceSet provisions
+      # harmostes-pr<id> with this URL (the images above are its backend).
+      - name: Comment the preview URL
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr comment "${{ github.event.pull_request.number }}" --body \
+            " preview environment provisioning: **https://harmostes-pr${{ github.event.pull_request.number }}.dev.rezus.cloud** (Ready in ~5 min; UI reads need the dev-identity header via port-forward — see How-to-Run-the-Dev-Environment)."

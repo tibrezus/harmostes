@@ -5449,6 +5449,12 @@ spec:
                   name: harmostes-forgejo-bot-token
                   key: token
                   optional: true
+            # The exact forge origin the bot credential is minted for (#480
+            # r2 t3): the deploy plugin overrides its auth only when the
+            # pr-context host matches this exactly — never on dialect alone
+            # (IS_FJ is "not github.com", true for any untrusted host).
+            - name: HARMOSTES_FORGEJO_BOT_HOST
+              value: "git.rezus.cloud"
             - name: LITELLM_URL
               valueFrom:
                 secretKeyRef:

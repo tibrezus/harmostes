@@ -25,11 +25,14 @@ TOKEN=$(host::token "$HOST" required)
 # ("approve/reject your own pull is not allowed") — observed live on
 # rhesadox#2169: twice-APPROVED green, required_approvals unsatisfiable.
 # Verdict COMMENTS stay on TOKEN (authors may comment).
-# HOST-GATED (r1 review t1): the bot credential is a Forgejo identity — it
-# must never be transmitted to GitHub/Codeberg, so the override applies to
-# IS_FJ hosts only. GitHub/Codeberg bot parity is a follow-up.
-if [ "${IS_FJ:-}" = "true" ]; then
-  REVIEW_TOKEN="${HARMOSTES_FORGEJO_BOT_TOKEN:-$TOKEN}"
+# EXACT-HOST-GATED (r2 review t3): IS_FJ only means "not github.com" — it
+# is true for codeberg.org and ANY *) host built from the untrusted
+# pr-context. The bot credential goes ONLY to the forge it was minted
+# for: HOST must equal HARMOSTES_FORGEJO_BOT_HOST exactly.
+if [ "${IS_FJ:-}" = "true" ] \
+   && [ -n "${HARMOSTES_FORGEJO_BOT_TOKEN:-}" ] \
+   && [ "${HARMOSTES_FORGEJO_BOT_HOST:-git.rezus.cloud}" = "$HOST" ]; then
+  REVIEW_TOKEN="$HARMOSTES_FORGEJO_BOT_TOKEN"
 else
   REVIEW_TOKEN="$TOKEN"
 fi

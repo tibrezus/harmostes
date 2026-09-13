@@ -424,3 +424,37 @@ func TestSpawnEnvRigFreshnessDecisionTable(t *testing.T) {
 		}
 	})
 }
+
+// #480 r2 t4: the bot review credential can satisfy required_approvals, so
+// it must never reach the pi child's env (pi's input includes untrusted PR
+// content). The deploy plugin reads it from the process env — the scrub is
+// pi-child-scoped, hence filterEnv instead of an unsetenv.
+func TestFilterEnvScrubBotToken(t *testing.T) {
+	base := []string{
+		"PATH=/usr/bin",
+		"HARMOSTES_FORGEJO_TOKEN=primary",
+		"HARMOSTES_FORGEJO_BOT_TOKEN=bot-secret",
+		"HARMOSTES_FORGEJO_BOT_TOKEN_SUFFIX=x", // same prefix, different key: must survive
+		"HOME=/root",
+	}
+	got := filterEnv(base, "HARMOSTES_FORGEJO_BOT_TOKEN")
+
+	for _, kv := range got {
+		if kv == "HARMOSTES_FORGEJO_BOT_TOKEN=bot-secret" {
+			t.Error("bot token survived the pi env scrub")
+		}
+	}
+	if len(got) != len(base)-1 {
+		t.Fatalf("expected exactly one entry removed, got %d removed → %v", len(base)-len(got), got)
+	}
+	// exact-key semantics: the longer same-prefix key must survive
+	found := false
+	for _, kv := range got {
+		if kv == "HARMOSTES_FORGEJO_BOT_TOKEN_SUFFIX=x" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("filterEnv must drop the exact key only — a same-prefix key was collateral damage")
+	}
+}

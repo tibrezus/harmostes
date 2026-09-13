@@ -76,6 +76,18 @@ func graphPresenceLine(graphPath string) (string, bool) {
 	return "", false
 }
 
+// filterEnv returns base without any KEY=… entry whose key is key.
+func filterEnv(base []string, key string) []string {
+	out := make([]string, 0, len(base))
+	for _, kv := range base {
+		if k, _, ok := strings.Cut(kv, "="); ok && k == key {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
+}
+
 // spawnEnv extends the pi child env with the ADR-0009 rig freshness
 // contract (#338/#350), evaluated at agent-node spawn: the expectation is
 // armed from the reviewed SHA; the degradation signal (#338 r24 D5) says
@@ -412,7 +424,12 @@ func runOneShot() {
 	// reviewed SHA; the rig-query extension compares it against RIG_EXPECTED_SHA
 	// and REFUSES on mismatch. Scoped to the pi child's env — not process-global
 	// (deploy/gate plugins must not inherit a one-consumer variable, #338 r15).
-	piEnv := os.Environ()
+	// The bot review credential is scrubbed from the pi child for the mirror
+	// reason, inverted (#480 r2 t4): pi's input includes untrusted PR content,
+	// and the bot token can satisfy required_approvals — it must not sit in
+	// an LLM loop's env. The deploy plugin (post-review) reads it from the
+	// process env, which this filter does not touch.
+	piEnv := filterEnv(os.Environ(), "HARMOSTES_FORGEJO_BOT_TOKEN")
 	logfFn("%s", piargs.ExtensionsLogLine())
 	deps.Agent = worker.RPCAgentRunner{
 		// The rig freshness contract arms at AGENT-NODE SPAWN, not run

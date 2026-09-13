@@ -215,6 +215,21 @@ func runPlugin(t *testing.T, srv *httptest.Server, fj bool, review map[string]an
 // run must be observable without failing the harness).
 func runPluginEnv(t *testing.T, srv *httptest.Server, fj bool, review map[string]any, extraEnv ...string) string {
 	t.Helper()
+	return runPluginEnvCtx(t, srv, "", fj, review, extraEnv...)
+}
+
+// runPluginEnvCtx additionally overrides the pr-context host ("" = default).
+// #480 r2 t3 pins the exact-host gate: a non-matching host must fall back to
+// the primary token even with the bot credential present.
+func runPluginEnvCtx(t *testing.T, srv *httptest.Server, hostOverride string, fj bool, review map[string]any, extraEnv ...string) string {
+	t.Helper()
+	if hostOverride == "codeberg.org" {
+		// codeberg's primary chain is HARMOSTES_CODEBERG_TOKEN (git-host.sh)
+		extraEnv = append(extraEnv,
+			"HARMOSTES_TEST_CODEBERG_API_BASE="+srv.URL,
+			"HARMOSTES_CODEBERG_TOKEN=fake-token",
+		)
+	}
 	dir := t.TempDir()
 	rc := map[string]any{
 		"host": "github.com", "repo": "tibrezus/harmostes", "number": 99,
@@ -222,6 +237,9 @@ func runPluginEnv(t *testing.T, srv *httptest.Server, fj bool, review map[string
 	}
 	if fj {
 		rc["host"] = "git.rezus.cloud"
+		if hostOverride != "" {
+			rc["host"] = hostOverride
+		}
 		rc["repo"] = "git.rezus.cloud/tibrez/rhesadox"
 	}
 	rj, _ := json.Marshal(review)
@@ -1167,5 +1185,31 @@ func TestPostReviewForgejoApprovalTransportFailureSurvives(t *testing.T) {
 	mu.Unlock()
 	if !gone {
 		t.Error("the plugin must survive to consume the label after an approval transport failure (set -e would abort before it)")
+	}
+}
+
+func TestPostReviewBotTokenExactHostGate(t *testing.T) {
+	// r2 t3: IS_FJ is "not github.com" — true for codeberg.org and any
+	// untrusted pr-context host. The bot credential goes ONLY to the forge
+	// it was minted for (HARMOSTES_FORGEJO_BOT_HOST); everything else falls
+	// back to the primary token.
+	srv, f := forgejoBotFixture(t, false)
+
+	review := baseReview([]any{
+		map[string]any{"path": "a.go", "line": 7, "body": "finding one"},
+	})
+	review["decision"] = "REQUEST_CHANGES"
+	// host=codeberg.org (≠ HARMOSTES_FORGEJO_BOT_HOST default) + bot present:
+	// the native posts must carry the PRIMARY token, never the bot secret.
+	out := runPluginEnvCtx(t, srv, "codeberg.org", true, review, "HARMOSTES_FORGEJO_BOT_TOKEN=bot-token-xyz")
+
+	headers, posts := f.snapshot()
+	if len(posts) == 0 {
+		t.Fatalf("expected the threads batch POST /reviews, got none (out: %s)", out)
+	}
+	for i, ah := range headers {
+		if ah != "token fake-token" {
+			t.Errorf("non-matching host must fall back to the primary token, POST %d got %q", i, ah)
+		}
 	}
 }

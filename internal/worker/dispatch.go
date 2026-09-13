@@ -408,6 +408,10 @@ func triggerSubject(req RunRequest) timeline.Subject {
 // boundary, and future credentials are added here explicitly.
 var jobEnvAllowlist = []string{
 	"HARMOSTES_FORGEJO_TOKEN",
+	// The whitelisted bot review identity (#480): native review objects must
+	// post as harmostes-bot — the primary token is the PR author's, and the
+	// forge 422s self-reviews. Optional secret; absent = primary token only.
+	"HARMOSTES_FORGEJO_BOT_TOKEN",
 	// CLI-canonical alias names (#374 protocol): the chart aliases the
 	// shared forge secrets at the exact names the agent CLIs read natively
 	// (worker-pool.yaml "CLI aliases" block) — the review agents drive

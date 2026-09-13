@@ -206,6 +206,65 @@ func runPlugin(t *testing.T, srv *httptest.Server, fj bool, review map[string]an
 	return string(out)
 }
 
+// runPluginEnv is runPlugin with extra env (needed when a test pins env the
+// plugin reads — e.g. HARMOSTES_FORGEJO_BOT_TOKEN, #480) and allows a plugin
+// exit (the speak-on-failure paths still exit 0, but a forced-422 self-review
+// run must be observable without failing the harness).
+func runPluginEnv(t *testing.T, srv *httptest.Server, fj bool, review map[string]any, extraEnv ...string) string {
+	t.Helper()
+	dir := t.TempDir()
+	rc := map[string]any{
+		"host": "github.com", "repo": "tibrezus/harmostes", "number": 99,
+		"head": map[string]string{"sha": "deadbeef123"},
+	}
+	if fj {
+		rc["host"] = "git.rezus.cloud"
+		rc["repo"] = "git.rezus.cloud/tibrez/rhesadox"
+	}
+	rj, _ := json.Marshal(review)
+	cj, _ := json.Marshal(rc)
+	if err := os.WriteFile(filepath.Join(dir, "review.json"), rj, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "pr-context.json"), cj, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	script, err := filepath.Abs(filepath.Join("..", "..", "plugins", "post-review", "post-review.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// go-test cache tracking (r4 P9): a plugin/lib change must re-run these.
+	if _, err := os.ReadFile(script); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.ReadFile(filepath.Join("..", "..", "plugins", "lib", "git-host.sh")); err != nil {
+		t.Fatal(err)
+	}
+	apiBase := "HARMOSTES_TEST_GITHUB_API_BASE=" + srv.URL
+	tokName := "HARMOSTES_GITHUB_TOKEN=fake-token"
+	fjFlag := "false"
+	if fj {
+		fjFlag = "true"
+		apiBase = "HARMOSTES_TEST_FORGEJO_API_BASE=" + srv.URL
+		tokName = "HARMOSTES_FORGEJO_TOKEN=fake-token"
+	}
+	env := append(os.Environ(),
+		"HARMOSTES_WORKDIR="+dir,
+		tokName,
+		"IS_FJ="+fjFlag,
+		apiBase,
+	)
+	env = append(env, extraEnv...)
+	cmd := exec.Command("bash", script)
+	cmd.Dir = dir
+	cmd.Env = env
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("plugin run failed: %v\n%s", err, out)
+	}
+	return string(out)
+}
+
 func baseReview(comments []any) map[string]any {
 	// r7 shape: NO top-level body field — the deploy builds the verdict line
 	// from decision + sha (the reviewer never writes analysis prose).
@@ -900,4 +959,128 @@ func TestPostReviewDowngradeIsR7Conforming(t *testing.T) {
 		t.Errorf("verdict must stay one line + trailer (r7 briefness), got %d newlines: %q", strings.Count(vb, "\n"), vb)
 	}
 	_ = out
+}
+
+// ── #480: native reviews post as the whitelisted bot identity ──────────────
+// The worker's primary token belongs to the PR author; both Forgejo and
+// GitHub 422 self-reviews ("approve/reject your own pull is not allowed").
+// Observed live on rhesadox#2169: twice-APPROVED green, yet the approvals
+// gate could never be satisfied and REQUEST_CHANGES threads died to prose.
+
+// forgejoBotFixture builds the Forgejo-shaped mux the #480 tests share:
+// it records every POST /reviews Authorization header, can force the
+// self-review 422, and serves the minimal comment/label surface post-review
+// needs (moved-head check, verdict comment, label removal).
+type botFixture struct {
+	mu          sync.Mutex
+	authHeaders []string
+	reviewPosts []map[string]any
+}
+
+func (b *botFixture) snapshot() ([]string, []map[string]any) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]string{}, b.authHeaders...), append([]map[string]any{}, b.reviewPosts...)
+}
+
+func forgejoBotFixture(t *testing.T, forceSelfReview422 bool) (*httptest.Server, *botFixture) {
+	t.Helper()
+	b := &botFixture{}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/git.rezus.cloud/tibrez/rhesadox/pulls/99", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"head": map[string]string{"sha": "deadbeef123"}})
+	})
+	mux.HandleFunc("/repos/git.rezus.cloud/tibrez/rhesadox/pulls/99/reviews", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			b.mu.Lock()
+			b.authHeaders = append(b.authHeaders, r.Header.Get("Authorization"))
+			if forceSelfReview422 {
+				b.mu.Unlock()
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnprocessableEntity)
+				_, _ = w.Write([]byte(`{"message":"approve your own pull is not allowed"}`))
+				return
+			}
+			b.reviewPosts = append(b.reviewPosts, body)
+			b.mu.Unlock()
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 6})
+			return
+		}
+		b.mu.Lock()
+		out, _ := json.Marshal([]any{})
+		b.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(out)
+	})
+	mux.HandleFunc("/repos/git.rezus.cloud/tibrez/rhesadox/issues/99/comments", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": 3})
+	})
+	mux.HandleFunc("/repos/git.rezus.cloud/tibrez/rhesadox/issues/99/labels/needs-review", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	return httptest.NewServer(mux), b
+}
+
+func TestPostReviewThreadsBatchUsesBotToken(t *testing.T) {
+	srv, f := forgejoBotFixture(t, false)
+
+	review := baseReview([]any{
+		map[string]any{"path": "a.go", "line": 7, "body": "finding one"},
+	})
+	review["decision"] = "REQUEST_CHANGES"
+	out := runPluginEnv(t, srv, true, review, "HARMOSTES_FORGEJO_BOT_TOKEN=bot-token-xyz")
+
+	headers, posts := f.snapshot()
+	if len(posts) == 0 {
+		t.Fatalf("expected the threads batch POST /reviews, got none (out: %s)", out)
+	}
+	for i, ah := range headers {
+		if ah != "token bot-token-xyz" {
+			t.Errorf("native review POST %d must carry the bot credential (#480), got %q", i, ah)
+		}
+	}
+}
+
+func TestPostReviewForgejoNativeApprovalUsesBotToken(t *testing.T) {
+	srv, f := forgejoBotFixture(t, false)
+
+	review := baseReview(nil)
+	review["decision"] = "APPROVE"
+	out := runPluginEnv(t, srv, true, review, "HARMOSTES_FORGEJO_BOT_TOKEN=bot-token-xyz")
+
+	headers, posts := f.snapshot()
+	if len(posts) != 1 {
+		t.Fatalf("expected exactly the native APPROVED review post, got %d (out: %s)", len(posts), out)
+	}
+	if ev, _ := posts[0]["event"].(string); ev != "APPROVED" {
+		t.Errorf("event must be APPROVED, got %q", ev)
+	}
+	for i, ah := range headers {
+		if ah != "token bot-token-xyz" {
+			t.Errorf("native approval POST %d must carry the bot credential (#480), got %q", i, ah)
+		}
+	}
+}
+
+func TestPostReviewForgejoApprovalSelfReviewForbiddenSpeaks(t *testing.T) {
+	// No bot token provisioned → primary (author) token → the host 422s the
+	// self-review. The artifact must SAY so (self-review-forbidden), not the
+	// ambiguous approval-post-failed that hid the #480 root cause for hours.
+	srv, _ := forgejoBotFixture(t, true)
+
+	review := baseReview(nil)
+	review["decision"] = "APPROVE"
+	out := runPluginEnv(t, srv, true, review)
+
+	if !strings.Contains(out, "self-review-forbidden") {
+		t.Errorf("artifact must carry skipped:self-review-forbidden on a self-review 422 (#480), out:\n%s", out)
+	}
+	if strings.Contains(out, `"posted":1`) {
+		t.Errorf("nothing may claim a posted approval when the host rejected it, out:\n%s", out)
+	}
 }

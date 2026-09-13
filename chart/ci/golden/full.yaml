@@ -5438,6 +5438,17 @@ spec:
                 secretKeyRef:
                   name: harmostes-forgejo-token
                   key: token
+            # harmostes-bot review identity (#480): native review objects post
+            # as the whitelisted bot — the primary token is the PR author's,
+            # and the forge 422s self-reviews. Optional: installs without the
+            # bot secret keep working (post-review falls back to the primary
+            # token and speaks the host's rejection in the artifact).
+            - name: HARMOSTES_FORGEJO_BOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: harmostes-forgejo-bot-token
+                  key: token
+                  optional: true
             - name: LITELLM_URL
               valueFrom:
                 secretKeyRef:

@@ -7,7 +7,6 @@ metadata:
   labels:
     app.kubernetes.io/name: harmostes
     app.kubernetes.io/instance: harmostes
-
 ---
 # Source: harmostes/templates/rbac.yaml
 # One ServiceAccount + Role serve both the controller (watch Workflows, create
@@ -25,7 +24,6 @@ metadata:
 # but Jobs created by the dispatcher never did (#281).
 imagePullSecrets:
   - name: ghcr-pull
-
 ---
 # Source: harmostes/templates/ui-rbac.yaml
 apiVersion: v1
@@ -36,7 +34,6 @@ metadata:
   labels:
     app.kubernetes.io/name: harmostes
     app.kubernetes.io/component: ui
-
 ---
 # Source: harmostes/templates/fork-conflict-resolver.yaml
 apiVersion: v1
@@ -714,8 +711,6 @@ data:
         ]
       }
     }
-    
-
 ---
 # Source: harmostes/templates/fork-maintenance.yaml
 apiVersion: v1
@@ -3289,8 +3284,6 @@ data:
     
       *) die "unknown command: $cmd (expected capture|reapply|verify)" ;;
     esac
-    
-
 ---
 # Source: harmostes/templates/fork-maintenance.yaml
 apiVersion: v1
@@ -3605,8 +3598,6 @@ data:
     
     echo "GATES GREEN (no markers + validation + signatures)"
     exit 0
-    
-
 ---
 # Source: harmostes/templates/fork-maintenance.yaml
 apiVersion: v1
@@ -3641,8 +3632,6 @@ data:
     echo "[signoz-hook] stripping ee/ (community-only build)"
     git rm -rf ee/ 2>/dev/null || true
     echo "[signoz-hook] done"
-    
-
 ---
 # Source: harmostes/templates/fork-maintenance.yaml
 apiVersion: v1
@@ -3685,8 +3674,6 @@ data:
       default_branch: rezus/main
       mirror_branch: main
       platform: forgejo
-    
-
 ---
 # Source: harmostes/templates/fork-maintenance.yaml
 apiVersion: v1
@@ -4559,8 +4546,6 @@ data:
     > The release branch is modified **only** by a merged PR. The sync never pushes to it directly — it pushes to `rezus/sync-<date>` and opens a PR. Therefore a broken sync (one that fails any gate) can never reach the release branch. The worst case is a stale sync PR, never a broken deployment.
     
     This is why the invariant holds even when automation fails: the failure is contained to the PR.
-    
-
 ---
 # Source: harmostes/templates/tasks-configmap.yaml
 apiVersion: v1
@@ -4658,9 +4643,12 @@ data:
     
     ## Your toolkit (use selectively)
     
-    You have a round-trip budget: every tool call costs ~25 seconds of model
-    latency. A good review fits in ~12 calls. The methodology (9 pillars) is
-    inlined below — NEVER search the filesystem for skill or pillar files.
+    You have a round-trip budget: every tool call costs ~1 minute of model
+    latency, and the HARNESS ENFORCES the cap — after PI_TOOL_BUDGET calls
+    (24 by default) every tool except `write` is refused with a finalize
+    instruction. A good review fits in ~12 calls; budget as if the cap were
+    15. The methodology (9 pillars) is inlined below — NEVER search the
+    filesystem for skill or pillar files.
     
     - `rig` — the architecture graph, when pr-context.json has `rig_db`. It is
       SHA-exact at the reviewed head (generated at prepare time, verified — a
@@ -4737,8 +4725,6 @@ data:
     python3 -c "import json; r=json.load(open('/workspace/review.json')); print('OK', r['decision'])"
     
     Do NOT push, commit, or modify any repository. Review only.
-    
-
 ---
 # Source: harmostes/templates/ui-platforms-configmap.yaml
 apiVersion: v1
@@ -4752,7 +4738,6 @@ metadata:
 data:
   platforms.json: |-
     [{"color":"#24292e","id":"github","label":"GitHub"},{"color":"#fc6d26","id":"gitlab","label":"GitLab"},{"color":"#fb8c00","id":"forgejo","label":"Forgejo"},{"color":"#2185d0","id":"codeberg","label":"Codeberg"}]
-
 ---
 # Source: harmostes/templates/worker-cache.yaml
 # Shared tool-cache claim (#336): mounted by per-Attempt Jobs (spec.cache.pvc:
@@ -4773,7 +4758,6 @@ spec:
   resources:
     requests:
       storage: "5Gi"
-
 ---
 # Source: harmostes/templates/ui-rbac.yaml
 # The schema endpoint (GET /api/schema, ADR-0012 §2) serves the CRDs'
@@ -4794,7 +4778,6 @@ rules:
       - workflows.harmostes.dev
       - workflowtemplates.harmostes.dev
     verbs: ["get"]
-
 ---
 # Source: harmostes/templates/ui-rbac.yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -4812,7 +4795,6 @@ subjects:
   - kind: ServiceAccount
     name: harmostes-ui
     namespace: harmostes-ci
-
 ---
 # Source: harmostes/templates/rbac.yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -4856,7 +4838,6 @@ rules:
   - apiGroups: ["harmostes.dev"]
     resources: ["workflowtemplates"]
     verbs: ["get", "list", "watch", "update", "patch"]
-
 ---
 # Source: harmostes/templates/ui-rbac.yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -4900,7 +4881,6 @@ rules:
   #    pruned (#291); credential sync is chart-rendered ExternalSecrets
   #    (ADR-0011). Verbs are granted only when a route needs them, never
   #    speculatively.
-
 ---
 # Source: harmostes/templates/rbac.yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -4916,7 +4896,6 @@ roleRef:
   kind: Role
   name: harmostes-controller
   apiGroup: rbac.authorization.k8s.io
-
 ---
 # Source: harmostes/templates/ui-rbac.yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -4932,7 +4911,6 @@ roleRef:
   kind: Role
   name: harmostes-ui
   apiGroup: rbac.authorization.k8s.io
-
 ---
 # Source: harmostes/templates/fork-conflict-resolver.yaml
 apiVersion: v1
@@ -4949,7 +4927,6 @@ spec:
     - name: http
       port: 80
       targetPort: http
-
 ---
 # Source: harmostes/templates/service.yaml
 # Service exposing the controller's webhook + metrics ports.
@@ -4977,7 +4954,6 @@ spec:
       port: 8080
       targetPort: 8080
       protocol: TCP
-
 ---
 # Source: harmostes/templates/ui.yaml
 apiVersion: v1
@@ -4997,7 +4973,6 @@ spec:
       port: 8083
       targetPort: 8083
       protocol: TCP
-
 ---
 # Source: harmostes/templates/controller.yaml
 # The monitor controller: always-on, watches Workflow CRs, schedules worker Jobs.
@@ -5054,7 +5029,6 @@ spec:
             requests:
               cpu: 100m
               memory: 128Mi
-
 ---
 # Source: harmostes/templates/fork-conflict-resolver.yaml
 apiVersion: apps/v1
@@ -5200,7 +5174,6 @@ spec:
             name: litellm-provider-extension
         - name: home
           emptyDir: {}
-
 ---
 # Source: harmostes/templates/ui.yaml
 apiVersion: apps/v1
@@ -5291,7 +5264,6 @@ spec:
         - name: platforms-config
           configMap:
             name: harmostes-ui-platforms
-
 ---
 # Source: harmostes/templates/worker-pool.yaml
 apiVersion: apps/v1
@@ -5441,6 +5413,10 @@ spec:
                 secretKeyRef:
                   name: harmostes-litellm-token
                   key: key
+            # Turn-budget extension's hard tool-call cap (#484) — forwarded to
+            # attempt Jobs via the dispatch allowlist. Empty = uncapped.
+            - name: PI_TOOL_BUDGET
+              value: "24"
           volumeMounts:
             - name: skills
               mountPath: /skills
@@ -5495,7 +5471,6 @@ spec:
           configMap:
             name: fork-maintenance-hooks
             defaultMode: 0755
-
 ---
 # Source: harmostes/templates/fork-conflict-resolver.yaml
 # ── Fork conflict resolver (ADR-0011: chart-owned) ──────────────────────────
@@ -5513,7 +5488,6 @@ spec:
 # same pattern as the rig-query fixture freshness check). The k8s-config
 # ConfigMap this replaces was exactly such a stale copy (#358 never reached
 # the resolver through it).
-
 ---
 # Source: harmostes/templates/fork-maintenance.yaml
 # ── Fork-maintenance engine payload (ADR-0011) ──────────────────────────────
@@ -5522,14 +5496,12 @@ spec:
 # declarative per-fork configuration. ConfigMap names match the worker-pool
 # mounts (forkMaintenance.*ConfigMap), so the worker pods see the same
 # /workspace layout the k8s-config kustomize generator used to produce.
-
 ---
 # Source: harmostes/templates/ui-platforms-configmap.yaml
 # Platform display configs (plug-and-play). This ConfigMap provides display
 # metadata (label, color, icon) for known git platforms. Any platform string
 # is accepted for token creation — this only enriches the UI. To add a new
 # platform, add an entry here (GitOps), no code change needed.
-
 ---
 # Source: harmostes/templates/ui-rbac.yaml
 # RBAC for harmostes-ui, right-sized to the ADR-0012 §5 write path: the UI
@@ -5538,14 +5510,12 @@ spec:
 # catalogs owner-scoped. Lifecycle mutations (update/patch/delete) return
 # with their own ADR-0012 issues (#418/#419) — until then the verbs are not
 # granted. Isolation is code-enforced: handlers filter by harmostes.dev/owner.
-
 ---
 # Source: harmostes/templates/ui.yaml
 # harmostes-ui: self-service web interface for managing Workflow CRs.
 # Authenticated via Authentik forward-auth (identity injected as headers).
 # The Go server reads X-Forwarded-Preferred-Username and filters all queries
 # by the harmostes.dev/owner label.
-
 ---
 # Source: harmostes/templates/dapr.yaml
 # Dapr components — the deterministic event-system application layer. State for
@@ -5576,7 +5546,6 @@ spec:
     # anyway.
     - name: keyPrefix
       value: "none"
-
 ---
 # Source: harmostes/templates/dapr.yaml
 apiVersion: dapr.io/v1alpha1
@@ -5597,7 +5566,6 @@ spec:
     # Per-namespace consumer isolation
     - name: consumerID
       value: harmostes
-
 ---
 # Source: harmostes/templates/dapr.yaml
 # Dapr secret store — wraps the cluster's k8s Secret backend so all apps (UI,
@@ -5616,7 +5584,6 @@ spec:
   metadata:
     - name: namespace
       value: harmostes-ci
-
 ---
 # Source: harmostes/templates/dapr.yaml
 # Dapr Configuration referenced by worker pods via dapr.io/config. The sentry
@@ -5651,7 +5618,6 @@ spec:
       timeout: "30s"
   tracing:
     samplingRate: "0.5"
-
 ---
 # Source: harmostes/templates/externalsecrets.yaml
 apiVersion: external-secrets.io/v1
@@ -5680,7 +5646,6 @@ spec:
     - secretKey: url
       remoteRef:
         key: GOLDEN_URL
-
 ---
 # Source: harmostes/templates/workflow-templates.yaml
 apiVersion: harmostes.dev/v1alpha1
@@ -5712,7 +5677,6 @@ spec:
     kind: string
     label: Fork
     name: fork
-
 ---
 # Source: harmostes/templates/workflow-templates.yaml
 apiVersion: harmostes.dev/v1alpha1
@@ -5736,7 +5700,6 @@ spec:
   prepare:
     plugin:
       name: rig-emit
-
 ---
 # Source: harmostes/templates/workflow-templates.yaml
 apiVersion: harmostes.dev/v1alpha1
@@ -5789,7 +5752,6 @@ spec:
     kind: string
     label: Wiki repo
     name: wiki
-
 ---
 # Source: harmostes/templates/workflow-templates.yaml
 apiVersion: harmostes.dev/v1alpha1

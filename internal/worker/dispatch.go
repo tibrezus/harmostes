@@ -433,6 +433,13 @@ var jobEnvAllowlist = []string{
 	// the reviewer's grep caught the first attempt landing on the wrong
 	// branch; this entry IS the fix).
 	"LITELLM_FALLBACKS",
+	// PI_TOOL_BUDGET: the turn-budget extension's hard tool-call cap
+	// (#484). The 43-minute review round ran 47 calls at ~55s of model
+	// latency each — turn COUNT is the wall clock; the prompt's ~12-call
+	// guidance was ignored, so the cap is enforced in the harness. Absent
+	// on a deployment → the extension is inert and reviews run uncapped
+	// (the pre-#484 status quo).
+	"PI_TOOL_BUDGET",
 }
 
 // jobCredentialEnv forwards the allowlisted deployment-level vars from the

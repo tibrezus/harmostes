@@ -69,6 +69,7 @@ func TestExtensionToolsCoversEveryLoadedExtension(t *testing.T) {
 	cases := map[string]string{
 		"/extensions/litellm-provider": "", // provider-only: registers no tool
 		"/extensions/rig-query":        "rig",
+		"/extensions/turn-budget":      "", // veto-only: blocks over-budget tool_call events, registers none (#484)
 		"/extensions/sol-pi":           "obs_recall", // observation-pack's recall affordance (#425)
 	}
 	for _, ext := range Extensions {

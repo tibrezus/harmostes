@@ -203,6 +203,7 @@ def main():
         "extensions": [
             "/extensions/litellm-provider",
             "/extensions/rig-query",
+            "/extensions/turn-budget",
             "/extensions/sol-pi"
         ],
         "tools": {

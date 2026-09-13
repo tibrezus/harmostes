@@ -63,7 +63,7 @@ func RenderExtensions() (jsonArtifact []byte, pyBlock []byte, err error) {
 // (LoadedExtensions, mirrored in harmostes.py) making the resolved set
 // visible per run.
 //
-// Provenance: litellm-provider and rig-query are IN-TREE
+// Provenance: litellm-provider, rig-query, and turn-budget are IN-TREE
 // (extensions/<name>, COPY'd); sol-pi is a VENDORED third-party checkout
 // (extensions/sol-pi — NVlabs/SoL-Pi, see its UPSTREAM.md for the source
 // SHA and bump procedure). Vendoring keeps the review/update path of a
@@ -71,6 +71,7 @@ func RenderExtensions() (jsonArtifact []byte, pyBlock []byte, err error) {
 var Extensions = []string{
 	"/extensions/litellm-provider",
 	"/extensions/rig-query",
+	"/extensions/turn-budget",
 	"/extensions/sol-pi",
 }
 

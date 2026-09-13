@@ -32,6 +32,14 @@ if d=="REQUEST_CHANGES" and not comments:
 for i,c in enumerate(comments):
     if not isinstance(c,dict) or not c.get("path") or not c.get("body"):
         print(f"ERROR: comments[{i}] must have path+body",file=sys.stderr);sys.exit(1)
+# TODO lane (r7-r10): completely-missing pieces ride todos[] — anchored as
+# non-blocking threads the dev must address; they never change the decision.
+todos=review.get("todos",[])
+if not isinstance(todos,list):
+    print("ERROR: todos must be a list",file=sys.stderr);sys.exit(1)
+for i,t in enumerate(todos):
+    if not isinstance(t,dict) or not t.get("path") or not t.get("body"):
+        print(f"ERROR: todos[{i}] must have path+body",file=sys.stderr);sys.exit(1)
 review["decision"]=d
 # Skill output contract (v2): reviewed_sha must equal the PR head SHA and
 # ── Divergence ledger (r18-r20 lessons) — check the CLASS, every round ──

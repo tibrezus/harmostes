@@ -721,6 +721,88 @@ func TestPostReviewForgejoZeroFindingsPostsNativeApproval(t *testing.T) {
 	}
 }
 
+// TestPostReviewForgejoTodosRideTheNativeApproval (r7-r10 TODO lane): an
+// APPROVE with zero blocking findings but a todos[] list posts the native
+// APPROVED review carrying the TODOs as anchored comments — the approval
+// stands, the threads still owe the dev a follow-up, and the verdict line
+// says so instead of hiding them.
+func TestPostReviewForgejoTodosRideTheNativeApproval(t *testing.T) {
+	var mu sync.Mutex
+	var verdictBody string
+	reviewPosts := []map[string]any{}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/git.rezus.cloud/tibrez/rhesadox/pulls/99", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"head": map[string]string{"sha": "deadbeef123"}})
+	})
+	mux.HandleFunc("/repos/git.rezus.cloud/tibrez/rhesadox/pulls/99/reviews", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			mu.Lock()
+			reviewPosts = append(reviewPosts, body)
+			mu.Unlock()
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 6})
+			return
+		}
+		mu.Lock()
+		out, _ := json.Marshal([]any{})
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(out)
+	})
+	mux.HandleFunc("/repos/git.rezus.cloud/tibrez/rhesadox/issues/99/comments", func(w http.ResponseWriter, r *http.Request) {
+		var b map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&b)
+		mu.Lock()
+		verdictBody, _ = b["body"].(string)
+		mu.Unlock()
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": 3})
+	})
+	mux.HandleFunc("/repos/git.rezus.cloud/tibrez/rhesadox/issues/99/labels/needs-review", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	review := map[string]any{
+		"decision":     "APPROVE",
+		"reviewed_sha": "deadbeef123",
+		"comments":     []any{},
+		"todos": []any{
+			map[string]any{"path": "src/serve/web/assets/styles.css", "line": 12, "body": "dark-mode tokens are missing entirely"},
+		},
+	}
+	_ = runForgejo(t, srv, review)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(reviewPosts) != 1 {
+		t.Fatalf("expected one native APPROVED review post, got %d", len(reviewPosts))
+	}
+	p := reviewPosts[0]
+	if p["event"] != "APPROVED" || p["commit_id"] != "deadbeef123" {
+		t.Fatalf("approval must stay APPROVED at the reviewed SHA, got %v", p)
+	}
+	cs, _ := p["comments"].([]any)
+	if len(cs) != 1 {
+		t.Fatalf("the APPROVED review must anchor the TODO as a comment, got %v", p["comments"])
+	}
+	c, _ := cs[0].(map[string]any)
+	cb, _ := c["body"].(string)
+	if !strings.HasPrefix(cb, "TODO (non-blocking") || !strings.Contains(cb, "dark-mode tokens") {
+		t.Errorf("TODO comment must carry the non-blocking prefix + body, got %q", cb)
+	}
+	if !strings.Contains(verdictBody, "1 TODO thread(s) anchored") {
+		t.Errorf("verdict must state the anchored TODO count, got %q", verdictBody)
+	}
+	if !strings.Contains(verdictBody, "<!-- pr-review: APPROVE @ deadbeef123 -->") {
+		t.Errorf("verdict must keep the APPROVE trailer, got %q", verdictBody)
+	}
+}
+
 // runForgejo runs the plugin the way the Forgejo dialect test does: the
 // fixture's rc names the git.rezus.cloud paths the workspace.sh envelope
 // produces, IS_FJ=true, and the Forgejo token env the publish path reads.

@@ -277,6 +277,11 @@ if os.environ.get("DOWNGRADED"):
           "prior-round thread(s); reply with the fix SHA, resolve, then re-arm.")
 elif dec=="APPROVE":
     line=f"APPROVE at {sha} — all pillars clean, no blocking findings. Label consumed; re-arm with the label to review again."
+    todos=review.get("todos",[]) or []
+    if todos:
+        # TODO lane (r7-r10): the approval stands; the anchored TODO threads
+        # still owe the dev a follow-up — say so on the record line.
+        line=f"APPROVE at {sha} — all pillars clean, no blocking findings; {len(todos)} TODO thread(s) anchored to address. Label consumed; re-arm with the label to review again."
 else:
     plural="finding" if n==1 else "findings"
     line=f"{dec} at {sha} — {n} blocking {plural} posted as review threads; close them, then re-arm with the label to re-review."
@@ -396,7 +401,18 @@ elif [ "$THREADS_ANCHOR" = "1" ] && python3 -c "import json,sys;cs=json.load(ope
 import json, os, subprocess, sys
 review=json.load(open(os.environ["REVIEW"]))
 all_cs=review.get("comments",[])
-cs=all_cs[:20]  # cap: the first 20 anchor as threads; the verdict body carries the rest
+all_todos=review.get("todos",[])
+# TODO lane (r7-r10): completely-missing pieces anchor as NON-blocking
+# threads after the findings, sharing the 20-thread cap. They never count
+# in the verdict's blocking number; teeth come from the classifier — an
+# unresolved TODO thread downgrades the NEXT round's APPROVE.
+TODO_PREFIX="TODO (non-blocking — reply with the follow-up, then resolve): "
+todo_bodies=[TODO_PREFIX+str(t.get("body","")) for t in all_todos
+             if isinstance(t,dict) and t.get("path") and t.get("body")]
+merged=all_cs[:20]+[{**t,"body":b} for t,b in zip(
+    [t for t in all_todos if isinstance(t,dict) and t.get("path") and t.get("body")][:max(0,20-len(all_cs[:20]))],
+    todo_bodies[:max(0,20-len(all_cs[:20]))])]
+cs=merged
 base=os.environ["API_BASE"]; tok=os.environ["TOKEN"]
 repo=os.environ["REPO"]; pr=os.environ["PR_NUM"]; sha=review.get("reviewed_sha","")
 fj = os.environ.get("IS_FJ")=="true"
@@ -460,7 +476,7 @@ else:
 dropped=[c.get("path","?") for c in all_cs[len(cs):]]
 if dropped:
     print(f"[post-review] capped: {len(dropped)} findings anchor only in the verdict body: {', '.join(dropped)}", file=sys.stderr)
-summary={"posted":posted,"rejected":rejected,"capped":max(0,len(all_cs)-len(cs))}
+summary={"posted":posted,"rejected":rejected,"capped":max(0,len(all_cs)+len(all_todos)-len(cs)),"todos":len(todo_bodies)}
 if last_error:
     summary["last_error"]=last_error[:60]
 with open(os.environ["THREAD_STATUS_FILE"],"w") as f:
@@ -471,14 +487,26 @@ elif [ "${IS_FJ:-}" = "true" ] && [ "$THREADS_ANCHOR" = "1" ] && [ "${EXISTING:-
   # APPROVE with zero blocking findings, Forgejo only (#470): the thread
   # publisher above never runs (nothing to anchor), so the native APPROVED
   # review — the whitelisted bot identity satisfying required_approvals —
-  # is posted here. body carries the same MARKER the dedupe scan
-  # recognises; the hoisted EXISTING scan guarantees no double-post.
+  # is posted here. TODOs (r7-r10) ride the same review as anchored
+  # comments; body carries the same MARKER the dedupe scan recognises; the
+  # hoisted EXISTING scan guarantees no double-post.
+  APPROVAL_JSON="$(mktemp)"; export APPROVAL_JSON
+  python3 - "$REVIEW" > "$APPROVAL_JSON" << 'PYTODO'
+import json, os, sys
+r=json.load(open(sys.argv[1]))
+P="TODO (non-blocking — reply with the follow-up, then resolve): "
+cs=[{"path":t["path"],"new_position":int(t["line"]),"body":P+str(t["body"])}
+    for t in (r.get("todos") or []) if isinstance(t,dict) and t.get("path") and t.get("line")]
+json.dump({"event":"APPROVED","commit_id":r.get("reviewed_sha",""),
+           "body":os.environ["MARKER"],"comments":cs}, sys.stdout)
+PYTODO
   curl -fsS --max-time 20 -X POST \
     -H "authorization: token $TOKEN" -H "content-type: application/json" \
-    -d "{\"event\":\"APPROVED\",\"commit_id\":\"$REVIEWED_SHA\",\"body\":\"$MARKER\"}" \
+    -d @"$APPROVAL_JSON" \
     "$API_BASE/repos/$REPO/pulls/$PR_NUM/reviews" >/dev/null 2>&1 \
     && echo '{"posted":1,"rejected":0,"capped":0}' > "$THREAD_STATUS_FILE" \
     || echo '{"posted":0,"rejected":1,"capped":0,"skipped":"approval-post-failed"}' > "$THREAD_STATUS_FILE"
+  rm -f "$APPROVAL_JSON"
 fi
 THREADS=$(cat "$THREAD_STATUS_FILE")
 # The scan-failed flag (written by the dedupe scan on failure) splices into

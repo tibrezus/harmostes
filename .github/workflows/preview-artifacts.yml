@@ -17,6 +17,7 @@ on:
 permissions:
   contents: read
   packages: write
+  pull-requests: write # the preview-URL comment
 
 concurrency:
   group: preview-artifacts-${{ github.event.pull_request.number }}

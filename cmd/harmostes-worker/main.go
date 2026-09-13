@@ -93,10 +93,15 @@ func botTokenEnvForNode(node v1alpha1.NodeSpec, base []string) []string {
 	if err := json.Unmarshal(node.Config, &cfg); err != nil || cfg.Name != "post-review" {
 		return base
 	}
-	if bt := os.Getenv("HARMOSTES_FORGEJO_BOT_TOKEN"); bt != "" {
-		return append(append([]string{}, base...), "HARMOSTES_FORGEJO_BOT_TOKEN="+bt)
+	bt := os.Getenv(agent.BotTokenEnvKey)
+	if bt == "" {
+		return base
 	}
-	return base
+	grant := []string{
+		agent.BotTokenEnvKey + "=" + bt,
+		agent.BotHostEnvKey + "=" + os.Getenv(agent.BotHostEnvKey),
+	}
+	return append(append([]string{}, base...), grant...)
 }
 
 // spawnEnv extends the pi child env with the ADR-0009 rig freshness
@@ -440,7 +445,7 @@ func runOneShot() {
 	// and the bot token can satisfy required_approvals — it must not sit in
 	// an LLM loop's env. The deploy plugin (post-review) reads it from the
 	// process env, which this filter does not touch.
-	piEnv := agent.FilterEnv(os.Environ(), "HARMOSTES_FORGEJO_BOT_TOKEN")
+	piEnv := agent.ChildEnv(os.Environ())
 	logfFn("%s", piargs.ExtensionsLogLine())
 	deps.Agent = worker.RPCAgentRunner{
 		// The rig freshness contract arms at AGENT-NODE SPAWN, not run
@@ -528,7 +533,7 @@ func runOneShot() {
 	// untrusted-content-driven process env. The grant is re-scoped per node
 	// by botTokenEnvForNode (this file) via WorkflowContext.ExtraEnvForNode
 	// — post-review, its only reader, is the sole node that receives it.
-	extraEnv := agent.FilterEnv(os.Environ(), "HARMOSTES_FORGEJO_BOT_TOKEN")
+	extraEnv := agent.ChildEnv(os.Environ())
 	if wf.Status.LastRigHash != "" {
 		extraEnv = append(extraEnv, "HARMOSTES_LAST_RIG_HASH="+wf.Status.LastRigHash)
 	}
@@ -598,9 +603,7 @@ func runOneShot() {
 			Shadow:         shadow,
 			State:          wf.Name,
 			ExtraEnv:       extraEnv,
-			ExtraEnvForNode: func(node v1alpha1.NodeSpec, base []string) []string {
-				return botTokenEnvForNode(node, base)
-			},
+			ExtraEnvForNode: botTokenEnvForNode,
 		}),
 	)
 

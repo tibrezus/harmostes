@@ -71,7 +71,7 @@ func (g CmdGate) Run(ctx context.Context) (bool, string, error) {
 	// invariant the graph legs hold (RunPlugin/GatePlugin set cmd.Env
 	// explicitly) applies here only as a scrub, since the gate command may
 	// legitimately need the rest of the ambient env.
-	cmd.Env = FilterEnv(os.Environ(), "HARMOSTES_FORGEJO_BOT_TOKEN")
+	cmd.Env = ChildEnv(os.Environ())
 	var out strings.Builder
 	cmd.Stdout = &out
 	cmd.Stderr = &out

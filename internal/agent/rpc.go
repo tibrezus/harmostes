@@ -48,6 +48,31 @@ type RPC struct {
 	sessionDir string
 }
 
+// The credential-boundary keys. EVERY Go site that scrubs, grants, forwards
+// or pins these credentials must reference these constants — the boundary is
+// fail-open if sites spell the names independently (r9 t16: a rename touching
+// some sites left others inheriting the credential while each pinning test
+// asserted its own copy of the literal). post-review.sh is bash and cannot
+// import this package; its literal is pinned by the boundary-scan test.
+const (
+	// BotTokenEnvKey holds the approval-capable bot review credential. It must
+	// never reach a child env whose input includes untrusted PR content (pi,
+	// gate shells, prepare tooling) — only the deploy/post-review node.
+	BotTokenEnvKey = "HARMOSTES_FORGEJO_BOT_TOKEN"
+	// BotHostEnvKey is the forge origin the bot credential is minted for; it
+	// travels with the token through the same scoped grant.
+	BotHostEnvKey = "HARMOSTES_FORGEJO_BOT_HOST"
+)
+
+// ChildEnv is THE exec-leaf env for children whose input includes untrusted
+// PR content (pi sessions, gate shells, workspace tooling): it strips the
+// approval-capable bot credential. Every exec site must route through this
+// helper (or enumerate cmd.Env fully, as the graph plugin legs do) — the
+// boundary-scan test (internal/agent/boundary_test.go) pins the closure.
+func ChildEnv(env []string) []string {
+	return FilterEnv(env, BotTokenEnvKey, BotHostEnvKey)
+}
+
 // FilterEnv returns env without KEY=… entries whose key is exactly any of
 // the given keys. Exported for entrypoints that must prove (testably) which
 // credentials never reach a child env (pi, gate shells).
@@ -161,7 +186,7 @@ func NewRPC(ctx context.Context, opts RPCOptions) (*RPC, error) {
 	// harmostes-agent) route through NewRPC, and pi's input includes
 	// untrusted PR content. The deploy plugin (post-review) reads the
 	// credential from its own exec env, which does not pass through here.
-	cmd.Env = FilterEnv(opts.Env, "HARMOSTES_FORGEJO_BOT_TOKEN")
+	cmd.Env = ChildEnv(opts.Env)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err

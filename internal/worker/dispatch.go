@@ -21,6 +21,8 @@ import (
 	"github.com/tibrezus/harmostes/internal/k8s"
 	"github.com/tibrezus/harmostes/internal/review"
 	"github.com/tibrezus/harmostes/internal/timeline"
+
+	"github.com/tibrezus/harmostes/internal/agent"
 )
 
 // Dispatcher is the consumer's RunFunc implementation (ADR-0007 phase 3):
@@ -411,13 +413,13 @@ var jobEnvAllowlist = []string{
 	// The whitelisted bot review identity (#480): native review objects must
 	// post as harmostes-bot — the primary token is the PR author's, and the
 	// forge 422s self-reviews. Optional secret; absent = primary token only.
-	"HARMOSTES_FORGEJO_BOT_TOKEN",
+	agent.BotTokenEnvKey,
 	// The other half of the #480 r3 t5 pair: the gate matches the pr-context
 	// host against this value EXACTLY (post-review.sh). Forwarding the token
 	// without the host halves the contract — the Job-side script would
 	// compare against its compiled-in default and a non-default botHost
 	// would silently never match.
-	"HARMOSTES_FORGEJO_BOT_HOST",
+	agent.BotHostEnvKey,
 	// CLI-canonical alias names (#374 protocol): the chart aliases the
 	// shared forge secrets at the exact names the agent CLIs read natively
 	// (worker-pool.yaml "CLI aliases" block) — the review agents drive

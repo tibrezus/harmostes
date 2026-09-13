@@ -82,8 +82,9 @@ review["decision"]=d
 # On a re-review of an addressed round: verify the fix in the diff, REPLY
 # on the thread with the fixing SHA (the CLI dialects above), then RESOLVE
 # it. An APPROVE is lawful ONLY when zero threads remain unresolved —
-# post-review downgrades an APPROVE issued over open prior threads. ──
-# the body must END with the verdict trailer — the merge-currency token.
+# post-review downgrades an APPROVE issued over open prior threads.
+# r7: review.json has no body and no trailer — the deploy composes the
+# one-line verdict + trailer itself (see below).
 sha=review.get("reviewed_sha","")
 ctx_path=os.path.join(os.path.dirname(path),"pr-context.json")
 head=os.environ.get("HARMOSTES_PR_HEAD_SHA","")

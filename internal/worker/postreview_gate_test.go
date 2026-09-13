@@ -19,9 +19,16 @@ const (
 	ghResolvedOnly     = `[{"id":21,"path":"r.go","line":3,"commit_id":"OLD","in_reply_to":null,"resolved":true}]`
 	ghUnresolvedMarked = `[{"id":31,"path":"u.go","line":7,"commit_id":"OLD","in_reply_to":null,"resolved":false}]`
 	ghNullCommit       = `[{"id":41,"path":"n.go","line":2,"commit_id":null,"in_reply_to":null}]`
-	ghOpenPrior        = `[{"id":1,"path":"a.go","line":10,"commit_id":"OLD","in_reply_to":null},{"id":2,"path":"b.go","line":20,"commit_id":"OLD","in_reply_to":1}]`
-	ghUnreplied        = `[{"id":1,"path":"a.go","line":10,"commit_id":"OLD","in_reply_to":null}]`
-	ghOpenCur          = `[{"id":1,"path":"a.go","line":10,"commit_id":"CUR","in_reply_to":null}]`
+	// A host shape the classifier cannot fully subscript (missing id —
+	// the r7 review of 90a24e63 mutation-probed `KeyError: 'id'` on the
+	// shipped block): must DEGRADE, never exit 1 — a crash here aborts
+	// the deploy under set -e and wedges the head (#328). A readable
+	// prior-round comment stays an open thread (C4); only unreadable
+	// SHAPES (non-list, non-dict) are skipped entirely.
+	ghTruncated = `[{"path":"a.go","line":1,"commit_id":"OLD"}]`
+	ghOpenPrior = `[{"id":1,"path":"a.go","line":10,"commit_id":"OLD","in_reply_to":null},{"id":2,"path":"b.go","line":20,"commit_id":"OLD","in_reply_to":1}]`
+	ghUnreplied = `[{"id":1,"path":"a.go","line":10,"commit_id":"OLD","in_reply_to":null}]`
+	ghOpenCur   = `[{"id":1,"path":"a.go","line":10,"commit_id":"CUR","in_reply_to":null}]`
 	// GitHub REST names the reply linkage in_reply_to_id (the live #467
 	// loop: replies never closed threads under the in_reply_to-only read,
 	// so every APPROVE downgraded on phantom open threads).
@@ -70,6 +77,8 @@ func TestPostReviewGateClassifier(t *testing.T) {
 		{"github: resolved-but-unreplied thread is CLOSED (C1)", ghResolvedOnly, "CUR", "APPROVE", "0"},
 		{"github: marked-unresolved unreplied thread downgrades", ghUnresolvedMarked, "CUR", "REQUEST_CHANGES", "1"},
 		{"github: commit_id-less root never downgrades (C4)", ghNullCommit, "CUR", "APPROVE", "0"},
+		{"github: field-truncated entry degrades, not dies", ghTruncated, "CUR", "REQUEST_CHANGES", "1"},
+		{"github: non-list payload degrades, not dies", `{"message":"bad credentials"}`, "CUR", "APPROVE", "0"},
 		{"null payload (fetch failed) fails open", `null`, "CUR", "APPROVE", "0"},
 	}
 	// r29 P4-1 regression lock: the production invocation must feed the

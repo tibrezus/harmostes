@@ -169,13 +169,21 @@ import json, os, sys
 cs=json.load(sys.stdin)
 sha=os.environ.get("REVIEWED_SHA","")
 open_n=0
-if cs is None:
+if not isinstance(cs, list):
     print(0); print("APPROVE"); raise SystemExit   # fetch failed — fail-open with a loud WARN upstream
 dec="APPROVE"
-if cs and "resolvable" in cs[0]:
+# Degraded-read posture (r7 review of 90a24e63): a shape this program
+# cannot classify must DEGRADE (treat as unresolvable-but-not-open), never
+# KeyError — the classifier runs under `set -e` inside the APPROVE branch,
+# and a crash there aborts the deploy before the verdict + label DELETE
+# (the exact lost-round signature this plugin exists to prevent). Anything
+# whose dialect/identity we cannot read is counted as CLOSED-BY-DEFAULT
+# here: a false APPROVE re-reviews next round, a crash wedges the head.
+if cs and isinstance(cs[0], dict) and "resolvable" in cs[0]:
     # GitLab dialect: native resolve is authoritative.
     open_threads=[c for c in cs
-        if c["resolvable"] and not c["resolved"]
+        if isinstance(c, dict)
+        and c.get("resolvable") and not c.get("resolved")
         and str(c.get("commit_id") or "")!=sha]
 else:
     # GitHub/Forgejo dialect: a thread is CLOSED by real resolve state
@@ -186,10 +194,11 @@ else:
     # so every APPROVE downgraded on phantom open threads).
     def reply_parent(c):
         return c.get("in_reply_to_id") or c.get("in_reply_to")
-    replied={reply_parent(c) for c in cs if reply_parent(c)}
+    replied={reply_parent(c) for c in cs if isinstance(c, dict) and reply_parent(c)}
     open_threads=[c for c in cs
-        if not reply_parent(c)
-        and c["id"] not in replied
+        if isinstance(c, dict)
+        and not reply_parent(c)
+        and c.get("id") not in replied
         and not c.get("resolved")
         # No commit_id → round unattributable: never downgrade on it (C4).
         and c.get("commit_id") not in (None, "")
@@ -210,10 +219,22 @@ GATE_PYEOF
 )
 
 # stdout of the classifier: count line first, decision last (the golden
-# test reads the decision as the last line — keep that invariant).
-CLASS_OUT=$(printf '%s' "$CS_JSON" | python3 -c "$CLASSIFIER_PY")
+# test reads the decision as the last line — keep that invariant). If the
+# classifier itself dies, the gate was NOT evaluated: apply the r6 P1
+# posture (skip the verdict + label removal, next cycle retries) instead
+# of posting a verdict from an unknown decision.
+CLASS_OUT=$(printf '%s' "$CS_JSON" | python3 -c "$CLASSIFIER_PY") || {
+  log "WARN: gate classifier failed — gate not evaluated; skipping verdict post and label removal; next cycle retries"
+  echo "{\"artifact\":\"pr-$HOST-$REPO-$PR_NUM\",\"status\":\"ok\",\"event\":{\"host\":\"$HOST\",\"repo\":\"$REPO\",\"number\":$PR_NUM,\"decision\":\"$DEC\",\"thread_gate\":\"classifier-crash\",\"skipped\":\"gate-unavailable\"}}"
+  exit 0
+}
 NEWDEC=$(printf '%s\n' "$CLASS_OUT" | tail -n 1)
 OPEN_THREADS=$(printf '%s\n' "$CLASS_OUT" | head -n 1)
+if [ -z "$NEWDEC" ] || [ "$NEWDEC" != "APPROVE" ] && [ "$NEWDEC" != "REQUEST_CHANGES" ]; then
+  log "WARN: gate classifier produced no decision — gate not evaluated; skipping verdict post and label removal; next cycle retries"
+  echo "{\"artifact\":\"pr-$HOST-$REPO-$PR_NUM\",\"status\":\"ok\",\"event\":{\"host\":\"$HOST\",\"repo\":\"$REPO\",\"number\":$PR_NUM,\"decision\":\"$DEC\",\"thread_gate\":\"classifier-crash\",\"skipped\":\"gate-unavailable\"}}"
+  exit 0
+fi
 
 if [ "$NEWDEC" != "$DEC" ]; then
   log "APPROVE downgraded: $OPEN_THREADS unresolved prior-round thread(s)"

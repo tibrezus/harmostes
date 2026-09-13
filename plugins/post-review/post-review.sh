@@ -24,10 +24,15 @@ TOKEN=$(host::token "$HOST" required)
 # belongs to the PR author, and both Forgejo and GitHub 422 self-reviews
 # ("approve/reject your own pull is not allowed") — observed live on
 # rhesadox#2169: twice-APPROVED green, required_approvals unsatisfiable.
-# Verdict COMMENTS stay on TOKEN (authors may comment). Unset bot → primary
-# token, and the failure paths SPEAK the host's rejection (self-review
-# detection below) instead of a bare failure flag.
-REVIEW_TOKEN="${HARMOSTES_FORGEJO_BOT_TOKEN:-$TOKEN}"
+# Verdict COMMENTS stay on TOKEN (authors may comment).
+# HOST-GATED (r1 review t1): the bot credential is a Forgejo identity — it
+# must never be transmitted to GitHub/Codeberg, so the override applies to
+# IS_FJ hosts only. GitHub/Codeberg bot parity is a follow-up.
+if [ "${IS_FJ:-}" = "true" ]; then
+  REVIEW_TOKEN="${HARMOSTES_FORGEJO_BOT_TOKEN:-$TOKEN}"
+else
+  REVIEW_TOKEN="$TOKEN"
+fi
 export API_BASE TOKEN REVIEW_TOKEN HOST REPO PR_NUM REVIEW LABEL IS_FJ IS_GITLAB WORKDIR
 # ── Moved-head guard (ADR-0006): the verdict is only valid at the exact ──
 # reviewed SHA. If the PR head moved while the agent worked, do NOT post and
@@ -512,23 +517,28 @@ json.dump({"event":"APPROVED","commit_id":r.get("reviewed_sha",""),
            "body":os.environ["MARKER"],"comments":cs}, sys.stdout)
 PYTODO
   APPROVAL_RESP_FILE="$(mktemp)"
+  # `|| true`: under set -euo pipefail a plain assignment propagates the
+  # substitution's exit status — a curl TRANSPORT failure (timeout, DNS,
+  # reset; distinct from HTTP 4xx/5xx which exit 0 without -f) would abort
+  # the whole plugin before label-consume + artifact (r1 review t2). A
+  # transport failure yields APPROVAL_CODE=000 → the * branch speaks.
   APPROVAL_CODE="$(curl -sS --max-time 20 -o "$APPROVAL_RESP_FILE" -w "%{http_code}" -X POST \
     -H "authorization: token $REVIEW_TOKEN" -H "content-type: application/json" \
     -d @"$APPROVAL_JSON" \
-    "$API_BASE/repos/$REPO/pulls/$PR_NUM/reviews" 2>/dev/null)"
+    "$API_BASE/repos/$REPO/pulls/$PR_NUM/reviews" 2>/dev/null || true)"
   case "$APPROVAL_CODE" in
     200|201) echo '{"posted":1,"rejected":0,"capped":0}' > "$THREAD_STATUS_FILE" ;;
     *)
       # SPEAK (r4-P8): the artifact must distinguish "credential missing, host
       # rejected a self-review" (#480 — bot token not provisioned) from any
       # other rejection; the response body lands in the deploy log either way.
-      APPROVAL_BODY="$(head -c 120 "$APPROVAL_RESP_FILE" 2>/dev/null)"
+      APPROVAL_BODY="$(head -c 120 "$APPROVAL_RESP_FILE" 2>/dev/null || true)"
       case "$APPROVAL_BODY" in
         *"own pull"*) APPROVAL_SKIP="self-review-forbidden" ;;
         *) APPROVAL_SKIP="approval-post-failed" ;;
       esac
       echo "{\"posted\":0,\"rejected\":1,\"capped\":0,\"skipped\":\"$APPROVAL_SKIP\"}" > "$THREAD_STATUS_FILE"
-      log "WARN: native approval rejected (http $APPROVAL_CODE) — $APPROVAL_BODY"
+      log "WARN: native approval rejected (http ${APPROVAL_CODE:-000}) — $APPROVAL_BODY"
       ;;
   esac
   rm -f "$APPROVAL_JSON" "$APPROVAL_RESP_FILE"

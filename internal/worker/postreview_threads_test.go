@@ -42,6 +42,7 @@ type fakeForge struct {
 	verdictBody string
 	labelGone   bool
 	comment422  map[string]bool // path → force 422
+	authHeaders []string        // Authorization on native posts (#480 host-gating)
 }
 
 func (f *fakeForge) mux(t *testing.T) *http.ServeMux {
@@ -64,6 +65,7 @@ func (f *fakeForge) mux(t *testing.T) *http.ServeMux {
 			var body map[string]any
 			_ = json.NewDecoder(r.Body).Decode(&body)
 			ev, _ := body["event"].(string)
+			f.authHeaders = append(f.authHeaders, r.Header.Get("Authorization"))
 			valid := map[string]map[string]bool{
 				"github":  {"APPROVE": true, "REQUEST_CHANGES": true, "COMMENT": true},
 				"forgejo": {"APPROVED": true, "PENDING": true, "COMMENT": true, "REQUEST_CHANGES": true},
@@ -99,6 +101,7 @@ func (f *fakeForge) mux(t *testing.T) *http.ServeMux {
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		path, _ := body["path"].(string)
 		f.mu.Lock()
+		f.authHeaders = append(f.authHeaders, r.Header.Get("Authorization"))
 		if f.comment422[path] {
 			f.mu.Unlock()
 			w.WriteHeader(http.StatusUnprocessableEntity)
@@ -1082,5 +1085,87 @@ func TestPostReviewForgejoApprovalSelfReviewForbiddenSpeaks(t *testing.T) {
 	}
 	if strings.Contains(out, `"posted":1`) {
 		t.Errorf("nothing may claim a posted approval when the host rejected it, out:\n%s", out)
+	}
+}
+
+func TestPostReviewGitHubIgnoresForgejoBotToken(t *testing.T) {
+	// r1 t1: the bot credential is a FORGEJO identity. It must never be
+	// transmitted to GitHub/Codeberg — the host-gate is the fix, this test
+	// is the pin (the review posts carry the primary token there).
+	f := &fakeForge{}
+	srv := httptest.NewServer(f.mux(t))
+	t.Cleanup(srv.Close)
+
+	runPluginEnv(t, srv, false, baseReview([]any{
+		map[string]any{"path": "a.go", "line": 7, "body": "finding one"},
+	}), "HARMOSTES_FORGEJO_BOT_TOKEN=bot-token-xyz")
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.authHeaders) == 0 {
+		t.Fatal("expected native posts to record Authorization headers")
+	}
+	for i, ah := range f.authHeaders {
+		if ah != "token fake-token" {
+			t.Errorf("GitHub native post %d must carry the PRIMARY token, not the Forgejo bot credential, got %q", i, ah)
+		}
+	}
+}
+
+func TestPostReviewForgejoApprovalTransportFailureSurvives(t *testing.T) {
+	// r1 t2: under set -euo pipefail the approval POST's curl assignment must
+	// not abort the plugin on a TRANSPORT failure (timeout/DNS/reset → exit
+	// non-zero even without -f) — label-consume and artifact must still run.
+	// The mux serves every other endpoint; POST /reviews hijacks the
+	// connection and drops it → curl exit 52 → APPROVAL_CODE=000.
+	var mu sync.Mutex
+	labelGone := false
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/git.rezus.cloud/tibrez/rhesadox/pulls/99", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"head": map[string]string{"sha": "deadbeef123"}})
+	})
+	mux.HandleFunc("/repos/git.rezus.cloud/tibrez/rhesadox/pulls/99/reviews", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte("[]"))
+			return
+		}
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			http.Error(w, "no hijack", http.StatusInternalServerError)
+			return
+		}
+		conn, _, err := hj.Hijack()
+		if err != nil {
+			return
+		}
+		_ = conn.Close() // drop the connection mid-request: a true transport failure
+	})
+	mux.HandleFunc("/repos/git.rezus.cloud/tibrez/rhesadox/issues/99/comments", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": 3})
+	})
+	mux.HandleFunc("/repos/git.rezus.cloud/tibrez/rhesadox/issues/99/labels/needs-review", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		labelGone = true
+		mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	review := baseReview(nil)
+	review["decision"] = "APPROVE"
+	out := runPluginEnv(t, srv, true, review)
+
+	if !strings.Contains(out, "approval-post-failed") {
+		t.Errorf("a transport failure must speak as approval-post-failed, out:\n%s", out)
+	}
+	mu.Lock()
+	gone := labelGone
+	mu.Unlock()
+	if !gone {
+		t.Error("the plugin must survive to consume the label after an approval transport failure (set -e would abort before it)")
 	}
 }

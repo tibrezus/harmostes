@@ -22,7 +22,7 @@
  * image without it simply has no cap (the pre-#484 status quo).
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { decide, parseAllow, parseBudget } from "./policy.ts";
+import { decide, eventArgs, parseAllow, parseBudget } from "./policy.ts";
 
 export default function (pi: ExtensionAPI) {
 	const budget = parseBudget(process.env.PI_TOOL_BUDGET);
@@ -31,7 +31,7 @@ export default function (pi: ExtensionAPI) {
 
 	let executed = 0;
 	pi.on("tool_call", (event) => {
-		const d = decide(event.toolName, (event.args ?? {}) as Record<string, unknown>, executed, budget, allowSubstrings);
+		const d = decide(event.toolName, eventArgs(event), executed, budget, allowSubstrings);
 		if (d.allow) {
 			executed++; // blocked attempts never reach execution — they stay free
 			return;

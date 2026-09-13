@@ -62,6 +62,26 @@ export function finalizeReason(count: number, budget: number, lane: string): str
 	);
 }
 
+/** Pi's tool_call event carries the arguments under `input` (types.d.ts:
+ * BashToolCallEvent.input). The prose docs say `args` — read BOTH, input
+ * first. The live failure (attempt 55de07e6351f) was exactly this: the lane
+ * matched nothing because the command was read from the wrong key. */
+export function eventArgs(event: unknown): Record<string, unknown> {
+	const e = (event ?? {}) as { input?: unknown; args?: unknown };
+	const raw = e.input ?? e.args;
+	if (typeof raw === "string") {
+		// some shapes carry the args as a JSON string — parse defensively
+		try {
+			const parsed = JSON.parse(raw);
+			return typeof parsed === "object" && parsed !== null ? (parsed as Record<string, unknown>) : {};
+			// eslint-disable-next-line @typescript-eslint/no-unused-vars
+		} catch {
+			return {};
+		}
+	}
+	return typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>) : {};
+}
+
 /** The cap decision for one tool call. `count` is the number of ALREADY
  * EXECUTED calls in this session (blocked attempts excluded). */
 export function decide(

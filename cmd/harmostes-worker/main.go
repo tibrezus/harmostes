@@ -525,8 +525,9 @@ func runOneShot() {
 	// cloned PR's trust boundary (workspace.sh → emit-rig.py → go mod
 	// download/list inherit the env verbatim), and a token whose whole
 	// purpose is approving third-party PRs must not sit in
-	// untrusted-content-driven process env. The deploy phase re-injects it
-	// (pipeline.go deployExtraEnv) — post-review is its only reader.
+	// untrusted-content-driven process env. The grant is re-scoped per node
+	// by botTokenEnvForNode (this file) via WorkflowContext.ExtraEnvForNode
+	// — post-review, its only reader, is the sole node that receives it.
 	extraEnv := agent.FilterEnv(os.Environ(), "HARMOSTES_FORGEJO_BOT_TOKEN")
 	if wf.Status.LastRigHash != "" {
 		extraEnv = append(extraEnv, "HARMOSTES_LAST_RIG_HASH="+wf.Status.LastRigHash)

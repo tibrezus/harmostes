@@ -48,12 +48,9 @@ type RPC struct {
 	sessionDir string
 }
 
-// SessionFiles returns the pi session files this RPC wrote, oldest first.
-// Empty when session persistence is off or pi wrote nothing (crash, abort
-// before first flush). Callers should read them after Abort.
 // FilterEnv returns env without KEY=… entries whose key is exactly any of
 // the given keys. Exported for entrypoints that must prove (testably) which
-// credentials never reach the pi child env.
+// credentials never reach a child env (pi, gate shells).
 func FilterEnv(env []string, keys ...string) []string {
 	drop := make(map[string]bool, len(keys))
 	for _, k := range keys {
@@ -69,6 +66,9 @@ func FilterEnv(env []string, keys ...string) []string {
 	return out
 }
 
+// SessionFiles returns the pi session files this RPC wrote, oldest first.
+// Empty when session persistence is off or pi wrote nothing (crash, abort
+// before first flush). Callers should read them after Abort.
 func (r *RPC) SessionFiles() []string {
 	if r.sessionDir == "" {
 		return nil

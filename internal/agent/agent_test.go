@@ -191,3 +191,23 @@ func TestTurnRecordsCarryPerTurnUsage(t *testing.T) {
 		t.Errorf("turn 1 usage = %+v, want 50/2", res.Session.Turns[1].Usage)
 	}
 }
+
+// #480 r8 t15: the gate shell inherits the process env unless set explicitly
+// — the approval-capable bot credential must be scrubbed at this leaf too
+// (the graph legs are safe because they enumerate cmd.Env; CmdGate did not).
+func TestCmdGateScrubBotToken(t *testing.T) {
+	t.Setenv("HARMOSTES_FORGEJO_BOT_TOKEN", "bot-secret")
+	t.Setenv("HARMOSTES_FORGEJO_TOKEN", "primary-keep")
+
+	g := CmdGate{Command: `test "$HARMOSTES_FORGEJO_BOT_TOKEN" = "" && echo scrubbed`}
+	green, out, err := g.Run(context.Background())
+	if err != nil {
+		t.Fatalf("gate run: %v", err)
+	}
+	if !green {
+		t.Fatalf("gate expected green (token scrubbed), output: %s", out)
+	}
+	if !strings.Contains(out, "scrubbed") {
+		t.Errorf("expected the scrubbed-env branch, output: %s", out)
+	}
+}

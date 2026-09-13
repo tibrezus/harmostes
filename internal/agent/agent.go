@@ -14,6 +14,7 @@ package agent
 
 import (
 	"context"
+	"os"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -58,12 +59,18 @@ type CmdGate struct {
 	Command string
 	Dir     string
 }
-
 func (g CmdGate) Run(ctx context.Context) (bool, string, error) {
 	_, span := observability.Tracer().Start(ctx, "gate.shell")
 	defer span.End()
 	cmd := exec.CommandContext(ctx, "sh", "-c", g.Command)
 	cmd.Dir = g.Dir
+	// #480 r8 t15: CmdGate never set cmd.Env, so the gate shell inherited the
+	// process env verbatim — the approval-capable bot credential included, in
+	// any pod mounting the secret. Scrub at this leaf too; the enumerated-env
+	// invariant the graph legs hold (RunPlugin/GatePlugin set cmd.Env
+	// explicitly) applies here only as a scrub, since the gate command may
+	// legitimately need the rest of the ambient env.
+	cmd.Env = FilterEnv(os.Environ(), "HARMOSTES_FORGEJO_BOT_TOKEN")
 	var out strings.Builder
 	cmd.Stdout = &out
 	cmd.Stderr = &out

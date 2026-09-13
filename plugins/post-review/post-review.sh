@@ -307,6 +307,23 @@ echo '{"posted":0,"rejected":0,"capped":0}' > "$THREAD_STATUS_FILE"; export THRE
 # guard silently stops recognising its own posts.
 SHA8="$(echo "${REVIEWED_SHA:-}" | cut -c1-8)"; export SHA8
 MARKER="automated review of $SHA8"; export MARKER
+# The verdict's native review state (#470): the thread gate has already
+# passed for an APPROVE, so its review carries zero unresolved threads and
+# submits as the host's APPROVAL event — the whitelisted bot identity then
+# SATISFIES required_approvals=1 (rhesadox main) and the merge unblocks
+# without a human re-click. REQUEST_CHANGES submits the host's rejection
+# event: block_on_rejected_reviews holds the PR until re-review clears it,
+# and dismiss_stale_approvals (branch protection) keeps the approval bound
+# to the reviewed head. Events are REQUEST vocabularies — the response
+# states (APPROVED / CHANGES_REQUESTED) are 422 bait (#470 r1 t1).
+if [ "${IS_FJ:-}" = "true" ]; then
+  # Forgejo CreatePullReview event enum: APPROVED | PENDING | COMMENT | REQUEST_CHANGES
+  REVIEW_EVENT="REQUEST_CHANGES"; [ "$DEC" = "APPROVE" ] && REVIEW_EVENT="APPROVED"
+else
+  # GitHub CreateReview event enum: APPROVE | REQUEST_CHANGES | COMMENT
+  REVIEW_EVENT="REQUEST_CHANGES"; [ "$DEC" = "APPROVE" ] && REVIEW_EVENT="APPROVE"
+fi
+export REVIEW_EVENT
 # The threads anchor at reviewed_sha: an absent/malformed SHA cannot anchor
 # (r3 P5 — trailers allow 7-40 hex, so validate, never assume full length).
 if echo "${REVIEWED_SHA:-}" | grep -qE '^[0-9a-f]{7,40}$'; then
@@ -317,15 +334,11 @@ else
   echo '{"posted":0,"rejected":0,"capped":0,"skipped":"sha-invalid"}' > "$THREAD_STATUS_FILE"
 fi
 
-if [ "${IS_GITLAB:-}" = "true" ]; then
-  # Unwired dialect — it must SPEAK (r4 P8): a green artifact here is
-  # ambiguous between "nothing to post" and "this host cannot be posted to".
-  echo '{"posted":0,"rejected":0,"capped":0,"skipped":"gitlab-not-wired"}' > "$THREAD_STATUS_FILE"
-elif [ "$THREADS_ANCHOR" = "1" ] && python3 -c "import json,sys;cs=json.load(open('$REVIEW')).get('comments',[]);sys.exit(0 if cs else 1)" 2>/dev/null; then
-  # Dedupe guard keyed on the MARKER (r2: the GitHub standalone-comment
-  # endpoint attaches no review object, so counting reviews never sees this
-  # publisher's own posts). Prefix-matched: trailers allow 7-40 hex, the
-  # host always serves the full id (r3 P5).
+# Dedupe scan, hoisted (#470 r2): BOTH consumers — the thread publisher and
+# the zero-findings native approval — must agree on "already posted at this
+# SHA", or a re-run double-posts. Runs whenever the SHA can anchor.
+EXISTING=0
+if [ "$THREADS_ANCHOR" = "1" ]; then
   EXISTING=$(python3 - << 'PYDEDUP'
 import json, os, subprocess, sys
 base=os.environ["API_BASE"]; tok=os.environ["TOKEN"]
@@ -367,6 +380,14 @@ except Exception as e:
     print(0)
 PYDEDUP
   ) || EXISTING=0
+fi
+
+if [ "${IS_GITLAB:-}" = "true" ]; then
+  # Unwired dialect — it must SPEAK (r4 P8): a green artifact here is
+  # ambiguous between "nothing to post" and "this host cannot be posted to".
+  echo '{"posted":0,"rejected":0,"capped":0,"skipped":"gitlab-not-wired"}' > "$THREAD_STATUS_FILE"
+elif [ "$THREADS_ANCHOR" = "1" ] && python3 -c "import json,sys;cs=json.load(open('$REVIEW')).get('comments',[]);sys.exit(0 if cs else 1)" 2>/dev/null; then
+  # Dedupe guard keyed on the MARKER (r2): already posted at this SHA → skip.
   if [ "${EXISTING:-0}" != "0" ]; then
     log "inline threads already posted at ${REVIEWED_SHA:0:8} — not duplicating"
     echo '{"posted":0,"rejected":0,"capped":0,"skipped":"already-posted"}' > "$THREAD_STATUS_FILE"
@@ -414,7 +435,7 @@ if fj:
     # Forgejo accepts a comments ARRAY in one create-pull-review — batch
     # first (one review object on the UI), fall back per finding on
     # rejection so one bad line cannot kill the batch (r2 P7).
-    payload={"event":"COMMENT","commit_id":sha,"body":marker,
+    payload={"event":os.environ["REVIEW_EVENT"],"commit_id":sha,"body":marker,
              "comments":[{"path":p,"new_position":l,"body":b} for p,l,_,b in valid]}
     ok, reason = curl(f"/repos/{repo}/pulls/{pr}/reviews", payload)
     if ok:
@@ -422,7 +443,7 @@ if fj:
     else:
         print(f"[post-review] WARN: batch publish rejected ({reason[:120]}) — falling back per finding", file=sys.stderr)
         for p,l,_,b in valid:
-            ok2, reason2 = curl(f"/repos/{repo}/pulls/{pr}/reviews", {"event":"COMMENT","commit_id":sha,"body":marker,
+            ok2, reason2 = curl(f"/repos/{repo}/pulls/{pr}/reviews", {"event":os.environ["REVIEW_EVENT"],"commit_id":sha,"body":marker,
                                      "comments":[{"path":p,"new_position":l,"body":b}]})
             if ok2: posted+=1
             else:
@@ -446,6 +467,18 @@ with open(os.environ["THREAD_STATUS_FILE"],"w") as f:
     json.dump(summary, f)
 PYTHREADS
   fi
+elif [ "${IS_FJ:-}" = "true" ] && [ "$THREADS_ANCHOR" = "1" ] && [ "${EXISTING:-0}" = "0" ] && [ "$REVIEW_EVENT" = "APPROVED" ]; then
+  # APPROVE with zero blocking findings, Forgejo only (#470): the thread
+  # publisher above never runs (nothing to anchor), so the native APPROVED
+  # review — the whitelisted bot identity satisfying required_approvals —
+  # is posted here. body carries the same MARKER the dedupe scan
+  # recognises; the hoisted EXISTING scan guarantees no double-post.
+  curl -fsS --max-time 20 -X POST \
+    -H "authorization: token $TOKEN" -H "content-type: application/json" \
+    -d "{\"event\":\"APPROVED\",\"commit_id\":\"$REVIEWED_SHA\",\"body\":\"$MARKER\"}" \
+    "$API_BASE/repos/$REPO/pulls/$PR_NUM/reviews" >/dev/null 2>&1 \
+    && echo '{"posted":1,"rejected":0,"capped":0}' > "$THREAD_STATUS_FILE" \
+    || echo '{"posted":0,"rejected":1,"capped":0,"skipped":"approval-post-failed"}' > "$THREAD_STATUS_FILE"
 fi
 THREADS=$(cat "$THREAD_STATUS_FILE")
 # The scan-failed flag (written by the dedupe scan on failure) splices into

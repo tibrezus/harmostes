@@ -35,6 +35,7 @@ const (
 type fakeForge struct {
 	mu          sync.Mutex
 	prState     string // "open" | "closed"
+	hostDialect string // "github" | "forgejo" — the POST /reviews validator enforces the host's event enum (#470 r2 t3)
 	reviews     []map[string]any
 	comments    []map[string]any
 	verdictPost bool
@@ -55,10 +56,25 @@ func (f *fakeForge) mux(t *testing.T) *http.ServeMux {
 	mux.HandleFunc("/repos/tibrezus/harmostes/pulls/99/reviews", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		if r.Method == http.MethodPost {
-			// Record native review submissions (#470): the APPROVE verdict's
-			// APPROVED event is exactly what the tests must assert.
+			// Record native review submissions — but only events the HOST
+			// accepts (#470 r2 t3): a fake that 200s anything pins the
+			// client's claim, not the host's contract. Request-event enums:
+			//   GitHub  : APPROVE | REQUEST_CHANGES | COMMENT
+			//   Forgejo : APPROVED | PENDING | COMMENT | REQUEST_CHANGES
 			var body map[string]any
 			_ = json.NewDecoder(r.Body).Decode(&body)
+			ev, _ := body["event"].(string)
+			valid := map[string]map[string]bool{
+				"github":  {"APPROVE": true, "REQUEST_CHANGES": true, "COMMENT": true},
+				"forgejo": {"APPROVED": true, "PENDING": true, "COMMENT": true, "REQUEST_CHANGES": true},
+			}[f.hostDialect]
+			if !valid[ev] {
+				f.mu.Unlock()
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnprocessableEntity)
+				_, _ = w.Write([]byte(`{"message":"event not in the host's request-event enum"}`))
+				return
+			}
 			f.reviews = append(f.reviews, body)
 			f.mu.Unlock()
 			w.Header().Set("Content-Type", "application/json")
@@ -289,14 +305,16 @@ func TestPostReviewZeroFindingsArtifactValid(t *testing.T) {
 	review["body"] = "## Adversarial Review\n<!-- pr-review: APPROVE @ deadbeef123 -->"
 	out := runPlugin(t, srv, false, review)
 
-	assertInlineThreads(t, out, 1, 0, 0)
+	// GitHub host (#470 r2 t1/t2): the native approval is Forgejo-scoped —
+	// GitHub's request-event enum has no APPROVED, so the zero-findings
+	// branch must not fire at all (no post attempt, no rejection-shaped
+	// metric on the common green case). GitHub's verdict surface stays the
+	// comment + threads; see the IS_FJ test for the native-approval path.
+	assertInlineThreads(t, out, 0, 0, 0)
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	// #470: an APPROVE with zero findings submits the native APPROVED review
-	// — the whitelisted bot identity satisfying required_approvals — instead
-	// of posting nothing.
-	if len(f.reviews) != 1 || f.reviews[0]["event"] != "APPROVED" {
-		t.Fatalf("zero-findings APPROVE must post one APPROVED review, got %v", f.reviews)
+	if len(f.reviews) != 0 {
+		t.Fatalf("github host must not record a native approval review, got %v", f.reviews)
 	}
 	if !f.verdictPost || !f.labelGone {
 		t.Fatal("zero findings must still deliver the verdict and consume the label")
@@ -623,10 +641,11 @@ func TestPostReviewForgejoDialect(t *testing.T) {
 	}
 	out := string(outBytes)
 	p := reviewPosts[0]
-	if p["event"] != "REQUEST_REVIEW" || p["commit_id"] != "deadbeef123" {
-		// #470: the verdict's native state rides the review — REQUEST_CHANGES
-		// submits REQUEST_REVIEW, which block_on_rejected_reviews enforces.
-		t.Fatalf("forgejo REQUEST_CHANGES review must be REQUEST_REVIEW at the reviewed SHA, got %v", p)
+	if p["event"] != "REQUEST_CHANGES" || p["commit_id"] != "deadbeef123" {
+		// #470: the verdict's native state rides the review — Forgejo's
+		// rejection event is REQUEST_CHANGES (REQUEST_REVIEW is not in the
+		// CreatePullReview enum; it would degrade to a PENDING draft).
+		t.Fatalf("forgejo REQUEST_CHANGES review must be REQUEST_CHANGES at the reviewed SHA, got %v", p)
 	}
 	cs, _ := p["comments"].([]any)
 	if len(cs) != 1 {
@@ -640,6 +659,105 @@ func TestPostReviewForgejoDialect(t *testing.T) {
 		t.Fatalf("forgejo comments must anchor via new_position (new_line 500s), got %v", c)
 	}
 	assertInlineThreads(t, out, 1, 0, 0)
+}
+
+// #470: an APPROVE with zero findings on the Forgejo host submits the
+// native APPROVED review — the whitelisted bot identity satisfying
+// required_approvals=1 (rhesadox main), so the merge unblocks without a
+// human re-click. The post is dedupe-guarded (one per SHA) and the
+// verdict + label consume still ride alongside.
+func TestPostReviewForgejoZeroFindingsPostsNativeApproval(t *testing.T) {
+	var mu sync.Mutex
+	reviewPosts := []map[string]any{}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/git.rezus.cloud/tibrez/rhesadox/pulls/99", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"head": map[string]string{"sha": "deadbeef123"}})
+	})
+	mux.HandleFunc("/repos/git.rezus.cloud/tibrez/rhesadox/pulls/99/reviews", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			mu.Lock()
+			reviewPosts = append(reviewPosts, body)
+			mu.Unlock()
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 6})
+			return
+		}
+		mu.Lock()
+		out, _ := json.Marshal([]any{})
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(out)
+	})
+	mux.HandleFunc("/repos/git.rezus.cloud/tibrez/rhesadox/issues/99/comments", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": 3})
+	})
+	mux.HandleFunc("/repos/git.rezus.cloud/tibrez/rhesadox/issues/99/labels/needs-review", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+		mu.Lock()
+		mu.Unlock()
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	review := baseReview(nil)
+	review["decision"] = "APPROVE"
+	review["body"] = "## Adversarial Review\n<!-- pr-review: APPROVE @ deadbeef123 -->"
+	out := runForgejo(t, srv, review)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(reviewPosts) != 1 {
+		t.Fatalf("expected the native APPROVED review post, got %d posts", len(reviewPosts))
+	}
+	p := reviewPosts[0]
+	if p["event"] != "APPROVED" || p["commit_id"] != "deadbeef123" {
+		t.Fatalf("forgejo zero-findings APPROVE must post event APPROVED at the reviewed SHA, got %v", p)
+	}
+	assertInlineThreads(t, out, 1, 0, 0)
+	if !strings.Contains(out, "inline_threads") {
+		t.Fatal("artifact must carry the unified inline_threads key set")
+	}
+}
+
+// runForgejo runs the plugin the way the Forgejo dialect test does: the
+// fixture's rc names the git.rezus.cloud paths the workspace.sh envelope
+// produces, IS_FJ=true, and the Forgejo token env the publish path reads.
+func runForgejo(t *testing.T, srv *httptest.Server, review map[string]any) string {
+	t.Helper()
+	dir := t.TempDir()
+	rc := map[string]any{
+		"host": "git.rezus.cloud", "repo": "git.rezus.cloud/tibrez/rhesadox", "number": 99,
+		"head": map[string]string{"sha": "deadbeef123"},
+	}
+	rj, _ := json.Marshal(review)
+	cj, _ := json.Marshal(rc)
+	if err := os.WriteFile(filepath.Join(dir, "review.json"), rj, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "pr-context.json"), cj, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	script, err := filepath.Abs(filepath.Join("..", "..", "plugins", "post-review", "post-review.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("bash", script)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(),
+		"HARMOSTES_WORKDIR="+dir,
+		"HARMOSTES_FORGEJO_TOKEN=fake-token",
+		"IS_FJ=true",
+		"HARMOSTES_TEST_FORGEJO_API_BASE="+srv.URL,
+	)
+	outBytes, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("plugin run failed: %v\n%s", err, outBytes)
+	}
+	return string(outBytes)
 }
 
 // TestPostReviewDowngradeIsR7Conforming is the mutation probe the r7 review

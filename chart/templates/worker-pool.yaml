@@ -176,6 +176,11 @@ spec:
             # attempt Jobs via the dispatch allowlist. Empty = uncapped.
             - name: PI_TOOL_BUDGET
               value: {{ .Values.agent.toolBudget | quote }}
+            # The finalize lane: post-cap bash commands touching any of these
+            # substrings still execute (the agent must always be able to
+            # write its output artifact — v1's missing-write-tool failure).
+            - name: PI_TOOL_BUDGET_ALLOW
+              value: {{ .Values.agent.toolBudgetAllow | quote }}
           volumeMounts:
             - name: skills
               mountPath: /skills

@@ -4660,10 +4660,14 @@ data:
     
     You have a round-trip budget: every tool call costs ~1 minute of model
     latency, and the HARNESS ENFORCES the cap — after PI_TOOL_BUDGET calls
-    (24 by default) every tool except `write` is refused with a finalize
-    instruction. A good review fits in ~12 calls; budget as if the cap were
-    15. The methodology (9 pillars) is inlined below — NEVER search the
-    filesystem for skill or pillar files.
+    (32 by default) only your finalize lane stays open: bash commands touching
+    /workspace/review.json still execute so you can write your review; every
+    other call is refused. A good review fits in ~12 calls; budget as if the
+    cap were 15. Batch aggressively: one bash call can run many greps (chain
+    them with && or ;) — prefer that over many narrow calls, and NEVER repeat
+    a grep or re-read a file you have already seen. The methodology (9
+    pillars) is inlined below — NEVER search the filesystem for skill or
+    pillar files.
     
     - `rig` — the architecture graph, when pr-context.json has `rig_db`. It is
       SHA-exact at the reviewed head (generated at prepare time, verified — a
@@ -5447,7 +5451,12 @@ spec:
             # Turn-budget extension's hard tool-call cap (#484) — forwarded to
             # attempt Jobs via the dispatch allowlist. Empty = uncapped.
             - name: PI_TOOL_BUDGET
-              value: "24"
+              value: "32"
+            # The finalize lane: post-cap bash commands touching any of these
+            # substrings still execute (the agent must always be able to
+            # write its output artifact — v1's missing-write-tool failure).
+            - name: PI_TOOL_BUDGET_ALLOW
+              value: "/workspace/review.json"
           volumeMounts:
             - name: skills
               mountPath: /skills

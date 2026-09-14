@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 
@@ -1043,5 +1044,42 @@ func TestExternalOnlyGraph_HasNoEntry(t *testing.T) {
 	}
 	if result.Status != StatusFailed {
 		t.Errorf("status = %q, want failed", result.Status)
+	}
+}
+
+// #480: the per-node env hook scopes credentials at NodeEnv build time —
+// non-matching nodes get the shared (scrubbed) base; the matching node gets
+// the injection appended WITHOUT mutating the shared slice.
+func TestWorkflowContextExtraEnvForNode(t *testing.T) {
+	base := []string{"HARMOSTES_FORGEJO_TOKEN=primary"}
+	ctx := &WorkflowContext{
+		ExtraEnv: base,
+		ExtraEnvForNode: func(node v1alpha1.NodeSpec, b []string) []string {
+			if node.ID != "deploy" {
+				return b
+			}
+			return append(append([]string{}, b...), "HARMOSTES_FORGEJO_BOT_TOKEN=bot-secret")
+		},
+	}
+
+	deploy := ctx.extraEnvFor(v1alpha1.NodeSpec{ID: "deploy", Type: "plugin"})
+	prepare := ctx.extraEnvFor(v1alpha1.NodeSpec{ID: "prepare", Type: "plugin"})
+
+	found := false
+	for _, kv := range deploy {
+		if kv == "HARMOSTES_FORGEJO_BOT_TOKEN=bot-secret" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("deploy node must receive the scoped credential")
+	}
+	for _, kv := range prepare {
+		if strings.HasPrefix(kv, "HARMOSTES_FORGEJO_BOT_TOKEN=") {
+			t.Errorf("non-deploy node must not see the scoped credential, got %q", kv)
+		}
+	}
+	if len(base) != 1 || base[0] != "HARMOSTES_FORGEJO_TOKEN=primary" {
+		t.Errorf("the shared base slice must not be mutated, got %v", base)
 	}
 }

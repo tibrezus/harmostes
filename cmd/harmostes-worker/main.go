@@ -76,6 +76,52 @@ func graphPresenceLine(graphPath string) (string, bool) {
 	return "", false
 }
 
+// botTokenEnvForNode is the #480 credential-scoping policy: the bot review
+// credential rides ONLY the node whose plugin is post-review — its sole
+// reader — regardless of what the node is named in the graph (compiled
+// "deploy" or CR-authored IDs; r5 t10). Every other node (prepare runs
+// emit-rig + the Go toolchain inside the untrusted PR clone) gets the
+// scrubbed base. The token itself is scrubbed from the process env at the
+// agent spawn leaf (agent.FilterEnv) and from this extraEnv slice.
+func botTokenEnvForNode(node v1alpha1.NodeSpec, base []string, resolver worker.PluginResolver) []string {
+	if node.Type != "plugin" {
+		return base
+	}
+	var cfg graph.PluginNodeConfig
+	if err := json.Unmarshal(node.Config, &cfg); err != nil {
+		return base
+	}
+	// Identity = the canonical resolution: resolve the node's ref and the
+	// canonical {name: post-review} ref and grant only on equality. A path-
+	// shape suffix cannot be the identity — the shipped BuiltinResolver maps
+	// the builtin to a FLAT image path (/usr/local/lib/harmostes/plugins/
+	// post-review.sh) while tests produce the repo layout, so any suffix
+	// guess matches one world and silently no-ops the other (r11 t21).
+	// Phase "plugin" — the SAME resolution the executor performs
+	// (plugin_executor.go); r14 t21: resolving the identity under a
+	// different phase than the leg that runs the script is the r11 t21
+	// failure mode again (identity that matches one world and no-ops the
+	// other) the moment a resolver becomes phase-aware.
+	nodeCmd, _, err := resolver.Resolve(context.Background(), cfg.ToPluginRef(), "plugin")
+	if err != nil || nodeCmd == "" {
+		return base
+	}
+	canonical, _, err := resolver.Resolve(context.Background(),
+		v1alpha1.PluginRef{Name: "post-review"}, "plugin")
+	if err != nil || canonical == "" || nodeCmd != canonical {
+		return base
+	}
+	bt := os.Getenv(agent.BotTokenEnvKey)
+	if bt == "" {
+		return base
+	}
+	grant := []string{
+		agent.BotTokenEnvKey + "=" + bt,
+		agent.BotHostEnvKey + "=" + os.Getenv(agent.BotHostEnvKey),
+	}
+	return append(append([]string{}, base...), grant...)
+}
+
 // spawnEnv extends the pi child env with the ADR-0009 rig freshness
 // contract (#338/#350), evaluated at agent-node spawn: the expectation is
 // armed from the reviewed SHA; the degradation signal (#338 r24 D5) says
@@ -412,7 +458,12 @@ func runOneShot() {
 	// reviewed SHA; the rig-query extension compares it against RIG_EXPECTED_SHA
 	// and REFUSES on mismatch. Scoped to the pi child's env — not process-global
 	// (deploy/gate plugins must not inherit a one-consumer variable, #338 r15).
-	piEnv := os.Environ()
+	// The bot review credential is scrubbed from the pi child for the mirror
+	// reason, inverted (#480 r2 t4): pi's input includes untrusted PR content,
+	// and the bot token can satisfy required_approvals — it must not sit in
+	// an LLM loop's env. The deploy plugin (post-review) reads it from the
+	// process env, which this filter does not touch.
+	piEnv := agent.ChildEnv(os.Environ())
 	logfFn("%s", piargs.ExtensionsLogLine())
 	deps.Agent = worker.RPCAgentRunner{
 		// The rig freshness contract arms at AGENT-NODE SPAWN, not run
@@ -492,8 +543,15 @@ func runOneShot() {
 	// Pass HARMOSTES_LAST_RIG_HASH so the rig-emit plugin can do a cross-run
 	// deterministic skip (structure unchanged → changed=false → graph skips
 	// agent/deploy). Also propagate the full process env so plugins inherit
-	// credentials and Dapr endpoints.
-	extraEnv := os.Environ()
+	// credentials and Dapr endpoints — MINUS the bot review credential
+	// (#480 r4 t7): prepare/gate run extractor and gate tooling inside the
+	// cloned PR's trust boundary (workspace.sh → emit-rig.py → go mod
+	// download/list inherit the env verbatim), and a token whose whole
+	// purpose is approving third-party PRs must not sit in
+	// untrusted-content-driven process env. The grant is re-scoped per node
+	// by botTokenEnvForNode (this file) via WorkflowContext.ExtraEnvForNode
+	// — post-review, its only reader, is the sole node that receives it.
+	extraEnv := agent.ChildEnv(os.Environ())
 	if wf.Status.LastRigHash != "" {
 		extraEnv = append(extraEnv, "HARMOSTES_LAST_RIG_HASH="+wf.Status.LastRigHash)
 	}
@@ -563,6 +621,9 @@ func runOneShot() {
 			Shadow:         shadow,
 			State:          wf.Name,
 			ExtraEnv:       extraEnv,
+			ExtraEnvForNode: func(node v1alpha1.NodeSpec, base []string) []string {
+				return botTokenEnvForNode(node, base, deps.Plugins)
+			},
 		}),
 	)
 
@@ -879,11 +940,13 @@ func fetchWorkspaceRepo(ctx context.Context, wr *v1alpha1.WorkspaceRepoSpec, bas
 	_ = os.RemoveAll(target) // idempotent: remove a stale checkout
 	cloneURL := tokenizeGitURL(wr.URL, os.Getenv("HARMOSTES_GIT_TOKEN"))
 	cmd := exec.CommandContext(ctx, "git", "clone", "--depth", "100", cloneURL, target)
+	cmd.Env = agent.ChildEnv(os.Environ())
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("git clone %s: %w (%s)", redact(wr.URL), err, string(out))
 	}
 	if wr.Branch != "" {
 		co := exec.CommandContext(ctx, "git", "-C", target, "checkout", wr.Branch)
+		co.Env = agent.ChildEnv(os.Environ())
 		if out, err := co.CombinedOutput(); err != nil {
 			return "", fmt.Errorf("git checkout %s: %w (%s)", wr.Branch, err, string(out))
 		}

@@ -327,6 +327,8 @@ func TestJobEnvAllowlistCarriesCLIAliases(t *testing.T) {
 		{"FORGEJO_TOKEN", "the fj CLI's env fallback — without it the inline-thread protocol's Forgejo leg dies to prose"},
 		{"GH_TOKEN", "gh's native env — without it the protocol's GitHub leg dies to prose"},
 		{"LITELLM_FALLBACKS", "the extension's override knob is a pool-pod-only no-op without it (#359 r4 P4.1)"},
+		{"HARMOSTES_FORGEJO_BOT_TOKEN", "the whitelisted bot review identity (#480) — without it native APPROVED/REQUEST_CHANGES reviews 422 as self-reviews on author-owned PRs"},
+		{"HARMOSTES_FORGEJO_BOT_HOST", "the other half of the #480 gate pair (#480 r3 t5) — token without host means the Job-side script compares against a compiled-in default and a non-default botHost silently never matches"},
 	}
 	for _, row := range rows {
 		found := false

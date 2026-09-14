@@ -88,8 +88,9 @@ type WorkflowList struct {
 // A Workflow can be defined in two equivalent forms:
 //
 //  1. **Declarative** (default): the fixed prepare → agent → deploy pipeline.
-//     Populate Prepare, Agent, and Deploy. The worker runs worker.Run().
-//     This is what all existing production workflows use.
+//     Populate Prepare, Agent, and Deploy. Compiled to a graph and executed
+//     by the graph executor (worker.Run is the legacy in-process runner,
+//     retained for tests).
 //
 //  2. **Graph-native**: an explicit directed graph of nodes + edges. Populate
 //     Graph with nodes (any type from the node executor registry) and edges

@@ -2,7 +2,9 @@
   "version": 1,
   "actionFusion": true,
   "observationPack": true,
-  "evidencePreservingReducer": false,
-  "onlineContextCompact": false,
-  "cacheWriteReadRatio": 12.5
+  "evidencePreservingReducer": true,
+  "onlineContextCompact": true,
+  "cacheWriteReadRatio": 12.5,
+  "evidencePreservingReducerProvider": "litellm",
+  "evidencePreservingReducerModel": "litellm/ali/anthropic/qwen3.8-flash"
 }

@@ -461,6 +461,18 @@ func runOneShot() {
 			logf("session lineage: resume=%v id=%s", resume, id)
 		}
 	}
+	// Research journal (#494): the workflow's recent outcomes — compact,
+	// capped by the writer, injected as context the agent may consult (the
+	// graph agent executor appends it to the task). Best-effort.
+	if deps.Dapr != nil {
+		if raw, err := deps.Dapr.GetState(ctx, deps.DaprStateStore, "pi-research/"+wf.Name); err == nil && raw != "" {
+			if j := worker.RenderResearchJournal([]byte(raw), worker.ResearchInjectMaxBytes); j != "" {
+				_ = os.Setenv("HARMOSTES_RESEARCH_JOURNAL", j)
+				logf("research journal injected (%d bytes)", len(j))
+			}
+		}
+	}
+
 	// ADR-0009 freshness: prepare stamps /workspace/rig.db.sha with the
 	// reviewed SHA; the rig-query extension compares it against RIG_EXPECTED_SHA
 	// and REFUSES on mismatch. Scoped to the pi child's env — not process-global
@@ -638,6 +650,27 @@ func runOneShot() {
 		_ = runTL.Emit(ctx, timeline.KindRunCompleted, "", map[string]any{
 			"status": result.Status, "message": result.Message, "source": source,
 		})
+	}
+
+	// Research journal (#494): append this run's outcome to the workflow's
+	// journal so the NEXT session starts knowing it. Deterministic (the
+	// run's own record), capped, best-effort — never a run failure.
+	if deps.Dapr != nil {
+		key := "pi-research/" + wf.Name
+		var prev []byte
+		if raw, err := deps.Dapr.GetState(ctx, deps.DaprStateStore, key); err == nil {
+			prev = []byte(raw)
+		}
+		next := worker.AppendResearchJournal(prev, worker.ResearchEntry{
+			At:     time.Now().UTC().Format(time.RFC3339),
+			Run:    runName(),
+			Status: string(result.Status),
+			Model:  wf.Spec.Agent.Model,
+			Note:   result.Message,
+		}, worker.ResearchJournalEntries, worker.ResearchJournalMaxBytes)
+		if err := deps.Dapr.SaveState(ctx, deps.DaprStateStore, key, string(next)); err != nil {
+			logf("research journal append failed: %v", err)
+		}
 	}
 
 	// Patch Workflow status from the graph result (mirrors the declarative

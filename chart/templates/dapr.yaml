@@ -26,6 +26,14 @@ spec:
     # anyway.
     - name: keyPrefix
       value: "none"
+    # ADR-0010 PR-lineage actor state (PRLineage||<repo>~<pr>): without this
+    # flag Dapr has NO actor state store — every actor state access
+    # nil-panics in the sidecar (onGetActorState, actors.go) and every
+    # lineage publish 500s. Live failure: "session lineage publish failed:
+    # ... 500" on every round, resume=false forever — the PR sandbox reuse
+    # was silently dead and each review round restarted blind.
+    - name: actorStateStore
+      value: "true"
 ---
 apiVersion: dapr.io/v1alpha1
 kind: Component

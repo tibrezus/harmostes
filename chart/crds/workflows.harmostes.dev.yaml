@@ -123,7 +123,21 @@ spec:
                   required: [model, taskTemplate, gate]
                   properties:
                     enabled: { type: boolean }                  # nil/true = run, false = skip (deterministic-only)
-                    model: { type: string }                    # litellm/zai/anthropic/glm-5.3-flash
+                    model: { type: string }
+                    models:
+                      type: array
+                      description: >-
+                        Time-windowed model overrides (template overlay) —
+                        evaluated at run start; first window containing `now`
+                        wins, else `model`.
+                      items:
+                        type: object
+                        required: [model, start, end]
+                        properties:
+                          model: { type: string }
+                          start: { type: string, pattern: '^([01]\d|2[0-3]):[0-5]\d$' }
+                          end: { type: string, pattern: '^([01]\d|2[0-3]):[0-5]\d$' }
+                          tz: { type: string, description: IANA timezone (default UTC) }                    # litellm/zai/anthropic/glm-5.3-flash
                     skill: { type: string }                    # /skills/…/SKILL.md
                     tools: { type: array, items: { type: string } }
                     taskTemplate:                              # the interpretive task

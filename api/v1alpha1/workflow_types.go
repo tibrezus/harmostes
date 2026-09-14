@@ -9,6 +9,7 @@ package v1alpha1
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -186,15 +187,75 @@ type PrepareSpec struct {
 func (a AgentSpec) EnabledOrDefault() bool { return a.Enabled == nil || *a.Enabled }
 
 type AgentSpec struct {
-	Enabled      *bool        `json:"enabled,omitempty"`  // nil/true = run, false = skip (deterministic-only)
-	Model        string       `json:"model"`              // e.g. litellm/zai/anthropic/glm-5.3-flash
-	Skill        string       `json:"skill"`              // path to SKILL.md
-	Tools        []string     `json:"tools,omitempty"`    // tool allowlist
-	TaskTemplate TaskTemplate `json:"taskTemplate"`       // the interpretive task
-	Gate         GateRef      `json:"gate"`               // validation plugin
-	MaxFixes     int          `json:"maxFixes,omitempty"` // default 3
-	Timeout      int          `json:"timeout,omitempty"`  // seconds, default 1800
-	Scope        string       `json:"scope,omitempty"`    // optional task scope override
+	Enabled      *bool         `json:"enabled,omitempty"`  // nil/true = run, false = skip (deterministic-only)
+	Model        string        `json:"model"`              // e.g. litellm/zai/anthropic/glm-5.3-flash
+	Models       []ModelWindow `json:"models,omitempty"`   // time-windowed overrides (#494): first match at run start wins
+	Skill        string        `json:"skill"`              // path to SKILL.md
+	Tools        []string      `json:"tools,omitempty"`    // tool allowlist
+	TaskTemplate TaskTemplate  `json:"taskTemplate"`       // the interpretive task
+	Gate         GateRef       `json:"gate"`               // validation plugin
+	MaxFixes     int           `json:"maxFixes,omitempty"` // default 3
+	Timeout      int           `json:"timeout,omitempty"`  // seconds, default 1800
+	Scope        string        `json:"scope,omitempty"`    // optional task scope override
+}
+
+// ModelWindow routes runs in [Start, End) (window's tz, midnight-wrap
+// allowed) to a different model. Malformed windows never match — a bad
+// schedule degrades to the base model, never fails a run (#494).
+type ModelWindow struct {
+	Model string `json:"model"`        // the model this window resolves to
+	Start string `json:"start"`        // HH:MM in TZ
+	End   string `json:"end"`          // HH:MM in TZ
+	TZ    string `json:"tz,omitempty"` // IANA zone; empty = UTC
+}
+
+// ResolveModel returns the model for `now`: the first window containing it
+// (in order), else the base model. The evaluation point is the worker's
+// run start — one resolution per run, so a run that starts inside a window
+// finishes with that window's model even if the clock crosses out.
+func (a AgentSpec) ResolveModel(now time.Time) string {
+	for _, w := range a.Models {
+		loc, err := time.LoadLocation(w.tzOrUTC())
+		if err != nil {
+			continue // unknown zone: the window cannot match, by design
+		}
+		start, err1 := minutesOfDay(w.Start)
+		end, err2 := minutesOfDay(w.End)
+		if err1 != nil || err2 != nil {
+			continue
+		}
+		local := now.In(loc)
+		nowMin := local.Hour()*60 + local.Minute()
+		if w.wrapsMidnight() {
+			// "16:00"→"02:00": the window is [start, 24:00) ∪ [0, end).
+			if nowMin >= start || nowMin < end {
+				return w.Model
+			}
+		} else if nowMin >= start && nowMin < end {
+			return w.Model
+		}
+	}
+	return a.Model
+}
+
+func (w ModelWindow) tzOrUTC() string {
+	if w.TZ == "" {
+		return "UTC"
+	}
+	return w.TZ
+}
+
+func (w ModelWindow) wrapsMidnight() bool {
+	return w.Start >= w.End // "16:00" → "02:00" spans midnight
+}
+
+// minutesOfDay parses "HH:MM" into minutes since midnight.
+func minutesOfDay(s string) (int, error) {
+	t, err := time.Parse("15:04", s)
+	if err != nil {
+		return 0, err
+	}
+	return t.Hour()*60 + t.Minute(), nil
 }
 
 // TaskTemplate names the prompt text for the agent (lives in a ConfigMap).

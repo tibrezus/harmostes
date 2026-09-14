@@ -91,8 +91,19 @@ func botTokenEnvForNode(node v1alpha1.NodeSpec, base []string, resolver worker.P
 	if err := json.Unmarshal(node.Config, &cfg); err != nil {
 		return base
 	}
-	command, _, err := resolver.Resolve(context.Background(), cfg.ToPluginRef(), "deploy")
-	if err != nil || !strings.HasSuffix(filepath.ToSlash(command), "plugins/post-review/post-review.sh") {
+	// Identity = the canonical resolution: resolve the node's ref and the
+	// canonical {name: post-review} ref and grant only on equality. A path-
+	// shape suffix cannot be the identity — the shipped BuiltinResolver maps
+	// the builtin to a FLAT image path (/usr/local/lib/harmostes/plugins/
+	// post-review.sh) while tests produce the repo layout, so any suffix
+	// guess matches one world and silently no-ops the other (r11 t21).
+	nodeCmd, _, err := resolver.Resolve(context.Background(), cfg.ToPluginRef(), "deploy")
+	if err != nil || nodeCmd == "" {
+		return base
+	}
+	canonical, _, err := resolver.Resolve(context.Background(),
+		v1alpha1.PluginRef{Name: "post-review"}, "deploy")
+	if err != nil || canonical == "" || nodeCmd != canonical {
 		return base
 	}
 	bt := os.Getenv(agent.BotTokenEnvKey)

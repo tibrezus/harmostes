@@ -480,10 +480,13 @@ func TestBotTokenScrubCoversPluginEnvDeployReinjects(t *testing.T) {
 	// script identity — a CR declaring name=post-review with a foreign
 	// ConfigMap resolves elsewhere and gets nothing. Node IDs are equally
 	// irrelevant for both directions (#480 r6 t10).
+	// mirrors BuiltinResolver: the CANONICAL ref resolves to the shipped
+	// FLAT image path (r11 t21 — a path-suffix identity guessed the repo
+	// layout and silently no-opped the grant in production).
 	resolver := worker.PluginResolver(fakeResolver{
-		"post-review":         "/plugins/post-review/post-review.sh",
+		"post-review":         "/usr/local/lib/harmostes/plugins/post-review.sh",
 		"post-review|cm-evil": "/plugins/cm-evil/post-review.sh",
-		"wiki-lint":           "/plugins/wiki-lint/wiki-lint.sh",
+		"wiki-lint":           "/usr/local/lib/harmostes/plugins/wiki-lint.sh",
 	})
 	deployNode := v1alpha1.NodeSpec{ID: "whatever-a-cr-names-it", Type: "plugin",
 		Config: json.RawMessage(`{"name":"post-review"}`)}

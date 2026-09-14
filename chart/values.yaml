@@ -47,6 +47,11 @@ dapr:
 # Worker deployment-node RBAC (G6: vela-app, flux-reconcile). Opt-in —
 # grants cluster-wide access to KubeVela Application + Flux CRs.
 worker:
+  # The forge origin the bot review credential (harmostes-forgejo-bot-token)
+  # is minted for — the deploy plugin overrides its auth only when the
+  # pr-context host matches exactly (#480). Leave at the default unless the
+  # forge moves.
+  forgejoBotHost: "git.rezus.cloud"
   deployRBAC:
     enabled: false
   job:                     # per-Attempt Job pods (ADR-0007)

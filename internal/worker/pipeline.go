@@ -16,6 +16,8 @@ import (
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
 	"github.com/tibrezus/harmostes/internal/dapr"
 	"github.com/tibrezus/harmostes/internal/observability"
+
+	"github.com/tibrezus/harmostes/internal/agent"
 )
 
 // Outcome of a pipeline run.
@@ -87,6 +89,12 @@ func Run(ctx context.Context, deps Deps, opts Options) (res Result, err error) {
 	name := wf.Name
 	logf := deps.log()
 	tracer := observability.Tracer()
+
+	// #480 r15: the credential boundary is enforced at THIS leaf too, not
+	// only at the caller — Run may be handed an ExtraEnv built elsewhere, and
+	// its prepare/gate legs execute inside the untrusted PR clone. The graph
+	// path carries the same guarantee via agent.ChildEnv at its exec leaves.
+	opts.ExtraEnv = agent.FilterEnv(opts.ExtraEnv, agent.BotTokenEnvKey)
 
 	// Root span: one trace per worker run. outcome is set on exit (named returns)
 	// so the trace records how the run ended.

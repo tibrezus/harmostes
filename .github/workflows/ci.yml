@@ -6,7 +6,12 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # Every branch head, not just main (B3): push events fire regardless of
+    # PR mergeability, so a DIRTY (conflicting) branch still gets signal
+    # instead of the silent "no checks" state — GitHub skips pull_request
+    # runs when the merge ref cannot be created. Branch runs are diagnostic
+    # only; branch protection still requires the PR runs.
+    branches: ["**"]
   pull_request:
 
 # Cancel superseded runs on the same ref so stale pushes don't burn runner

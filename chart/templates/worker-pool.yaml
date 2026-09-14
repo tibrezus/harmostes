@@ -198,6 +198,10 @@ spec:
             # write its output artifact — v1's missing-write-tool failure).
             - name: PI_TOOL_BUDGET_ALLOW
               value: {{ .Values.agent.toolBudgetAllow | quote }}
+            # Mid-budget checkpoint (#487): one blocked call at this count
+            # with a converge-now instruction. "0" off; empty = cap/2.
+            - name: PI_TOOL_BUDGET_NUDGE
+              value: {{ .Values.agent.toolBudgetNudge | quote }}
           volumeMounts:
             - name: skills
               mountPath: /skills

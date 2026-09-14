@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { decide, eventArgs, parseAllow, parseBudget, DEFAULT_ALLOW, finalizeReason } from "./policy.ts";
+import { decide, eventArgs, parseAllow, parseBudget, parseNudge, DEFAULT_ALLOW, finalizeReason, nudgeReason } from "./policy.ts";
 
 test("no/0/unparsable budget is inert", () => {
 	for (const raw of [undefined, "", "0", "-3", "abc", "  "]) {
@@ -93,4 +93,42 @@ test("live regression: post-cap write via input-carried command opens the lane",
 	// and a non-lane command still blocks
 	const b = decide("bash", eventArgs({ input: { command: "grep -rn x /workspace/repo" } }), 33, 32, parseAllow("/workspace/review.json"));
 	assert.equal(b.allow, false);
+});
+
+test("parseNudge: absent → budget/2, \"0\" → off, garbage/past-cap → off", () => {
+	assert.equal(parseNudge(undefined, 32), 16);
+	assert.equal(parseNudge("", 32), 16);
+	assert.equal(parseNudge("0", 32), 0);
+	assert.equal(parseNudge("12", 32), 12);
+	assert.equal(parseNudge("32", 32), 0); // at the cap = meaningless
+	assert.equal(parseNudge("40", 32), 0);
+	assert.equal(parseNudge("abc", 32), 0);
+	assert.equal(parseNudge("-4", 32), 0);
+	assert.equal(parseNudge("", 1), 0); // budget 1 has no halfway
+});
+
+test("mid-budget checkpoint: one block at nudgeAt, does not count, fires once", () => {
+	const lane = parseAllow("/workspace/review.json");
+	// before the checkpoint: plain allow
+	assert.deepEqual(decide("bash", { command: "ls" }, 15, 32, lane, { nudgeAt: 16 }), { allow: true });
+	// exactly at 16: the checkpoint — blocked, flagged, shaped message
+	const n = decide("bash", { command: "grep -rn x ." }, 16, 32, lane, { nudgeAt: 16 });
+	assert.equal(n.allow, false);
+	assert.equal(n.nudge, true);
+	assert.match(n.reason ?? "", /Budget checkpoint: 16\/32/);
+	assert.match(n.reason ?? "", /review\.json/);
+	assert.deepEqual(nudgeReason(16, 32, "/workspace/review.json"), n.reason);
+	// after the flag flips: never again at the same count (the block does
+	// not advance `executed` — without the flag this would loop forever)
+	assert.deepEqual(decide("bash", { command: "ls" }, 16, 32, lane, { nudgeAt: 16, nudged: true }), { allow: true });
+	// the checkpoint never fires at/after the cap
+	assert.deepEqual(decide("bash", { command: "ls" }, 16, 16, lane, { nudgeAt: 16 }), { allow: true });
+	// nudged=0 (explicit off): plain behavior
+	assert.deepEqual(decide("bash", { command: "ls" }, 16, 32, lane, { nudgeAt: 0 }), { allow: true });
+	// the checkpoint interrupts WHATEVER call lands at the halfway count —
+	// even a lane write (it is a one-shot interrupt; its message names the
+	// lane). The next call at the same count passes.
+	const lw = decide("bash", { command: "cat > /workspace/review.json" }, 16, 32, lane, { nudgeAt: 16 });
+	assert.equal(lw.nudge, true);
+	assert.deepEqual(decide("bash", { command: "cat > /workspace/review.json" }, 16, 32, lane, { nudgeAt: 16, nudged: true }), { allow: true });
 });

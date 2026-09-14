@@ -33,6 +33,10 @@ export const DEFAULT_ALLOW = "/workspace/review.json";
 export interface Decision {
 	allow: boolean;
 	reason?: string;
+	/** This block was the one-shot mid-budget checkpoint (#487): it does not
+	 * count against the budget and must not re-fire (the caller flips its
+	 * `nudged` flag on seeing it). */
+	nudge?: boolean;
 }
 
 /** Parse PI_TOOL_BUDGET: absent/0/unparsable → 0 = inert (mode-3). */
@@ -50,6 +54,32 @@ export function parseAllow(raw: string | undefined): string[] {
 		.map((s) => s.trim())
 		.filter(Boolean);
 	return parts.length > 0 ? parts : [DEFAULT_ALLOW];
+}
+
+/** Parse PI_TOOL_BUDGET_NUDGE: absent → budget/2 (checkpoint ON by default —
+ * the block is the one lever the model demonstrably obeys: attempt ef2b683
+ * went from blocked-at-33 to artifact-written on the very next call);
+ * "0" → off; n ≥ budget or garbage → off (a checkpoint at or past the cap
+ * is meaningless). */
+export function parseNudge(raw: string | undefined, budget: number): number {
+	const t = (raw ?? "").trim();
+	if (t === "") return budget > 1 ? Math.floor(budget / 2) : 0;
+	if (t === "0") return 0;
+	const n = Number.parseInt(t, 10);
+	return Number.isFinite(n) && n > 0 && n < budget ? n : 0;
+}
+
+/** The mid-budget checkpoint message: shape convergence at the halfway mark
+ * (name the pillars the diff triggers selected, verify only those, compose),
+ * because the prose budget guidance in the prompt is systematically ignored
+ * — measured, #484 — while a block is obeyed. */
+export function nudgeReason(count: number, budget: number, lane: string): string {
+	return (
+		`Budget checkpoint: ${count}/${budget} calls used, ~${budget - count} left. ` +
+		`Converge NOW: name the 3-4 pillars the diff's triggers selected, verify only those, ` +
+		`then compose your output artifact. bash commands touching "${lane}" stay open past ` +
+		`the cap. Further exploration WILL be refused.`
+	);
 }
 
 export function finalizeReason(count: number, budget: number, lane: string): string {
@@ -82,6 +112,12 @@ export function eventArgs(event: unknown): Record<string, unknown> {
 	return typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>) : {};
 }
 
+/** Checkpoint state passed by the caller (it owns the flags). */
+export interface DecideOpts {
+	nudgeAt?: number;
+	nudged?: boolean;
+}
+
 /** The cap decision for one tool call. `count` is the number of ALREADY
  * EXECUTED calls in this session (blocked attempts excluded). */
 export function decide(
@@ -90,8 +126,21 @@ export function decide(
 	count: number,
 	budget: number,
 	allowSubstrings: string[],
+	opts: DecideOpts = {},
 ): Decision {
 	if (budget <= 0) return { allow: true }; // inert
+	// One-shot mid-budget checkpoint (#487): a single block at the halfway
+	// mark that does NOT count against the budget and fires exactly once.
+	if (
+		opts.nudgeAt !== undefined && opts.nudgeAt > 0 &&
+		!opts.nudged && count === opts.nudgeAt && count < budget
+	) {
+		return {
+			allow: false,
+			nudge: true,
+			reason: nudgeReason(count, budget, allowSubstrings[0] ?? DEFAULT_ALLOW),
+		};
+	}
 	if (count <= budget) return { allow: true };
 	if (FILE_TOOLS.has(toolName)) return { allow: true };
 	if (toolName === "bash") {

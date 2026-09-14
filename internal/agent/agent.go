@@ -203,6 +203,7 @@ func Task(ctx context.Context, sess PiSession, gate Gate, task string, maxFixes 
 		Response: capture.Response,
 		Tools:    capture.Tools,
 		Usage:    turnUsage,
+		Budget:   budgetStats(capture.Tools),
 	}
 	session.Turns = append(session.Turns, currentTurn)
 	attempts := 0
@@ -236,6 +237,7 @@ func Task(ctx context.Context, sess PiSession, gate Gate, task string, maxFixes 
 			Response: capture.Response,
 			Tools:    capture.Tools,
 			Usage:    fbUsage,
+			Budget:   budgetStats(capture.Tools),
 		})
 	}
 	// final gate after the last fix

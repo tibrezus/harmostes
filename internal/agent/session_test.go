@@ -352,3 +352,53 @@ func TestToolEndDetails(t *testing.T) {
 		})
 	}
 }
+
+func TestBudgetStats(t *testing.T) {
+	block := "Tool budget exhausted (33 calls > 32 allowed). ..."
+	nudge := "Budget checkpoint: 16/32 calls used, ~16 left. Converge NOW..."
+	t.Run("nil for a call-free turn", func(t *testing.T) {
+		if got := budgetStats(nil); got != nil {
+			t.Fatalf("budgetStats(nil) = %#v, want nil", got)
+		}
+	})
+	t.Run("all executed, no vetoes", func(t *testing.T) {
+		got := budgetStats([]ToolCall{
+			{Name: "bash", Result: "ok"},
+			{Name: "read", Result: "contents"},
+		})
+		if got == nil || got.Executed != 2 || got.Blocked != 0 || got.Nudged {
+			t.Fatalf("budgetStats() = %#v, want executed=2 blocked=0 nudged=false", got)
+		}
+	})
+	t.Run("vetoes classified by the extension's marker text", func(t *testing.T) {
+		got := budgetStats([]ToolCall{
+			{Name: "bash", Result: "ok"},
+			{Name: "bash", Result: block},
+			{Name: "bash", Result: nudge},
+			{Name: "bash", Result: block},
+		})
+		if got.Executed != 1 || got.Blocked != 3 || !got.Nudged {
+			t.Fatalf("budgetStats() = %#v, want executed=1 blocked=3 nudged=true", got)
+		}
+	})
+	t.Run("a checkpoint block is a veto carrying the nudge flag", func(t *testing.T) {
+		got := budgetStats([]ToolCall{{Name: "bash", Result: nudge}})
+		if got.Executed != 0 || got.Blocked != 1 || !got.Nudged {
+			t.Fatalf("budgetStats() = %#v, want executed=0 blocked=1 nudged=true", got)
+		}
+	})
+	t.Run("round trip through the envelope JSON", func(t *testing.T) {
+		rec := TurnRecord{Label: "initial task", Budget: budgetStats([]ToolCall{{Name: "bash", Result: nudge}})}
+		b, err := json.Marshal(rec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var back TurnRecord
+		if err := json.Unmarshal(b, &back); err != nil {
+			t.Fatal(err)
+		}
+		if back.Budget == nil || back.Budget.Blocked != 1 || !back.Budget.Nudged {
+			t.Fatalf("round trip lost BudgetStats: %#v", back.Budget)
+		}
+	})
+}

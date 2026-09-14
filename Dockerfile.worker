@@ -207,7 +207,7 @@ COPY extensions/sol-pi /extensions/sol-pi
 COPY extensions/sol-pi/sol-pi.json /root/.pi/agent/sol-pi.json
 COPY extensions/sol-pi/settings.json /root/.pi/agent/settings.json
 RUN node /extensions/sol-pi/scripts/check-sol-pi-config.mjs --config /root/.pi/agent/sol-pi.json > /tmp/sol-pi-config.json \
-    && node -e 'const c=JSON.parse(require("fs").readFileSync("/tmp/sol-pi-config.json","utf8"));const e=c.effective_config||c;if(!e.actionFusion||!e.observationPack||e.e.actionFusion!==true||e.observationPack!==true||e.evidencePreservingReducer!==true||e.onlineContextCompact!==true||e.evidencePreservingReducerProvider!=="litellm"||e.evidencePreservingReducerModel!=="litellm/ali/anthropic/qwen3.8-flash"){console.error("sol-pi profile drift:",JSON.stringify(e));process.exit(1)}' \
+    && node -e 'const c=JSON.parse(require("fs").readFileSync("/tmp/sol-pi-config.json","utf8"));const e=c.effective_config||c;if(!(!(e.actionFusion===true&&e.observationPack===true&&e.evidencePreservingReducer===true&&e.onlineContextCompact===true&&e.evidencePreservingReducerProvider==="litellm"&&e.evidencePreservingReducerModel==="litellm/ali/anthropic/qwen3.8-flash"))){console.error("sol-pi profile drift:",JSON.stringify(e));process.exit(1)}' \
     || { echo "sol-pi config/profile check failed"; cat /tmp/sol-pi-config.json 2>/dev/null; exit 1; }
 RUN PI_SKIP_VERSION_CHECK=1 timeout 60 pi -e /extensions/sol-pi --mode rpc </dev/null >/tmp/pi-solpi-load.log 2>&1; rc=$?; \
     head -5 /tmp/pi-solpi-load.log; \

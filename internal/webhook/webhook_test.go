@@ -408,3 +408,35 @@ func TestPullRequestEventCICompletedAnnotates(t *testing.T) {
 		t.Errorf("trigger-action = %q", got.Annotations[TriggerActionAnnotation])
 	}
 }
+
+// #488: the native review request arms the gate — the forge's action passes
+// the vocabulary unnormalized (it is already GitHub-shaped), and the
+// withdrawal re-evaluates like unlabeled.
+func TestPullRequestEventReviewRequestedArms(t *testing.T) {
+	for _, tc := range []struct{ action string }{
+		{"review_requested"},
+		{"review_request_removed"},
+	} {
+		t.Run(tc.action, func(t *testing.T) {
+			wf, sec := prWorkflow("w-rr", "", "")
+			h := newTestHandler(sec, wf)
+
+			body := prEventBody(tc.action, 42, "abc123def4567890", "tibrez/rhesadox", "https://git.rezus.cloud/tibrez/rhesadox")
+			req := httptest.NewRequest(http.MethodPost, "/webhook/w-rr?namespace=harmostes", strings.NewReader(body))
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req, "w-rr")
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+			}
+			var got v1alpha1.Workflow
+			_ = h.Get(context.Background(), types.NamespacedName{Namespace: "harmostes", Name: "w-rr"}, &got)
+			if got.Annotations[TriggerActionAnnotation] != tc.action {
+				t.Errorf("trigger-action = %q, want %q", got.Annotations[TriggerActionAnnotation], tc.action)
+			}
+			if got.Annotations[TriggerRevisionAnnotation] != "abc123def4567890" {
+				t.Errorf("trigger-revision = %q", got.Annotations[TriggerRevisionAnnotation])
+			}
+		})
+	}
+}

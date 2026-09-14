@@ -160,13 +160,17 @@ func (d GateDeps) wake(wf *v1alpha1.Workflow) *candidate {
 	return &candidate{
 		repo: repo, pr: pr, pointer: fmt.Sprintf("%s#%d", repo, pr), sha: d.Wake.Revision,
 		request: requestShaped,
-		labeled: d.Wake.Action == "labeled",
+		// review_requested is explicit human intent — same override class as
+		// applying the label (#488). review_request_removed is a withdrawal:
+		// its direction resolves against label presence exactly like the
+		// granular label event (label still on = the label contract stands).
+		labeled: d.Wake.Action == "labeled" || d.Wake.Action == "review_requested",
 		// Forgejo's PR-label webhook emits only "label_updated" — for add
 		// AND remove (Gitea heritage; "labeled"/"unlabeled" never fire).
 		// #423: the add/remove ambiguity resolves against the PR's CURRENT
 		// labels at evaluation time — present means the human (re-)requested
 		// the review, absent means they removed it (never an override).
-		granularLabel: d.Wake.Action == "label_updated",
+		granularLabel: d.Wake.Action == "label_updated" || d.Wake.Action == "review_request_removed",
 	}
 }
 

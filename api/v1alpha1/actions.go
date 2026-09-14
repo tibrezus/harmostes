@@ -16,6 +16,14 @@ var PullRequestWakeActions = map[string]bool{
 	"ready_for_review": true,
 	"label_updated":    true, // Forgejo granular-event name; the gate re-verifies state
 	"synchronized":     true, // Forgejo alias of synchronize — normalized at the edge
+	// review_requested: the NATIVE readiness signal (#488) — the dev requests
+	// review from harmostes-bot when the work is done, instead of (or on top
+	// of) the label. The gate still re-verifies label ∧ CI; the request is
+	// the human's "now" and supersedes like labeling. Forgejo also emits the
+	// removal action when a request is withdrawn — re-evaluate, like
+	// unlabeled.
+	"review_requested":       true,
+	"review_request_removed": true,
 	// ci_completed: the repo's OWN CI pipeline notifies harmostes when a
 	// pipeline run finishes (Forgejo Actions emits no run-completion
 	// webhook, so until the fork ships one, a final CI step POSTs a
@@ -37,7 +45,7 @@ func deriveRequestShaped() map[string]bool {
 	m := map[string]bool{}
 	for action := range PullRequestWakeActions {
 		switch action {
-		case "labeled", "unlabeled", "label_updated":
+		case "labeled", "unlabeled", "label_updated", "review_requested", "review_request_removed":
 			m[action] = true
 		}
 	}

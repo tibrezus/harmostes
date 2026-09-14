@@ -458,6 +458,10 @@ var jobEnvAllowlist = []string{
 	// registered in review sessions, bricking the run — 4 failed gate
 	// attempts, no review.json, attempt 57a1232749c0).
 	"PI_TOOL_BUDGET_ALLOW",
+	// PI_TOOL_BUDGET_NUDGE: the one-shot mid-budget checkpoint (#487) — a
+	// single blocked call at this count carrying a converge-now
+	// instruction. "0" off; empty = cap/2.
+	"PI_TOOL_BUDGET_NUDGE",
 }
 
 // jobCredentialEnv forwards the allowlisted deployment-level vars from the

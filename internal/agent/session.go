@@ -32,12 +32,13 @@ type SessionRecord struct {
 // TurnRecord is one complete turn: the prompt sent, the response received,
 // the tool calls made, and the gate outcome (if a gate ran for this turn).
 type TurnRecord struct {
-	Label    string      `json:"label"`              // "initial task", "feedback #1"
-	Prompt   string      `json:"prompt"`             // the message sent to the agent
-	Response string      `json:"response,omitempty"` // assistant response text
-	Tools    []ToolCall  `json:"tools"`              // tool calls in execution order
-	Usage    Usage       `json:"usage"`              // token usage for this turn
-	Gate     *GateResult `json:"gate,omitempty"`     // gate outcome (nil if no gate ran)
+	Label    string       `json:"label"`              // "initial task", "feedback #1"
+	Prompt   string       `json:"prompt"`             // the message sent to the agent
+	Response string       `json:"response,omitempty"` // assistant response text
+	Tools    []ToolCall   `json:"tools"`              // tool calls in execution order
+	Usage    Usage        `json:"usage"`              // token usage for this turn
+	Gate     *GateResult  `json:"gate,omitempty"`     // gate outcome (nil if no gate ran)
+	Budget   *BudgetStats `json:"budget,omitempty"`   // tool-call ledger vs the turn-budget extension
 }
 
 // ToolCall is one tool execution within a turn. Full capture (Option A) —
@@ -59,6 +60,50 @@ type ToolCall struct {
 type GateResult struct {
 	Green  bool   `json:"green"`
 	Output string `json:"output"`
+}
+
+// BudgetStats summarizes one turn's tool-call ledger against the
+// turn-budget extension (#487): executed calls, vetoes (blocked attempts,
+// which cost a model turn but not budget), and whether the one-shot
+// mid-budget checkpoint fired. Derived from the extension's reason-text
+// markers — that wording is the wire contract between the extension and
+// this ledger; changing it means updating both sides and their tests.
+type BudgetStats struct {
+	Executed int  `json:"executed"`
+	Blocked  int  `json:"blocked"`
+	Nudged   bool `json:"nudged,omitempty"`
+}
+
+const (
+	budgetBlockMarker = "Tool budget exhausted"
+	budgetNudgeMarker = "Budget checkpoint:"
+)
+
+// isBudgetVeto: a captured call whose result carries one of the extension's
+// refusal markers never executed. Heuristic by design — the refusal text IS
+// the extension's observable output in the transcript.
+func isBudgetVeto(result string) bool {
+	return strings.Contains(result, budgetBlockMarker) || strings.Contains(result, budgetNudgeMarker)
+}
+
+// budgetStats classifies a turn's captured tool calls. nil when the turn
+// made no calls (nothing to say about the budget).
+func budgetStats(tools []ToolCall) *BudgetStats {
+	if len(tools) == 0 {
+		return nil
+	}
+	st := &BudgetStats{}
+	for _, tc := range tools {
+		if isBudgetVeto(tc.Result) {
+			st.Blocked++
+			if strings.Contains(tc.Result, budgetNudgeMarker) {
+				st.Nudged = true
+			}
+			continue
+		}
+		st.Executed++
+	}
+	return st
 }
 
 // TurnCapture is the raw content captured from one RPC.Prompt call: the

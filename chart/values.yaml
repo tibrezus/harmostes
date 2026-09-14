@@ -22,6 +22,13 @@ agent:
   # containing any of them still executes (inert-substring comparison —
   # compare, never execute). Empty extension-side default = review.json.
   toolBudgetAllow: "/workspace/review.json"
+  # Mid-budget checkpoint (#487): ONE blocked call at toolBudgetNudge with a
+  # converge-now instruction (name the pillars the diff triggers selected,
+  # verify only those, compose). The block is the only lever the model
+  # demonstrably obeys, so the checkpoint shapes convergence instead of
+  # only cutting it off at the cap. Does not count against the budget.
+  # "0" disables; empty defaults to toolBudget/2.
+  toolBudgetNudge: "16"
 
 controller:
   serviceAccount: harmostes-controller

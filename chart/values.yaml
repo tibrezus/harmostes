@@ -45,6 +45,13 @@ dapr:
   # Valkey with an isolated DB so harmostes never crosses llm-wiki (DB 0/1) or
   # fork-maintenance (DB 2).
   stateStore: statestore
+  # Dedicated actor state store (ADR-0010 PRLineage): Dapr requires the
+  # actor-capable store to NOT use keyPrefix none — save-actor-state 404s
+  # on this edge runtime (live: every lineage publish 500'd even after
+  # actorStateStore was declared on the flat store). keyPrefix name gives a
+  # static "actorstore||" prefix: identical across attempt pods (whose
+  # app-ids differ), so the per-PR lineage survives pod churn.
+  actorStateStore: actorstore
   pubSub: pubsub
   secretStore: harmostes-secret-store   # Dapr secret store component (type: secretstores.kubernetes)
   valkeyHost: valkey.llm-wiki.svc.cluster.local:6379

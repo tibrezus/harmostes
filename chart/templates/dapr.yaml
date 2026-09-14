@@ -26,12 +26,33 @@ spec:
     # anyway.
     - name: keyPrefix
       value: "none"
-    # ADR-0010 PR-lineage actor state (PRLineage||<repo>~<pr>): without this
-    # flag Dapr has NO actor state store — every actor state access
-    # nil-panics in the sidecar (onGetActorState, actors.go) and every
-    # lineage publish 500s. Live failure: "session lineage publish failed:
-    # ... 500" on every round, resume=false forever — the PR sandbox reuse
-    # was silently dead and each review round restarted blind.
+    # ADR-0010 PR-lineage actor state (PRLineage||<repo>~<pr>): without
+    # SOME store flagged actorStateStore, Dapr has NO actor state store —
+    # every actor state access nil-panics in the sidecar (onGetActorState,
+    # actors.go) and every lineage publish 500s. The dedicated store lives
+    # below (keyPrefix none breaks save-actor-state on this runtime).
+---
+# Actor state store (ADR-0010): separate from the flat app store because
+# Dapr's actor state path rejects keyPrefix none (save-actor-state 404s).
+# keyPrefix "name" pins the prefix to the component name — static across
+# attempt pods, so one PR's lineage is one shared actor entity.
+apiVersion: dapr.io/v1alpha1
+kind: Component
+metadata:
+  name: {{ .Values.dapr.actorStateStore }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: harmostes
+spec:
+  type: state.redis
+  version: v1
+  metadata:
+    - name: redisHost
+      value: {{ .Values.dapr.valkeyHost }}
+    - name: redisDB
+      value: {{ quote .Values.dapr.valkeyDB }}
+    - name: keyPrefix
+      value: name
     - name: actorStateStore
       value: "true"
 ---

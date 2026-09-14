@@ -83,14 +83,16 @@ func graphPresenceLine(graphPath string) (string, bool) {
 // emit-rig + the Go toolchain inside the untrusted PR clone) gets the
 // scrubbed base. The token itself is scrubbed from the process env at the
 // agent spawn leaf (agent.FilterEnv) and from this extraEnv slice.
-func botTokenEnvForNode(node v1alpha1.NodeSpec, base []string) []string {
+func botTokenEnvForNode(node v1alpha1.NodeSpec, base []string, resolver worker.PluginResolver) []string {
 	if node.Type != "plugin" {
 		return base
 	}
-	var cfg struct {
-		Name string `json:"name"`
+	var cfg graph.PluginNodeConfig
+	if err := json.Unmarshal(node.Config, &cfg); err != nil {
+		return base
 	}
-	if err := json.Unmarshal(node.Config, &cfg); err != nil || cfg.Name != "post-review" {
+	command, _, err := resolver.Resolve(context.Background(), cfg.ToPluginRef(), "deploy")
+	if err != nil || !strings.HasSuffix(filepath.ToSlash(command), "plugins/post-review/post-review.sh") {
 		return base
 	}
 	bt := os.Getenv(agent.BotTokenEnvKey)
@@ -592,18 +594,20 @@ func runOneShot() {
 		}),
 		graph.WithTimeline(runTL),
 		graph.WithWorkflowContext(graph.WorkflowContext{
-			Name:            wf.Name,
-			Namespace:       namespace,
-			Workdir:         workdir,
-			Source:          source,
-			SourceURL:       wf.Spec.Source.Repo,
-			SourceBranch:    wf.Spec.Source.Branch,
-			SourceLanguage:  wf.Spec.Source.Language,
-			WorkspaceDir:    workdir,
-			Shadow:          shadow,
-			State:           wf.Name,
-			ExtraEnv:        extraEnv,
-			ExtraEnvForNode: botTokenEnvForNode,
+			Name:           wf.Name,
+			Namespace:      namespace,
+			Workdir:        workdir,
+			Source:         source,
+			SourceURL:      wf.Spec.Source.Repo,
+			SourceBranch:   wf.Spec.Source.Branch,
+			SourceLanguage: wf.Spec.Source.Language,
+			WorkspaceDir:   workdir,
+			Shadow:         shadow,
+			State:          wf.Name,
+			ExtraEnv:       extraEnv,
+			ExtraEnvForNode: func(node v1alpha1.NodeSpec, base []string) []string {
+				return botTokenEnvForNode(node, base, deps.Plugins)
+			},
 		}),
 	)
 
@@ -920,11 +924,13 @@ func fetchWorkspaceRepo(ctx context.Context, wr *v1alpha1.WorkspaceRepoSpec, bas
 	_ = os.RemoveAll(target) // idempotent: remove a stale checkout
 	cloneURL := tokenizeGitURL(wr.URL, os.Getenv("HARMOSTES_GIT_TOKEN"))
 	cmd := exec.CommandContext(ctx, "git", "clone", "--depth", "100", cloneURL, target)
+	cmd.Env = agent.ChildEnv(os.Environ())
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("git clone %s: %w (%s)", redact(wr.URL), err, string(out))
 	}
 	if wr.Branch != "" {
 		co := exec.CommandContext(ctx, "git", "-C", target, "checkout", wr.Branch)
+		co.Env = agent.ChildEnv(os.Environ())
 		if out, err := co.CombinedOutput(); err != nil {
 			return "", fmt.Errorf("git checkout %s: %w (%s)", wr.Branch, err, string(out))
 		}

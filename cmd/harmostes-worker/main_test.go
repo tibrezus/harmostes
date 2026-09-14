@@ -15,6 +15,7 @@ import (
 	"github.com/tibrezus/harmostes/internal/agent"
 	"github.com/tibrezus/harmostes/internal/observability"
 	"github.com/tibrezus/harmostes/internal/timeline"
+	"github.com/tibrezus/harmostes/internal/worker"
 )
 
 // TestFlushTelemetryCallsShutdown: the worker's exit path flushes telemetry —
@@ -475,11 +476,18 @@ func TestBotTokenScrubCoversPluginEnvDeployReinjects(t *testing.T) {
 		}
 	}
 
-	// the grant follows the CONSUMER (plugin name post-review), not the node
-	// ID — graph-native CR-authored node names must not matter (#480 r6 t10)
+	// the grant follows the RESOLVED EXECUTABLE (r10 t19): name alone is not
+	// script identity — a CR declaring name=post-review with a foreign
+	// ConfigMap resolves elsewhere and gets nothing. Node IDs are equally
+	// irrelevant for both directions (#480 r6 t10).
+	resolver := worker.PluginResolver(fakeResolver{
+		"post-review":         "/plugins/post-review/post-review.sh",
+		"post-review|cm-evil": "/plugins/cm-evil/post-review.sh",
+		"wiki-lint":           "/plugins/wiki-lint/wiki-lint.sh",
+	})
 	deployNode := v1alpha1.NodeSpec{ID: "whatever-a-cr-names-it", Type: "plugin",
 		Config: json.RawMessage(`{"name":"post-review"}`)}
-	dep := botTokenEnvForNode(deployNode, pluginEnv)
+	dep := botTokenEnvForNode(deployNode, pluginEnv, resolver)
 	found := false
 	for _, kv := range dep {
 		if kv == "HARMOSTES_FORGEJO_BOT_TOKEN=bot-secret" {
@@ -497,12 +505,35 @@ func TestBotTokenScrubCoversPluginEnvDeployReinjects(t *testing.T) {
 		}
 	}
 
+	// a foreign-configMap CR that SPOOFS the post-review name gets nothing
+	spoof := botTokenEnvForNode(v1alpha1.NodeSpec{ID: "deploy", Type: "plugin",
+		Config: json.RawMessage(`{"name":"post-review","configMap":"cm-evil"}`)}, pluginEnv, resolver)
+	for _, kv := range spoof {
+		if kv == "HARMOSTES_FORGEJO_BOT_TOKEN=bot-secret" {
+			t.Error("a name-spoofing node with a foreign ConfigMap must not receive the bot credential (r10 t19)")
+		}
+	}
+
 	// a non-post-review plugin node gets the scrubbed base even if named deploy
 	other := botTokenEnvForNode(v1alpha1.NodeSpec{ID: "deploy", Type: "plugin",
-		Config: json.RawMessage(`{"name":"wiki-lint"}`)}, pluginEnv)
+		Config: json.RawMessage(`{"name":"wiki-lint"}`)}, pluginEnv, resolver)
 	for _, kv := range other {
 		if kv == "HARMOSTES_FORGEJO_BOT_TOKEN=bot-secret" {
 			t.Error("a non-post-review plugin must not receive the bot credential")
 		}
 	}
+}
+
+// fakeResolver resolves name (optionally name|configMap) to a script path —
+// mirroring BuiltinResolver's builtin + configmap legs for the grant tests.
+type fakeResolver map[string]string
+
+func (f fakeResolver) Resolve(_ context.Context, ref v1alpha1.PluginRef, _ string) (string, []string, error) {
+	if p, ok := f[ref.Name+"|"+ref.ConfigMap]; ok && ref.ConfigMap != "" {
+		return p, nil, nil
+	}
+	if p, ok := f[ref.Name]; ok {
+		return p, nil, nil
+	}
+	return "", nil, fmt.Errorf("plugin %q not found", ref.Name)
 }

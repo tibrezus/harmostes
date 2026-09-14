@@ -164,7 +164,7 @@ func (d GateDeps) wake(wf *v1alpha1.Workflow) *candidate {
 		// applying the label (#488). review_request_removed is a withdrawal:
 		// its direction resolves against label presence exactly like the
 		// granular label event (label still on = the label contract stands).
-		labeled:       d.Wake.Action == "labeled" || d.Wake.Action == "review_requested",
+		labeled: d.Wake.Action == "labeled" || d.Wake.Action == "review_requested",
 		// Forgejo's PR-label webhook emits only "label_updated" — for add
 		// AND remove (Gitea heritage; "labeled"/"unlabeled" never fire).
 		// #423: the add/remove ambiguity resolves against the PR's CURRENT

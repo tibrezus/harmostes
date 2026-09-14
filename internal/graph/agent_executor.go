@@ -98,6 +98,14 @@ func (e *AgentExecutor) Execute(ctx context.Context, node v1alpha1.NodeSpec, env
 		task = task + "\n\n" + note
 	}
 
+	// Research journal (#494): the workflow's recent run outcomes — compact
+	// and capped by the writer (the tail, never the archive). Evidence the
+	// agent can consult to avoid redoing known failures; it changes nothing
+	// about the gate or the tools.
+	if j := os.Getenv("HARMOSTES_RESEARCH_JOURNAL"); j != "" {
+		task = task + "\n\n" + "Prior runs of this workflow (newest first) — known outcomes; do not redo failed approaches:\n" + j
+	}
+
 	// Build the gate (optional).
 	var gate agent.Gate
 	if cfg.Gate != nil {

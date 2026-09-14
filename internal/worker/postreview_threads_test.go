@@ -1216,8 +1216,8 @@ func TestPostReviewForgejoApprovalTransportFailureSurvives(t *testing.T) {
 	review["decision"] = "APPROVE"
 	out := runPluginEnv(t, srv, true, review)
 
-	if !strings.Contains(out, "approval-post-failed") {
-		t.Errorf("a transport failure must speak as approval-post-failed, out:\n%s", out)
+	if !strings.Contains(out, "approval-transport-failed") {
+		t.Errorf("a transport failure must speak as approval-transport-failed (r14 t22: distinct from a host-side refusal), out:\n%s", out)
 	}
 	mu.Lock()
 	gone := labelGone

@@ -530,12 +530,22 @@ PYTODO
   # reset; distinct from HTTP 4xx/5xx which exit 0 without -f) would abort
   # the whole plugin before label-consume + artifact (r1 review t2). A
   # transport failure yields APPROVAL_CODE=000 → the * branch speaks.
+  # stderr lands in the response file: with -sS transport errors (timeout,
+  # DNS, reset — the cases that motivated || true) report ONLY on stderr and
+  # write no body, so without this the WARN degrades to http 000 with no
+  # cause (r14 t22 — the #480 unattributable-rejection symptom, one layer
+  # down). HTTP responses carry a body and empty stderr: unambiguous.
   APPROVAL_CODE="$(curl -sS --max-time 20 -o "$APPROVAL_RESP_FILE" -w "%{http_code}" -X POST \
     -H "authorization: token $REVIEW_TOKEN" -H "content-type: application/json" \
     -d @"$APPROVAL_JSON" \
-    "$API_BASE/repos/$REPO/pulls/$PR_NUM/reviews" 2>/dev/null || true)"
+    "$API_BASE/repos/$REPO/pulls/$PR_NUM/reviews" 2>>"$APPROVAL_RESP_FILE" || true)"
   case "$APPROVAL_CODE" in
     200|201) echo '{"posted":1,"rejected":0,"capped":0}' > "$THREAD_STATUS_FILE" ;;
+    000)
+      APPROVAL_BODY="$(head -c 120 "$APPROVAL_RESP_FILE" 2>/dev/null || true)"
+      echo '{"posted":0,"rejected":1,"capped":0,"skipped":"approval-transport-failed"}' > "$THREAD_STATUS_FILE"
+      log "WARN: native approval transport failure (no HTTP response) — $APPROVAL_BODY"
+      ;;
     *)
       # SPEAK (r4-P8): the artifact must distinguish "credential missing, host
       # rejected a self-review" (#480 — bot token not provisioned) from any

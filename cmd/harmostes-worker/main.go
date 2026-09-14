@@ -97,12 +97,17 @@ func botTokenEnvForNode(node v1alpha1.NodeSpec, base []string, resolver worker.P
 	// the builtin to a FLAT image path (/usr/local/lib/harmostes/plugins/
 	// post-review.sh) while tests produce the repo layout, so any suffix
 	// guess matches one world and silently no-ops the other (r11 t21).
-	nodeCmd, _, err := resolver.Resolve(context.Background(), cfg.ToPluginRef(), "deploy")
+	// Phase "plugin" — the SAME resolution the executor performs
+	// (plugin_executor.go); r14 t21: resolving the identity under a
+	// different phase than the leg that runs the script is the r11 t21
+	// failure mode again (identity that matches one world and no-ops the
+	// other) the moment a resolver becomes phase-aware.
+	nodeCmd, _, err := resolver.Resolve(context.Background(), cfg.ToPluginRef(), "plugin")
 	if err != nil || nodeCmd == "" {
 		return base
 	}
 	canonical, _, err := resolver.Resolve(context.Background(),
-		v1alpha1.PluginRef{Name: "post-review"}, "deploy")
+		v1alpha1.PluginRef{Name: "post-review"}, "plugin")
 	if err != nil || canonical == "" || nodeCmd != canonical {
 		return base
 	}

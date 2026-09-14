@@ -162,13 +162,28 @@ func (c *HTTPClient) GetActorState(ctx context.Context, actorType, actorID, key 
 
 // SaveActorState writes a key into the actor's isolated state partition.
 // value must be JSON-serializable (the API stores it as-is).
+//
+// Uses the ACTOR STATE TRANSACTION endpoint (POST .../state, batch body)
+// — the per-key PUT .../state/{key} no longer exists on this Dapr
+// runtime: the route falls through to direct-invoke and 404s
+// (ERR_DIRECT_INVOKE, live: every PRLineage publish 500'd through three
+// shipped fixes before this was read off the sidecar). GET per-key
+// remains the read path.
 func (c *HTTPClient) SaveActorState(ctx context.Context, actorType, actorID, key string, value any) error {
-	b, err := json.Marshal(value)
+	b, err := json.Marshal([]map[string]any{
+		{
+			"operation": "upsert",
+			"request": map[string]any{
+				"key":   key,
+				"value": value,
+			},
+		},
+	})
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut,
-		fmt.Sprintf("%s/v1.0/actors/%s/%s/state/%s", c.BaseURL, actorType, url.PathEscape(actorID), key), bytes.NewReader(b))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		fmt.Sprintf("%s/v1.0/actors/%s/%s/state", c.BaseURL, actorType, url.PathEscape(actorID)), bytes.NewReader(b))
 	if err != nil {
 		return err
 	}

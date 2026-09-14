@@ -168,6 +168,17 @@ else
   git clone --quiet --depth 50 "$CLONE_URL" "$REPO_DIR" 2>&1|tail -1
 fi
 git -C "$REPO_DIR" fetch --quiet --depth 50 origin "$HEAD_SHA" 2>/dev/null || true
+# ── Stale-dispatch guard (#2190 churn): the label re-arms on every push, so
+# a review dispatched at SHA N can start after the dev pushed N+1 (rebase
+# mid-loop). The post-review gate refuses sha != head, so a superseded round
+# burns ~15 min of agent turns on a verdict that cannot publish. The clone
+# above is the branch TIP — compare BEFORE checking out the dispatched SHA
+# and fail fast; the loop re-dispatches at the new head.
+TIP=$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || echo "")
+if [ -n "$TIP" ] && [ "$TIP" != "$HEAD_SHA" ]; then
+  log "SUPERSEDED: dispatched at ${HEAD_SHA:0:10} but branch head is now ${TIP:0:10} — skipping (re-dispatch lands at the new head)"
+  exit 2
+fi
 git -C "$REPO_DIR" checkout --quiet "$HEAD_SHA" 2>/dev/null || true
 git config --global --add safe.directory '*' 2>/dev/null || true
 

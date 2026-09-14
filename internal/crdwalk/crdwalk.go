@@ -52,6 +52,15 @@ type Leaf struct {
 // identical leaf values for every field that survived.
 var probeTime = metav1.NewTime(time.Unix(1700000000, 0).UTC())
 
+// patternProbes maps CRD `pattern` constraints to conforming probe values —
+// the generic string probe ("probe.<path>") violates pinned patterns and the
+// real apiserver rejects it (caught live by the acceptance matrix, #494). An
+// unregistered pattern surfaces as a conformance issue (add the pattern + a
+// value here).
+var patternProbes = map[string]string{
+	`^([01]\d|2[0-3]):[0-5]\d$`: "16:00", // HH:MM — agent.models windows (#494)
+}
+
 // LoadSchema extracts the v1alpha1 openAPIV3Schema root node from a chart
 // CRD file.
 func LoadSchema(crdDir, file string) (map[string]interface{}, error) {
@@ -318,7 +327,20 @@ func walkType(t reflect.Type, schema map[string]interface{}, path string, collec
 	default:
 		// string/number/bool leaf
 		if !collect && rv.IsValid() {
-			rv.Set(scalarValue(t, schema, path))
+			if pattern, ok := schema["pattern"].(string); ok && pattern != "" {
+				if _, known := patternProbes[pattern]; !known {
+					missing("%s: schema pattern %q has no registered probe value — add it to crdwalk.patternProbes", path, pattern)
+				}
+			}
+			sv := scalarValue(t, schema, path)
+			if pattern, ok := schema["pattern"].(string); ok && pattern != "" {
+				if pv, known := patternProbes[pattern]; known {
+					sv = reflect.ValueOf(pv).Convert(t)
+				} else {
+					missing("%s: schema pattern %q has no registered probe value — add it to crdwalk.patternProbes", path, pattern)
+				}
+			}
+			rv.Set(sv)
 		}
 		record(path, leafValue(rv))
 	}

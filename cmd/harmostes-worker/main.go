@@ -336,6 +336,13 @@ func runOneShot() {
 	// Session capture (Phase 1): wire Dapr state writer + pub/sub publisher so
 	// the agent transcript (prompts, tools, responses, gates) is persisted for
 	// the UI session viewer.
+	// Pin the run's model ONCE (#494): ResolveModel evaluates the
+	// time-windowed schedule at run start and the result is written into
+	// the in-memory spec — pi args, events, graph config and session
+	// metadata all carry the SAME model, and a run never switches models
+	// mid-flight because the clock crossed a window boundary.
+	wf.Spec.Agent.Model = wf.Spec.Agent.ResolveModel(time.Now())
+
 	runID := runName()
 	sessionMeta := agent.SessionMeta{
 		Workflow: workflow,

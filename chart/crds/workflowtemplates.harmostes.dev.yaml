@@ -75,6 +75,28 @@ spec:
                   properties:
                     enabled: { type: boolean }
                     model: { type: string }
+                    models:
+                      type: array
+                      description: >-
+                        Time-windowed model overrides, evaluated at run start
+                        (worker): first window containing `now` wins, else
+                        `model`. Windows may wrap midnight.
+                      items:
+                        type: object
+                        required: [model, start, end]
+                        properties:
+                          model: { type: string }
+                          start:
+                            type: string
+                            pattern: '^([01]\d|2[0-3]):[0-5]\d$'
+                            description: HH:MM in tz
+                          end:
+                            type: string
+                            pattern: '^([01]\d|2[0-3]):[0-5]\d$'
+                            description: HH:MM in tz
+                          tz:
+                            type: string
+                            description: IANA timezone (default UTC)
                     skill: { type: string }
                     tools:
                       type: array

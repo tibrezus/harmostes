@@ -253,8 +253,13 @@ workflowTemplates:
       # Time-windowed model selection (#494): deepseek is primary during
       # the working evening/night (16:00-02:00 CEST — Europe/Paris handles
       # CET/CEST), qwen otherwise. Evaluated at run start, first match wins.
+      # Model id note: the proxy catalog has no "v4.1-flash" — the original
+      # id is outside the key's access group and every in-window round
+      # returned EMPTY completions (three wasted rounds before a direct
+      # catalog+completion probe pinned it). -0731 is the served snapshot
+      # (probe: 200 + tokens).
       models:
-        - model: litellm/ali/anthropic/deepseek-v4.1-flash
+        - model: litellm/ali/anthropic/deepseek-v4-flash-0731
           start: "16:00"
           end: "02:00"
           tz: Europe/Paris

@@ -1,0 +1,26 @@
+{{- if .Values.worker.sessions.enabled }}
+# Persistent pi-session lineages (ADR-0010): mounted by per-Attempt Jobs
+# (spec.sessions.pvc: harmostes-worker-sessions) at /sessions (SubPath per
+# workflow — project isolation on one RWX claim). Per-PR session lineages
+# — the compacted context, and the SoL-Pi data inside the session dir —
+# survive across attempt Jobs until the TTL janitor prunes them; a
+# re-armed PR resumes its conversation instead of starting cold. The
+# claim needs an RWX-capable storage class (the deployment's choice —
+# e.g. a distributed FS); the lineage dirs are collision-proof
+# (<repo>-<hash>~<pr>) and per-project by construction.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: harmostes-worker-sessions
+  labels:
+    app.kubernetes.io/name: harmostes
+    app.kubernetes.io/component: worker-sessions
+spec:
+  accessModes: ["ReadWriteMany"]
+  {{- with .Values.worker.sessions.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.worker.sessions.size | quote }}
+{{- end }}

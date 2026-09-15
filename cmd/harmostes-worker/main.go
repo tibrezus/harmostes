@@ -417,6 +417,20 @@ func runOneShot() {
 	} else {
 		piSessions = ""
 	}
+	// Lineage TTL (ADR-0010 follow-up): idle lineages (closed/merged PRs)
+	// expire from the persistent claim; active ones are touched by every
+	// resumed turn, so they are structurally never pruned. Runs only when
+	// the Job mounted the sessions claim (the Job builder sets the TTL
+	// env) — ephemeral /tmp roots stay untouched.
+	if ttl := os.Getenv("HARMOSTES_SESSIONS_TTL"); ttl != "" && piSessions != "" {
+		if d, err := time.ParseDuration(ttl); err == nil {
+			if n := worker.JanitorSessions(piSessions, d, time.Now()); n > 0 {
+				logf("sessions janitor: pruned %d idle lineage dir(s) (ttl %s)", n, ttl)
+			}
+		} else {
+			logf("sessions TTL %q unparsable — lineages not pruned", ttl)
+		}
+	}
 	// ADR-0010: PR-shaped runs own ONE session lineage — resume, don't
 	// rebuild. The delta note (HARMOSTES_SESSION_RESUME) is read by the
 	// graph agent executor; this process runs exactly one review, so the

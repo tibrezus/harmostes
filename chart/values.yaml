@@ -262,7 +262,7 @@ workflowTemplates:
       # allowed models). The #504 empty-completion guard makes any residual
       # misaccess fail loudly, naming the model.
       models:
-        - model: litellm/ali/anthropic/deepseek-v4.1-flash
+        - model: litellm/ali/anthropic/deepseek-v4-flash-0731
           start: "16:00"
           end: "02:00"
           tz: Europe/Paris

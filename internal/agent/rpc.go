@@ -274,6 +274,7 @@ func (r *RPC) Prompt(ctx context.Context, message, label string) (Event, int, Us
 			logf(r.log, ev)
 			switch ev.Type {
 			case "message_end":
+				capture.AssistantMessageEnd = true
 				if u, ok := messageEndUsage(ev.Raw); ok {
 					usage.add(u)
 				}

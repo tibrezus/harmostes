@@ -174,7 +174,7 @@ func Task(ctx context.Context, sess PiSession, gate Gate, task string, maxFixes 
 		)
 		_, _, turnUsage, capture, err := sess.Prompt(tctx, message, label)
 		usage.add(turnUsage)
-		if err == nil && strings.TrimSpace(capture.Response) == "" && turnUsage.Input+turnUsage.Output+turnUsage.CacheRead+turnUsage.CacheWrite == 0 {
+		if err == nil && capture.AssistantMessageEnd && strings.TrimSpace(capture.Response) == "" && turnUsage.Input+turnUsage.Output+turnUsage.CacheRead+turnUsage.CacheWrite == 0 {
 			// #504: silent-empty model responses — a LiteLLM key-access 403
 			// or an unhealthy upstream surfaces as ~100ms empty turns, not
 			// errors. Fail the turn LOUDLY, naming the model, instead of

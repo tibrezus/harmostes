@@ -13,7 +13,7 @@ type emptySession struct{ calls int }
 
 func (s *emptySession) Prompt(ctx context.Context, message, label string) (Event, int, Usage, TurnCapture, error) {
 	s.calls++
-	return Event{Type: "agent_end"}, 0, Usage{}, TurnCapture{}, nil
+	return Event{Type: "agent_end"}, 0, Usage{}, TurnCapture{AssistantMessageEnd: true}, nil
 }
 func (s *emptySession) Abort(ctx context.Context) error { return nil }
 

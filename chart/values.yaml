@@ -256,6 +256,16 @@ workflowTemplates:
       # PER-DEPLOYMENT value (HelmRelease override): model availability is
       # deployment-specific, never a shared-chart default.
       model: litellm/ali/anthropic/qwen3.8-flash
+      # RESTORED with the model id CONFIRMED against the proxy (#502): the
+      # window model exists in LiteLLM — the fleet stall was the harmostes
+      # KEY's access group, which must grant it (LiteLLM admin: key →
+      # allowed models). The #504 empty-completion guard makes any residual
+      # misaccess fail loudly, naming the model.
+      models:
+        - model: litellm/ali/anthropic/deepseek-v4.1-flash
+          start: "16:00"
+          end: "02:00"
+          tz: Europe/Paris
       skill: /skills/pr-review/SKILL.md
       taskTemplate:
         configMap: harmostes-tasks

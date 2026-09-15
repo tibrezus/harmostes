@@ -174,6 +174,15 @@ func Task(ctx context.Context, sess PiSession, gate Gate, task string, maxFixes 
 		)
 		_, _, turnUsage, capture, err := sess.Prompt(tctx, message, label)
 		usage.add(turnUsage)
+		if err == nil && capture.AssistantMessageEnd && strings.TrimSpace(capture.Response) == "" && turnUsage.Input+turnUsage.Output+turnUsage.CacheRead+turnUsage.CacheWrite == 0 {
+			// #504: silent-empty model responses — a LiteLLM key-access 403
+			// or an unhealthy upstream surfaces as ~100ms empty turns, not
+			// errors. Fail the turn LOUDLY, naming the model, instead of
+			// feeding empty text to the gate loop and burning silent retries.
+			return capture, turnUsage, fmt.Errorf(
+				"model %s returned an EMPTY completion (0 tokens) — check the provider catalog and the key's model access groups",
+				cfg.sessionMeta.Model)
+		}
 		// Extension handler throws (r5/r6): pi continues with the throwing
 		// extension inert — the count on the turn span makes that visible in
 		// the trace, not just the per-turn ledger blob.

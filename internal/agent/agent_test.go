@@ -26,7 +26,14 @@ func (f *fakeSession) Prompt(_ context.Context, message, _ string) (Event, int, 
 		usage = f.usages[f.idx]
 	}
 	f.idx++
-	return Event{Type: "agent_end"}, tools, usage, TurnCapture{}, nil
+	// Non-empty response + nonzero usage: the #504 guard must not fire on
+	// these gate-loop mechanics fakes (an empty zero-token turn is the
+	// silent-empty INCIDENT shape, pinned by TestTask_EmptyCompletionFailsLoudly).
+	capture := TurnCapture{Response: "ok (fake turn)"}
+	if usage.Input == 0 && usage.Output == 0 {
+		usage = Usage{Input: 1, Output: 1}
+	}
+	return Event{Type: "agent_end"}, tools, usage, capture, nil
 }
 
 func (f *fakeSession) Abort(_ context.Context) error { f.aborted = true; return nil }

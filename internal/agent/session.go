@@ -117,6 +117,11 @@ type TurnCapture struct {
 	// "loaded and inert" degrade is invisible in the run summary — the
 	// raw event only ever reached the generic RPC log.
 	ExtensionErrors int `json:"extensionErrors,omitempty"`
+	// AssistantMessageEnd records that the model's assistant message_end
+	// event arrived this turn — the #504 empty-completion guard requires
+	// it, so harness fakes that emit no message_end are never mistaken for
+	// a silent-empty model response.
+	AssistantMessageEnd bool `json:"assistantMessageEnd,omitempty"`
 }
 
 // SessionWriter writes the current SessionRecord to a durable store (Dapr

@@ -84,8 +84,13 @@ GATE_STATUS_FILE="$(mktemp)"; : > "$GATE_STATUS_FILE"; export GATE_STATUS_FILE
 CS_JSON=$(python3 - << 'PYEOF'
 # Emits the unified comment list on stdout; each comment carries a boolean
 # "resolved": GitHub = GraphQL reviewThreads.isResolved mapped from
-# databaseId (REST never shows a GraphQL-side resolve, C1); Forgejo = always
-# false (closure is a closing reply); GitLab = native flag. On a listing
+# databaseId (REST never shows a GraphQL-side resolve, C1); Forgejo = the
+# fork's NATIVE resolver state (a resolved review comment serializes the
+# resolve_doer object as `resolver`; absent/null = unresolved â closing
+# replies cannot be expressed through this REST shape, the fork's
+# in_reply_to is a rezuscloud/forgejo follow-up, so native resolve is the
+# only closable path and must be authoritative); GitLab = native flag.
+# On a listing
 # failure or an unwired dialect it emits `null` and writes the structured
 # skip reason to $GATE_STATUS_FILE (C3: a skip must be alarmable, never
 # silent) — the shell puts it in the run's event JSON.
@@ -132,7 +137,7 @@ try:
         cs=[]
         for r in paged(f"/repos/{repo}/pulls/{pr}/reviews"):
             cs+=paged(f"/repos/{repo}/pulls/{pr}/reviews/{r['id']}/comments")
-        for c in cs: c["resolved"]=False  # Forgejo resolves by closing reply
+        for c in cs: c["resolved"]=bool(c.get("resolver"))  # fork-native resolve_doer object; absent = open (in_reply_to is the fork gap)
         print(json.dumps(cs)); raise SystemExit
     cs=paged(f"/repos/{repo}/pulls/{pr}/comments")
     owner, name = repo.split("/", 1)

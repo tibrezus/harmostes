@@ -1269,3 +1269,88 @@ func TestPostReviewThreadsPublisherSpeaksRejectionReason(t *testing.T) {
 		t.Errorf("the threads summary must carry last_error when the host rejects the batch, out:\n%s", out)
 	}
 }
+
+// ── fork-native resolve: the resolver object is authoritative ───────────────
+// Observed live on rhesadox#2126 (2026-09-15): every round downgraded with
+// "24 unresolved prior-round thread(s)" because the Forgejo fetch hard-set
+// resolved=False ("closure is a closing reply") — but this fork's REST shape
+// has NO in_reply_to (rezuscloud/forgejo fork gap), so a closing reply can
+// never be expressed and prior threads were permanently open: any PR that
+// ever received a finding could never APPROVE again. The fork serializes
+// native resolve state as `resolver` (the resolve_doer object; absent/null
+// = unresolved) — that is the only closable path and must be authoritative.
+// Mutation probe: restore `c["resolved"]=False` — this test goes red (the
+// resolved thread reopens and the verdict downgrades citing 2, not 1).
+func TestPostReviewForgejoNativeResolverClosesPriorThreads(t *testing.T) {
+	var mu sync.Mutex
+	verdictBodies := []string{}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/git.rezus.cloud/tibrez/rhesadox/pulls/99", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"head": map[string]string{"sha": "deadbeef123"}})
+	})
+	mux.HandleFunc("/repos/git.rezus.cloud/tibrez/rhesadox/pulls/99/reviews", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 6})
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		out, _ := json.Marshal([]any{map[string]any{"id": 55, "user": map[string]any{"login": "harmostes-bot"}}})
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(out)
+	})
+	// Two prior-round threads on review 55: id 81 carries the fork's native
+	// resolver object (resolve_doer present ⇒ resolved), id 82 does not.
+	// Both anchor at a PRIOR commit so the reviewed-SHA criterion cannot
+	// close them — only the resolver state can.
+	mux.HandleFunc("/repos/git.rezus.cloud/tibrez/rhesadox/pulls/99/reviews/55/comments", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		out, _ := json.Marshal([]any{
+			map[string]any{"id": 81, "path": "a.go", "line": 1, "commit_id": "old123", "body": "resolved prior finding",
+				"resolver": map[string]any{"id": 3, "login": "tibrez"}},
+			map[string]any{"id": 82, "path": "b.go", "line": 2, "commit_id": "old123", "body": "open prior finding"},
+		})
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(out)
+	})
+	mux.HandleFunc("/repos/git.rezus.cloud/tibrez/rhesadox/issues/99/comments", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		mu.Lock()
+		verdictBodies = append(verdictBodies, fmt.Sprint(body["body"]))
+		mu.Unlock()
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": 3})
+	})
+	mux.HandleFunc("/repos/git.rezus.cloud/tibrez/rhesadox/issues/99/labels/needs-review", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	out := runForgejo(t, srv, map[string]any{
+		"decision":     "APPROVE",
+		"reviewed_sha": "deadbeef123",
+		"comments":     []any{},
+	})
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(verdictBodies) == 0 {
+		t.Fatal("the downgrade verdict comment must post")
+	}
+	vb := verdictBodies[len(verdictBodies)-1]
+	if !strings.Contains(vb, "downgraded:") {
+		t.Fatalf("the UNresolved thread must still downgrade the APPROVE, got %q", vb)
+	}
+	if !strings.Contains(vb, "1 unresolved prior-round thread") {
+		t.Fatalf("exactly the resolver-less thread counts open (the resolver-carrying one is closed by native state); got %q", vb)
+	}
+	if strings.Contains(vb, "2 unresolved") {
+		t.Fatalf("the resolver-carrying thread must be CLOSED (fork-native resolve is authoritative); got %q", vb)
+	}
+	_ = out
+}

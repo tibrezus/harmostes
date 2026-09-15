@@ -43,6 +43,7 @@ test("default chain composition covers every live primary (#363, #401 r2)", () =
   assert.deepEqual(DEFAULT_FALLBACKS, {
     "mtplx/qwen38-27b-optimized-speed-fp16": ["ali/anthropic/qwen3.8-flash"],
     "ali/anthropic/qwen3.8-flash": ["zai/anthropic/glm-5.3-flash"],
+    "ali/anthropic/deepseek-v4.1-flash": ["zai/anthropic/glm-5.3-flash"],
     "zai/anthropic/glm-5.3-flash": ["ali/anthropic/qwen3.8-flash"],
   });
   // And ALL THREE wire over a proxy exposing exactly the three known
@@ -74,7 +75,9 @@ test("default chain composition covers every live primary (#363, #401 r2)", () =
     "mtplx/qwen38-27b-optimized-speed-fp16 → ali/anthropic/qwen3.8-flash",
     "zai/anthropic/glm-5.3-flash → ali/anthropic/qwen3.8-flash",
   ]);
-  assert.deepEqual(unwiredChains, []); // every default key is a served primary
+  // deepseek-v4.1-flash is in the table but NOT in this proxy map — inert
+  // by design (unwired) until the proxy serves it (owner directive).
+  assert.deepEqual(unwiredChains, ["ali/anthropic/deepseek-v4.1-flash"]);
 });
 
 // The documented off-switch, pinned (#401 review r2: it had no test at any
@@ -100,7 +103,11 @@ test("applyChains: a subset proxy reports exactly the unserved key", () => {
   ]);
   const twoModels = [...two.entries()].map(([id, m]) => ({ id, ...m }));
   const { wired, unwiredChains } = applyChains(twoModels, DEFAULT_FALLBACKS, two);
-  assert.deepEqual(unwiredChains, ["mtplx/qwen38-27b-optimized-speed-fp16"]);
+  // insertion order of the default table: speed first, deepseek third
+  assert.deepEqual(unwiredChains, [
+    "mtplx/qwen38-27b-optimized-speed-fp16",
+    "ali/anthropic/deepseek-v4.1-flash",
+  ]);
   assert.deepEqual(wired.sort(), [
     "ali/anthropic/qwen3.8-flash → zai/anthropic/glm-5.3-flash",
     "zai/anthropic/glm-5.3-flash → ali/anthropic/qwen3.8-flash",
@@ -267,6 +274,18 @@ test("resolveFallbackChains: the default does not leak by reference", () => {
   assert.deepEqual(after, {
     "mtplx/qwen38-27b-optimized-speed-fp16": ["ali/anthropic/qwen3.8-flash"],
     "ali/anthropic/qwen3.8-flash": ["zai/anthropic/glm-5.3-flash"],
+    "ali/anthropic/deepseek-v4.1-flash": ["zai/anthropic/glm-5.3-flash"],
     "zai/anthropic/glm-5.3-flash": ["ali/anthropic/qwen3.8-flash"],
   });
+});
+
+test("the night-window primary (owner directive) carries the glm-5.3-flash second option", () => {
+	// deepseek-v4.1-flash 16:00-02:00 CET is the night first option; its
+	// chain must name glm-5.3-flash (the all-hours second option). The
+	// chain is inert until the proxy catalog lists the id — this assert
+	// keeps the INTENT in the table so the admin-side model addition
+	// activates it without a code change.
+	assert.deepEqual(DEFAULT_FALLBACKS["ali/anthropic/deepseek-v4.1-flash"], [
+		"zai/anthropic/glm-5.3-flash",
+	]);
 });

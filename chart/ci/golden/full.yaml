@@ -98,6 +98,7 @@ data:
       assert.deepEqual(DEFAULT_FALLBACKS, {
         "mtplx/qwen38-27b-optimized-speed-fp16": ["ali/anthropic/qwen3.8-flash"],
         "ali/anthropic/qwen3.8-flash": ["zai/anthropic/glm-5.3-flash"],
+        "ali/anthropic/deepseek-v4.1-flash": ["zai/anthropic/glm-5.3-flash"],
         "zai/anthropic/glm-5.3-flash": ["ali/anthropic/qwen3.8-flash"],
       });
       // And ALL THREE wire over a proxy exposing exactly the three known
@@ -129,7 +130,9 @@ data:
         "mtplx/qwen38-27b-optimized-speed-fp16 → ali/anthropic/qwen3.8-flash",
         "zai/anthropic/glm-5.3-flash → ali/anthropic/qwen3.8-flash",
       ]);
-      assert.deepEqual(unwiredChains, []); // every default key is a served primary
+      // deepseek-v4.1-flash is in the table but NOT in this proxy map — inert
+      // by design (unwired) until the proxy serves it (owner directive).
+      assert.deepEqual(unwiredChains, ["ali/anthropic/deepseek-v4.1-flash"]);
     });
     
     // The documented off-switch, pinned (#401 review r2: it had no test at any
@@ -155,7 +158,11 @@ data:
       ]);
       const twoModels = [...two.entries()].map(([id, m]) => ({ id, ...m }));
       const { wired, unwiredChains } = applyChains(twoModels, DEFAULT_FALLBACKS, two);
-      assert.deepEqual(unwiredChains, ["mtplx/qwen38-27b-optimized-speed-fp16"]);
+      // insertion order of the default table: speed first, deepseek third
+      assert.deepEqual(unwiredChains, [
+        "mtplx/qwen38-27b-optimized-speed-fp16",
+        "ali/anthropic/deepseek-v4.1-flash",
+      ]);
       assert.deepEqual(wired.sort(), [
         "ali/anthropic/qwen3.8-flash → zai/anthropic/glm-5.3-flash",
         "zai/anthropic/glm-5.3-flash → ali/anthropic/qwen3.8-flash",
@@ -322,8 +329,20 @@ data:
       assert.deepEqual(after, {
         "mtplx/qwen38-27b-optimized-speed-fp16": ["ali/anthropic/qwen3.8-flash"],
         "ali/anthropic/qwen3.8-flash": ["zai/anthropic/glm-5.3-flash"],
+        "ali/anthropic/deepseek-v4.1-flash": ["zai/anthropic/glm-5.3-flash"],
         "zai/anthropic/glm-5.3-flash": ["ali/anthropic/qwen3.8-flash"],
       });
+    });
+    
+    test("the night-window primary (owner directive) carries the glm-5.3-flash second option", () => {
+    	// deepseek-v4.1-flash 16:00-02:00 CET is the night first option; its
+    	// chain must name glm-5.3-flash (the all-hours second option). The
+    	// chain is inert until the proxy catalog lists the id — this assert
+    	// keeps the INTENT in the table so the admin-side model addition
+    	// activates it without a code change.
+    	assert.deepEqual(DEFAULT_FALLBACKS["ali/anthropic/deepseek-v4.1-flash"], [
+    		"zai/anthropic/glm-5.3-flash",
+    	]);
     });
     
   fallbacks.ts: |
@@ -355,6 +374,12 @@ data:
     export const DEFAULT_FALLBACKS: Record<string, string[]> = {
       "mtplx/qwen38-27b-optimized-speed-fp16": ["ali/anthropic/qwen3.8-flash"],
       "ali/anthropic/qwen3.8-flash": ["zai/anthropic/glm-5.3-flash"],
+      // Night-window primary (owner directive): deepseek-v4.1-flash 16:00-02:00
+      // CET with glm-5.3-flash as the all-hours second option. The chain is
+      // INERT until the proxy catalog lists the id (unwiredChains below) — the
+      // LiteLLM admin must add the model and grant the fleet key access
+      // (probe evidence, #507: absent from /v1/models, key not allowed).
+      "ali/anthropic/deepseek-v4.1-flash": ["zai/anthropic/glm-5.3-flash"],
       // glm is a live primary too — the --model default of cmd/harmostes-agent
       // and harmostes.py (#401 review r2): without an entry a glm-primary run
       // attaches no failover at all. flash is LARGER in both dimensions, so
@@ -5091,7 +5116,7 @@ spec:
         # the fork-maintenance.yaml template output (scripts/checks/defs/
         # hooks/skill CMs) and the litellm extension payload.
         checksum/fork-maintenance: 082d8c5472ee15b9beacfd112a46beff3f5121af68d95f1af2eadb6fd64372f4
-        checksum/litellm-extension: b48e7a02c4d911c0def232e6c0cf41528c4cac8cec9bc6e19c65627688f48be1
+        checksum/litellm-extension: 97073fa9069e781a359c9b419ba4eea8a29dd8ed3805c32e658737f04d41416e
     spec:
       imagePullSecrets:
         - name: ghcr-pull
@@ -5824,7 +5849,7 @@ spec:
     model: litellm/ali/anthropic/qwen3.8-flash
     models:
     - end: "02:00"
-      model: litellm/ali/anthropic/deepseek-v4-flash-0731
+      model: litellm/ali/anthropic/deepseek-v4.1-flash
       start: "16:00"
       tz: Europe/Paris
     skill: /skills/pr-review/SKILL.md

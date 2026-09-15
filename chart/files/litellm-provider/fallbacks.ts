@@ -26,6 +26,12 @@
 export const DEFAULT_FALLBACKS: Record<string, string[]> = {
   "mtplx/qwen38-27b-optimized-speed-fp16": ["ali/anthropic/qwen3.8-flash"],
   "ali/anthropic/qwen3.8-flash": ["zai/anthropic/glm-5.3-flash"],
+  // Night-window primary (owner directive): deepseek-v4.1-flash 16:00-02:00
+  // CET with glm-5.3-flash as the all-hours second option. The chain is
+  // INERT until the proxy catalog lists the id (unwiredChains below) — the
+  // LiteLLM admin must add the model and grant the fleet key access
+  // (probe evidence, #507: absent from /v1/models, key not allowed).
+  "ali/anthropic/deepseek-v4.1-flash": ["zai/anthropic/glm-5.3-flash"],
   // glm is a live primary too — the --model default of cmd/harmostes-agent
   // and harmostes.py (#401 review r2): without an entry a glm-primary run
   // attaches no failover at all. flash is LARGER in both dimensions, so

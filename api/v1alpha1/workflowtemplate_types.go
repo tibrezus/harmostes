@@ -76,6 +76,14 @@ type WorkflowTemplateSpec struct {
 	// template is the natural home — a fleet's review workflows share one
 	// claim, and instances inherit it whole-struct like ReviewReady.
 	Cache *CacheSpec `json:"cache,omitempty"`
+
+	// Sessions declares the persistent pi-session lineage claim the
+	// per-Attempt Job mounts (ADR-0010 follow-up): per-PR compacted
+	// context (and SoL-Pi data) survives across attempt Jobs until TTL.
+	// Mounting is a deployment fact (the RWX claim must exist) — the
+	// template references it, the environment renders it; instances
+	// inherit whole-struct like Cache.
+	Sessions *SessionsSpec `json:"sessions,omitempty"`
 }
 
 // ScopeParam is one instance-level configuration parameter.

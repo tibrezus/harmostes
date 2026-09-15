@@ -86,6 +86,13 @@ func ApplyTemplateDefaults(wf *Workflow, tmpl *WorkflowTemplate) {
 		s.Cache = t.Cache
 	}
 
+	// Sessions: same whole-struct inherit — the lineage claim (and its
+	// TTL) is one storage decision, declared on the template, not a
+	// per-instance knob.
+	if s.Sessions == nil {
+		s.Sessions = t.Sessions
+	}
+
 	// Instance scope wins PER KEY: spec.config overlays prepare.config —
 	// instance-set fields win, template fields survive. (The wholesale
 	// replace shipped earlier contradicted the overlay contract: any

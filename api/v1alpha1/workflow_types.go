@@ -115,6 +115,7 @@ type WorkflowSpec struct {
 	Bindings      []ExternalSystemBinding `json:"bindings,omitempty"`    // ADR-0003: external system authority boundary (static; runtime may not expand)
 	Events        *EventsSpec             `json:"events,omitempty"`
 	Cache         *CacheSpec              `json:"cache,omitempty"`
+	Sessions      *SessionsSpec           `json:"sessions,omitempty"`
 	Scaling       *ScalingSpec            `json:"scaling,omitempty"`
 	Disabled      bool                    `json:"disabled,omitempty"`
 }
@@ -297,6 +298,21 @@ type CacheSpec struct {
 	Git bool   `json:"git,omitempty"`
 	Go  bool   `json:"go,omitempty"`
 	NPM bool   `json:"npm,omitempty"`
+}
+
+// SessionsSpec declares the persistent pi-session lineage store the
+// per-Attempt Job mounts (ADR-0010 follow-up): one RWX PVC at /sessions,
+// SubPath-isolated per workflow — per-PR session lineages (the compacted
+// context, and the SoL-Pi data inside the session dir) survive across
+// attempt Jobs until they age out of TTL. Mounting is a DEPLOYMENT fact
+// (needs an RWX storage class): templates reference a claim name, the
+// deploying environment renders the claim and opts its templates in.
+type SessionsSpec struct {
+	PVC string `json:"pvc,omitempty"`
+	// TTL prunes lineage dirs idle longer than the duration (Go format,
+	// default 336h = 14 days — covers a PR's review lifetime; closed and
+	// merged PRs' lineages expire by age, the janitor runs in-attempt).
+	TTL string `json:"ttl,omitempty"`
 }
 
 // ScalingSpec selects the trigger model.

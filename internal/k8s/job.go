@@ -100,6 +100,10 @@ type AttemptJobParams struct {
 	// /cache (SubPath per workflow — isolation on one RWX claim) and the
 	// flag-gated tool env. Nil or PVC-less = no cache, byte-identical Job.
 	Cache *v1alpha1.CacheSpec
+	// Sessions mounts the persistent pi-session lineage claim (ADR-0010
+	// follow-up): an RWX PVC at /sessions, SubPath per workflow. Nil or
+	// PVC-less = ephemeral /tmp sessions, byte-identical Job.
+	Sessions *v1alpha1.SessionsSpec
 }
 
 // ConfigMapMount is one additional ConfigMap volume: name (the ConfigMap and
@@ -202,6 +206,26 @@ func BuildJob(p AttemptJobParams) *batchv1.Job {
 			// mount, harmless when idle.
 			env = append(env, corev1.EnvVar{Name: "XDG_CACHE_HOME", Value: "/cache/xdg"})
 		}
+	}
+	// Persistent session lineages (ADR-0010): one RWX PVC, SubPath per
+	// workflow — the per-PR lineage dirs (<repo>-<hash>~<pr>, and the
+	// SoL-Pi data inside them) survive across per-Attempt Jobs, so a
+	// re-armed PR resumes its compacted context instead of starting
+	// cold. Project isolation is physical (SubPath), like the cache
+	// claim. The TTL env arms the in-attempt janitor; the default keeps
+	// every claim mount self-pruning even when the spec omits it.
+	if p.Sessions != nil && p.Sessions.PVC != "" {
+		volumes = append(volumes, corev1.Volume{
+			Name:         "sessions",
+			VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: p.Sessions.PVC}},
+		})
+		mounts = append(mounts, corev1.VolumeMount{Name: "sessions", SubPath: p.WorkflowName, MountPath: "/sessions"})
+		env = append(env, corev1.EnvVar{Name: "HARMOSTES_PI_SESSIONS", Value: "/sessions"})
+		ttl := p.Sessions.TTL
+		if ttl == "" {
+			ttl = "336h"
+		}
+		env = append(env, corev1.EnvVar{Name: "HARMOSTES_SESSIONS_TTL", Value: ttl})
 	}
 	for _, m := range p.ExtraConfigMapMounts {
 		mode := int32(0o755)

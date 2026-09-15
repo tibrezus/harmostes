@@ -250,3 +250,24 @@ func TestApplyTemplateDefaults_InstanceConfigNilKeepsTemplateConfig(t *testing.T
 		t.Errorf("prepare.config = %s, want the template's untouched config", wf.Spec.Prepare.Config)
 	}
 }
+
+// ADR-0010 follow-up: the lineage claim inherits whole-struct like
+// Cache — it is one storage decision (claim + TTL), not per-instance
+// knobs; an instance that declares its own wins.
+func TestApplyTemplateDefaultsSessionsInherit(t *testing.T) {
+	tmpl := &WorkflowTemplate{}
+	tmpl.Spec.Sessions = &SessionsSpec{PVC: "harmostes-worker-sessions", TTL: "336h"}
+
+	wf := &Workflow{} // instance sets nothing → inherits whole
+	ApplyTemplateDefaults(wf, tmpl)
+	if wf.Spec.Sessions == nil || wf.Spec.Sessions.PVC != "harmostes-worker-sessions" || wf.Spec.Sessions.TTL != "336h" {
+		t.Fatalf("sessions must inherit whole-struct from template, got %+v", wf.Spec.Sessions)
+	}
+
+	own := &Workflow{}
+	own.Spec.Sessions = &SessionsSpec{PVC: "other-claim"} // instance wins
+	ApplyTemplateDefaults(own, tmpl)
+	if own.Spec.Sessions.PVC != "other-claim" {
+		t.Fatalf("instance sessions must win, got %+v", own.Spec.Sessions)
+	}
+}

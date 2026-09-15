@@ -82,6 +82,14 @@ worker:
     enabled: false
     size: 20Gi
     storageClass: ""       # "" = cluster default
+  # Persistent pi-session lineages (ADR-0010): when enabled, renders the
+  # harmostes-worker-sessions RWX claim; templates opt in per workflow
+  # (workflowTemplates.<name>.sessions.pvc). Deployment-specific — needs
+  # an RWX-capable storage class (e.g. a distributed FS).
+  sessions:
+    enabled: false
+    size: 10Gi
+    storageClass: ""
 
 # workerPool: event-driven worker pool (Dapr pub/sub consumer).
 # A long-running Deployment subscribes to the harmostes-triggers topic via

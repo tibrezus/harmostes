@@ -158,6 +158,16 @@ spec:
                     go:  { type: boolean }
                     npm: { type: boolean }
 
+                # persistent pi-session lineages (ADR-0010): RWX PVC at /sessions,
+                # SubPath per workflow — per-PR sessions (and the SoL-Pi data
+                # inside them) survive across attempt Jobs; TTL prunes idle
+                # lineages (Go duration string, default 336h)
+                sessions:
+                  type: object
+                  properties:
+                    pvc: { type: string }
+                    ttl: { type: string }
+
             status:
               type: object
               x-kubernetes-preserve-unknown-fields: true

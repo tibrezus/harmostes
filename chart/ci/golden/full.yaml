@@ -5360,7 +5360,15 @@ spec:
         - name: sync-skills
           image: "ghcr.io/tibrezus/harmostes-worker:0.4.2"
           imagePullPolicy: Always
-          command: ["sh", "-c", "git clone --depth 1 https://github.com/tibrezus/agents.git /tmp/agents && mkdir -p /skills && cp -r /tmp/agents/skills/. /skills/ && { echo \"[sync-skills] served skills revision: $(git -C /tmp/agents rev-parse HEAD)\"; (find /skills -name 'SKILL.md' | sort | xargs -r sha256sum > /skills/.manifest) || echo \"[sync-skills] manifest write failed (non-fatal)\"; true; }"]
+          # #407: the repo URL travels as env data and the script references it
+          # quoted as "$HARMOSTES_SKILLS_REPO" — POSIX shells never re-parse
+          # expansion results as operators, so a crafted values.skills.repo
+          # cannot execute shell in the pod. Byte-identical literal to
+          # internal/k8s.skillsSyncCommand (Go side, per-Attempt Jobs).
+          command: ["sh", "-c", "git clone --depth 1 \"$HARMOSTES_SKILLS_REPO\" /tmp/agents && mkdir -p /skills && cp -r /tmp/agents/skills/. /skills/ && { echo \"[sync-skills] served skills revision: $(git -C /tmp/agents rev-parse HEAD)\"; (find /skills -name 'SKILL.md' | sort | xargs -r sha256sum > /skills/.manifest) || echo \"[sync-skills] manifest write failed (non-fatal)\"; true; }"]
+          env:
+            - name: HARMOSTES_SKILLS_REPO
+              value: "https://github.com/tibrezus/agents.git"
           volumeMounts:
             - name: skills
               mountPath: /skills

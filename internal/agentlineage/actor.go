@@ -20,47 +20,30 @@
 package agentlineage
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 
-	"github.com/tibrezus/harmostes/internal/agent"
 	"github.com/tibrezus/harmostes/internal/dapr"
+	"github.com/tibrezus/harmostes/internal/sessionstore"
 )
 
 // ActorType is the registered entity name.
 const ActorType = "PRLineage"
 
-// Session is the actor's persisted state: the pi session JSONL (the whole
-// conversation, resumable), the head it was last published against, and a
-// monotonic publish counter (the ordered-growth signal — it must only
-// ever increase; a regression means state was lost or two writers raced).
-type Session struct {
-	Session    string `json:"session"`
-	LastHead   string `json:"lastHead"`
-	Generation int    `json:"generation"`
-	// File is the pi-side FILENAME of the live conversation (pi renames
-	// sessions to "<ts>_<id>.jsonl" after the first turn); fetch must
-	// materialize under the SAME name or pi cannot adopt it (r21 P4.1).
-	File string `json:"file,omitempty"`
-}
+// Session is the actor's persisted state — the shared sessionstore.Lineage
+// (pi session JSONL, last head, monotonic generation, pi-side filename).
+// The type moved to internal/sessionstore with the rest of the lineage
+// contract (#516); the actor remains its Dapr ADAPTER (HTTP server +
+// sidecar state endpoints).
+type Session = sessionstore.Lineage
 
-// ActorID builds the entity id "<sanitized-repo>~<pr>". The PR half is
-// digits-only (agent.SanitizePR) — path syntax can never enter an id.
-func ActorID(repo, pr string) (string, error) {
-	if !agent.SanitizePR(pr) {
-		return "", agent.ErrNotAPR
-	}
-	// The repo hash mirrors agent.LineageDir: sanitizer colliders
-	// (host/a_b/c vs host/a/b-c) must NOT share one durable entity —
-	// r24 P4.2 found the actor key dropping what the dir key kept.
-	sum := sha256.Sum256([]byte(repo))
-	return fmt.Sprintf("%s-%s~%s", agent.SanitizeRepo(repo), hex.EncodeToString(sum[:4]), pr), nil
-}
+// ActorID builds the entity id "<sanitized-repo>~<pr>".
+//
+// Moved to sessionstore.ActorID with the identity scheme (#516).
+func ActorID(repo, pr string) (string, error) { return sessionstore.ActorID(repo, pr) }
 
 // Host serves the Dapr actor contract on the pool's app port.
 type Host struct {
@@ -106,10 +89,7 @@ func (h *Host) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	http.NotFound(w, r)
 }
 
-func validID(id string) bool {
-	i := strings.LastIndex(id, "~")
-	return i > 0 && agent.SanitizePR(id[i+1:])
-}
+func validID(id string) bool { return sessionstore.ValidID(id) }
 
 func (h *Host) invoke(w http.ResponseWriter, r *http.Request, id, method string) {
 	ctx := r.Context()

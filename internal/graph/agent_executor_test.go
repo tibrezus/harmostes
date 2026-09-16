@@ -215,7 +215,7 @@ func (f *capturingAgentRunner) Run(_ context.Context, task string, _ agent.Gate,
 // TestAgentExecutorResumeNoteAppended (ADR-0010): a resumed lineage's run
 // carries the delta note — do-not-redo + the new head.
 func TestAgentExecutorResumeNoteAppended(t *testing.T) {
-	t.Setenv("HARMOSTES_SESSION_RESUME", "1")
+	t.Setenv("HARMOSTES_SESSION_NOTE", "Session note: this is a RESUMED session. Verify only what changed (new head: deadbeef123).")
 	t.Setenv("HARMOSTES_TRIGGER_SHA", "deadbeef123")
 	runner := &capturingAgentRunner{}
 	exec := NewAgentExecutor(runner, nil, nil, nil, "")
@@ -229,7 +229,7 @@ func TestAgentExecutorResumeNoteAppended(t *testing.T) {
 }
 
 func TestAgentExecutorFreshRunHasNoResumeNote(t *testing.T) {
-	t.Setenv("HARMOSTES_SESSION_RESUME", "")
+	t.Setenv("HARMOSTES_SESSION_NOTE", "")
 	runner := &capturingAgentRunner{}
 	exec := NewAgentExecutor(runner, nil, nil, nil, "")
 	node := v1alpha1.NodeSpec{ID: "a", Type: "agent", Config: mustJSON(t, AgentNodeConfig{Task: "review it"})}

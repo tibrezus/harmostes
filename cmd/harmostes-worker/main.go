@@ -49,6 +49,7 @@ import (
 	"github.com/tibrezus/harmostes/internal/k8s"
 	"github.com/tibrezus/harmostes/internal/observability"
 	"github.com/tibrezus/harmostes/internal/piargs"
+	"github.com/tibrezus/harmostes/internal/sessionstore"
 	"github.com/tibrezus/harmostes/internal/timeline"
 	"github.com/tibrezus/harmostes/internal/worker"
 	"github.com/tibrezus/harmostes/version"
@@ -446,31 +447,36 @@ func runOneShot() {
 			// ACTOR owns the lineage (isolated + durable + turn-based);
 			// fetch it and materialize as the local session file, so the
 			// stable id RESUMES the real conversation (KV-cache economics).
-			if raw, err := deps.Dapr.InvokeActor(ctx, agentlineage.ActorType, aid, "fetch", nil); err == nil {
-				var sess agentlineage.Session
-				if json.Unmarshal(raw, &sess) == nil && sess.Session != "" {
-					// Materialize under the pi-ADOPTABLE name: the stored
-					// filename if the actor has one, else a fresh timestamped
-					// name pi's --session-id resolution can decode.
-					// VALIDATED (r24 P4.1): File is client-settable state; a
-					// traversal string must never become a write path. Only a
-					// basename ending in "_"+id+".jsonl" is honored.
-					name := filepath.Base(sess.File)
-					if !strings.HasSuffix(name, "_"+id+".jsonl") {
-						name = filepath.Base(agent.LineageSessionPath(dir, id))
-					}
-					if err := os.WriteFile(filepath.Join(dir, name), []byte(sess.Session), 0o600); err != nil {
-						logf("session lineage materialize failed: %v", err)
-					} else {
-						resume = true
-						logf("session lineage: actor gen=%d lastHead=%s file=%s", sess.Generation, sess.LastHead, name)
-					}
+			store := sessionstore.Store{Actors: deps.Dapr}
+			sess, ferr := store.Fetch(ctx, triggerRepo(), triggerPR())
+			if ferr != nil {
+				logf("session lineage fetch failed (fresh if absent): %v", ferr)
+			} else if sess.Session != "" {
+				// Materialize under the pi-ADOPTABLE name (the stored
+				// filename if the actor has one). VALIDATED (r24 P4.1):
+				// File is client-settable state; only a basename ending in
+				// "_"+id+".jsonl" is honored — traversal strings are not
+				// write paths.
+				name, resumed, merr := sessionstore.Materialize(dir, id, sess)
+				if merr != nil {
+					logf("session lineage materialize failed: %v", merr)
+				} else {
+					resume = resumed
+					logf("session lineage: actor gen=%d lastHead=%s file=%s", sess.Generation, sess.LastHead, name)
 				}
-			} else {
-				logf("session lineage fetch failed (fresh if absent): %v", err)
 			}
 			if resume {
 				_ = os.Setenv("HARMOSTES_SESSION_RESUME", "1")
+				// C4: the note TEXT is composed here — the process that owns
+				// the lineage fact and the new head — and carried to the
+				// executor as data. The kernel-side executor renders
+				// envelope-provided notes verbatim; it holds no
+				// pr-review vocabulary of its own.
+				note := "Session note: this is a RESUMED session. Your prior orientation, findings, and verdict reasoning are already in the transcript above — do not redo that work. Verify only what changed since your last turn"
+				if sha := envOr("HARMOSTES_TRIGGER_SHA", ""); sha != "" {
+					note += " (new head: " + sha + ")"
+				}
+				_ = os.Setenv("HARMOSTES_SESSION_NOTE", note+".")
 			}
 			logf("session lineage: resume=%v id=%s", resume, id)
 		}
@@ -541,11 +547,11 @@ func runOneShot() {
 						// from the run summary alone, not only from a log grep.
 						logf("WARN: session lineage publish REFUSED: %s is %d bytes (cap %d) — fresh next round", filepath.Base(file), len(raw), maxLineageBytes)
 					} else {
-						payload, _ := json.Marshal(agentlineage.Session{Session: worker.Redact(string(raw)), LastHead: envOr("HARMOSTES_TRIGGER_SHA", ""), File: filepath.Base(file)})
-						if out, err := deps.Dapr.InvokeActor(fctx, agentlineage.ActorType, actorID, "publish", payload); err != nil {
-							logf("session lineage publish failed: %v", err)
+						pub := sessionstore.Lineage{Session: worker.Redact(string(raw)), LastHead: envOr("HARMOSTES_TRIGGER_SHA", ""), File: filepath.Base(file)}
+						if perr := (sessionstore.Store{Actors: deps.Dapr}).Publish(fctx, triggerRepo(), triggerPR(), pub); err != nil {
+							logf("session lineage publish failed: %v", perr)
 						} else {
-							logf("session lineage published %s redacted (%d bytes) %s", filepath.Base(file), len(raw), strings.TrimSpace(string(out)))
+							logf("session lineage published %s redacted (%d bytes)", filepath.Base(file), len(raw))
 						}
 					}
 				} else {
@@ -901,6 +907,18 @@ func wakeFromEnv() worker.GateWake {
 // pipelines keep the per-run session dirs (#243): they have no
 // conversation worth resuming. Non-PR or malformed pointer → empty dir/id
 // (the caller falls back to per-run persistence).
+// triggerRepo/triggerPR: the wake's PR identity, split. Empty when the
+// run is not PR-shaped.
+func triggerRepo() string {
+	repo, _, _ := strings.Cut(wakeFromEnv().PR, "#")
+	return repo
+}
+
+func triggerPR() string {
+	_, num, _ := strings.Cut(wakeFromEnv().PR, "#")
+	return num
+}
+
 func sessionLineageForRun(root string) (dir, id, key string, resume bool, err error) {
 	pr := wakeFromEnv().PR
 	repo, num, ok := strings.Cut(pr, "#")

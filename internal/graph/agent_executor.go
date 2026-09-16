@@ -86,15 +86,11 @@ func (e *AgentExecutor) Execute(ctx context.Context, node v1alpha1.NodeSpec, env
 		task = task + "\n\n" + cfg.Scope
 	}
 
-	// ADR-0010: a resumed lineage gets a delta note — the transcript above
-	// already holds this PR's orientation, findings, and reasoning; the
-	// agent must not redo that work, only verify what changed.
-	if os.Getenv("HARMOSTES_SESSION_RESUME") == "1" {
-		note := "Session note: this is a RESUMED session. Your prior orientation, findings, and verdict reasoning are already in the transcript above — do not redo that work. Verify only what changed since your last turn"
-		if sha := os.Getenv("HARMOSTES_TRIGGER_SHA"); sha != "" {
-			note += " (new head: " + sha + ")"
-		}
-		note += "."
+	// Resume context arrives as DATA (HARMOSTES_SESSION_NOTE, composed by
+	// the dispatch path that owns the lineage fact — C4). The kernel-side
+	// executor carries no pr-review vocabulary of its own: it renders
+	// envelope-provided notes verbatim, like cfg.Scope above.
+	if note := os.Getenv("HARMOSTES_SESSION_NOTE"); note != "" {
 		task = task + "\n\n" + note
 	}
 

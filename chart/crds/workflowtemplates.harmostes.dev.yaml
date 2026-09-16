@@ -168,6 +168,22 @@ spec:
                     pvc: { type: string }
                     ttl: { type: string }
 
+                # scoped shared storage components (#516 C2): sandboxes stay
+                # isolated per attempt; named stores are shared on demand at
+                # the declared scope (workflow | repository | attempt).
+                # Backed by an RWX claim; SubPath derives from the scope.
+                attachments:
+                  type: array
+                  items:
+                    type: object
+                    required: [name]
+                    properties:
+                      name: { type: string }
+                      scope: { type: string, enum: [workflow, repository, attempt] }
+                      pvc: { type: string }
+                      mountPath: { type: string }
+
+
             status:
               type: object
               x-kubernetes-preserve-unknown-fields: true

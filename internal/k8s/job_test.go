@@ -479,7 +479,7 @@ func TestBuildJobAttachments(t *testing.T) {
 	claims := map[string]string{}
 	for _, v := range job.Spec.Template.Spec.Volumes {
 		if strings.HasPrefix(v.Name, "attach-") {
-			claims[v.Name] = v.VolumeSource.PersistentVolumeClaim.ClaimName
+			claims[v.Name] = v.PersistentVolumeClaim.ClaimName
 		}
 	}
 	if claims["attach-sol-pi"] != "harmostes-worker-sessions" || claims["attach-scratch"] != "harmostes-worker-sessions" {

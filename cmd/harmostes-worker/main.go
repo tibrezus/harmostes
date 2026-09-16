@@ -541,7 +541,7 @@ func runOneShot() {
 				// the bare read ENOENT'd every round, publishing nothing).
 				// Redact BEFORE it enters durable state (#115 class, r22 P5);
 				// bound it like SavePiSession (OOM vector, r22 P5).
-				if file, raw, err := agent.FindLineageSession(lineageDir, sessionID); err == nil {
+				if file, raw, err := sessionstore.FindLineageSession(lineageDir, sessionID); err == nil {
 					if len(raw) > maxLineageBytes {
 						// WARN-visible (r26 P4): continuity loss must be attributable
 						// from the run summary alone, not only from a log grep.
@@ -925,7 +925,7 @@ func sessionLineageForRun(root string) (dir, id, key string, resume bool, err er
 	if pr == "" || !ok || repo == "" || num == "" {
 		return "", "", "", false, nil
 	}
-	dir, id, resume, err = agent.ResolveSession(root, repo, num)
+	dir, id, resume, err = sessionstore.ResolveSession(root, repo, num)
 	if err != nil {
 		return "", "", "", false, err
 	}

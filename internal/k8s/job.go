@@ -42,14 +42,21 @@ func SkillsRepo() string {
 	return DefaultSkillsRepo
 }
 
-// skillsSyncCommand mirrors the chart's sync-skills init container byte for
-// byte in spirit: clone the agents repo fresh, copy skills/, write the
-// sha256 manifest the pool's startup check consumes. Every attempt therefore
+// skillsSyncCommand mirrors the chart's sync-skills init container byte
+// for byte: clone the agents repo fresh, copy skills/, write the sha256
+// manifest the pool's startup check consumes. Every attempt therefore
 // serves agents main AS OF THE ATTEMPT — the owner directive "every update
 // should be available in the runtime" at the granularity agents actually
 // move (between pool pod restarts).
-func skillsSyncCommand(repo string) []string {
-	return []string{"sh", "-c", fmt.Sprintf("git clone --depth 1 %s /tmp/agents && mkdir -p /skills && cp -r /tmp/agents/skills/. /skills/ && { echo \"[sync-skills] served skills revision: $(git -C /tmp/agents rev-parse HEAD)\"; (find /skills -name 'SKILL.md' | sort | xargs -r sha256sum > /skills/.manifest) || echo \"[sync-skills] manifest write failed (non-fatal)\"; true; }", repo)}
+//
+// #407: the repo URL is deliberately NOT interpolated here. It travels as
+// HARMOSTES_SKILLS_REPO env data (set by the chart / SkillsRepo()), and the
+// script references it quoted as "$HARMOSTES_SKILLS_REPO": POSIX shells
+// never re-parse expansion results as operators, so a crafted skills.repo
+// value cannot execute shell in the pod. The chart template carries the
+// identical literal — keep them in sync.
+func skillsSyncCommand() []string {
+	return []string{"sh", "-c", `git clone --depth 1 "$HARMOSTES_SKILLS_REPO" /tmp/agents && mkdir -p /skills && cp -r /tmp/agents/skills/. /skills/ && { echo "[sync-skills] served skills revision: $(git -C /tmp/agents rev-parse HEAD)"; (find /skills -name 'SKILL.md' | sort | xargs -r sha256sum > /skills/.manifest) || echo "[sync-skills] manifest write failed (non-fatal)"; true; }`}
 }
 
 // AttemptJobParams parameterize BuildJob — the per-Attempt Job pod shape
@@ -342,9 +349,12 @@ func BuildJob(p AttemptJobParams) *batchv1.Job {
 					ServiceAccountName: p.ServiceAccount,
 					RestartPolicy:      corev1.RestartPolicyNever,
 					InitContainers: []corev1.Container{{
-						Name:         "sync-skills",
-						Image:        p.Image,
-						Command:      skillsSyncCommand(SkillsRepo()),
+						Name:    "sync-skills",
+						Image:   p.Image,
+						Command: skillsSyncCommand(),
+						// #407: the clone source travels as env data, never spliced
+						// into the shell string (see skillsSyncCommand).
+						Env:          []corev1.EnvVar{{Name: "HARMOSTES_SKILLS_REPO", Value: SkillsRepo()}},
 						VolumeMounts: []corev1.VolumeMount{{Name: "skills", MountPath: "/skills"}},
 					}},
 					Containers: []corev1.Container{{

@@ -150,6 +150,57 @@ func TestBuildJobShape(t *testing.T) {
 // restart. Without it the workflow's --skill /skills/... path resolves to
 // nothing inside the attempt and agents run on the task prompt alone (the
 // skill's methodology detail never reached a single production review run).
+func envValue(env []corev1.EnvVar, name string) string {
+	for _, e := range env {
+		if e.Name == name {
+			return e.Value
+		}
+	}
+	return ""
+}
+
+// #407: skills.repo (values → HARMOSTES_SKILLS_REPO env) is operator-
+// controlled data that used to be fmt.Sprintf'd UNQUOTED into the sync-skills
+// `sh -c` string — a crafted value executed arbitrary shell in every
+// per-Attempt Job pod (which carries the fleet's forge credentials). The
+// fix is env indirection: the command is a constant referencing
+// "$HARMOSTES_SKILLS_REPO"; the value travels as env data, which the shell
+// never re-parses as operators. This test pins that property against
+// every injection shape that mattered: command separators, command
+// substitution, backticks, redirection, and newline smuggling.
+func TestSkillsSyncCommandInjectionSafe(t *testing.T) {
+	hostile := []string{
+		"https://example.com/x; rm -rf /",
+		"https://example.com/$(touch /pwned)",
+		"https://example.com/x`touch /pwned2`",
+		"https://example.com/x > /etc/passwd",
+		"https://example.com/x\nrm -rf /",
+	}
+	for _, repo := range hostile {
+		t.Setenv("HARMOSTES_SKILLS_REPO", repo)
+		job := BuildJob(AttemptJobParams{
+			Attempt:      jobTestAttempt(),
+			WorkflowName: "pr-review-harmostes",
+			Namespace:    "harmostes",
+			Image:        "ghcr.io/tibrezus/harmostes-worker:1.2.3",
+		})
+		ic := job.Spec.Template.Spec.InitContainers[0]
+		cmd := strings.Join(ic.Command, " ")
+		for _, payload := range []string{"rm -rf", "touch /pwned", "`touch", "> /etc/passwd"} {
+			if strings.Contains(cmd, payload) {
+				t.Fatalf("hostile repo %q: payload %q reached the command string: %q", repo, payload, cmd)
+			}
+		}
+		if v := envValue(ic.Env, "HARMOSTES_SKILLS_REPO"); v != repo {
+			t.Fatalf("hostile repo must travel verbatim as env data, got env=%q", v)
+		}
+		// The literal contract: one quoted env reference, no %s hole left.
+		if !strings.Contains(cmd, `--depth 1 "$HARMOSTES_SKILLS_REPO" /tmp/agents`) {
+			t.Fatalf("command must reference the env var quoted, got %q", cmd)
+		}
+	}
+}
+
 func TestBuildJobServesFreshSkills(t *testing.T) {
 	job := BuildJob(AttemptJobParams{
 		Attempt:        jobTestAttempt(),
@@ -169,8 +220,18 @@ func TestBuildJobServesFreshSkills(t *testing.T) {
 		t.Fatalf("sync-skills must use the run container's image (same fj/gh tooling), got %q", ic.Image)
 	}
 	cmd := strings.Join(ic.Command, " ")
-	if !strings.Contains(cmd, "git clone --depth 1 "+DefaultSkillsRepo) {
-		t.Fatalf("sync-skills must clone the agents repo (default %s), got %q", DefaultSkillsRepo, cmd)
+	// #407: the repo URL is passed as ENV DATA, never interpolated into
+	// the shell string — the command references it as "$HARMOSTES_SKILLS_REPO".
+	// Env expansion results are not re-parsed as shell operators (POSIX),
+	// so any metacharacters in the value are inert.
+	if !strings.Contains(cmd, `git clone --depth 1 "$HARMOSTES_SKILLS_REPO" /tmp/agents`) {
+		t.Fatalf("sync-skills must clone via the env-indirected repo URL, got %q", cmd)
+	}
+	if envVal := envValue(ic.Env, "HARMOSTES_SKILLS_REPO"); envVal != DefaultSkillsRepo {
+		t.Fatalf("sync-skills must receive the repo (default %s) as HARMOSTES_SKILLS_REPO env, got %q", DefaultSkillsRepo, envVal)
+	}
+	if strings.Contains(cmd, DefaultSkillsRepo) {
+		t.Fatalf("#407: the repo URL must never be spliced into the command string, got %q", cmd)
 	}
 	if !strings.Contains(cmd, "cp -r /tmp/agents/skills/. /skills/") || !strings.Contains(cmd, ".manifest") {
 		t.Fatalf("sync-skills must copy skills/ and write the sha256 manifest, got %q", cmd)
@@ -216,12 +277,17 @@ func TestBuildJobSkillsRepoOverride(t *testing.T) {
 		Attempt: jobTestAttempt(), WorkflowName: "pr-review-harmostes", Namespace: "harmostes",
 		Image: "img", ServiceAccount: "sa",
 	})
-	cmd := strings.Join(job.Spec.Template.Spec.InitContainers[0].Command, " ")
-	if !strings.Contains(cmd, "git clone --depth 1 https://git.rezus.cloud/tibrezus/agents.git") {
-		t.Fatalf("skills repo override must reach the sync-skills clone, got %q", cmd)
+	// #407: the override travels as env data (see skillsSyncCommand) — the
+	// clone reads it at runtime via "$HARMOSTES_SKILLS_REPO".
+	ic := job.Spec.Template.Spec.InitContainers[0]
+	if v := envValue(ic.Env, "HARMOSTES_SKILLS_REPO"); v != "https://git.rezus.cloud/tibrezus/agents.git" {
+		t.Fatalf("skills repo override must reach sync-skills as env data, got %q", v)
 	}
-	if strings.Contains(cmd, "github.com/tibrezus/agents") {
-		t.Fatalf("default repo leaked past the override: %q", cmd)
+	if strings.Contains(strings.Join(ic.Command, " "), "git.rezus.cloud") {
+		t.Fatalf("#407: override must not be spliced into the command string: %q", ic.Command)
+	}
+	if strings.Contains(strings.Join(ic.Command, " "), "github.com/tibrezus/agents") {
+		t.Fatalf("default repo leaked into the command string: %q", ic.Command)
 	}
 }
 

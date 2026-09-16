@@ -417,26 +417,50 @@ func (a *RESTAPI) ContextStates(ctx context.Context, repo, sha string) (map[stri
 		}
 	default: // Forgejo
 		var statuses []struct {
-			Context string `json:"context"`
-			State   string `json:"state"`  // GitHub field name
-			StatusF string `json:"status"` // Forgejo/Gitea field name
+			Context   string `json:"context"`
+			State     string `json:"state"`  // GitHub field name
+			StatusF   string `json:"status"` // Forgejo/Gitea field name
+			CreatedAt string `json:"created_at"`
 		}
 		get(fmt.Sprintf("/repos/%s/commits/%s/statuses", host.RepoPath, sha), "application/json", &statuses)
 		// Forgejo returns NEWEST-FIRST with multiple entries per context
-		// (superseded attempts linger below). FIRST entry wins — last-wins
-		// let a stale pending clobber the fresh success, arming the gate
-		// forever on green heads (observed live on rhesadox #1566). Field
-		// name differs by host: GitHub sends `state`, Forgejo sends
-		// `status` (a missing field parsing as "" classified as failure —
-		// observed live: an all-green head read as red).
+		// (superseded attempts linger below). First-wins per context, with
+		// a SAME-SECOND tie-break: Forgejo can repost a status within the
+		// same second (CI re-run), and the newest-first order between equal
+		// timestamps is unstable — a stale pending can sit ABOVE the fresh
+		// success (observed live on rhesadox #2234: pending@23:00:08 above
+		// success@23:00:08 → first-wins kept the gate armed on a green head
+		// for hours). At equal timestamps the CONCLUSIVE state wins
+		// (success < pending < failure); genuinely newer entries (distinct
+		// timestamps) still win outright, so a real pending or red beats an
+		// older green exactly as before. First-wins over last-wins stays
+		// (last-wins let a stale pending clobber a fresh success — rhesadox
+		// #1566). Field name differs by host: GitHub sends `state`, Forgejo
+		// sends `status` (a missing field parsing as "" classified as
+		// failure — observed live: an all-green head read as red).
+		precedence := map[string]int{"success": 0, "pending": 1}
+		curAt := map[string]string{}
 		for _, s := range statuses {
 			v := s.State
 			if v == "" {
 				v = s.StatusF
 			}
-			if _, ok := states[s.Context]; !ok {
-				states[s.Context] = normalizeStatusState(v)
+			nv := normalizeStatusState(v)
+			cur, ok := states[s.Context]
+			if !ok {
+				states[s.Context] = nv
+				curAt[s.Context] = s.CreatedAt
+				continue
 			}
+			// Same-second rows: the more conclusive state wins; a context
+			// only degrades (success→pending→failure) when the newer entry
+			// is strictly NEWER.
+			if s.CreatedAt == curAt[s.Context] && precedence[nv] < precedence[cur] {
+				states[s.Context] = nv
+			} else if s.CreatedAt > curAt[s.Context] {
+				states[s.Context] = nv
+			}
+			curAt[s.Context] = s.CreatedAt
 		}
 		var checks struct {
 			CheckRuns []struct {

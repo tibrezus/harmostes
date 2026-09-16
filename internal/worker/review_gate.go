@@ -814,7 +814,17 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 					continue
 				}
 				log("review-ready: arm claim %s failed: %v", cand.pointer, err)
+				// A failed arm must not print the success-shaped "armed"
+				// line nor enter newlyArmed (#512): the fall-through used to
+				// read as if the arm had committed — an error line followed
+				// by a success line for the same PR is the exact triage
+				// confusion filed in the issue (and a failed arm left in
+				// newlyArmed would misattribute supersede successors).
+				// Parity with the Proceed case: book the outcome, skip the
+				// arm bookkeeping.
 				recordReviewGate(ctx, wf.Name, cand.repo, err)
+				lastDecision, lastReason = string(res.Decision), res.Reason
+				continue
 			}
 			log("review-ready: armed %s at %s (waiting: %s)", cand.pointer, sha, res.Reason)
 			newlyArmed[cand.pointer] = sha

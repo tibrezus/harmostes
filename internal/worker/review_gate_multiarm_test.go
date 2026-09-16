@@ -217,6 +217,71 @@ func TestMultiArmWaitingArmsClaimWithoutDispatch(t *testing.T) {
 	}
 }
 
+// ── #512: a FAILED waiting-arm must not print the success-shaped
+// "armed" line nor enter newlyArmed — the fall-through used to read as
+// if the arm had committed (error line followed by a success line for
+// the same PR: the triage confusion filed in the issue). ──
+func TestMultiArmWaitingArmFailureSkipsArmedLine(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := noLabelServer(t)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	st := &fakeStatus{}
+
+	scheme := runtime.NewScheme()
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("AddToScheme: %v", err)
+	}
+	if err := batchv1.AddToScheme(scheme); err != nil {
+		t.Fatalf("batchv1: %v", err)
+	}
+	// Fail the claim resolve the way the #512 incident did ("resolve claim
+	// attempt: client rate limiter Wait returned an error"): every Attempt
+	// Create errors, so ArmClaim aborts before any visibility commit.
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&v1alpha1.Attempt{}).
+		WithInterceptorFuncs(interceptor.Funcs{Create: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+			if _, ok := obj.(*v1alpha1.Attempt); ok {
+				return fmt.Errorf("client rate limiter Wait returned an error")
+			}
+			return cl.Create(ctx, obj, opts...)
+		}}).
+		Build()
+	var logs []string
+	deps := GateDeps{
+		Status: st, Client: cl, Scheme: scheme, FleetMaxConcurrent: 3,
+		Log:  func(f string, a ...any) { logs = append(logs, fmt.Sprintf(f, a...)) },
+		Wake: GateWake{PR: "git.rezus.cloud/tibrez/rhesadox#99", Action: "labeled", Revision: "deadbeef123"},
+	}
+	ctx := context.Background()
+
+	out, err := RunReviewGateWake(ctx, deps, wf)
+	if err != nil {
+		t.Fatalf("wake: %v", err)
+	}
+	if len(out) != 0 {
+		t.Fatalf("waiting must not dispatch, got %d", len(out))
+	}
+	joined := strings.Join(logs, "\n")
+	if !strings.Contains(joined, "arm claim git.rezus.cloud/tibrez/rhesadox#99 failed") {
+		t.Fatalf("the arm failure must be logged, got:\n%s", joined)
+	}
+	if strings.Contains(joined, "armed git.rezus.cloud/tibrez/rhesadox#99 at") {
+		t.Fatalf("no success-shaped armed line may follow a failed arm (#512), got:\n%s", joined)
+	}
+	// The arm did not commit: nothing live, no claim object created.
+	if claims, err := attempt.LiveReviewClaims(ctx, deps.Client, wf); err != nil || len(claims) != 0 {
+		t.Fatalf("failed arm must leave no live claim, got %d (%v)", len(claims), err)
+	}
+	// The evaluation outcome is still recorded — the sweep reports WHY it
+	// held, so aggregates answer "what did the gate decide" (#512 dir 4).
+	if st.last.ReviewReady == nil || st.last.ReviewReady.LastDecision != "waiting" {
+		t.Fatalf("aggregates must record waiting, got %+v", st.last.ReviewReady)
+	}
+}
+
 // ── r4 core: proceed dispatches; a SECOND sweep with the claim dispatched
 // must not re-dispatch (the verdict window is the consume signal). ──
 func TestMultiArmInFlightNotReDispatched(t *testing.T) {

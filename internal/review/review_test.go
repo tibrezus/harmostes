@@ -187,6 +187,51 @@ func TestLabelAbsentNoVerdictHorizonStandsDown(t *testing.T) {
 	}
 }
 
+func TestLabelAbsentHoldNoteDiscriminatesCI(t *testing.T) {
+	// #512: the label-absent hold must NAME its reason. An armed claim
+	// dispatches on CI green regardless of the label (the queued-claim
+	// re-dispatch pass), so red/pending CI is the benign majority — say
+	// so. "ingress may be lost" is reserved for a green (or unreadable)
+	// head with the label gone and no verdict.
+	green := &fakeAPI{pr: openPR("full-pipeline"), required: []string{"a"}, states: map[string]string{"a": "success"}}
+	r := Evaluate(context.Background(), green, base)
+	if r.Decision != DecisionWaiting || !strings.Contains(r.Reason, "ci green at head") || !strings.Contains(r.Reason, "ingress may be lost") {
+		t.Fatalf("green head must keep the ambiguity note, got %q", r.Reason)
+	}
+
+	redC := &fakeAPI{pr: openPR("full-pipeline"), required: []string{"a", "b"}, states: map[string]string{"a": "success", "b": "failure"}}
+	r = Evaluate(context.Background(), redC, base)
+	if r.Decision != DecisionWaiting || !strings.Contains(r.Reason, "ci red at head (b)") || !strings.Contains(r.Reason, "dispatch on green") {
+		t.Fatalf("red CI must be named with dispatch-on-green, got %q", r.Reason)
+	}
+	if strings.Contains(r.Reason, "ingress may be lost") {
+		t.Fatalf("red CI is not the ambiguous class, got %q", r.Reason)
+	}
+
+	pend := &fakeAPI{pr: openPR("full-pipeline"), required: []string{"a", "b"}, states: map[string]string{"a": "success", "b": "pending"}}
+	r = Evaluate(context.Background(), pend, base)
+	if r.Decision != DecisionWaiting || !strings.Contains(r.Reason, "ci pending (b)") || !strings.Contains(r.Reason, "dispatch on green") {
+		t.Fatalf("pending CI must be named with dispatch-on-green, got %q", r.Reason)
+	}
+}
+
+func TestLabelAbsentHoldNoteDegradesToAmbiguity(t *testing.T) {
+	// Best-effort by design (#512): a failed statuses fetch (or no merge
+	// rules at all — the label is then the whole contract) degrades to
+	// the ambiguous wording, never to a wrong CI claim.
+	ctxErr := &fakeAPI{pr: openPR("full-pipeline"), required: []string{"a"}, states: map[string]string{"a": "success"}, ctxErr: errors.New("boom")}
+	r := Evaluate(context.Background(), ctxErr, base)
+	if r.Decision != DecisionWaiting || !strings.Contains(r.Reason, "ingress may be lost") {
+		t.Fatalf("statuses fetch failure must keep the ambiguity note, got %q", r.Reason)
+	}
+
+	noRules := &fakeAPI{pr: openPR("full-pipeline"), required: nil, states: map[string]string{"a": "success"}}
+	r = Evaluate(context.Background(), noRules, base)
+	if r.Decision != DecisionWaiting || !strings.Contains(r.Reason, "ingress may be lost") {
+		t.Fatalf("no merge rules must keep the ambiguity note, got %q", r.Reason)
+	}
+}
+
 func TestVerdictWindowFreshConsumeOnly(t *testing.T) {
 	// #238 review MAJOR: the verdict scan is TIME-WINDOWED. An OLD verdict
 	// (posted before this arm — a prior review cycle on the same PR) must

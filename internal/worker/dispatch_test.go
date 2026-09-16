@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/tibrezus/harmostes/internal/attempt"
+	"github.com/tibrezus/harmostes/internal/review"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -45,6 +46,12 @@ func newTestDispatcher(t *testing.T, objects ...runtime.Object) (*Dispatcher, co
 		cfg: DispatchConfig{
 			FleetMaxConcurrent: 3,
 			JobImage:           "harmostes-worker:test",
+			NewReviewAPI: func() review.API {
+				if testReviewAPI != nil {
+					return testReviewAPI
+				}
+				return nil
+			},
 		},
 	}
 	return d, context.Background()

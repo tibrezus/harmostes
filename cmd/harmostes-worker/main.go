@@ -45,6 +45,7 @@ import (
 	"github.com/tibrezus/harmostes/internal/agentlineage"
 	"github.com/tibrezus/harmostes/internal/attempt"
 	"github.com/tibrezus/harmostes/internal/dapr"
+	"github.com/tibrezus/harmostes/internal/gate"
 	"github.com/tibrezus/harmostes/internal/graph"
 	"github.com/tibrezus/harmostes/internal/k8s"
 	"github.com/tibrezus/harmostes/internal/observability"
@@ -268,14 +269,14 @@ func runOneShot() {
 		if cerr != nil {
 			fatal("review-ready: %v", cerr)
 		}
-		gateDeps := worker.GateDeps{
+		gateDeps := gate.GateDeps{
 			Status: k8s.StatusPatcher{Client: cl, Namespace: namespace},
 			Client: cl, Scheme: scheme,
 			Log: logf, TL: gateTL,
 			Wake:                     wakeFromEnv(),
 			DisableCancelOnSupersede: !cancelOnSupersede,
 		}
-		dispatches, err := worker.RunReviewGateWake(ctx, gateDeps, wf)
+		dispatches, err := gate.RunReviewGateWake(ctx, gateDeps, wf)
 		if err != nil {
 			fatal("review-ready: %v", err)
 		}
@@ -888,14 +889,14 @@ func envReq(key string) string {
 // REPO; EnvelopeEnv writes a BARE NUMBER plus HARMOSTES_TRIGGER_REPO. SHA
 // wins over REVISION — each producer writes exactly one of the two names.
 // An operator running `harmostes-worker run` by hand can use either shape.
-func wakeFromEnv() worker.GateWake {
+func wakeFromEnv() gate.GateWake {
 	pr := os.Getenv("HARMOSTES_TRIGGER_PR")
 	if pr != "" && !strings.Contains(pr, "#") {
 		if repo := os.Getenv("HARMOSTES_TRIGGER_REPO"); repo != "" {
 			pr = repo + "#" + pr // bare number + repo → the gate's pointer form
 		}
 	}
-	return worker.GateWake{
+	return gate.GateWake{
 		PR:       pr,
 		Action:   os.Getenv("HARMOSTES_TRIGGER_ACTION"),
 		Revision: envOr("HARMOSTES_TRIGGER_SHA", os.Getenv("HARMOSTES_TRIGGER_REVISION")),

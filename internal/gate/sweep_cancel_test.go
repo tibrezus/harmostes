@@ -1,4 +1,4 @@
-package worker
+package gate
 
 // Cancel-on-supersede (#402): a claim the gate released as superseded/closed
 // leaves its review Job RUNNING — this pass deletes it and finalizes the

@@ -18,6 +18,7 @@ import (
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
 	"github.com/tibrezus/harmostes/internal/attempt"
 	"github.com/tibrezus/harmostes/internal/dapr"
+	"github.com/tibrezus/harmostes/internal/gate"
 	"github.com/tibrezus/harmostes/internal/k8s"
 	"github.com/tibrezus/harmostes/internal/review"
 	"github.com/tibrezus/harmostes/internal/timeline"
@@ -68,12 +69,15 @@ type DispatchConfig struct {
 	// full run bound before the moved-head guard discards its verdict.
 	// Default on; HARMOSTES_CANCEL_ON_SUPERSEDE=false turns it off.
 	DisableCancelOnSupersede bool
-	JobImage                 string
-	ServiceAccount           string
-	JobTTLSeconds            *int32
-	DaprdImage               string
-	PluginConfigMaps         []string
-	ExtraConfigMapMounts     []k8s.ConfigMapMount
+	// NewReviewAPI overrides the review API construction for the gate
+	// sweep — the worker tests pin the API through it (C3 seam).
+	NewReviewAPI         func() review.API
+	JobImage             string
+	ServiceAccount       string
+	JobTTLSeconds        *int32
+	DaprdImage           string
+	PluginConfigMaps     []string
+	ExtraConfigMapMounts []k8s.ConfigMapMount
 }
 
 // DispatchConfigFromEnv resolves the fleet-level dispatch configuration
@@ -313,22 +317,23 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req RunRequest) error {
 	// Only workflows with reviewReady gate; every other class dispatches
 	// straight through (every class is Job-per-run, ADR-0007). The gate
 	// drains to capacity: one sweep accepts every free slot.
-	gateDeps := GateDeps{
+	gateDeps := gate.GateDeps{
 		Status:                   k8s.StatusPatcher{Client: d.cl, Namespace: req.Namespace},
 		Client:                   d.cl,
 		Scheme:                   d.scheme,
 		FleetMaxConcurrent:       d.cfg.FleetMaxConcurrent,
 		AttemptRetention:         d.cfg.AttemptRetention,
 		DisableCancelOnSupersede: d.cfg.DisableCancelOnSupersede,
+		NewReviewAPI:             d.cfg.NewReviewAPI,
 		Log:                      d.logf,
-		Wake:                     GateWake{PR: req.Pr, Action: req.Action, Revision: req.Revision},
+		Wake:                     gate.GateWake{PR: req.Pr, Action: req.Action, Revision: req.Revision},
 		TL: timeline.NewGateWriter(dapr.Tracing(dapr.New(os.Getenv("DAPR_HTTP_ENDPOINT"))),
 			envOr("HARMOSTES_STATE_STORE", "statestore"), wf.Name, "", triggerSubject(req)),
 	}
 
-	var dispatches []GateDispatch
+	var dispatches []gate.GateDispatch
 	if wf.Spec.ReviewReady != nil {
-		dispatches, err = RunReviewGateSweep(ctx, gateDeps, wf)
+		dispatches, err = gate.RunReviewGateSweep(ctx, gateDeps, wf)
 		if err != nil {
 			return fmt.Errorf("review gate: %w", err)
 		}
@@ -348,7 +353,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req RunRequest) error {
 		if err != nil {
 			return fmt.Errorf("resolve attempt: %w", err)
 		}
-		dispatches = append(dispatches, GateDispatch{Attempt: at.Name})
+		dispatches = append(dispatches, gate.GateDispatch{Attempt: at.Name})
 	}
 
 	// ── Create the Jobs (serialized: dedupe racing wakes). ──────────────

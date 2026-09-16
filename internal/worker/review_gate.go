@@ -729,8 +729,19 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 				// label_updated resolves its direction first (#423) — a
 				// label REMOVAL on a breaker-open head is a stand-down,
 				// not a retry.
+				//
+				// An arm with DispatchedAt nil has never dispatched: the
+				// poll sweep's re-evaluation of the armed claim is its
+				// dispatch path. If this drop fires repeatedly on a green
+				// head, the CI-wait read is lying (#2234's mis-bound status
+				// view class) — name the arm state so the operator sees
+				// which half of the pair to blame.
+				armNote := ""
+				if claimFor.Status.Review.DispatchedAt == nil {
+					armNote = " (claim is armed, never dispatched — the poll sweep re-evaluates it)"
+				}
 				if !humanOverride(ctx, api, &cand, wf.Name, label, log) || claimFor.Status.Review.DeadDispatches == 0 {
-					log("review-ready: candidate %s dropped: same-head re-request with no dead dispatches — nothing to do", cand.pointer)
+					log("review-ready: candidate %s dropped: same-head re-request with no dead dispatches%s — nothing to do", cand.pointer, armNote)
 					continue
 				}
 			}

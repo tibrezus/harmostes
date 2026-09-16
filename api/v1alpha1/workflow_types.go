@@ -116,8 +116,19 @@ type WorkflowSpec struct {
 	Events        *EventsSpec             `json:"events,omitempty"`
 	Cache         *CacheSpec              `json:"cache,omitempty"`
 	Sessions      *SessionsSpec           `json:"sessions,omitempty"`
-	Scaling       *ScalingSpec            `json:"scaling,omitempty"`
-	Disabled      bool                    `json:"disabled,omitempty"`
+	// Attachments are scoped shared storage components (#516 C2): sandboxes
+	// stay isolated per attempt, while named stores are shared on demand at
+	// the scope the workflow declares (workflow | repository | attempt).
+	// Example — per-REPOSITORY sol-pi storage shared by every attempt that
+	// reviews the same repo:
+	//   attachments:
+	//   - name: sol-pi
+	//     scope: repository
+	//     pvc: harmostes-worker-sessions
+	//     mountPath: /attachments/sol-pi
+	Attachments []SharedAttachment `json:"attachments,omitempty"`
+	Scaling     *ScalingSpec       `json:"scaling,omitempty"`
+	Disabled    bool               `json:"disabled,omitempty"`
 }
 
 // WorkspaceRepoSpec is the repo a pipeline operates on. The worker fetches it
@@ -307,6 +318,35 @@ type CacheSpec struct {
 // attempt Jobs until they age out of TTL. Mounting is a DEPLOYMENT fact
 // (needs an RWX storage class): templates reference a claim name, the
 // deploying environment renders the claim and opts its templates in.
+// SharedAttachment declares one scoped shared storage component (C2):
+// a named store mounted into every attempt sandbox of the workflow, at a
+// SubPath derived from the SCOPE — the dimension along which attempts
+// share. "workflow" (default) shares across the workflow's attempts;
+// "repository" shares across every attempt targeting the same repo
+// (pr-review's per-repository sol-pi store); "attempt" is private to one
+// attempt. The backend is an RWX-capable PVC the deployment provisions
+// (the sessions claim pattern). MountPath defaults to
+// /attachments/<name>; SubPath is derived from the scope — never user
+// input — so traversal cannot escape the mount.
+type SharedAttachment struct {
+	// Name identities the attachment: the mount name and the default
+	// MountPath tail. DNS-1123 label.
+	Name string `json:"name"`
+	// Scope selects the sharing dimension: workflow | repository | attempt.
+	Scope string `json:"scope,omitempty"`
+	// PVC is the RWX claim backing the attachment.
+	PVC string `json:"pvc,omitempty"`
+	// MountPath overrides the default /attachments/<name>.
+	MountPath string `json:"mountPath,omitempty"`
+}
+
+// AttachmentScope values.
+const (
+	AttachmentScopeWorkflow   = "workflow"
+	AttachmentScopeRepository = "repository"
+	AttachmentScopeAttempt    = "attempt"
+)
+
 type SessionsSpec struct {
 	PVC string `json:"pvc,omitempty"`
 	// TTL prunes lineage dirs idle longer than the duration (Go format,

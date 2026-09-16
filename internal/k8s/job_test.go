@@ -407,3 +407,87 @@ func TestBuildJobWallSecondsMatchesDeadline(t *testing.T) {
 		}
 	}
 }
+
+func TestAttachmentSubPath(t *testing.T) {
+	// C2: the scope picks the sharing dimension; identity-unavailable
+	// scopes are INERT (a repository attachment on a non-PR run shares
+	// nothing, by design).
+	cases := []struct {
+		name     string
+		scope    string
+		workflow string
+		repo     string
+		attempt  string
+		want     string
+		ok       bool
+	}{
+		{"workflow default", "", "wf-a", "o/r#1", "att-1", "wf-a", true},
+		{"explicit workflow", "workflow", "wf-a", "o/r#1", "att-1", "wf-a", true},
+		{"repository shares by repo hash", "repository", "wf-a", "git.rezus.cloud/tibrez/rhesadox", "att-1", "git.rezus.cloud-tibrez-rhesadox-" + "d782cf64", true},
+		{"repository inert without repo", "repository", "wf-a", "", "att-1", "", false},
+		{"attempt is private", "attempt", "wf-a", "o/r#1", "att-1", "attempt-att-1", true},
+		{"attempt inert without attempt", "attempt", "wf-a", "o/r#1", "", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := AttachmentSubPath(tc.scope, tc.workflow, tc.repo, tc.attempt)
+			if ok != tc.ok {
+				t.Fatalf("ok=%v want %v", ok, tc.ok)
+			}
+			if tc.ok && !strings.HasPrefix(got, tc.want) {
+				t.Fatalf("subpath %q, want prefix %q", got, tc.want)
+			}
+		})
+	}
+	// the repository hash must be the collision-proof LineageDir scheme
+	_, ok := AttachmentSubPath("repository", "wf", "a_b/c", "x")
+	_, ok2 := AttachmentSubPath("repository", "wf", "a/b-c", "x")
+	if ok && ok2 {
+		sub1, _ := AttachmentSubPath("repository", "wf", "a_b/c", "x")
+		sub2, _ := AttachmentSubPath("repository", "wf", "a/b-c", "x")
+		if sub1 == sub2 {
+			t.Fatalf("sanitizer colliders must not share a subpath: %q", sub1)
+		}
+	}
+}
+
+func TestBuildJobAttachments(t *testing.T) {
+	// C2 rendering: one volume per attachment, SubPath from the scope,
+	// default mountPath /attachments/<name>, shared PVC deduped by claim.
+	p := AttemptJobParams{
+		WorkflowName: "pr-review-rhesadox",
+		AttemptName:  "attempt-abc",
+		Attempt:      &v1alpha1.Attempt{ObjectMeta: metav1.ObjectMeta{Name: "attempt-abc", Namespace: "default"}},
+		TriggerRepo:  "git.rezus.cloud/tibrez/rhesadox",
+		Attachments: []v1alpha1.SharedAttachment{
+			{Name: "sol-pi", Scope: v1alpha1.AttachmentScopeRepository, PVC: "harmostes-worker-sessions"},
+			{Name: "scratch", Scope: v1alpha1.AttachmentScopeAttempt, PVC: "harmostes-worker-sessions", MountPath: "/scratch"},
+			{Name: "nolabel", PVC: ""}, // no backend → skipped
+		},
+	}
+	job := BuildJob(p)
+	mounts := map[string]corev1.VolumeMount{}
+	for _, m := range job.Spec.Template.Spec.Containers[0].VolumeMounts {
+		mounts[m.Name] = m
+	}
+	if m := mounts["attach-sol-pi"]; m.SubPath != "git.rezus.cloud-tibrez-rhesadox-d782cf64" || m.MountPath != "/attachments/sol-pi" {
+		t.Fatalf("sol-pi mount: %+v", m)
+	}
+	if m := mounts["attach-scratch"]; m.SubPath != "attempt-attempt-abc" || m.MountPath != "/scratch" {
+		t.Fatalf("scratch mount: %+v", m)
+	}
+	claims := map[string]string{}
+	for _, v := range job.Spec.Template.Spec.Volumes {
+		if strings.HasPrefix(v.Name, "attach-") {
+			claims[v.Name] = v.PersistentVolumeClaim.ClaimName
+		}
+	}
+	if claims["attach-sol-pi"] != "harmostes-worker-sessions" || claims["attach-scratch"] != "harmostes-worker-sessions" {
+		t.Fatalf("both attachments must ride the sessions claim: %+v", claims)
+	}
+	for _, m := range job.Spec.Template.Spec.Containers[0].VolumeMounts {
+		if m.Name == "attach-nolabel" {
+			t.Fatalf("backend-less attachment must be skipped: %+v", m)
+		}
+	}
+}

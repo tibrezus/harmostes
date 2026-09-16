@@ -2,12 +2,15 @@ package k8s
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/tibrezus/harmostes/internal/sessionstore"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -104,6 +107,41 @@ type AttemptJobParams struct {
 	// follow-up): an RWX PVC at /sessions, SubPath per workflow. Nil or
 	// PVC-less = ephemeral /tmp sessions, byte-identical Job.
 	Sessions *v1alpha1.SessionsSpec
+	// Attachments render the workflow's scoped shared storage components
+	// (C2): one mount per attachment, SubPath derived from the scope.
+	Attachments []v1alpha1.SharedAttachment
+	// TriggerRepo/AttemptName feed the repository/attempt attachment
+	// scopes. Empty repo makes a repository-scoped attachment inert (the
+	// run is not PR-shaped).
+	TriggerRepo string
+	AttemptName string
+}
+
+// AttachmentSubPath derives the SubPath for a scoped shared attachment:
+// the scope picks the sharing dimension — workflow (the workflow's name),
+// repository (the sanitized trigger repo, hashed like the session
+// lineages), attempt (the attempt's own name). ok=false when the scope's
+// identity is unavailable (a repository-scoped attachment on a
+// non-PR-shaped run shares nothing — inert, by design).
+func AttachmentSubPath(scope, workflow, repo, attempt string) (string, bool) {
+	switch scope {
+	case v1alpha1.AttachmentScopeRepository:
+		if repo == "" {
+			return "", false
+		}
+		sum := sha256.Sum256([]byte(repo))
+		return fmt.Sprintf("%s-%s", sessionstore.SanitizeRepo(repo), hex.EncodeToString(sum[:4])), true
+	case v1alpha1.AttachmentScopeAttempt:
+		if attempt == "" {
+			return "", false
+		}
+		return "attempt-" + attempt, true
+	default: // workflow ("" too — the zero value)
+		if workflow == "" {
+			return "", false
+		}
+		return workflow, true
+	}
 }
 
 // ConfigMapMount is one additional ConfigMap volume: name (the ConfigMap and
@@ -226,6 +264,25 @@ func BuildJob(p AttemptJobParams) *batchv1.Job {
 			ttl = "336h"
 		}
 		env = append(env, corev1.EnvVar{Name: "HARMOSTES_SESSIONS_TTL", Value: ttl})
+	}
+	for _, at := range p.Attachments {
+		if at.PVC == "" || at.Name == "" {
+			continue
+		}
+		volName := "attach-" + at.Name
+		sub, ok := AttachmentSubPath(at.Scope, p.WorkflowName, p.TriggerRepo, p.AttemptName)
+		if !ok {
+			continue // repository scope without a repo: nothing to share
+		}
+		mountPath := at.MountPath
+		if mountPath == "" {
+			mountPath = "/attachments/" + at.Name
+		}
+		volumes = append(volumes, corev1.Volume{
+			Name:         volName,
+			VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: at.PVC}},
+		})
+		mounts = append(mounts, corev1.VolumeMount{Name: volName, SubPath: sub, MountPath: mountPath})
 	}
 	for _, m := range p.ExtraConfigMapMounts {
 		mode := int32(0o755)

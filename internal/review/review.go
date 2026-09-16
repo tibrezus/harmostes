@@ -416,6 +416,33 @@ func (a *RESTAPI) ContextStates(ctx context.Context, repo, sha string) (map[stri
 			}
 		}
 	default: // Forgejo
+		// The COMBINED status view seeds first: it is the forge's own
+		// deduped per-context answer for this SHA. The raw /statuses list is
+		// vulnerable to foreign-run mis-binds (the known status-aggregator
+		// bug: another run's job posts a pending against this SHA with a
+		// NEWER created_at — live: rhesadox #2234's fresh arm read
+		// 'backend-compile (rocm)' as pending for hours while the combined
+		// view said success). Raw entries still fill contexts the combined
+		// view does not cover; contexts it covers are authoritative.
+		var combined struct {
+			Statuses []struct {
+				Context string `json:"context"`
+				State   string `json:"state"`  // GitHub field name
+				StatusF string `json:"status"` // Forgejo/Gitea field name
+			} `json:"statuses"`
+		}
+		get(fmt.Sprintf("/repos/%s/commits/%s/status", host.RepoPath, sha), "application/json", &combined)
+		combinedCovered := map[string]bool{}
+		for _, s := range combined.Statuses {
+			v := s.State
+			if v == "" {
+				v = s.StatusF
+			}
+			if _, ok := states[s.Context]; !ok {
+				states[s.Context] = normalizeStatusState(v)
+			}
+			combinedCovered[s.Context] = true
+		}
 		var statuses []struct {
 			Context   string `json:"context"`
 			State     string `json:"state"`  // GitHub field name
@@ -441,6 +468,11 @@ func (a *RESTAPI) ContextStates(ctx context.Context, repo, sha string) (map[stri
 		precedence := map[string]int{"success": 0, "pending": 1}
 		curAt := map[string]string{}
 		for _, s := range statuses {
+			if combinedCovered[s.Context] {
+				// The combined view owns this context — a raw entry (possibly
+				// a foreign-run mis-bind) cannot override it.
+				continue
+			}
 			v := s.State
 			if v == "" {
 				v = s.StatusF

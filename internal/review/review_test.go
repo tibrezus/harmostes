@@ -601,6 +601,83 @@ func TestContextStatesNewestFirstWins(t *testing.T) {
 	}
 }
 
+func TestContextStatesCombinedViewOwnsTheContext(t *testing.T) {
+	// Live regression (rhesadox #2234): a foreign run's job mis-binds a
+	// pending status against this SHA with a NEWER created_at than the real
+	// success (the forge status-aggregator bug). The raw list's newest-wins
+	// kept the gate armed on a green head for hours while the combined
+	// /status view said success. The combined view is the forge's own
+	// deduped per-context answer — it owns the context; raw fills only the
+	// contexts it does not cover.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(req.URL.Path, "/check-runs"):
+			_ = json.NewEncoder(w).Encode(map[string]any{"check_runs": []any{}})
+		case strings.HasSuffix(req.URL.Path, "/statuses"):
+			// the poisoned raw list: a foreign pending NEWER than the success
+			_ = json.NewEncoder(w).Encode([]map[string]string{
+				{"context": "ci / backend-compile (rocm) (push)", "status": "pending", "created_at": "2026-09-15T23:30:00Z"},
+				{"context": "ci / backend-compile (rocm) (push)", "status": "success", "created_at": "2026-09-15T23:00:08Z"},
+				{"context": "ci / build-test (push)", "status": "success", "created_at": "2026-09-15T22:58:00Z"},
+			})
+		case strings.HasSuffix(req.URL.Path, "/status"):
+			// the combined view: the authoritative per-context answer
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"statuses": []map[string]string{
+					{"context": "ci / backend-compile (rocm) (push)", "status": "success"},
+					{"context": "ci / build-test (push)", "status": "success"},
+				},
+			})
+		default:
+			http.NotFound(w, req)
+		}
+	}))
+	defer srv.Close()
+	api := &RESTAPI{Client: srv.Client(), BaseOverride: srv.URL + "/api/v1"}
+	states, err := api.ContextStates(context.Background(), "git.rezus.cloud/o/r", "abc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if states["ci / backend-compile (rocm) (push)"] != "success" {
+		t.Fatalf("the combined view must own the context over a newer foreign pending: %+v", states)
+	}
+	if states["ci / build-test (push)"] != "success" {
+		t.Fatalf("covered contexts unaffected: %+v", states)
+	}
+	// A context the combined view does not cover is filled from the raw list.
+	if states["integration / integration (cpu) (pull_request)"] != "" {
+		t.Fatalf("unexpected context: %+v", states)
+	}
+}
+
+func TestContextStatesCombinedAbsentFallsBackToRaw(t *testing.T) {
+	// A forge (or fake) that 404s the combined endpoint: raw-list semantics
+	// (newest-wins + same-second tie-break) apply unchanged.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(req.URL.Path, "/check-runs"):
+			_ = json.NewEncoder(w).Encode(map[string]any{"check_runs": []any{}})
+		case strings.HasSuffix(req.URL.Path, "/statuses"):
+			_ = json.NewEncoder(w).Encode([]map[string]string{
+				{"context": "ci", "status": "success", "created_at": "2026-09-15T23:00:08Z"},
+			})
+		default:
+			http.NotFound(w, req)
+		}
+	}))
+	defer srv.Close()
+	api := &RESTAPI{Client: srv.Client(), BaseOverride: srv.URL + "/api/v1"}
+	states, err := api.ContextStates(context.Background(), "git.rezus.cloud/o/r", "abc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if states["ci"] != "success" {
+		t.Fatalf("raw fallback must serve uncovered contexts: %+v", states)
+	}
+}
+
 func TestForgejoStatusFieldParsed(t *testing.T) {
 	// Live regression (rhesadox #1566): Forgejo's status objects carry the
 	// field `status`, GitHub's carry `state`. Parsing only `state` read
@@ -948,6 +1025,11 @@ func TestContextStatesSameSecondTieBreak(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		if strings.HasSuffix(req.URL.Path, "/check-runs") {
 			_ = json.NewEncoder(w).Encode(map[string]any{"check_runs": []any{}})
+			return
+		}
+		if strings.HasSuffix(req.URL.Path, "/status") {
+			// empty combined view: the raw list is the only source here
+			_ = json.NewEncoder(w).Encode(map[string]any{"statuses": []any{}})
 			return
 		}
 		_ = json.NewEncoder(w).Encode([]map[string]string{

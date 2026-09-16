@@ -905,3 +905,63 @@ func TestUnprotectedProceedStillReachableWhenNotInFlight(t *testing.T) {
 		t.Fatalf("proceed must carry the empty required set, got %v", res.Envelope.RequiredContexts)
 	}
 }
+
+// Live regression (rhesadox #2234): Forgejo can repost a status within the
+// SAME second (CI re-run), and the newest-first order between equal
+// timestamps is unstable — the stale pending sat ABOVE the fresh success,
+// so first-wins kept the gate armed on a green head for hours. At equal
+// timestamps the CONCLUSIVE state wins; a genuinely newer pending/red
+// still beats an older success.
+func TestContextStatesSameSecondTieBreak(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(req.URL.Path, "/check-runs"):
+			_ = json.NewEncoder(w).Encode(map[string]any{"check_runs": []any{}})
+		case strings.HasSuffix(req.URL.Path, "/statuses"):
+			_ = json.NewEncoder(w).Encode([]map[string]string{
+				// newest-first; the same-second pair is the live shape:
+				// pending ABOVE success at identical created_at.
+				{"context": "ci / backend-compile (rocm) (push)", "status": "pending", "created_at": "2026-09-15T23:00:08Z"},
+				{"context": "ci / backend-compile (rocm) (push)", "status": "success", "created_at": "2026-09-15T23:00:08Z"},
+				{"context": "ci / build-test (push)", "status": "success", "created_at": "2026-09-15T22:58:00Z"},
+			})
+		default:
+			http.NotFound(w, req)
+		}
+	}))
+	defer srv.Close()
+	api := &RESTAPI{Client: srv.Client(), BaseOverride: srv.URL + "/api/v1"}
+	states, err := api.ContextStates(context.Background(), "git.rezus.cloud/o/r", "abc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if states["ci / backend-compile (rocm) (push)"] != "success" {
+		t.Fatalf("same-second tie must resolve to the conclusive state: %+v", states)
+	}
+	if states["ci / build-test (push)"] != "success" {
+		t.Fatalf("uncontested entries unaffected: %+v", states)
+	}
+
+	// A genuinely NEWER pending still wins over an older success.
+	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(req.URL.Path, "/check-runs") {
+			_ = json.NewEncoder(w).Encode(map[string]any{"check_runs": []any{}})
+			return
+		}
+		_ = json.NewEncoder(w).Encode([]map[string]string{
+			{"context": "ci", "status": "pending", "created_at": "2026-09-15T23:10:00Z"},
+			{"context": "ci", "status": "success", "created_at": "2026-09-15T23:00:08Z"},
+		})
+	}))
+	defer srv2.Close()
+	api2 := &RESTAPI{Client: srv2.Client(), BaseOverride: srv2.URL + "/api/v1"}
+	states2, err := api2.ContextStates(context.Background(), "git.rezus.cloud/o/r", "abc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if states2["ci"] != "pending" {
+		t.Fatalf("newer pending must win over older success: %+v", states2)
+	}
+}

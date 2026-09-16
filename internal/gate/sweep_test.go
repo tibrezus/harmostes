@@ -1,4 +1,4 @@
-package worker
+package gate
 
 import (
 	"encoding/json"

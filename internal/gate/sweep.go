@@ -1,4 +1,4 @@
-package worker
+package gate
 
 import (
 	"log/slog"
@@ -82,6 +82,14 @@ var newReviewAPI = func() review.API {
 	return &review.RESTAPI{Client: http.DefaultClient, TokenLookup: os.Getenv}
 }
 
+// StatusPatcher reconciles the Workflow status — the same surface the
+// worker's pipeline defines; re-declared here so the gate package does not
+// import the worker (the kernel/workflow seam, C3).
+type StatusPatcher interface {
+	PatchStatus(ctx context.Context, name string, mutate func(*v1alpha1.WorkflowStatus)) error
+	GetStatus(ctx context.Context, name string) (*v1alpha1.WorkflowStatus, error)
+}
+
 // GateDeps are the Review-Ready Gate's collaborators (ADR-0007 phase 4).
 // Claims live on Attempt CRs (Client); the Workflow status carries
 // aggregates only (Status).
@@ -107,6 +115,10 @@ type GateDeps struct {
 	DisableCancelOnSupersede bool
 	Log                      func(format string, args ...any)
 	TL                       timeline.Writer
+	// NewReviewAPI overrides the review REST API construction — the
+	// worker's dispatch tests pin the API through it (C3 moved the sweep
+	// here; the injection point moved with it). Nil = the default.
+	NewReviewAPI func() review.API
 	// Wake carries the TRIGGER EVENT that scheduled this run (#349): the
 	// controller publishes it, the consumer hands it down with the run
 	// request, and the gate turns it into the labeled-scan's leading
@@ -316,6 +328,18 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 	now := time.Now()
 	capacity := rr.EffectiveMaxConcurrent(deps.FleetMaxConcurrent)
 	api := newReviewAPI()
+	if deps.NewReviewAPI != nil {
+		if overridden := deps.NewReviewAPI(); overridden != nil {
+			api = overridden
+		}
+	}
+	if dbg := os.Getenv("HARMOSTES_GATE_DEBUG"); dbg != "" {
+		if r, ok := api.(*review.RESTAPI); ok {
+			fmt.Printf("GATE DEBUG: api base=%q client=%v\n", r.BaseOverride, r.Client != nil)
+		} else {
+			fmt.Printf("GATE DEBUG: api is %T\n", api)
+		}
+	}
 	label := rr.EffectiveLabel()
 	// Durable writes (the sweep summary in D, the cancel pass's ledger
 	// finalization) run on a ctx the sweep deadline CANNOT cancel (r8 (e)):

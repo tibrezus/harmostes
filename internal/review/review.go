@@ -365,6 +365,55 @@ func (a *RESTAPI) RequiredContexts(ctx context.Context, repo, branch string) ([]
 	}
 }
 
+// classifyRequiredContexts buckets the required contexts by state — the
+// ONE classification home, shared by the label-present proceed path and
+// labelAbsentHoldNote (#512): red beats pending beats green, and a context
+// with no result yet (run not started, or the surface holds no entry) is
+// pending, not green.
+func classifyRequiredContexts(required []string, states map[string]string) (red, pending, green []string) {
+	for _, ctx := range required {
+		switch states[ctx] {
+		case "success":
+			green = append(green, ctx)
+		case "failure":
+			red = append(red, ctx)
+		default: // pending or missing entirely (run not started)
+			pending = append(pending, ctx)
+		}
+	}
+	return red, pending, green
+}
+
+// labelAbsentHoldNote names WHY an armed, label-absent, verdict-less claim
+// is holding (#512): the armed claim dispatches on CI green regardless of
+// the label — the queued-claim re-dispatch pass reads the claim, not the
+// ingress — so "ci red/pending at head" is the benign majority (dispatch
+// follows green). "ingress may be lost" is reserved for the genuinely
+// ambiguous residual: a green or unreadable head with the label gone and
+// no verdict (the #1635 class). Best-effort by design: a fetch failure
+// degrades to the ambiguous wording, never to a wrong CI claim.
+func labelAbsentHoldNote(ctx context.Context, api API, p Params, pr *PullRequest) string {
+	required, err := api.RequiredContexts(ctx, p.Repo, pr.Base)
+	if err != nil || len(required) == 0 {
+		// No merge-rule contexts: the label is the whole contract — its
+		// absence with no verdict is exactly the ambiguous case.
+		return "ingress may be lost"
+	}
+	states, err := api.ContextStates(ctx, p.Repo, pr.HeadSHA)
+	if err != nil {
+		return "ingress may be lost"
+	}
+	red, pending, _ := classifyRequiredContexts(required, states)
+	switch {
+	case len(red) > 0:
+		return "ci red at head (" + strings.Join(red, ", ") + ") — dispatch on green"
+	case len(pending) > 0:
+		return "ci pending (" + strings.Join(pending, ", ") + ") — dispatch on green"
+	default:
+		return "ci green at head, dispatch imminent; if this persists, ingress may be lost"
+	}
+}
+
 // ContextStates merges commit statuses and check-runs into a per-context
 // normalized state: success | pending | failure. GitHub required contexts
 // may be satisfied by either surface; Forgejo posts both.
@@ -695,7 +744,16 @@ func Evaluate(ctx context.Context, api API, p Params) Result {
 		if now.Sub(armedAt) > p.Horizon {
 			return withoutPresence(standdown("horizon exceeded (label absent, no verdict; pending > "+p.Horizon.String()+")"), "", time.Time{})
 		}
-		return withPresence(waiting("label absent, no verdict — ingress may be lost, staying armed"), pr.HeadSHA, armedAt)
+		// #512: the hold note discriminates WHY the armed claim is parked —
+		// an armed claim dispatches on CI green regardless of the label (the
+		// queued-claim re-dispatch pass reads the claim, not the ingress),
+		// so "CI not green yet" is the benign, self-resolving majority.
+		// Only a green (or unreadable) head with the label gone and no
+		// verdict is the genuinely ambiguous #1635 class. One log line must
+		// answer "why is this PR not being reviewed?" without a second
+		// query — the old single wording read like a lost ingress on every
+		// red-CI hold.
+		return withPresence(waiting("label absent, no verdict — "+labelAbsentHoldNote(ctx, api, p, pr)+", staying armed"), pr.HeadSHA, armedAt)
 	}
 
 	// Head moved since arming: re-arm at the new head (reset the horizon).
@@ -773,17 +831,7 @@ func Evaluate(ctx context.Context, api API, p Params) Result {
 		return withPresence(waiting("contexts fetch failed: "+err.Error()), pr.HeadSHA, armedAt)
 	}
 
-	var pending, red, green []string
-	for _, ctx := range required {
-		switch states[ctx] {
-		case "success":
-			green = append(green, ctx)
-		case "failure":
-			red = append(red, ctx)
-		default: // pending or missing entirely (run not started)
-			pending = append(pending, ctx)
-		}
-	}
+	red, pending, green := classifyRequiredContexts(required, states)
 
 	switch {
 	case len(red) > 0:

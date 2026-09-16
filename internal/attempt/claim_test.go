@@ -701,6 +701,64 @@ func TestArmClaim_LabelFailureAbortsBeforeStatusCommit(t *testing.T) {
 	}
 }
 
+// TestArmClaim_HealsStrandedReleaseMarker (#512 direction 2, inverted
+// polarity): a claim can strand with the release marker SET while its
+// status says LIVE — the residue class of the old-polarity incident (the
+// production remedy there was a manual kubectl label). Under absence-
+// means-live such a claim is INVISIBLE to LiveReviewClaims (it holds no
+// counted slot and blocks nothing), and the next candidate arm is the
+// repair sweep: ArmClaim resolves the same object, removes the marker,
+// and refreshes the live status — no external reconciliation needed.
+func TestArmClaim_HealsStrandedReleaseMarker(t *testing.T) {
+	ctx := context.Background()
+	c := newFakeClient(t)
+	wf := wikiWorkflow()
+	const pr = "git.rezus.cloud/tibrez/rhesadox#2234"
+	const sha = "272b3c76cafe2234"
+
+	name, err := armFor(t, ctx, c, wf, pr, sha, "needs-review", false)
+	if err != nil {
+		t.Fatalf("arm: %v", err)
+	}
+	// Strand it: status stays live (Released=false) but the marker is set
+	// — e.g. a stale marker surviving a revival regression.
+	var at v1alpha1.Attempt
+	if err := c.Get(ctx, client.ObjectKey{Namespace: "harmostes", Name: name}, &at); err != nil {
+		t.Fatal(err)
+	}
+	base := at.DeepCopy()
+	if at.Labels == nil {
+		at.Labels = map[string]string{}
+	}
+	at.Labels[v1alpha1.ReviewClaimLabel] = v1alpha1.ReviewClaimReleased
+	if err := c.Patch(ctx, &at, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+		t.Fatalf("strand marker: %v", err)
+	}
+
+	// Invisible while stranded: the marker is the list bound.
+	if claims, err := LiveReviewClaims(ctx, c, wf); err != nil || len(claims) != 0 {
+		t.Fatalf("stranded claim must be invisible, got %d (%v)", len(claims), err)
+	}
+
+	// The next arm is the repair sweep.
+	if _, err := ArmClaim(ctx, c, wfScheme(t), wf, pr, sha, "needs-review", false); err != nil {
+		t.Fatalf("healing arm: %v", err)
+	}
+	healed, err := resolveForTest(t, ctx, c, wf, sha)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, marked := healed.Labels[v1alpha1.ReviewClaimLabel]; marked {
+		t.Fatal("healing arm must remove the stranded marker")
+	}
+	if healed.Status.Review == nil || healed.Status.Review.Released {
+		t.Fatal("healed claim must be live")
+	}
+	if claims, err := LiveReviewClaims(ctx, c, wf); err != nil || len(claims) != 1 {
+		t.Fatalf("healed claim must be listed live, got %d (%v)", len(claims), err)
+	}
+}
+
 // labelFailClient fails every main-resource Patch (metadata: the release
 // marker) while passing status-subresource patches through.
 type labelFailClient struct {

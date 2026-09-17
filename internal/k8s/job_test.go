@@ -646,3 +646,33 @@ func TestBuildJobAttachments(t *testing.T) {
 		}
 	}
 }
+
+// #408 item 9 follow-up (live-learned on 222): the pinned rev must be the
+// FULL 40-hex object name — GitHub refuses fetch-by-SHA for abbreviations
+// ("couldn't find remote ref 9b63a39c36cb") and a short pin crash-loops
+// every sync-skills init container fleet-wide. Empty (track default branch)
+// stays legal. Fail the render, not the fleet.
+func TestSkillsRevPinIsFullShaOrEmpty(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "chart", "values.yaml"))
+	if err != nil {
+		t.Fatalf("read values: %v", err)
+	}
+	rev := ""
+	for _, line := range strings.Split(string(raw), "\n") {
+		if strings.HasPrefix(line, `  rev: "`) {
+			rev = strings.TrimSuffix(strings.TrimPrefix(line, `  rev: "`), `"`)
+			break
+		}
+	}
+	if rev == "" {
+		return // tracking default branch — legal escape hatch
+	}
+	if len(rev) != 40 {
+		t.Fatalf("values.skills.rev = %q — must be the FULL 40-hex sha (fetch-by-SHA refuses abbreviations) or empty", rev)
+	}
+	for _, r := range rev {
+		if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f') {
+			t.Fatalf("values.skills.rev = %q — not hex", rev)
+		}
+	}
+}

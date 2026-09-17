@@ -40,7 +40,7 @@ jobs:
         run: |
           set -euo pipefail
           pinned="$(sed -n 's/^  rev: "\(.*\)"$/\1/p' chart/values.yaml)"
-          upstream="$(git ls-remote https://github.com/tibrezus/agents.git refs/heads/main | cut -c1-12)"
+          upstream="$(git ls-remote https://github.com/tibrezus/agents.git refs/heads/main | cut -f1)"  # FULL sha: fetch-by-SHA refuses abbreviations (live-learned: 222 Init:Error)
           echo "pinned=${pinned:-<empty: tracking main>} upstream=$upstream"
           if [ -z "$upstream" ]; then
             echo "::error::git ls-remote returned nothing — agents repo unreachable?"

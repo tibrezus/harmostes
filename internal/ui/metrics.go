@@ -33,6 +33,20 @@ var writesTotal = prometheus.NewCounterVec(
 
 func init() {
 	metricsRegistry.MustRegister(writesTotal)
+	// Pre-instantiate the full grid at zero. A CounterVec renders nothing
+	// until a labeled child exists, so a fresh deployment's /metrics is
+	// EMPTY — and "no series" is ambiguous between "no writes happened"
+	// and "the metric is not scraped at all" (#525 live-learned: the
+	// repaired scraper delivered, the metric stayed invisible until the
+	// first write). A zeroed grid makes the scrape contract visible from
+	// the first scrape and self-documents the vocabulary. The action set
+	// mirrors the mutating routes (create + enable/disable/trigger/delete);
+	// "created" is the verb's happy-path result whatever the verb.
+	for _, action := range []string{"create", "enable", "disable", "trigger", "delete"} {
+		for _, result := range []string{"created", "forbidden", "error"} {
+			writesTotal.WithLabelValues(action, result)
+		}
+	}
 }
 
 // recordWrite increments the writes counter — the single funnel every

@@ -37,6 +37,16 @@ spec:
         {{- if .Values.observability.otlpInsecure }}
         dapr.io/env: "OTEL_EXPORTER_OTLP_INSECURE=true"
         {{- end }}
+        {{- if .Values.observability.enabled }}
+        # UI self-telemetry (#525): the UI's /metrics (Prometheus format,
+        # outside auth — the scraper is in-cluster and holds no identity)
+        # registers with the annotation-based kubernetes-pods receiver
+        # (concepts/annotation-based-observability). The UI is scrape-only
+        # (no OTel SDK); without these annotations nothing ingests it.
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8083"
+        prometheus.io/path: /metrics
+        {{- end }}
     spec:
       serviceAccountName: {{ .Values.ui.serviceAccount }}
       {{- if .Values.image.pullSecret }}

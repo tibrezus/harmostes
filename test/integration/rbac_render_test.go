@@ -34,8 +34,11 @@ const goldenPath = "../../chart/ci/golden/full.yaml"
 var writeVerbs = map[string]bool{"create": true, "update": true, "patch": true, "delete": true, "deletecollection": true}
 
 type goldenResource struct {
-	Kind     string           `json:"kind"`
-	Metadata map[string]any   `json:"metadata"`
+	Kind     string         `json:"kind"`
+	Metadata map[string]any `json:"metadata"`
+	// Spec is decoded for non-RBAC golden assertions (e.g. #525's UI
+	// scrape-annotation pin); RBAC tests read Rules/RoleRef/Subjects.
+	Spec     map[string]any   `json:"spec,omitempty"`
 	Rules    []map[string]any `json:"rules,omitempty"`
 	RoleRef  map[string]any   `json:"roleRef,omitempty"`
 	Subjects []map[string]any `json:"subjects,omitempty"`

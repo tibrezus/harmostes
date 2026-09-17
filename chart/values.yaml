@@ -257,22 +257,17 @@ workflowTemplates:
         plugin:
           name: pr-review
       maxFixes: 3
-      # OWNER DIRECTIVE (supersedes #502/#507): the night window's first
-      # option is litellm/ali/anthropic/deepseek-v4.1-flash 16:00-02:00
-      # CET (Europe/Paris), qwen3.8-flash otherwise; the second option at
-      # all hours is zai/anthropic/glm-5.3-flash via the litellm-provider
-      # fallback chain (fallbacks.ts DEFAULT_FALLBACKS).
-      # PROXY PREREQUISITE: deepseek-v4.1-flash is not yet in the LiteLLM
-      # catalog nor the fleet key's access group (#507 probes). Until the
-      # admin adds it, the chain stays inert (unwiredChains at startup)
-      # and in-window rounds fail LOUDLY via the #504 guard — by design:
-      # a silent -0731 substitution hides the access gap.
+      # OWNER DIRECTIVE (final, supersedes #502/#507/#508): qwen3.8-flash
+      # at ALL hours — no time-windowed schedule. The night window
+      # (deepseek-v4.1-flash 16:00-02:00 CET) was disabled after its first
+      # live rounds: the model explores (27 calls) then fails to finalize —
+      # zero tool calls on feedback turns, no review.json, 4 gate attempts
+      # (observed 2026-09-16/17, fleet sessions). The glm-5.3-flash
+      # fallback chain (qwen → glm) remains as the safety net; the deepseek
+      # → glm chain stays in the table but is inert while no schedule
+      # resolves to that id. Revisit a night window only when the
+      # deepseek route finalizes reliably on the resumed lineage.
       model: litellm/ali/anthropic/qwen3.8-flash
-      models:
-        - model: litellm/ali/anthropic/deepseek-v4.1-flash
-          start: "16:00"
-          end: "02:00"
-          tz: Europe/Paris
       skill: /skills/pr-review/SKILL.md
       taskTemplate:
         configMap: harmostes-tasks

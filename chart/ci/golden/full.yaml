@@ -4667,7 +4667,14 @@ data:
     
     - **PR context**: `cat /workspace/pr-context.json` — host, repo, number, title,
       body, head_sha, head_ref, issue (linked), milestone, ci_status, files_changed,
-      repo_dir, wiki_dir.
+      repo_dir, wiki_dir. The merge state is a FACT from the forge API
+      (`pr_state`, `merged`, `merge_note`) — never narrate it from inference.
+      `gate` lists the exact contexts the kernel gate verified green at this
+      SHA (`required_contexts`, `green_contexts`) — a review may only cite
+      gates from that list; naming a gate that is not there is a finding
+      against YOUR review, not the PR. `diff_source` says where the diff came
+      from ("git" = derived from merge-base..head in the checkout, exact at
+      the dispatched SHA; "api" = forge fallback — treat with care).
     - **Orientation — read `/workspace/rig-briefing.md` FIRST.** It is your
       pre-computed context: the architecture graph's components and dependency
       edges, which components THIS diff touches, their key symbols with
@@ -4677,7 +4684,13 @@ data:
       the briefing does not answer. If pr-context has no `rig_briefing`, fall
       back to `rig` (when `rig_db` is set), and only then to targeted greps.
       `rig_path`/`c4_path` are the wiki's synced copies (background reading only).
-    - **Diff**: `cat /workspace/pr-diff.patch`
+    - **Diff**: `cat /workspace/pr-diff.patch` — the COMPLETE diff (never
+      truncated). For large/huge scopes, navigate it by the manifest first:
+      `files_changed` + `diff_stats` in pr-context.json name every file; grep
+      the patch's `^diff --git` headers to jump to the files that matter
+      instead of reading it end-to-end. Fallback of last resort (diff_source
+      is "api" or the patch looks wrong): `git -C /workspace/repo diff
+      <merge_base> <head_sha>` — the checkout is exact at the reviewed SHA.
     - **Code**: `/workspace/repo` — checked out at the PR's head SHA
     - **Wiki**: `/workspace/wiki` — project design docs (if configured)
     

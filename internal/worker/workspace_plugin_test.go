@@ -104,20 +104,21 @@ func fakePRForge(t *testing.T, merged bool, apiDiff string, filePages ...[]map[s
 	})
 	mux.HandleFunc("/repos/o/r/pulls/9/files", func(w http.ResponseWriter, r *http.Request) {
 		page := 1
-		fmt.Sscanf(r.URL.Query().Get("page"), "%d", &page)
+		_, _ = fmt.Sscanf( // missing page param → 1
+			r.URL.Query().Get("page"), "%d", &page)
 		if page >= 1 && page <= len(filePages) {
-			json.NewEncoder(w).Encode(filePages[page-1])
+			_ = json.NewEncoder(w).Encode(filePages[page-1])
 			return
 		}
-		json.NewEncoder(w).Encode([]any{})
+		_ = json.NewEncoder(w).Encode([]any{})
 	})
 	mux.HandleFunc("/repos/o/r/commits/", func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode([]map[string]any{
+		_ = json.NewEncoder(w).Encode([]map[string]any{
 			{"context": "ci/test", "status": "success"},
 		})
 	})
 	mux.HandleFunc("/repos/o/r/issues/5", func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]any{
+		_ = json.NewEncoder(w).Encode(map[string]any{
 			"title": "linked issue", "body": "b",
 			"labels": []map[string]any{{"name": "bug"}},
 		})

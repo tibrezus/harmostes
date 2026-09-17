@@ -100,7 +100,7 @@ func fakePRForge(t *testing.T, merged bool, apiDiff string, filePages ...[]map[s
 			_, _ = fmt.Fprint(w, apiDiff) // test ResponseWriter write
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]any{
+		_ = json.NewEncoder(w).Encode(map[string]any{
 			"title": "T", "body": "Refs #5", "html_url": "u",
 			"state":     map[bool]string{true: "closed", false: "open"}[merged],
 			"merged":    merged,
@@ -144,8 +144,12 @@ func runContextPhase(t *testing.T, srvURL, workdir, headSha string, extra ...str
 		t.Fatal(err)
 	}
 	// cache-track the plugin + its caller (r4 P9)
-	os.ReadFile(script)
-	os.ReadFile(filepath.Join("..", "..", "plugins", "workspace", "workspace.sh"))
+	if _, err := os.ReadFile(script); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.ReadFile(filepath.Join("..", "..", "plugins", "workspace", "workspace.sh")); err != nil {
+		t.Fatal(err)
+	}
 	cmd := exec.Command("python3", script, "meta")
 	cmd.Dir = workdir
 	cmd.Env = hermeticEnv(append([]string{

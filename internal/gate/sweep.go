@@ -494,7 +494,7 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 				emitGate(ctx, deps.TL, liveAgg, res, repo, pr)
 				log("review-ready: re-dispatching queued claim %s at %s (CI green since arm)", c.Name, r.HeadSHA)
 			case review.DecisionStanddown:
-				releaseClaim(ctx, deps, c, classifyRelease(res.Reason), log)
+				releaseClaim(ctx, deps, c, classifyRelease(res.Evaluation), log)
 				releasedInA[c.Name] = true
 				emitGate(ctx, deps.TL, liveAgg, res, repo, pr)
 			default: // waiting: the armed state is doing its job — shield it
@@ -521,7 +521,7 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 		p.DispatchedAt = r.DispatchedAt.Time
 		res := review.Evaluate(ctx, api, p)
 		if res.Decision == review.DecisionStanddown {
-			reason := classifyRelease(res.Reason)
+			reason := classifyRelease(res.Evaluation)
 			if reason == v1alpha1.ReleaseReasonDispatchTimeout && jobAlive(c.Name) {
 				// The bound presumes death; the Job is observably still
 				// alive (slow deadline enforcement, clock skew). The fact
@@ -1072,12 +1072,40 @@ func isIntentionalStop(err error) bool {
 		errors.Is(err, attempt.ErrChurnBudgetExhausted)
 }
 
-// classifyRelease maps a standdown reason onto the claim's release-reason
-// vocabulary. Producers write CONSTANTS, not re-typed literals: the #402
-// cancel pass branches on the cancellation subset (IsCancellationRelease),
-// so a producer literal that drifts from the constant silently changes what
-// gets cancelled (r3 P4).
-func classifyRelease(reason string) string {
+// classifyRelease maps a standdown Evaluation onto the claim's release-reason
+// vocabulary (#408 item 2): the machine Code decides when present; the prose
+// substrings are the LEGACY fallback (pre-code Evaluations, external reason
+// writers). Deletion authority rides on the result via
+// v1alpha1.IsCancellationRelease — pr-closed and superseded cancel;
+// consumed/horizon/standdown/dispatch-timeout do not.
+func classifyRelease(ev review.Evaluation) string {
+	switch ev.Code {
+	case review.CodePRClosed:
+		return v1alpha1.ReleaseReasonPRClosed
+	case review.CodeConsumed:
+		return "consumed"
+	case review.CodeHorizon:
+		return v1alpha1.ReleaseReasonHorizon
+	case review.CodeHeadMoved:
+		// #410: the in-flight review's PR advanced past the dispatched head —
+		// the verdict cannot land, so the release is a supersession, not a
+		// death: no breaker strike, and the #403 cancel pass deletes the Job.
+		return v1alpha1.ReleaseReasonSuperseded
+	case review.CodeDispatchDead:
+		return v1alpha1.ReleaseReasonDispatchTimeout
+	case review.CodeStanddown:
+		return "standdown"
+	}
+	return classifyReleaseProse(ev.Reason)
+}
+
+// classifyReleaseProse is the legacy substring map over review.go's reason
+// sentences, kept only for producers that predate Evaluation.Code — new
+// code must carry the code (#408 item 2). Producers write CONSTANTS, not
+// re-typed literals: the #402 cancel pass branches on the cancellation
+// subset (IsCancellationRelease), so a producer literal that drifts from
+// the constant silently changes what gets cancelled (r3 P4).
+func classifyReleaseProse(reason string) string {
 	switch {
 	case strings.Contains(reason, "consumed"):
 		return "consumed"

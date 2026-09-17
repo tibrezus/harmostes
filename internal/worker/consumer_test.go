@@ -274,6 +274,19 @@ func TestDispatchConfigCancelOnSupersedeKnob(t *testing.T) {
 		t.Fatal("HARMOSTES_CANCEL_ON_SUPERSEDE=false must disable the pass")
 	}
 
+	// Case variant (#408 item 8): the rendered chart could carry "False" —
+	// the render contract and ParseBool's accepted grammar stay pinned
+	// together, so a helm-side casing change cannot ship a knob that only
+	// looks off.
+	t.Setenv("HARMOSTES_CANCEL_ON_SUPERSEDE", "False")
+	cfg, err = DispatchConfigFromEnv(func(string, ...any) {})
+	if err != nil {
+		t.Fatalf("case-variant off config: %v", err)
+	}
+	if !cfg.DisableCancelOnSupersede {
+		t.Fatal("HARMOSTES_CANCEL_ON_SUPERSEDE=False must disable the pass (ParseBool grammar)")
+	}
+
 	t.Setenv("HARMOSTES_CANCEL_ON_SUPERSEDE", "sometimes")
 	if _, err := DispatchConfigFromEnv(func(string, ...any) {}); err == nil {
 		t.Fatal("a malformed knob value must fail construction, not silently keep the default")

@@ -65,8 +65,30 @@ type Envelope struct {
 type Evaluation struct {
 	Decision Decision
 	Reason   string
+	// Code is the machine-readable release code for standdown Evaluations
+	// (#408 item 2): the gate's release classification consults the code
+	// FIRST and falls back to Reason substrings only for legacy producers
+	// (pre-code Evaluations, external reason writers). The safety property —
+	// which releases authorize Job deletion — must not rest on sentence
+	// wording; the prose stays for humans (logs, timeline, the CR).
+	Code     ReleaseCode
 	Envelope *Envelope // set only on proceed
 }
+
+// ReleaseCode is the closed vocabulary of standdown reasons the gate can
+// classify. It maps 1:1 onto the release-reason vocabulary via
+// gate.classifyRelease; an empty code on a standdown Evaluation means a
+// legacy/external producer — the prose fallback applies.
+type ReleaseCode string
+
+const (
+	CodePRClosed     ReleaseCode = "pr-closed"     // PR closed — the verdict can never land (cancel)
+	CodeConsumed     ReleaseCode = "consumed"      // verdict posted, label consumed — review done
+	CodeHorizon      ReleaseCode = "horizon"       // ambiguity horizon exceeded — verdict may still land (ADR-0006)
+	CodeHeadMoved    ReleaseCode = "head-moved"    // PR advanced past the dispatched head (#410) — verdict void (cancel)
+	CodeDispatchDead ReleaseCode = "dispatch-dead" // dispatched, no verdict within the dispatch timeout (cancel; no live Job left)
+	CodeStanddown    ReleaseCode = "standdown"     // anything else the gate stops asking for — never cancels
+)
 
 // API is the per-host API surface the gate reads. It exists so tests can
 // stub the transport.
@@ -661,7 +683,7 @@ func Evaluate(ctx context.Context, api API, p Params) Result {
 	}
 
 	if p.DisarmHint {
-		return Result{Evaluation: standdown("pull request closed"), NewArmedSha: ""}
+		return Result{Evaluation: standdown(CodePRClosed, "pull request closed"), NewArmedSha: ""}
 	}
 
 	pr, err := api.GetPullRequest(ctx, p.Repo, p.PR)
@@ -698,7 +720,17 @@ func Evaluate(ctx context.Context, api API, p Params) Result {
 	}
 
 	if pr.State != "open" {
-		return withPresence(standdown("pull request "+stateWord(pr.State)), "", time.Time{})
+		// #408 item 2: a Forgejo host can report state "merged" where GitHub
+		// says "closed". merged still classifies as plain standdown — NEVER a
+		// cancellation — because the run bound lets an in-flight verdict drain
+		// and the moved-head guard discards it; only closed is terminal for
+		// the review. Do not widen CodePRClosed to merged without revisiting
+		// that drain path.
+		code := CodeStanddown
+		if pr.State == "closed" {
+			code = CodePRClosed
+		}
+		return withPresence(standdown(code, "pull request "+stateWord(pr.State)), "", time.Time{})
 	}
 
 	if !pr.HasLabel(p.Label) {
@@ -731,7 +763,7 @@ func Evaluate(ctx context.Context, api API, p Params) Result {
 			return withoutPresence(waiting("label absent; verdict check failed: "+err.Error()), keepSha, armTime(p.ArmedAt, now))
 		}
 		if hasVerdict(comments) {
-			return withoutPresence(standdown("label absent (verdict posted — consumed)"), "", time.Time{})
+			return withoutPresence(standdown(CodeConsumed, "label absent (verdict posted — consumed)"), "", time.Time{})
 		}
 		armedAt := armTime(p.ArmedAt, now)
 		// Head moved during the ambiguity window: reset the horizon clock,
@@ -742,7 +774,7 @@ func Evaluate(ctx context.Context, api API, p Params) Result {
 			armedAt = now
 		}
 		if now.Sub(armedAt) > p.Horizon {
-			return withoutPresence(standdown("horizon exceeded (label absent, no verdict; pending > "+p.Horizon.String()+")"), "", time.Time{})
+			return withoutPresence(standdown(CodeHorizon, "horizon exceeded (label absent, no verdict; pending > "+p.Horizon.String()+")"), "", time.Time{})
 		}
 		// #512: the hold note discriminates WHY the armed claim is parked —
 		// an armed claim dispatches on CI green regardless of the label (the
@@ -763,7 +795,7 @@ func Evaluate(ctx context.Context, api API, p Params) Result {
 	}
 
 	if now.Sub(armedAt) > p.Horizon {
-		return withPresence(standdown("horizon exceeded (CI pending > "+p.Horizon.String()+")"), "", time.Time{})
+		return withPresence(standdown(CodeHorizon, "horizon exceeded (CI pending > "+p.Horizon.String()+")"), "", time.Time{})
 	}
 
 	// In-flight discrimination (#250 r2) + liveness bound (#248) — BEFORE
@@ -788,7 +820,7 @@ func Evaluate(ctx context.Context, api API, p Params) Result {
 			return withPresence(waiting("in-flight verdict check failed: "+err.Error()), pr.HeadSHA, armedAt)
 		}
 		if hasVerdict(comments) {
-			return withPresence(standdown("verdict posted — consumed"), "", time.Time{})
+			return withPresence(standdown(CodeConsumed, "verdict posted — consumed"), "", time.Time{})
 		}
 		// Head moved while the review was in flight (#410): the run was
 		// dispatched at the claim's head, but the PR has advanced past it.
@@ -807,10 +839,10 @@ func Evaluate(ctx context.Context, api API, p Params) Result {
 		// already prevented. A failed verdict scan stays on the waiting
 		// path above (conservative: retry the whole evaluation next sweep).
 		if p.ArmedSha != "" && p.ArmedSha != pr.HeadSHA {
-			return Result{Evaluation: standdown(fmt.Sprintf("head moved while review in flight (dispatched at %s, PR now at %s) — verdict could not land", p.ArmedSha, pr.HeadSHA)), NewArmedSha: ""}
+			return Result{Evaluation: standdown(CodeHeadMoved, fmt.Sprintf("head moved while review in flight (dispatched at %s, PR now at %s) — verdict could not land", p.ArmedSha, pr.HeadSHA)), NewArmedSha: ""}
 		}
 		if p.DispatchTimeout > 0 && now.Sub(p.DispatchedAt) >= p.DispatchTimeout {
-			return withPresence(standdown(fmt.Sprintf("dispatch presumed dead (no verdict after %s; run bound %s) — backlog will re-arm", p.DispatchTimeout, v1alpha1.OneShotRunBound)), "", time.Time{})
+			return withPresence(standdown(CodeDispatchDead, fmt.Sprintf("dispatch presumed dead (no verdict after %s; run bound %s) — backlog will re-arm", p.DispatchTimeout, v1alpha1.OneShotRunBound)), "", time.Time{})
 		}
 		return withPresence(waiting("review in flight — dispatched, verdict pending"), pr.HeadSHA, armedAt)
 	}
@@ -883,8 +915,8 @@ func nowFrom(p Params) time.Time {
 }
 
 func waiting(reason string) Evaluation { return Evaluation{Decision: DecisionWaiting, Reason: reason} }
-func standdown(reason string) Evaluation {
-	return Evaluation{Decision: DecisionStanddown, Reason: reason}
+func standdown(code ReleaseCode, reason string) Evaluation {
+	return Evaluation{Decision: DecisionStanddown, Reason: reason, Code: code}
 }
 
 // verdictTrailer anchors hasVerdict to the FULL trailer shape the pr-review

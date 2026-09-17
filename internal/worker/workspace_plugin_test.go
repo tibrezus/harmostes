@@ -52,7 +52,9 @@ func fixtureRepo(t *testing.T) (dir, baseSha, headSha string) {
 		return out.String()
 	}
 	run("init", "-q", "-b", "main")
-	os.WriteFile(filepath.Join(dir, "README.md"), []byte("base\n"), 0o644)
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	run("add", "-A")
 	run("commit", "-qm", "base")
 	baseSha = strings.TrimSpace(run("rev-parse", "HEAD"))
@@ -60,14 +62,20 @@ func fixtureRepo(t *testing.T) (dir, baseSha, headSha string) {
 	// vendored-first bulk
 	for i := 0; i < vendoredFileCount; i++ {
 		vdir := filepath.Join(dir, "vendor", "pkg", fmt.Sprintf("p%03d", i%7))
-		os.MkdirAll(vdir, 0o755)
-		os.WriteFile(filepath.Join(vdir, fmt.Sprintf("f%03d.js", i)),
-			[]byte(strings.Repeat(fmt.Sprintf("// vendored line %d padding padding padding\n", i), 16)), 0o644)
+		if err := os.MkdirAll(vdir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(vdir, fmt.Sprintf("f%03d.js", i)),
+			[]byte(strings.Repeat(fmt.Sprintf("// vendored line %d padding padding padding\n", i), 16)), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 	run("add", "-A")
 	run("commit", "-qm", "vendor sync")
 	// the code delta LAST — first to be amputated by a head-first cap
-	os.MkdirAll(filepath.Join(dir, "internal", "piargs"), 0o755)
+	if err := os.MkdirAll(filepath.Join(dir, "internal", "piargs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(dir, "internal", "piargs", "piargs.go"),
 		[]byte("package piargs\n\n// the real review surface\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -85,11 +93,11 @@ func fakePRForge(t *testing.T, merged bool, apiDiff string, filePages ...[]map[s
 	t.Helper()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/repos/o/r/pulls/9.diff", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, apiDiff)
+		_, _ = fmt.Fprint(w, apiDiff) // test ResponseWriter write
 	})
 	mux.HandleFunc("/repos/o/r/pulls/9", func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.Header.Get("accept"), "diff") {
-			fmt.Fprint(w, apiDiff)
+			_, _ = fmt.Fprint(w, apiDiff) // test ResponseWriter write
 			return
 		}
 		json.NewEncoder(w).Encode(map[string]any{

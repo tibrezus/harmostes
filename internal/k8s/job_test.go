@@ -670,8 +670,9 @@ func TestSkillsRevPinIsFullShaOrEmpty(t *testing.T) {
 	if len(rev) != 40 {
 		t.Fatalf("values.skills.rev = %q — must be the FULL 40-hex sha (fetch-by-SHA refuses abbreviations) or empty", rev)
 	}
+	isHex := func(r rune) bool { return '0' <= r && r <= '9' || 'a' <= r && r <= 'f' }
 	for _, r := range rev {
-		if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f') {
+		if !isHex(r) {
 			t.Fatalf("values.skills.rev = %q — not hex", rev)
 		}
 	}

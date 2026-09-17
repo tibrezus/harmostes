@@ -42,12 +42,21 @@ func SkillsRepo() string {
 	return DefaultSkillsRepo
 }
 
+// SkillsRev resolves the PINNED skills revision (#408 item 9): the env set
+// by the chart (values.skills.rev passed through), else "" = track the
+// repo's default branch. Empty is the escape hatch — the fleet pins by
+// default and the skills-bump workflow owns keeping the pin fresh, so an
+// operator who wants to live on main says so explicitly.
+func SkillsRev() string {
+	return os.Getenv("HARMOSTES_SKILLS_REV")
+}
+
 // skillsSyncCommand mirrors the chart's sync-skills init container byte
 // for byte: clone the agents repo fresh, copy skills/, write the sha256
 // manifest the pool's startup check consumes. Every attempt therefore
-// serves agents main AS OF THE ATTEMPT — the owner directive "every update
-// should be available in the runtime" at the granularity agents actually
-// move (between pool pod restarts).
+// serves the pinned skills rev AS OF THE ATTEMPT (#408 item 9) — the
+// owner directive "every update should be available in the runtime" at
+// the granularity the bump bot actually moves (the values pin).
 //
 // #407: the repo URL is deliberately NOT interpolated here. It travels as
 // HARMOSTES_SKILLS_REPO env data (set by the chart / SkillsRepo()), and the
@@ -55,8 +64,13 @@ func SkillsRepo() string {
 // never re-parse expansion results as operators, so a crafted skills.repo
 // value cannot execute shell in the pod. The chart template carries the
 // identical literal — keep them in sync.
+//
+// #408 item 9: HARMOSTES_SKILLS_REV pins the served revision. Non-empty →
+// shallow-fetch that exact commit and check it out (clone --branch cannot
+// take an arbitrary SHA); empty → the clone's default branch stands. The
+// rev travels as env data too — same injection argument as the repo URL.
 func skillsSyncCommand() []string {
-	return []string{"sh", "-c", `git clone --depth 1 "$HARMOSTES_SKILLS_REPO" /tmp/agents && mkdir -p /skills && cp -r /tmp/agents/skills/. /skills/ && { echo "[sync-skills] served skills revision: $(git -C /tmp/agents rev-parse HEAD)"; (find /skills -name 'SKILL.md' | sort | xargs -r sha256sum > /skills/.manifest) || echo "[sync-skills] manifest write failed (non-fatal)"; true; }`}
+	return []string{"sh", "-c", `git clone --depth 1 "$HARMOSTES_SKILLS_REPO" /tmp/agents && { [ -z "$HARMOSTES_SKILLS_REV" ] || { git -C /tmp/agents fetch --depth 1 origin "$HARMOSTES_SKILLS_REV" && git -C /tmp/agents checkout --detach FETCH_HEAD; }; } && mkdir -p /skills && cp -r /tmp/agents/skills/. /skills/ && { echo "[sync-skills] served skills revision: $(git -C /tmp/agents rev-parse HEAD)"; (find /skills -name 'SKILL.md' | sort | xargs -r sha256sum > /skills/.manifest) || echo "[sync-skills] manifest write failed (non-fatal)"; true; }`}
 }
 
 // AttemptJobParams parameterize BuildJob — the per-Attempt Job pod shape
@@ -352,9 +366,13 @@ func BuildJob(p AttemptJobParams) *batchv1.Job {
 						Name:    "sync-skills",
 						Image:   p.Image,
 						Command: skillsSyncCommand(),
-						// #407: the clone source travels as env data, never spliced
-						// into the shell string (see skillsSyncCommand).
-						Env:          []corev1.EnvVar{{Name: "HARMOSTES_SKILLS_REPO", Value: SkillsRepo()}},
+						// #407/#408: clone source and pinned rev travel as env
+						// data, never spliced into the shell string (see
+						// skillsSyncCommand).
+						Env: []corev1.EnvVar{
+							{Name: "HARMOSTES_SKILLS_REPO", Value: SkillsRepo()},
+							{Name: "HARMOSTES_SKILLS_REV", Value: SkillsRev()},
+						},
 						VolumeMounts: []corev1.VolumeMount{{Name: "skills", MountPath: "/skills"}},
 					}},
 					Containers: []corev1.Container{{

@@ -1,0 +1,69 @@
+# Skills supply-chain freshness (#408 item 9): the fleet serves a PINNED
+# agents revision (values.skills.rev), so this workflow owns keeping that pin
+# fresh — daily it compares the pin against agents main and opens a PR that
+# bumps it when the upstream moved. The advisory "is the fleet stale?" log
+# line retires: staleness is now a reviewable diff instead of a judgment
+# call.
+#
+# NOTE ON CI-CARRYING PRs: GitHub does not start workflows for PRs created
+# with the default GITHUB_TOKEN (recursion guard), so a bump PR would open
+# with no checks and be unmergeable under branch protection. Configure a
+# fine-grained PAT (contents:write + pull-requests:write on this repo only)
+# as the SKILLS_BUMP_TOKEN secret — PRs created with it carry full CI and
+# can merge on green. Without the secret the PR still opens (drift is
+# visible) but an operator must close/reopen it to start CI.
+name: skills-bump
+
+on:
+  schedule:
+    - cron: "0 6 * * *" # daily 06:00 UTC — one bump PR/day at most
+  workflow_dispatch: {} # manual re-run after a failed/merged bump
+
+# Least privilege: bump the pin and open the PR — nothing else.
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: skills-bump
+  cancel-in-progress: false # a bump must never race itself
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Bump values.skills.rev when agents main moved
+        env:
+          GH_TOKEN: ${{ secrets.SKILLS_BUMP_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          pinned="$(sed -n 's/^  rev: "\(.*\)"$/\1/p' chart/values.yaml)"
+          upstream="$(git ls-remote https://github.com/tibrezus/agents.git refs/heads/main | cut -c1-12)"
+          echo "pinned=${pinned:-<empty: tracking main>} upstream=$upstream"
+          if [ -z "$upstream" ]; then
+            echo "::error::git ls-remote returned nothing — agents repo unreachable?"
+            exit 1
+          fi
+          if [ "$pinned" = "$upstream" ]; then
+            echo "pin is fresh — nothing to do"
+            exit 0
+          fi
+          if git ls-remote --heads origin "chore/skills-bump-$upstream" | grep -q .; then
+            echo "bump branch for $upstream already exists — a PR is presumably open"
+            exit 0
+          fi
+          git config user.name "harmostes-bot"
+          git config user.email "harmostes-bot@rezus.cloud"
+          git checkout -b "chore/skills-bump-$upstream"
+          sed -i "s|^  rev: \".*\"$|  rev: \"$upstream\"|" chart/values.yaml
+          git add chart/values.yaml
+          git commit -m "chore(skills): bump pinned skills rev to $upstream"
+          git push origin "chore/skills-bump-$upstream"
+          gh pr create \
+            --title "chore(skills): bump pinned skills rev to ${upstream:0:7}" \
+            --body "Automated bump of \`values.skills.rev\` (#408 item 9): agents main advanced \`${pinned:-<tracking main>}\` → \`$upstream\`.
+
+The fleet serves the pinned rev; merging this PR is the freshness step. Rollback = revert (the previous pin returns)." \
+            --base main --head "chore/skills-bump-$upstream"

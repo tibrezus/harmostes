@@ -1,6 +1,8 @@
 package k8s
 
 import (
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -10,6 +12,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	sigsyaml "sigs.k8s.io/yaml"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
 
@@ -201,6 +204,86 @@ func TestSkillsSyncCommandInjectionSafe(t *testing.T) {
 	}
 }
 
+// #408 item 9: a PINNED revision rides the same env-indirection contract —
+// hostile payload in HARMOSTES_SKILLS_REV must reach the shell only as env
+// data (inert), with the command referencing "$HARMOSTES_SKILLS_REV"
+// quoted inside the fetch/checkout segment.
+func TestSkillsRevPinnedCheckoutInjectionSafe(t *testing.T) {
+	hostile := []string{
+		"main; rm -rf /",
+		"$(touch /pwned-rev)",
+		"9b63a39c36cb`touch /pwned3`",
+		"--upload-pack=evil",
+		"deadbeef\nrm -rf /",
+	}
+	for _, rev := range hostile {
+		t.Setenv("HARMOSTES_SKILLS_REV", rev)
+		job := BuildJob(AttemptJobParams{
+			Attempt:      jobTestAttempt(),
+			WorkflowName: "pr-review-harmostes",
+			Namespace:    "harmostes",
+			Image:        "ghcr.io/tibrezus/harmostes-worker:1.2.3",
+		})
+		ic := job.Spec.Template.Spec.InitContainers[0]
+		cmd := strings.Join(ic.Command, " ")
+		for _, payload := range []string{"rm -rf", "touch /pwned", "`touch", "--upload-pack=evil"} {
+			if strings.Contains(cmd, payload) {
+				t.Fatalf("hostile rev %q: payload %q reached the command string: %q", rev, payload, cmd)
+			}
+		}
+		if v := envValue(ic.Env, "HARMOSTES_SKILLS_REV"); v != rev {
+			t.Fatalf("hostile rev must travel verbatim as env data, got env=%q", v)
+		}
+		// Positive shape: the shell must reference the rev env var QUOTED in
+		// the fetch/checkout segment — an env-only value the command never
+		// reads would silently unpin the fleet.
+		for _, need := range []string{
+			`[ -z "$HARMOSTES_SKILLS_REV" ]`,
+			`fetch --depth 1 origin "$HARMOSTES_SKILLS_REV"`,
+			`checkout --detach FETCH_HEAD`,
+		} {
+			if !strings.Contains(cmd, need) {
+				t.Fatalf("command must carry %q, got %q", need, cmd)
+			}
+		}
+	}
+}
+
+// #408 item 9: the chart template and the Go side MUST stay byte-identical
+// (#407 discipline, now mechanically pinned). The worker-pool template's
+// sync-skills command is a single-line YAML flow scalar — parse it and
+// compare against skillsSyncCommand's script.
+func TestSyncSkillsCommandMatchesChartTemplate(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "chart", "templates", "worker-pool.yaml"))
+	if err != nil {
+		t.Fatalf("read chart template: %v", err)
+	}
+	var cmdLine string
+	for _, line := range strings.Split(string(raw), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, `command: ["sh", "-c", "git clone --depth 1`) {
+			cmdLine = trimmed
+			break
+		}
+	}
+	if cmdLine == "" {
+		t.Fatal("worker-pool.yaml carries no sync-skills command line — template moved? update this test's anchor")
+	}
+	// Strip the mapping key — the flow sequence parses standalone.
+	flow := strings.TrimPrefix(cmdLine, "command: ")
+	var parsed []string
+	if err := sigsyaml.Unmarshal([]byte(flow), &parsed); err != nil {
+		t.Fatalf("parse chart command scalar: %v", err)
+	}
+	if len(parsed) != 3 || parsed[0] != "sh" || parsed[1] != "-c" {
+		t.Fatalf("chart command shape = %#v, want [sh -c <script>]", parsed)
+	}
+	want := skillsSyncCommand()[2]
+	if parsed[2] != want {
+		t.Errorf("chart and Go sync-skills literals DIVERGED:\nchart: %s\ngo:    %s", parsed[2], want)
+	}
+}
+
 func TestBuildJobServesFreshSkills(t *testing.T) {
 	job := BuildJob(AttemptJobParams{
 		Attempt:        jobTestAttempt(),
@@ -227,8 +310,14 @@ func TestBuildJobServesFreshSkills(t *testing.T) {
 	if !strings.Contains(cmd, `git clone --depth 1 "$HARMOSTES_SKILLS_REPO" /tmp/agents`) {
 		t.Fatalf("sync-skills must clone via the env-indirected repo URL, got %q", cmd)
 	}
-	if envVal := envValue(ic.Env, "HARMOSTES_SKILLS_REPO"); envVal != DefaultSkillsRepo {
-		t.Fatalf("sync-skills must receive the repo (default %s) as HARMOSTES_SKILLS_REPO env, got %q", DefaultSkillsRepo, envVal)
+	if envVal := envValue(ic.Env, "HARMOSTES_SKILLS_REV"); envVal != "" {
+		t.Fatalf("unset HARMOSTES_SKILLS_REV must resolve to empty (track default branch), got %q", envVal)
+	}
+	if !strings.Contains(cmd, `[ -z "$HARMOSTES_SKILLS_REV" ]`) || !strings.Contains(cmd, `fetch --depth 1 origin "$HARMOSTES_SKILLS_REV"`) {
+		t.Fatalf("sync-skills must carry the pinned-rev fetch/checkout segment referencing the env var quoted, got %q", cmd)
+	}
+	if strings.Contains(cmd, DefaultSkillsRepo) {
+		t.Fatalf("#407: the repo URL must never be spliced into the command string, got %q", cmd)
 	}
 	if strings.Contains(cmd, DefaultSkillsRepo) {
 		t.Fatalf("#407: the repo URL must never be spliced into the command string, got %q", cmd)

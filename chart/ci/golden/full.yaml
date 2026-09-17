@@ -5376,12 +5376,16 @@ spec:
           # #407: the repo URL travels as env data and the script references it
           # quoted as "$HARMOSTES_SKILLS_REPO" — POSIX shells never re-parse
           # expansion results as operators, so a crafted values.skills.repo
-          # cannot execute shell in the pod. Byte-identical literal to
+          # cannot execute shell in the pod. #408 item 9: values.skills.rev
+          # pins the served revision the same way ("$HARMOSTES_SKILLS_REV",
+          # fetch+checkout when non-empty). Byte-identical literal to
           # internal/k8s.skillsSyncCommand (Go side, per-Attempt Jobs).
-          command: ["sh", "-c", "git clone --depth 1 \"$HARMOSTES_SKILLS_REPO\" /tmp/agents && mkdir -p /skills && cp -r /tmp/agents/skills/. /skills/ && { echo \"[sync-skills] served skills revision: $(git -C /tmp/agents rev-parse HEAD)\"; (find /skills -name 'SKILL.md' | sort | xargs -r sha256sum > /skills/.manifest) || echo \"[sync-skills] manifest write failed (non-fatal)\"; true; }"]
+          command: ["sh", "-c", "git clone --depth 1 \"$HARMOSTES_SKILLS_REPO\" /tmp/agents && { [ -z \"$HARMOSTES_SKILLS_REV\" ] || { git -C /tmp/agents fetch --depth 1 origin \"$HARMOSTES_SKILLS_REV\" && git -C /tmp/agents checkout --detach FETCH_HEAD; }; } && mkdir -p /skills && cp -r /tmp/agents/skills/. /skills/ && { echo \"[sync-skills] served skills revision: $(git -C /tmp/agents rev-parse HEAD)\"; (find /skills -name 'SKILL.md' | sort | xargs -r sha256sum > /skills/.manifest) || echo \"[sync-skills] manifest write failed (non-fatal)\"; true; }"]
           env:
             - name: HARMOSTES_SKILLS_REPO
               value: "https://github.com/tibrezus/agents.git"
+            - name: HARMOSTES_SKILLS_REV
+              value: "9b63a39c36cb"
           volumeMounts:
             - name: skills
               mountPath: /skills
@@ -5464,6 +5468,10 @@ spec:
             # (internal/k8s.DefaultSkillsRepo — kept equal to values.skills.repo).
             - name: HARMOSTES_SKILLS_REPO
               value: "https://github.com/tibrezus/agents.git"
+            # #408 item 9: the dispatcher passes the pinned rev through so
+            # per-Attempt Jobs serve the SAME revision the pool serves.
+            - name: HARMOSTES_SKILLS_REV
+              value: "9b63a39c36cb"
             # GH_TOKEN deliberately aliases the same secret the dispatch path
             # already mounts as HARMOSTES_GIT_TOKEN — the gh CLI wants its
             # canonical name; one credential, one secret, two env spellings.

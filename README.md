@@ -37,6 +37,31 @@ SHA; red CI is a silent non-event; a moved head re-arms at the new SHA.
 The verdict posts as an issue comment carrying the trailer
 `<!-- pr-review: DECISION @ sha -->` and consumes the label.
 
+## Testing your change (preview environments)
+
+Every kernel PR can run itself. Label the PR **`preview`** and the cluster
+provisions a dedicated environment in namespace `harmostes-pr<id>`:
+valkey + this chart rendered from the repo **at the PR's SHA**, with images
+built from the same SHA by the `preview-artifacts` workflow.
+
+- **URL:** `https://harmostes-pr<id>.dev.rezus.cloud` (wildcard TLS via the
+  gateway's preview listener)
+- **Identity:** the header credential — pages 401 without it:
+
+  ```bash
+  curl -H 'X-Harmostes-Dev-User: <your-name>' https://harmostes-pr<id>.dev.rezus.cloud/healthz
+  ```
+
+  The owner-scoped visibility gate holds on previews; writes additionally
+  require the environment's `devWrite` (enabled on previews by design).
+- **Lifecycle:** closing (or merging) the PR garbage-collects the whole
+  namespace. Failures to spawn are torn down, not wedged.
+
+The label is **not** the review gate — `preview-ready` is a different label
+(the Review-Ready Gate's). Full procedure, including the standing
+`harmostes-dev` environment and prod pinning, lives in the
+[dev-environment how-to](https://github.com/tibrezus/harmostes/wiki/How-to-Run-the-Dev-Environment).
+
 ## The model in one paragraph
 
 A **Workflow** is a graph of typed **Nodes**. The kernel is deterministic: it

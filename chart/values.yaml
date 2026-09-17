@@ -9,6 +9,12 @@ image:
 
 skills:
   repo: https://github.com/tibrezus/agents.git   # cloned by the init container into /skills on every worker pod AND per-Attempt Job (#441, passed to the dispatcher as HARMOSTES_SKILLS_REPO; Go default: internal/k8s.DefaultSkillsRepo)
+  # Pinned served revision (#408 item 9): the fleet clones THIS commit, not
+  # a moving branch — the supply chain is reproducible and the skills-bump
+  # workflow owns freshness (scheduled PR bumping this value when agents
+  # main moves). Empty string = track the repo's default branch (the
+  # pre-#408 behavior; the manifest log line remains the only provenance).
+  rev: "9b63a39c36cb"
 
 agent:
   # Hard tool-call cap per agent session (#484): past the cap only the

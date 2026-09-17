@@ -5277,6 +5277,14 @@ spec:
         dapr.io/config: harmostes-config
         dapr.io/sidecar-image: "ghcr.io/rezuscloud/daprd:otel-metrics-latest-amd64"
         dapr.io/env: "OTEL_EXPORTER_OTLP_INSECURE=true"
+        # UI self-telemetry (#525): the UI's /metrics (Prometheus format,
+        # outside auth — the scraper is in-cluster and holds no identity)
+        # registers with the annotation-based kubernetes-pods receiver
+        # (concepts/annotation-based-observability). The UI is scrape-only
+        # (no OTel SDK); without these annotations nothing ingests it.
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8083"
+        prometheus.io/path: /metrics
     spec:
       serviceAccountName: harmostes-ui
       imagePullSecrets:

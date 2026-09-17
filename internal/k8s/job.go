@@ -399,6 +399,10 @@ func ListActiveJobs(ctx context.Context, cl client.Client, namespace, workflow s
 // verdict. Deleting uses default (foreground-adjacent) propagation: the
 // running pod is SIGTERMed, which IS the mechanism — the ctx-cancelled run
 // never reaches post-review, so no verdict can land for the dead head.
+// DeleteJob removes the attempt's review Job. Default propagation cascades
+// to the running pod — and that cascade IS the cancellation mechanism
+// (#402): SIGTERM → context cancel → the graph aborts before post-review
+// ever runs, so a cancelled claim leaves no verdict behind.
 func DeleteJob(ctx context.Context, cl client.Client, namespace, name string) error {
 	j := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name}}
 	return cl.Delete(ctx, j)

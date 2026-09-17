@@ -244,3 +244,72 @@ func TestGoldenUIRBAC(t *testing.T) {
 		}
 	}
 }
+
+// The cancel-on-supersede knob (#408 item 8): the rendered worker-pool env
+// must carry HARMOSTES_CANCEL_ON_SUPERSEDE BY NAME with the default-on
+// value — matched by entry name (never by position), so a helm-side rename
+// or a value flip cannot ship silently. The accepted-value grammar is
+// pinned on the parse side (TestDispatchConfigCancelOnSupersedeKnob,
+// including the "False" case variant); the two stay in step.
+func TestGoldenWorkerCancelKnob(t *testing.T) {
+	type envEntry struct {
+		Name  string `json:"name"`
+		Value string `json:"value"`
+	}
+	type container struct {
+		Name string     `json:"name"`
+		Env  []envEntry `json:"env"`
+	}
+	type deployment struct {
+		Kind     string         `json:"kind"`
+		Metadata map[string]any `json:"metadata"`
+		Spec     struct {
+			Template struct {
+				Spec struct {
+					Containers []container `json:"containers"`
+				} `json:"spec"`
+			} `json:"template"`
+		} `json:"spec"`
+	}
+	var pool *deployment
+	for _, doc := range strings.Split(string(mustReadGolden(t)), "\n---") {
+		doc = strings.TrimSpace(doc)
+		if doc == "" {
+			continue
+		}
+		var d deployment
+		if err := sigsyaml.Unmarshal([]byte(doc), &d); err != nil {
+			t.Fatalf("parse golden doc: %v", err)
+		}
+		if d.Kind == "Deployment" {
+			name, _ := d.Metadata["name"].(string)
+			if strings.Contains(name, "worker-pool") {
+				pool = &d
+				break
+			}
+		}
+	}
+	if pool == nil {
+		t.Fatal("golden render has no worker-pool Deployment")
+	}
+	for _, c := range pool.Spec.Template.Spec.Containers {
+		for _, e := range c.Env {
+			if e.Name == "HARMOSTES_CANCEL_ON_SUPERSEDE" {
+				if e.Value != "true" {
+					t.Errorf("rendered %s = %q, want \"true\" (default-on; the False case-variant grammar is pinned in the parse test)", e.Name, e.Value)
+				}
+				return
+			}
+		}
+	}
+	t.Error("worker-pool render carries no HARMOSTES_CANCEL_ON_SUPERSEDE env entry — the knob is unnamed in the contract")
+}
+
+func mustReadGolden(t *testing.T) []byte {
+	t.Helper()
+	raw, err := os.ReadFile(goldenPath)
+	if err != nil {
+		t.Fatalf("read golden render: %v", err)
+	}
+	return raw
+}

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"sync/atomic"
 	"time"
 
 	cloudevents "github.com/cloudevents/sdk-go/v2"
@@ -44,6 +45,20 @@ type ConsumerConfig struct {
 	Topic      string  // topic to subscribe to (default "harmostes-triggers")
 	RunFunc    RunFunc // the function that executes a workflow
 	Logger     *slog.Logger
+	Namespace  string // the namespace the workflows live in (fast-poll runs)
+
+	// FastPoll arms the leg-2 fast path (owner requirement): every tick,
+	// ArmedWaitingWorkflows names the review-ready workflows holding an
+	// ARMED, NEVER-DISPATCHED claim (the durable queue — the PR asked for
+	// a review and the gate is only waiting for CI), and each gets a
+	// synthetic schedule trigger through RunFunc. CI-green is therefore
+	// detected within one tick of the last context landing instead of on
+	// the next cron tick — the workflow starts instantly when the
+	// conditions are met. 0 = off (cron-only backstop).
+	FastPoll time.Duration
+	// ArmedWaitingWorkflows returns the review-ready workflow NAMES with
+	// armed-not-dispatched claims. Nil disables the fast poll.
+	ArmedWaitingWorkflows func(ctx context.Context) []string
 }
 
 // RunFunc executes a single workflow run. The consumer shells out to itself
@@ -117,6 +132,10 @@ func (c *Consumer) Start(ctx context.Context) error {
 		Handler: mux,
 	}
 
+	if c.cfg.FastPoll > 0 && c.cfg.ArmedWaitingWorkflows != nil {
+		go c.fastPollLoop(ctx)
+	}
+
 	c.cfg.Logger.Info("consumer listening",
 		"port", c.cfg.HTTPPort,
 		"topic", c.cfg.Topic,
@@ -131,6 +150,41 @@ func (c *Consumer) Start(ctx context.Context) error {
 	}()
 
 	return c.server.ListenAndServe()
+}
+
+// fastPollLoop runs the leg-2 fast path: while any review-ready workflow
+// holds an armed-not-dispatched claim, fire synthetic schedule triggers at
+// the FastPoll cadence. The sweep is idempotent and capacity-safe (the
+// dispatcher's createMu + the gate's own dedupe), so overlap degrades to a
+// no-op; a busy flag keeps one sweep per tick even when a sweep overruns
+// the interval.
+func (c *Consumer) fastPollLoop(ctx context.Context) {
+	ticker := time.NewTicker(c.cfg.FastPoll)
+	defer ticker.Stop()
+	var busy atomic.Bool
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		if !busy.CompareAndSwap(false, true) {
+			continue
+		}
+		for _, wf := range c.cfg.ArmedWaitingWorkflows(ctx) {
+			req := RunRequest{
+				Workflow:  wf,
+				Namespace: c.cfg.Namespace,
+				Source:    "fast-poll",
+			}
+			runCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+			if err := c.cfg.RunFunc(runCtx, req); err != nil {
+				c.cfg.Logger.Info("fast-poll sweep failed (retried next tick)", "workflow", wf, "error", err)
+			}
+			cancel()
+		}
+		busy.Store(false)
+	}
 }
 
 // handleSubscribe returns the Dapr pub/sub subscription configuration.
@@ -254,6 +308,11 @@ func RunConsumer(ctx context.Context, muxOpts ...func(*http.ServeMux)) error {
 		Topic:      envOr("HARMOSTES_TRIGGER_TOPIC", "harmostes-triggers"),
 		RunFunc:    dispatcher.Dispatch,
 		Logger:     logger,
+		Namespace:  dispatcher.Namespace(),
+		FastPoll:   fastPollFromEnv(logger),
+		ArmedWaitingWorkflows: func(ctx context.Context) []string {
+			return dispatcher.ArmedWaitingWorkflows(ctx)
+		},
 	})
 	consumer.muxOpts = muxOpts
 
@@ -264,6 +323,21 @@ func RunConsumer(ctx context.Context, muxOpts ...func(*http.ServeMux)) error {
 // live in dispatch.go beside the DispatchConfig they feed — one module owns
 // env→config, so a parsed fact cannot be dropped between a parser and a
 // struct field (the #314 class).
+
+// fastPollFromEnv reads HARMOSTES_GATE_FASTPOLL (Go duration; the chart
+// default is 30s). "0"/unparsable = off — the cron-only backstop.
+func fastPollFromEnv(logger *slog.Logger) time.Duration {
+	raw := os.Getenv("HARMOSTES_GATE_FASTPOLL")
+	if raw == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		logger.Warn("HARMOSTES_GATE_FASTPOLL unparsable — fast poll disabled", "value", raw)
+		return 0
+	}
+	return d
+}
 
 func envOr(key, def string) string {
 	if v := os.Getenv(key); v != "" {

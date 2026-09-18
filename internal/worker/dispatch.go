@@ -271,6 +271,41 @@ func NewDispatcher(ctx context.Context, cfg DispatchConfig, logf func(string, ..
 	}, nil
 }
 
+// Namespace is the namespace this dispatcher works in (the fast-poll loop
+// reads it to scope its workflow lists).
+func (d *Dispatcher) Namespace() string { return d.namespace }
+
+// ArmedWaitingWorkflows lists the review-ready workflows that currently
+// hold an ARMED, NEVER-DISPATCHED claim — the durable queue waiting for
+// CI (the leg-2 fast poll drives these to dispatch the tick their last
+// context lands).
+func (d *Dispatcher) ArmedWaitingWorkflows(ctx context.Context) []string {
+	var wfs v1alpha1.WorkflowList
+	if err := d.cl.List(ctx, &wfs, client.InNamespace(d.namespace)); err != nil {
+		d.logf("fast-poll: workflow list failed: %v", err)
+		return nil
+	}
+	var out []string
+	for i := range wfs.Items {
+		wf := wfs.Items[i]
+		if wf.Spec.ReviewReady == nil {
+			continue
+		}
+		claims, err := attempt.LiveReviewClaims(ctx, d.cl, &wf)
+		if err != nil {
+			d.logf("fast-poll: live claims %s: %v", wf.Name, err)
+			continue
+		}
+		for _, c := range claims {
+			if c.Status.Review != nil && c.Status.Review.DispatchedAt == nil {
+				out = append(out, wf.Name)
+				break
+			}
+		}
+	}
+	return out
+}
+
 // DispatcherFromEnv resolves the fleet-level configuration from the chart
 // environment (DispatchConfigFromEnv) and builds the dispatcher on top of
 // it.

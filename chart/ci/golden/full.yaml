@@ -5420,6 +5420,10 @@ spec:
               value: "3"
             - name: HARMOSTES_ATTEMPT_RETENTION
               value: "720h"
+            # Leg-2 fast path: sweep cadence for ARMED-not-dispatched
+            # claims — CI-green dispatches within one tick. "0" = off.
+            - name: HARMOSTES_GATE_FASTPOLL
+              value: "30s"
             - name: HARMOSTES_CANCEL_ON_SUPERSEDE
               value: "true"
             - name: HARMOSTES_JOB_TTL_SECONDS

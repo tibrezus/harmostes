@@ -199,7 +199,9 @@ func triggerCard(n v1alpha1.NodeSpec) nodeCard {
 	}
 	switch cfg.Kind {
 	case "schedule":
-		add("cron " + cfg.Schedule)
+		if cfg.Schedule != "" {
+			add("cron " + cfg.Schedule)
+		}
 	case "webhook":
 		add("push events")
 		add(sourceTarget(cfg))

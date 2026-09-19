@@ -42,4 +42,19 @@ test('terminal run detail: graph, waterfall proportions, hover panel', async ({ 
   await page.locator('[data-node="trigger"]').hover();
   await expect(panel).toContainText('webhook trigger');
   await expect(panel).toContainText('demo-rezuscloud-harmostes');
+
+  // #547 structure: the masthead carries claim + objective as a fact grid,
+  // the ledger below renders as tables (not stacked dl/card rows).
+  const facts = page.getByTestId('fact-grid');
+  await expect(facts).toContainText('demo-rezuscloud/harmostes#42');
+  await expect(facts).toContainText('verdict posted');
+
+  const runs = page.getByTestId('runs-table');
+  await expect(runs.locator('tbody tr')).toHaveCount(3);
+  await expect(runs).toContainText('13.1m');
+  await expect(runs.locator('a[href*="/session"]')).toHaveCount(3);
+
+  const results = page.getByTestId('noderes-table');
+  await expect(results.locator('tbody tr')).toHaveCount(4);
+  await expect(results).toContainText('13.0m');
 });

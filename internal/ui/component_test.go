@@ -116,6 +116,35 @@ func TestComponent_RunDetail_TerminalGraphAndWaterfall(t *testing.T) {
 	if cause := doc.Find(`[data-testid="trigger-edge"]`); cause.Length() != 1 {
 		t.Errorf("cause edges = %d, want 1 (trigger → first root, dashed)", cause.Length())
 	}
+	// #547 structure: the masthead fact grid replaces the stacked dl rows
+	// (claim + objective live at a glance), the ledger renders as tables.
+	facts := doc.Find(`[data-testid="fact-grid"] .ds-fact`)
+	if facts.Length() < 4 {
+		t.Errorf("fact grid cells = %d, want ≥4 (outcome, state, claim, PR)", facts.Length())
+	}
+	if txt := doc.Find(`[data-testid="fact-grid"]`).Text(); !strings.Contains(txt, "demo-rezuscloud/harmostes#42") {
+		t.Errorf("fact grid must carry the claim PR, got %q", txt)
+	}
+	if txt := doc.Find(`[data-testid="fact-grid"]`).Text(); !strings.Contains(txt, "verdict posted") {
+		t.Errorf("fact grid must carry the claim state, got %q", txt)
+	}
+	runsTable := doc.Find(`[data-testid="runs-table"] tbody tr`)
+	if runsTable.Length() != 3 {
+		t.Errorf("runs table rows = %d, want 3 (fixture attempt runs)", runsTable.Length())
+	}
+	if txt := runsTable.Text(); !strings.Contains(txt, "13.1m") {
+		t.Errorf("runs table must carry humanized run durations (the agent run's 13m05s wall span), got %q", txt)
+	}
+	if n := doc.Find(`[data-testid="runs-table"] a[href*="/session"]`); n.Length() != 3 {
+		t.Errorf("per-run session links = %d, want 3 (agent-enabled attempt)", n.Length())
+	}
+	res := doc.Find(`[data-testid="noderes-table"] tbody tr`)
+	if res.Length() != 4 {
+		t.Errorf("node-results rows = %d, want 4", res.Length())
+	}
+	if txt := res.Text(); !strings.Contains(txt, "13.0m") {
+		t.Errorf("node results must carry humanized envelope durations, got %q", txt)
+	}
 	agentCardText := strings.TrimSpace(doc.Find(`[data-testid="graph-node"][data-node="agent"]`).Text())
 	if txt := agentCardText; !strings.Contains(txt, "maxFixes 3") {
 		t.Errorf("agent card must carry the fix-loop budget (maxFixes 3), got %q", txt)

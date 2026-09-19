@@ -5912,10 +5912,10 @@ spec:
     maxFixes: 3
     model: litellm/ali/anthropic/qwen3.8-flash
     models:
-    - end: "02:00"
+    - end: "08:00"
       model: litellm/ali/anthropic/qwen3.8-max
-      start: "16:00"
-      tz: Europe/Paris
+      start: "22:00"
+      tz: Asia/Shanghai
     skill: /skills/pr-review/SKILL.md
     taskTemplate:
       configMap: harmostes-tasks

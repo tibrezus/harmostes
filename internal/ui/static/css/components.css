@@ -669,6 +669,48 @@
 	overflow-x: auto;
 }
 
+/* Run-detail dual pane (#533, ADR-0012 §4 amendment) — the Temporal
+   composition: Workflow Code and Event Timeline read together, side by side
+   under the header. Code is the document (wider, fixed read height); the
+   timeline is the stream (scrolls internally, newest last, SSE swap
+   preserves scroll — see the page script). Stacks below 1100px: code first
+   (what it is), then the stream (what it did). */
+.rd-duo {
+	display: grid;
+	grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
+	gap: var(--sp-4);
+	align-items: stretch;
+}
+.rd-pane {
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+	gap: var(--sp-2);
+}
+.rd-pane .ds-section-heading { margin-bottom: 0; }
+.rd-pane--code .code-island {
+	/* The island defaults are page-height (template detail); inside the band
+	   it stretches to the timeline's side and stops at a readable cap. */
+	height: auto;
+	flex: 1 1 auto;
+	min-height: 420px;
+	max-height: 640px;
+}
+.rd-pane--events #event-timeline-pane {
+	flex: 1 1 auto;
+	min-height: 420px;
+	max-height: 640px;
+	overflow-y: auto;
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	padding: var(--sp-2) var(--sp-3);
+	background: var(--bg-alt);
+}
+@media (max-width: 1100px) {
+	.rd-duo { grid-template-columns: minmax(0, 1fr); }
+	.rd-pane--events #event-timeline-pane { max-height: 480px; }
+}
+
 /* Workflow Code island (#416, ADR-0012 §2) — the Monaco mount. Tokens.css
    supplies every color (mapped live by the glue); this block only sizes the
    container and blends the widget chrome with page surfaces. */

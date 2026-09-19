@@ -51,3 +51,27 @@ test('Workflow Code island renders, completes, and validates schema-driven', asy
     .poll(() => page.evaluate(() => window.harmostesCodeIsland.markers().length), { timeout: 10000 })
     .toBe(0);
 });
+
+// Run detail (#533): the same island mounts in the Temporal band with the
+// run's RESOLVED workflow document — kind Workflow (not WorkflowTemplate),
+// schema-driven against the workflow CRD key. The document is what this
+// run's worker compiled; read-only like the template surface.
+test('run detail: the island renders the resolved Workflow document', async ({ page }) => {
+  await page.goto('/runs/attempt-pr-review-demo-42a1');
+
+  await expect(page.getByTestId('workflow-code-pane')).toBeVisible();
+  const island = await islandReady(page);
+
+  // The resolved document: identity + spec, graph-native fixture shape.
+  await expect(island.locator('.view-lines')).toContainText('kind: Workflow');
+  await expect(island.locator('.view-lines')).toContainText('pr-review-demo');
+
+  // Read-only on this surface: the band is a read, the MR-bridge owns
+  // writes. The handle exposes no isReadOnly — the mount attribute is the
+  // contract the glue reads (pinned in the goquery tier too).
+  await expect(page.getByTestId('code-island')).toHaveAttribute('data-readonly', 'true');
+
+  // A valid fixture document produces no markers — the workflow schema
+  // validates the resolved spec exactly as the template one does.
+  expect(await page.evaluate(() => window.harmostesCodeIsland.markers().length)).toBe(0);
+});

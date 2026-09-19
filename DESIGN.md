@@ -86,7 +86,7 @@ headers change in one place; `data-island-state="ready"` plus the
 
 | Hook | Template | Hooked by |
 | --- | --- | --- |
-| `graph-tab`, `event-timeline-tab`, `event-timeline-pane` | `pages/attempt_detail.html` | event-timeline, run-detail specs |
+| `workflow-code-pane`, `event-timeline-pane` (first-render, no tab), `run-graph-section`, `code-island` (mounts here too) | `pages/attempt_detail.html` | event-timeline, code-island, run-detail specs |
 | `run-link`, `subject-cell`, `tab-*` (all/failed/inflight/verdicts) | `pages/attempts.html` | runs spec |
 | `wf-controls`, `wf-trigger`, `wf-enable`, `wf-disable`, `wf-delete` | `pages/detail.html` | lifecycle spec |
 | `event-timeline`, `event-timeline-empty`, `timeline-row`, `timeline-row-{kind,time,details,payload}` | `pages/frag_event_timeline.html` | event-timeline specs |

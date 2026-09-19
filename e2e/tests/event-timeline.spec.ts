@@ -1,22 +1,20 @@
-// E2E — the Event Timeline (ADR-0012 §4): the tab lazy-loads the fragment,
-// the full narrative renders as append-only rows, payload expanders open,
-// and the state chips speak the console vocabulary.
+// E2E — the Event Timeline (ADR-0012 §4, amended #533): the pane is
+// first-render in the Temporal band beside the Workflow Code, the full
+// narrative renders as append-only rows, payload expanders open, and the
+// state chips speak the console vocabulary.
 //
-// Reload-equals-live is the design contract; the SSE path is exercised by
-// the same fragment swap the tab click performs.
+// Reload-equals-live is the design contract; the SSE path is the same
+// fragment swap the pane rendered server-side on first paint.
 import { test, expect } from '@playwright/test';
 
-test('event timeline: tab, narrative rows, payload expander', async ({ page }) => {
+test('event timeline: band pane, narrative rows, payload expander', async ({ page }) => {
   await page.goto('/runs/attempt-pr-review-demo-42a1');
 
-  // The graph is the default view; the timeline pane stays hidden.
-  await expect(page.getByTestId('graph-tab')).toBeVisible();
+  // The Temporal band (#533): the timeline is first-render beside the code —
+  // no tab to activate, the pane is visible with its server-rendered rows.
   const pane = page.getByTestId('event-timeline-pane');
-  await expect(pane).toBeHidden();
-
-  // Activate the Events tab: the pane loads the fragment.
-  await page.getByTestId('event-timeline-tab').click();
   await expect(pane).toBeVisible();
+  await expect(page.getByTestId('workflow-code-pane')).toBeVisible();
 
   const rows = page.getByTestId('timeline-row');
   await expect(rows).toHaveCount(21); // fixture narrative: 18 store + 3 ledger rows
@@ -48,12 +46,10 @@ test('event timeline: tab, narrative rows, payload expander', async ({ page }) =
 // Event Timeline.
 test('a lifecycle event converges into the open timeline through SSE', async ({ page, request }) => {
   await page.goto('/runs/attempt-pr-review-demo-43c2');
-  await page.getByTestId('event-timeline-tab').click();
 
   const rows = page.getByTestId('timeline-row');
-  // The tab click fires the htmx fetch asynchronously — wait for the
-  // initial fragment before reading the baseline count (CI is cold; a
-  // local warm server hides this race).
+  // The pane renders server-side on first paint (#533) — the baseline is
+  // the initial document, not an async fetch.
   await expect(rows.first()).toBeVisible();
   const before = await rows.count();
 

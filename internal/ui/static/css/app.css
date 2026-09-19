@@ -2034,10 +2034,55 @@ code, pre {
 	fill: var(--ds-text-muted);
 	text-anchor: end;
 }
+
+/* ---- Identity cards (#541): the canvas carries workflow semantics —
+   type chip, headline, fact lines; status = accent bar + glyph chip
+   (color AND glyph — survives grayscale; one-state vocabulary). ---- */
+.rg-title {
+	font-size: 13.5px;
+	font-weight: 600;
+	fill: var(--ds-text);
+}
+.rg-fact {
+	font-size: 11px;
+	fill: var(--ds-text-muted);
+}
+.rg-chip {
+	font-size: 9.5px;
+	font-weight: 700;
+	letter-spacing: 0.12em;
+	text-transform: uppercase;
+	fill: var(--ds-text-muted);
+}
+/* Per-kind chip tint — the type reads at a glance, tokens only. */
+.rg-chipkind--source .rg-chip { fill: var(--ds-accent, var(--ds-warning)); }
+.rg-chipkind--agent .rg-chip { fill: var(--ds-warning); }
+.rg-chipkind--gate .rg-chip { fill: var(--ds-negative); }
+.rg-chipkind--prepare .rg-chip, .rg-chipkind--deploy .rg-chip { fill: var(--ds-positive); }
+.rg-statext {
+	font-size: 10px;
+	font-weight: 600;
+	text-anchor: end;
+}
+.rg-statext--ok { fill: var(--ds-positive); }
+.rg-statext--failed { fill: var(--ds-negative); }
+.rg-statext--running { fill: var(--ds-warning); }
+.rg-statext--skipped, .rg-statext--pending, .rg-statext--external { fill: var(--ds-text-muted); }
+/* Status accent bar: the card's left edge states the state (kestra/Argo
+   language); the box stroke stays as the secondary signal. */
+.rg-bar { rx: 2; }
+.rg-bar--ok { fill: var(--ds-positive); }
+.rg-bar--failed { fill: var(--ds-negative); }
+.rg-bar--running { fill: var(--ds-warning); }
+.rg-bar--skipped, .rg-bar--pending, .rg-bar--external { fill: var(--ds-border); }
 .rg-edge {
 	fill: none;
 	stroke: var(--ds-border);
 	stroke-width: 1.5;
+}
+/* The trigger's cause-edge: dashed — cause, not data flow. */
+.rg-edge--cause, .tp-edge--cause {
+	stroke-dasharray: 5 4;
 }
 
 /* Run-graph timing waterfall (#298): one lane per node, bar = wall-clock share */
@@ -2092,6 +2137,12 @@ code, pre {
 	fill: var(--ds-text);
 	font-family: var(--ds-font-mono, monospace);
 }
+/* Topology cards share the run graph's identity-card language (#541):
+   same facts path, same classes — one visual vocabulary. */
+.tp-node .rg-chip--prepare, .tp-node .rg-chip--deploy { fill: var(--ds-positive); }
+.tp-node .rg-chip--agent { fill: var(--ds-warning); }
+.tp-node .rg-chip--gate { fill: var(--ds-negative); }
+.tp-node .rg-chip--source { fill: var(--ds-accent, var(--ds-warning)); }
 .tp-type {
 	font-size: 10px;
 	fill: var(--ds-text-muted);

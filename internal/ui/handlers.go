@@ -129,8 +129,9 @@ func (s *Server) handleWorkflowDetail(w http.ResponseWriter, r *http.Request) {
 		"Jobs":     jobs,
 		"Pipeline": buildWorkflowPipelineView(&resolved),
 		// Topology (ADR-0012 §3, #417): the resolved graph as the layered SVG
-		// projection — thin instances render their merged shape here.
-		"Topology": buildTopology(graphForWorkflow(&resolved), s.nodeTypePalette(r.Context())),
+		// projection — thin instances render their merged shape here. The
+		// instance's source joins as the virtual trigger node (#541).
+		"Topology": buildTopology(withTriggerNode(graphForWorkflow(&resolved), resolved.Spec.Source), &resolved.Spec, s.nodeTypePalette(r.Context())),
 		"MayWrite": s.mayWrite(identityFromContext(r.Context())),
 	})
 }

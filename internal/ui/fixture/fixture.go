@@ -89,10 +89,7 @@ func Objects(namespace string) ([]ctrlclient.Object, error) {
 // timing waterfall's input).
 func envelope(nodeID, status string, at metav1.Time, durationSec int64) v1alpha1.NodeResultEnvelope {
 	return v1alpha1.NodeResultEnvelope{
-		NodeID:     nodeID,
-		Status:     status,
-		ProducedAt: at,
-		DurationMs: durationSec * 1000,
+		NodeID: nodeID, Status: status, ProducedAt: at, DurationMs: durationSec * 1000,
 	}
 }
 

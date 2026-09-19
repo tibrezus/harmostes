@@ -31,5 +31,11 @@ test('the runs list surfaces all phases and navigates into a run', async ({ page
   await page.locator(`.tbl .exp[data-group="${group}"]`).click();
   await link.click();
   await expect(page).toHaveURL(/\/runs\/attempt-pr-review-demo-42a1$/);
-  await expect(page.getByTestId('graph-node')).toHaveCount(4);
+  // 5 = the virtual trigger + prepare/agent/gate/deploy (#541).
+  await expect(page.getByTestId('graph-node')).toHaveCount(5);
+  // The identity cards carry workflow semantics: the trigger names its
+  // kind, the agent card carries the fix-loop budget.
+  await expect(page.locator('[data-node="trigger"] .rg-title')).toContainText('webhook');
+  await expect(page.locator('[data-node="agent"]')).toContainText('maxFixes');
+  await expect(page.getByTestId('trigger-edge')).toHaveCount(1);
 });

@@ -50,7 +50,7 @@ test('a lifecycle event reaches the open wall through SSE without reload', async
 
 test('a lifecycle event wakes the run-detail graph stream too', async ({ page, request }) => {
   await page.goto('/runs/attempt-pr-review-demo-43c2');
-  await expect(page.getByTestId('graph-node')).toHaveCount(4);
+  await expect(page.getByTestId('graph-node')).toHaveCount(5); // trigger + 4 (#541);
 
   // The stream re-renders on the injected event; the fragment content here
   // is ledger-driven (SSE accelerates freshness, never determines state),
@@ -59,5 +59,5 @@ test('a lifecycle event wakes the run-detail graph stream too', async ({ page, r
   // end-to-end delivery.
   await injectEvent(request);
   await expect(page.locator('.rg-pulse')).toHaveCount(1, { timeout: 10_000 });
-  await expect(page.getByTestId('graph-node')).toHaveCount(4);
+  await expect(page.getByTestId('graph-node')).toHaveCount(5); // trigger + 4 (#541)
 });

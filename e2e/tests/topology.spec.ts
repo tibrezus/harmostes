@@ -33,9 +33,15 @@ test.describe('topology projection', () => {
     // The stored CR is thin (templateRef + source only) — the topology
     // shows the merged shape: the template's agent appears.
     const nodes = page.getByTestId('topology-node');
-    await expect(nodes).toHaveCount(3);
+    // 4 = the instance's virtual trigger + the merged shape (#541).
+    await expect(nodes).toHaveCount(4);
     await expect(page.locator('[data-testid="topology-node"][data-node="agent"]')).toBeVisible();
     await expect(page.locator('[data-testid="topology-node"][data-node="deploy"]')).toContainText('post-review');
+    // Identity cards: the trigger is the canvas root, the agent card
+    // carries the template's model + fix-loop budget.
+    await expect(page.locator('[data-testid="topology-node"][data-node="trigger"]')).toContainText('webhook');
+    await expect(page.locator('[data-testid="topology-node"][data-node="agent"]')).toContainText('litellm');
+    await expect(page.locator('[data-testid="topology-node"][data-node="agent"]')).toContainText('maxFixes');
   });
 
   test('revision graph diff marks node and edge deltas', async ({ page }) => {

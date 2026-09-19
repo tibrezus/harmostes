@@ -1,8 +1,10 @@
 {{define "pages/frag_run_graph.html"}}
-{{- /* frag_run_graph.html — the attempt's workflow graph as SVG: layered
-      layout, per-node state colors, pulsing live position. Re-rendered over
-      SSE; the hover panel lives OUTSIDE this fragment (delegation survives
-      swaps). */ -}}
+{{- /* frag_run_graph.html — the attempt's workflow graph as SVG: identity
+      cards (#541) carrying workflow semantics — what triggers this (the
+      virtual source node), what the deterministic nodes do, what the agent
+      runs — plus per-node runtime state (accent bar + glyph chip) and the
+      pulsing live position. Re-rendered over SSE; the hover/click panel
+      lives OUTSIDE this fragment (delegation survives swaps). */ -}}
 {{- with .Graph}}
 {{- if .Available}}
 <div class="rg-canvas" data-testid="graph-canvas">
@@ -15,15 +17,21 @@
 		</marker>
 	</defs>
 	{{range .Edges}}
-	<path class="rg-edge" d="{{.Path}}" marker-end="url(#rg-arrow)"></path>
+	<path class="rg-edge{{if .Cause}} rg-edge--cause{{end}}" d="{{.Path}}" marker-end="url(#rg-arrow)"{{if .Cause}} data-testid="trigger-edge"{{end}}></path>
 	{{end}}
 	{{range .Nodes}}
-	<g class="rg-node rg-node--{{.Status}}" data-node="{{.ID}}" data-testid="graph-node" tabindex="0">
-		<title>{{.ID}} — {{.Status}}</title>
-		<rect class="rg-box" x="{{.X}}" y="{{.Y}}" width="168" height="40" rx="6"></rect>
+	<g class="rg-node rg-node--{{.Status}} rg-chipkind--{{.Chip}}" data-node="{{.ID}}" data-testid="graph-node" data-type="{{.Type}}" tabindex="0">
+		<title>{{.Title}} — {{.Status}}</title>
+		<rect class="rg-box" x="{{.X}}" y="{{.Y}}" width="224" height="92" rx="8"></rect>
+		{{- /* Status accent bar + glyph chip: color AND glyph — status
+		survives grayscale/color-blind viewing (one-state vocabulary). */ -}}
+		<rect class="rg-bar rg-bar--{{.Status}}" x="{{.BarX}}" y="{{.BarY}}" width="4" height="{{.BarH}}" rx="2"></rect>
+		<text class="rg-chip" x="{{.ChipX}}" y="{{.ChipY}}">{{.Chip}}</text>
+		<text class="rg-statext rg-statext--{{.Status}}" x="{{.StatX}}" y="{{.StatY}}">{{.StatusText}}</text>
+		<text class="rg-title" x="{{.TitleX}}" y="{{.TitleY}}">{{.Title}}</text>
+		{{- if .Fact1}}<text class="rg-fact" x="{{.Fact1X}}" y="{{.Fact1Y}}">{{.Fact1}}</text>{{end}}
+		{{- if .Fact2}}<text class="rg-fact" x="{{.Fact2X}}" y="{{.Fact2Y}}">{{.Fact2}}</text>{{end}}
 		{{if eq .Status "running"}}<circle class="rg-pulse" cx="{{.PulseX}}" cy="{{.PulseY}}" r="5"></circle>{{end}}
-		<text class="rg-label" x="{{.LabelX}}" y="{{.LabelY}}">{{.Label}}</text>
-		<text class="rg-type" x="{{.TypeX}}" y="{{.TypeY}}">{{.Type}}</text>
 	</g>
 	{{end}}
 </svg>

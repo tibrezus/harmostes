@@ -44,16 +44,19 @@ test("default chain composition covers every live primary (#363, #401 r2)", () =
     "mtplx/qwen38-27b-optimized-speed-fp16": ["ali/anthropic/qwen3.8-flash"],
     "ali/anthropic/qwen3.8-flash": ["zai/anthropic/glm-5.3-flash"],
     "ali/anthropic/deepseek-v4.1-flash": ["zai/anthropic/glm-5.3-flash"],
+    "ali/anthropic/qwen3.8-max": ["ali/anthropic/qwen3.8-flash"],
     "zai/anthropic/glm-5.3-flash": ["ali/anthropic/qwen3.8-flash"],
   });
-  // And ALL THREE wire over a proxy exposing exactly the three known
+  // And ALL FOUR wire over a proxy exposing exactly the four known
   // groups: speed keeps its own 256 KiB window (fallback LARGER — no
   // clamp, no early compaction); flash pays the documented fallback clamp
   // down to glm (128 Ki ctx / 8k out) — the pre-#363 shape, retained on
-  // purpose; glm clamps nothing (flash is larger in both dimensions).
+  // purpose; max nets to flash, which is larger in both dims — no clamp;
+  // glm clamps nothing (flash is larger in both dimensions).
   const proxy = new Map([
     ["mtplx/qwen38-27b-optimized-speed-fp16", { max_input_tokens: 262144, max_output_tokens: 32768 }],
     ["ali/anthropic/qwen3.8-flash", { max_input_tokens: 1048576, max_output_tokens: 32768 }],
+    ["ali/anthropic/qwen3.8-max", { max_input_tokens: 991808, max_output_tokens: 131072 }],
     ["zai/anthropic/glm-5.3-flash", { max_input_tokens: 131072, max_output_tokens: 8192 }],
   ]);
   const models = [...proxy.entries()].map(([id, m]) => ({ id, ...m }));
@@ -70,8 +73,13 @@ test("default chain composition covers every live primary (#363, #401 r2)", () =
   assert.deepEqual(glm.samplingParams, { fallbacks: ["ali/anthropic/qwen3.8-flash"] });
   assert.equal(glm.contextWindow, 131072); // own window — flash is larger, no clamp
   assert.equal(glm.clampNote, undefined);
+  const max = annotated.find((m) => m.id === "ali/anthropic/qwen3.8-max")!;
+  assert.deepEqual(max.samplingParams, { fallbacks: ["ali/anthropic/qwen3.8-flash"] });
+  assert.equal(max.contextWindow, 991808); // own ctx — the net (flash) is larger on input
+  assert.match(max.clampNote!, /maxTokens 131072→32768/); // fallback clamp: flash's 32k out
   assert.deepEqual(wired.sort(), [
     "ali/anthropic/qwen3.8-flash → zai/anthropic/glm-5.3-flash", // wired entries are primary→fallback summaries
+    "ali/anthropic/qwen3.8-max → ali/anthropic/qwen3.8-flash",
     "mtplx/qwen38-27b-optimized-speed-fp16 → ali/anthropic/qwen3.8-flash",
     "zai/anthropic/glm-5.3-flash → ali/anthropic/qwen3.8-flash",
   ]);
@@ -93,9 +101,9 @@ test("resolveFallbackChains: '{}' is the off-switch — empty chains, no warning
 
 // The default table is a deliberate SUPERSET of any one proxy's groups
 // (#401 review r3): over a 2-group proxy (the chart-default shape, where
-// speed is ops-side), exactly the speed key is reported inert and the two
-// served directions still wire — the unwired note is expected output, not
-// an alarm.
+// speed is ops-side), exactly the unserved keys (speed, deepseek, max)
+// are reported inert and the two served directions still wire — the
+// unwired note is expected output, not an alarm.
 test("applyChains: a subset proxy reports exactly the unserved key", () => {
   const two = new Map([
     ["ali/anthropic/qwen3.8-flash", { max_input_tokens: 1048576, max_output_tokens: 32768 }],
@@ -103,10 +111,12 @@ test("applyChains: a subset proxy reports exactly the unserved key", () => {
   ]);
   const twoModels = [...two.entries()].map(([id, m]) => ({ id, ...m }));
   const { wired, unwiredChains } = applyChains(twoModels, DEFAULT_FALLBACKS, two);
-  // insertion order of the default table: speed first, deepseek third
+  // insertion order of the default table: speed first, deepseek third,
+  // max fourth
   assert.deepEqual(unwiredChains, [
     "mtplx/qwen38-27b-optimized-speed-fp16",
     "ali/anthropic/deepseek-v4.1-flash",
+    "ali/anthropic/qwen3.8-max",
   ]);
   assert.deepEqual(wired.sort(), [
     "ali/anthropic/qwen3.8-flash → zai/anthropic/glm-5.3-flash",
@@ -275,6 +285,7 @@ test("resolveFallbackChains: the default does not leak by reference", () => {
     "mtplx/qwen38-27b-optimized-speed-fp16": ["ali/anthropic/qwen3.8-flash"],
     "ali/anthropic/qwen3.8-flash": ["zai/anthropic/glm-5.3-flash"],
     "ali/anthropic/deepseek-v4.1-flash": ["zai/anthropic/glm-5.3-flash"],
+    "ali/anthropic/qwen3.8-max": ["ali/anthropic/qwen3.8-flash"],
     "zai/anthropic/glm-5.3-flash": ["ali/anthropic/qwen3.8-flash"],
   });
 });
@@ -287,5 +298,11 @@ test("the night-window primary (owner directive) carries the glm-5.3-flash secon
 	// activates it without a code change.
 	assert.deepEqual(DEFAULT_FALLBACKS["ali/anthropic/deepseek-v4.1-flash"], [
 		"zai/anthropic/glm-5.3-flash",
+	]);
+	// The CURRENT night primary (owner correction, #536 → -230):
+	// qwen3.8-max nets to flash — the proven finalizer on this contract,
+	// and larger than max in both dims, so the chain clamps nothing.
+	assert.deepEqual(DEFAULT_FALLBACKS["ali/anthropic/qwen3.8-max"], [
+		"ali/anthropic/qwen3.8-flash",
 	]);
 });

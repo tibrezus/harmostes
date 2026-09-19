@@ -269,19 +269,20 @@ workflowTemplates:
         plugin:
           name: pr-review
       maxFixes: 3
-      # OWNER DIRECTIVE (supersedes #520): the night window is qwen3.8-flash
-      # on the SAME anthropic route as the day model (litellm/ali/anthropic)
-      # — not deepseek-v4.1-flash: its first live rounds explored (27 calls)
-      # then failed to finalize — zero tool calls on feedback turns, no
-      # review.json, 4 gate attempts (observed 2026-09-16/17, fleet
-      # sessions). The window is kept and pinned to qwen3.8 so a future
-      # day-model change cannot silently move the night route; both windows
-      # share the qwen → glm-5.3-flash litellm fallback chain (the
-      # deepseek → glm chain in the table stays inert — no schedule
-      # resolves to that id).
+      # OWNER DIRECTIVE (supersedes #536/-229): the night window is
+      # qwen3.8-max on the SAME anthropic route as the day model
+      # (litellm/ali/anthropic) — proxy-verified served with the fleet key
+      # (991,808 in / 131,072 out). Its litellm fallback is flash — the
+      # proven finalizer on this contract, and larger than max in both
+      # dims, so the chain clamps nothing. Day stays qwen3.8-flash →
+      # glm-5.3-flash. History: deepseek-v4.1-flash owned this window
+      # until its first live rounds explored (27 calls) then failed to
+      # finalize — zero tool calls on feedback turns, no review.json,
+      # 4 gate attempts (2026-09-16/17 fleet sessions); #536 re-pinned
+      # the window to flash before this correction to max.
       model: litellm/ali/anthropic/qwen3.8-flash
       models:
-        - model: litellm/ali/anthropic/qwen3.8-flash
+        - model: litellm/ali/anthropic/qwen3.8-max
           start: "16:00"
           end: "02:00"
           tz: Europe/Paris

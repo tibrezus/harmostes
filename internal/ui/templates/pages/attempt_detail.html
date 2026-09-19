@@ -1,13 +1,19 @@
 {{define "pages/attempt_detail.html"}}
-{{- /* attempt_detail.html — one Run (an Attempt): metadata, claim state, runs,
-      per-run logs, node results, evidence. The execution spine's detail view. */ -}}
+{{- /* attempt_detail.html — one Run (an Attempt), structured as three zones
+      (#547): the MASTHEAD (identity + facts), the WATCH (execution graph —
+      live position, the operator's first question), the READ (Workflow Code
+      + Event Timeline, #533's Temporal composition), and the LEDGER (runs,
+      node results, evidence — tables, not cards: the table is the product).
+      Fact rows that were stacked dl sections collapse into the masthead's
+      fact grid; every list below renders as a .tbl. */ -}}
 <div class="page-content">
-	<!-- Header -->
-	<div class="ds-section">
+
+	<!-- Zone 1: masthead — who this attempt is, in one glance -->
+	<div class="ds-section" id="run-detail-header">
 		<div class="ds-section-header">
 			<div>
 				<h2 class="ds-section-title">{{.PrimarySubject}}</h2>
-				<span class="ds-card-meta"><code>{{.Name}}</code> · {{.ObjectiveKind}} · <a href="/workflows/{{.WorkflowLink}}" class="ds-link">{{.WorkflowLink}}</a>{{if .TotalDuration}} · total {{.TotalDuration}}{{end}}{{if .LastRunAt}} · last run {{.LastRunAt}}{{end}}</span>
+				<span class="ds-card-meta"><code>{{.Name}}</code> · {{.ObjectiveKind}} · <a href="/workflows/{{.WorkflowLink}}" class="ds-link">{{.WorkflowLink}}</a>{{if .Owner}} · {{.Owner}}{{end}}{{if .TotalDuration}} · total {{.TotalDuration}}{{end}}{{if .LastRunAt}} · last run {{.LastRunAt}}{{end}}</span>
 			</div>
 			{{if eq .Phase "validated"}}<span class="ds-status-badge ds-status-badge--positive">✓ Validated</span>
 			{{else if eq .Phase "reconciling"}}<span class="ds-status-badge ds-status-badge--warning">↻ Reconciling</span>
@@ -16,20 +22,49 @@
 			{{else}}<span class="ds-status-badge ds-status-badge--neutral">{{.Phase}}</span>
 			{{end}}
 		</div>
-	</div>
-
-	{{if .Message}}
-	<div class="ds-section">
+		{{if .Message}}
 		<div class="ds-callout ds-callout--info">{{.Message}}</div>
+		{{end}}
+		<dl class="ds-facts" data-testid="fact-grid">
+			<div class="ds-fact"><dt>Desired outcome</dt><dd>{{.DesiredOutcome}}</dd></div>
+			<div class="ds-fact"><dt>Targeted state</dt><dd><code>{{.TargetedState}}</code></dd></div>
+			{{if .Claim}}
+			<div class="ds-fact"><dt>Claim</dt><dd>{{.Claim.State}}{{if .Claim.Released}} ({{.Claim.ReleaseReason}}){{end}}</dd></div>
+			<div class="ds-fact"><dt>Pull request</dt><dd><code>{{.Claim.PR}}</code></dd></div>
+			{{if .Claim.HeadShort}}
+			<div class="ds-fact"><dt>Head</dt><dd><code title="{{.Claim.HeadSHA}}">{{.Claim.HeadShort}}</code></dd></div>
+			{{end}}
+			{{if .Claim.ArmedSince}}
+			<div class="ds-fact"><dt>Armed</dt><dd>{{.Claim.ArmedSince}}</dd></div>
+			{{end}}
+			{{if .Claim.DispatchedAt}}
+			<div class="ds-fact"><dt>Dispatched</dt><dd>{{.Claim.DispatchedAt}}</dd></div>
+			{{end}}
+			{{if gt .Claim.DeadDispatches 0}}
+			<div class="ds-fact"><dt>Dead dispatches</dt><dd>{{.Claim.DeadDispatches}}/{{.Claim.MaxDead}}{{if ge .Claim.DeadDispatches .Claim.MaxDead}} — stood down; new push or re-label to retry{{end}}</dd></div>
+			{{end}}
+			{{end}}
+		</dl>
 	</div>
-	{{end}}
 
-	<!-- Execution views (ADR-0012 §4, amended #533): the Temporal composition —
-	     Workflow Code and Event Timeline read TOGETHER, side by side under the
-	     header; the graph (harmostes' native live-position projection) follows
-	     as its own section. The code pane shows the RESOLVED document (what
-	     this run's worker compiled); the timeline renders server-side first
-	     and converges by SSE — no lazy tab, reload equals live from byte one. -->
+	<!-- Zone 2: the watch — live position + timing. The operator's first
+	     question is "where is it"; the graph answers before anything else. -->
+	<div class="ds-section" id="run-detail-graph" data-testid="run-graph-section">
+		<h3 class="ds-section-heading">Execution Graph</h3>
+		<div class="run-graph-layout">
+			<div class="run-graph-stream" id="run-graph-frag">
+				{{template "pages/frag_run_graph.html" .}}
+			</div>
+			<aside class="rg-panel" id="rg-panel" aria-live="polite">
+				<div class="rg-panel-empty">Hover or click a node for its live data.</div>
+			</aside>
+		</div>
+	</div>
+
+	<!-- Zone 3: the read — what the worker compiled and what happened,
+	     side by side (#533, amended #547: follows the watch). The code pane
+	     shows the RESOLVED document; the timeline renders server-side first
+	     and converges by SSE — no lazy tab, reload equals live. -->
 	<div class="ds-section" id="run-detail-views">
 		<div class="rd-duo">
 			<section class="rd-pane rd-pane--code" data-testid="workflow-code-pane" aria-label="Workflow Code">
@@ -60,137 +95,113 @@
 		</div>
 	</div>
 
-	<!-- Execution graph: live position + timing waterfall (harmostes-native
-	     projection; the dual pane above is the read, this is the watch). -->
-	<div class="ds-section" id="run-detail-graph" data-testid="run-graph-section">
-		<h3 class="ds-section-heading">Execution Graph</h3>
-		<div class="run-graph-layout">
-			<div class="run-graph-stream" id="run-graph-frag">
-				{{template "pages/frag_run_graph.html" .}}
-			</div>
-			<aside class="rg-panel" id="rg-panel" aria-live="polite">
-				<div class="rg-panel-empty">Hover or click a node for its live data.</div>
-			</aside>
-		</div>
-	</div>
-
-	{{if .Claim}}
-	<!-- Review claim -->
-	<div class="ds-section">
-		<h3 class="ds-section-heading">Review Claim</h3>
-		<dl class="ds-definition-list">
-			<dt>Pull Request</dt>
-			<dd><code>{{.Claim.PR}}</code></dd>
-			{{if .Claim.HeadSHA}}
-			<dt>Head SHA</dt>
-			<dd><code>{{.Claim.HeadSHA}}</code></dd>
-			{{end}}
-			<dt>Claim State</dt>
-			<dd>{{.Claim.State}}{{if .Claim.Released}} ({{.Claim.ReleaseReason}}){{end}}</dd>
-			{{if gt .Claim.DeadDispatches 0}}
-			<dt>Dead Dispatches</dt>
-			<dd>{{.Claim.DeadDispatches}}/{{.Claim.MaxDead}}{{if ge .Claim.DeadDispatches .Claim.MaxDead}} — stood down; new push or re-label to retry{{end}}</dd>
-			{{end}}
-			{{if .Claim.ArmedSince}}
-			<dt>Armed</dt>
-			<dd>{{.Claim.ArmedSince}}</dd>
-			{{end}}
-			{{if .Claim.DispatchedAt}}
-			<dt>Dispatched</dt>
-			<dd>{{.Claim.DispatchedAt}}</dd>
-			{{end}}
-		</dl>
-	</div>
-	{{end}}
-
-	<!-- Objective -->
-	<div class="ds-section">
-		<h3 class="ds-section-heading">Implementation Objective</h3>
-		<dl class="ds-definition-list">
-			<dt>Desired Outcome</dt>
-			<dd>{{.DesiredOutcome}}</dd>
-			<dt>Targeted State</dt>
-			<dd><code>{{.TargetedState}}</code></dd>
-		</dl>
-	</div>
-
-	<!-- Runs timeline -->
-	<div class="ds-section">
-		<h3 class="ds-section-heading">Runs ({{.TotalRuns}})</h3>
+	<!-- Zone 4: the ledger — the record, as tables. -->
+	{{if or .Runs .NodeResults .Evidence}}
+	<div class="ds-section" id="run-detail-ledger">
 		{{if .Runs}}
-		<div class="ds-timeline">
-			{{range .Runs}}
-			<div class="ds-timeline-item">
-				<div class="ds-timeline-marker ds-timeline-marker--{{if eq .Phase "succeeded"}}positive{{else if eq .Phase "failed"}}negative{{else}}warning{{end}}"></div>
-				<div class="ds-timeline-content">
-					<code>{{.Name}}</code>
-					{{if eq .Phase "succeeded"}}<span class="ds-status-badge ds-status-badge--positive">✓</span>
-					{{else if eq .Phase "failed"}}<span class="ds-status-badge ds-status-badge--negative">✗</span>
-					{{else}}<span class="ds-status-badge ds-status-badge--warning">↻ {{.Phase}}</span>
+		<h3 class="ds-section-heading">Runs ({{.TotalRuns}})</h3>
+		<div class="tbl-wrap">
+			<table class="tbl" data-testid="runs-table">
+				<thead>
+					<tr>
+						<th>Run</th>
+						<th>Phase</th>
+						<th class="time">Started</th>
+						<th class="time">Ended</th>
+						<th class="num">Duration</th>
+						<th></th>
+					</tr>
+				</thead>
+				<tbody>
+					{{range .Runs}}
+					<tr>
+						<td><code>{{.Name}}</code></td>
+						<td>{{if eq .Phase "succeeded"}}<span class="chip chip--ok">✓ succeeded</span>
+							{{else if eq .Phase "failed"}}<span class="chip chip--fail">✗ failed</span>
+							{{else if eq .Phase "running"}}<span class="chip chip--run">↻ running</span>
+							{{else}}<span class="chip chip--neutral">{{.Phase}}</span>{{end}}</td>
+						<td class="time">{{.StartedAt}}</td>
+						<td class="time">{{if .EndedAt}}{{.EndedAt}}{{else}}—{{end}}</td>
+						<td class="num">{{if .Duration}}{{.Duration}}{{else}}—{{end}}</td>
+						<td class="rd-row-actions">
+							<div class="runlogs-slot" id="runlogs-{{.Name}}"
+								hx-get="/runs/{{$.Name}}/runs/{{.Name}}/logs"
+								hx-target="#runlogs-{{.Name}}"
+								hx-swap="outerHTML"
+								{{- if eq .Phase "running"}} hx-trigger="load delay:200ms, every 3s"{{- else}} hx-trigger="click"{{- end}}>
+								<button type="button" class="ds-btn ds-btn--secondary ds-btn--xs" title="Pod log tail; the session transcript persists after the pod is recycled">Logs</button>
+							</div>
+							{{if $.AgentEnabled}}<a href="/runs/{{$.Name}}/runs/{{.Name}}/session" class="ds-btn ds-btn--secondary ds-btn--xs" title="View agent session transcript">📜 Session</a>{{end}}
+						</td>
+					</tr>
 					{{end}}
-					<br>
-					<span class="ds-card-meta">{{.StartedAt}}{{if .EndedAt}} → {{.EndedAt}}{{end}}</span>
-					<div class="runlogs-slot" id="runlogs-{{.Name}}"
-						hx-get="/runs/{{$.Name}}/runs/{{.Name}}/logs"
-						hx-target="#runlogs-{{.Name}}"
-						hx-swap="outerHTML"
-						{{- if eq .Phase "running"}} hx-trigger="load delay:200ms, every 3s"{{- else}} hx-trigger="click"{{- end}}>
-						<button type="button" class="ds-btn ds-btn--secondary ds-btn--xs" title="Pod log tail; the session transcript persists after the pod is recycled">Logs</button>
-					</div>
-					{{if $.AgentEnabled}}<a href="/runs/{{$.Name}}/runs/{{.Name}}/session" class="ds-btn ds-btn--secondary ds-btn--xs" title="View agent session transcript">📜 Session</a>{{end}}
-				</div>
-			</div>
-			{{end}}
+				</tbody>
+			</table>
 		</div>
-		{{else}}
-		<p class="ds-empty-text">No runs recorded yet.</p>
 		{{end}}
-	</div>
 
-	<!-- Node Result Envelopes -->
-	{{if .NodeResults}}
-	<div class="ds-section">
+		{{if .NodeResults}}
 		<h3 class="ds-section-heading">Node Results ({{.TotalNodeRes}})</h3>
-		<div class="ds-card-list">
-			{{range .NodeResults}}
-			<div class="ds-card">
-				<div class="ds-card-header">
-					<span class="ds-card-title">{{.NodeID}}</span>
-					{{if eq (printf "%s" .Status) "ok"}}<span class="ds-status-badge ds-status-badge--positive">✓ {{.Status}}</span>
-					{{else if eq (printf "%s" .Status) "skipped"}}<span class="ds-status-badge ds-status-badge--neutral">− {{.Status}}</span>
-					{{else}}<span class="ds-status-badge ds-status-badge--negative">✗ {{.Status}}</span>
+		<div class="tbl-wrap">
+			<table class="tbl" data-testid="noderes-table">
+				<thead>
+					<tr>
+						<th>Node</th>
+						<th>Status</th>
+						<th class="num">Duration</th>
+						<th>Summary</th>
+					</tr>
+				</thead>
+				<tbody>
+					{{range .NodeResults}}
+					<tr{{if eq .Status "failed"}} class="is-failed"{{end}}>
+						<td><code>{{.NodeID}}</code></td>
+						<td>{{if eq .Status "ok"}}<span class="chip chip--ok">✓ ok</span>
+							{{else if eq .Status "skipped"}}<span class="chip chip--neutral">− skipped</span>
+							{{else}}<span class="chip chip--fail">✗ {{.Status}}</span>{{end}}</td>
+						<td class="num">{{if .Duration}}{{.Duration}}{{else}}—{{end}}</td>
+						<td class="rd-cell-summary" title="{{.Summary}}">{{if .Summary}}{{.Summary}}{{else}}—{{end}}</td>
+					</tr>
 					{{end}}
-				</div>
-				{{if .Summary}}
-				<div class="ds-card-body">{{.Summary}}</div>
-				{{end}}
-			</div>
-			{{end}}
+				</tbody>
+			</table>
 		</div>
-	</div>
-	{{end}}
+		{{end}}
 
-	<!-- Evidence -->
-	{{if .Evidence}}
-	<div class="ds-section">
+		{{if .Evidence}}
 		<h3 class="ds-section-heading">Evidence ({{.TotalEvidence}})</h3>
-		<div class="ds-card-list">
-			{{range .Evidence}}
-			<div class="ds-card">
-				<div class="ds-card-header">
-					<span class="ds-card-title">{{.Kind}}</span>
-					<span class="ds-card-meta">{{.Surface}}</span>
-				</div>
-				<div class="ds-card-body">
-					{{if .URL}}<a href="{{.URL}}" class="ds-link" target="_blank">{{.Ref}}</a>{{else}}<code>{{.Ref}}</code>{{end}}
-				</div>
-			</div>
-			{{end}}
+		<div class="tbl-wrap">
+			<table class="tbl" data-testid="evidence-table">
+				<thead>
+					<tr>
+						<th>Kind</th>
+						<th>Surface</th>
+						<th>Reference</th>
+					</tr>
+				</thead>
+				<tbody>
+					{{range .Evidence}}
+					<tr>
+						<td>{{.Kind}}</td>
+						<td class="ds-card-meta">{{.Surface}}</td>
+						<td>{{if .URL}}<a href="{{.URL}}" class="ds-link" target="_blank" rel="noopener">{{.Ref}}</a>{{else}}<code>{{.Ref}}</code>{{end}}</td>
+					</tr>
+					{{end}}
+				</tbody>
+			</table>
 		</div>
+		{{end}}
 	</div>
 	{{end}}
 </div>
 
+<script id="run-graph-data-initial" type="application/json">{{.NodeDataJSON}}</script>
+<script>
+(function () {
+	var views = document.getElementById('run-detail-views');
+	if (!views) return;
+	var frag = document.getElementById('run-graph-frag');
+	var panel = document.getElementById('rg-panel');
 <script id="run-graph-data-initial" type="application/json">{{.NodeDataJSON}}</script>
 <script>
 (function () {

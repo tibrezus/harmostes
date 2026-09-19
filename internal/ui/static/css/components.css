@@ -508,11 +508,15 @@
 		height: auto;
 		position: static;
 		flex-direction: row;
+		flex-wrap: wrap;
 		align-items: center;
 		border-right: none;
 		border-bottom: 1px solid var(--border);
 	}
-	.ds-sidebar-nav { flex-direction: row; padding: var(--sp-2); }
+	/* The topbar wraps instead of pushing the page wider than the viewport
+	   (the nav is 4 links + logo + toggle — at phone widths it must reflow,
+	   never overflow). */
+	.ds-sidebar-nav { flex-direction: row; flex-wrap: wrap; padding: var(--sp-2); }
 	.ds-sidebar-footer { margin-top: 0; margin-left: auto; border-top: none; }
 	.ds-page-content { padding: var(--sp-3); }
 	.tbl-wrap { border-radius: var(--radius); }
@@ -699,6 +703,78 @@
 	gap: var(--sp-2);
 }
 .rd-pane .ds-section-heading { margin-bottom: 0; }
+
+/* ===== Run-detail structure (#547): zones, fact grid, ledger tables.
+   The ds-section family carried semantic hooks with no styles — sections
+   stacked flush and every fact rendered as browser-default dl rows. The
+   page now groups by zone: bordered panels, deliberate rhythm, facts in a
+   grid, ledger as .tbl. */ 
+.ds-section {
+	border: 1px solid var(--border);
+	border-radius: var(--radius-lg);
+	background: var(--bg-alt);
+	padding: var(--sp-4);
+}
+.page-content > .ds-section + .ds-section { margin-top: var(--sp-5); }
+.ds-section-header {
+	display: flex;
+	align-items: flex-start;
+	justify-content: space-between;
+	gap: var(--sp-3);
+	margin-bottom: var(--sp-2);
+}
+.ds-section-title { margin: 0; font-size: var(--fs-xl); font-weight: 650; }
+.ds-section-heading {
+	margin: var(--sp-4) 0 var(--sp-2);
+	font-size: var(--fs-xs);
+	font-weight: 600;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	color: var(--fg-muted);
+}
+.ds-section > .ds-section-heading:first-child { margin-top: 0; }
+
+/* The masthead fact strip: what this attempt IS, at a glance. Pairs are
+   equal grid cells (not stacked dl rows); labels whisper, values speak. */
+.ds-facts {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+	gap: var(--sp-2) var(--sp-5);
+	margin: var(--sp-3) 0 0;
+}
+.ds-fact dt {
+	font-size: var(--fs-xs);
+	text-transform: uppercase;
+	letter-spacing: 0.06em;
+	color: var(--fg-muted);
+	margin-bottom: 2px;
+}
+.ds-fact dd {
+	margin: 0;
+	font-size: var(--fs-sm);
+	overflow-wrap: anywhere;
+}
+.ds-fact dd code { font-size: var(--fs-xs); }
+
+/* Callouts (used by the graph/topology reason states and run logs). */
+.ds-callout {
+	border: 1px solid var(--border);
+	border-radius: var(--radius-lg);
+	padding: var(--sp-2) var(--sp-3);
+	font-size: var(--fs-sm);
+	color: var(--fg-muted);
+}
+.ds-callout--info { color: var(--fg); }
+
+/* Ledger rows: action cluster stays one line, summaries truncate. */
+.rd-row-actions { white-space: nowrap; text-align: right; }
+.rd-row-actions .runlogs-slot { display: inline-block; }
+.rd-cell-summary {
+	max-width: 56ch;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
 .rd-pane--code .code-island {
 	/* The island defaults are page-height (template detail); inside the band
 	   it stretches to the timeline's side and stops at a readable cap. */

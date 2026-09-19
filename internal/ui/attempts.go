@@ -332,7 +332,7 @@ type attemptDetailData struct {
 	TotalRuns      int
 	TotalNodeRes   int
 	TotalEvidence  int
-	NodeResults    []v1alpha1.NodeResultEnvelope
+	NodeResults    []nodeResultRow
 	Evidence       []v1alpha1.EvidenceReference
 	Owner          string
 	AgentEnabled   bool
@@ -350,6 +350,7 @@ type attemptDetailData struct {
 type claimView struct {
 	PR            string // host/owner/name#N (normalized)
 	HeadSHA       string
+	HeadShort     string // shortSHA(HeadSHA), precomputed for the fact strip
 	State         string // dispatched | released | armed/waiting…
 	ArmedSince    string
 	DispatchedAt  string
@@ -366,6 +367,16 @@ type runSummary struct {
 	StartedAt string
 	EndedAt   string
 	Phase     string
+	Duration  string // ended−started, humanized; "" while running
+}
+
+// nodeResultRow is the ledger projection of one Node Result Envelope
+// (ADR-0004): precomputed server-side so the template stays arithmetic-free.
+type nodeResultRow struct {
+	NodeID   string
+	Status   string
+	Duration string // humanized from DurationMs; "" when unset
+	Summary  string
 }
 
 // agentEnabledFor resolves whether a workflow runs an agent, matching the
@@ -402,6 +413,10 @@ func (s *Server) handleAttemptDetail(w http.ResponseWriter, r *http.Request) {
 	for _, run := range att.Status.Runs {
 		started := ""
 		ended := ""
+		duration := ""
+		if !run.StartedAt.IsZero() && !run.EndedAt.IsZero() && run.EndedAt.After(run.StartedAt.Time) {
+			duration = formatDuration(run.EndedAt.Sub(run.StartedAt.Time))
+		}
 		if !run.StartedAt.IsZero() {
 			started = run.StartedAt.Format("2006-01-02 15:04:05 MST")
 			if earliest.IsZero() || run.StartedAt.Time.Before(earliest) {
@@ -418,6 +433,7 @@ func (s *Server) handleAttemptDetail(w http.ResponseWriter, r *http.Request) {
 			Name:      run.Name,
 			StartedAt: started,
 			EndedAt:   ended,
+			Duration:  duration,
 			Phase:     run.Phase,
 		})
 	}
@@ -460,8 +476,8 @@ func (s *Server) handleAttemptDetail(w http.ResponseWriter, r *http.Request) {
 		TotalRuns:      att.Status.TotalRuns(),
 		TotalNodeRes:   att.Status.TotalNodeResults(),
 		TotalEvidence:  att.Status.TotalEvidence(),
-		NodeResults:    att.Status.NodeResults,
 		Evidence:       att.Status.Evidence,
+		NodeResults:    nodeResultRows(att.Status.NodeResults),
 		Owner:          att.Spec.Owner,
 		AgentEnabled:   agentEnabled,
 		LastRunAt:      formatMetaTime(att.Status.LastRunAt),
@@ -471,6 +487,7 @@ func (s *Server) handleAttemptDetail(w http.ResponseWriter, r *http.Request) {
 		data.Claim = &claimView{
 			PR:             rv.PR,
 			HeadSHA:        rv.HeadSHA,
+			HeadShort:      shortSHA(rv.HeadSHA),
 			State:          claimState(rv),
 			Released:       rv.Released,
 			ReleaseReason:  rv.ReleaseReason,
@@ -783,6 +800,20 @@ func (s *Server) handleAttemptPiSession(w http.ResponseWriter, r *http.Request) 
 }
 
 // chipState maps an attempt phase onto the shared chip vocabulary.
+// nodeResultRows projects envelopes into ledger table rows, durations
+// humanized server-side (the template never computes).
+func nodeResultRows(envs []v1alpha1.NodeResultEnvelope) []nodeResultRow {
+	rows := make([]nodeResultRow, 0, len(envs))
+	for _, e := range envs {
+		dur := ""
+		if e.DurationMs > 0 {
+			dur = formatDuration(time.Duration(e.DurationMs) * time.Millisecond)
+		}
+		rows = append(rows, nodeResultRow{NodeID: e.NodeID, Status: e.Status, Duration: dur, Summary: e.Summary})
+	}
+	return rows
+}
+
 func chipState(phase string) string {
 	switch phase {
 	case "failed":

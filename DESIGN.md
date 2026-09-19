@@ -74,6 +74,19 @@ document renders **read-only** first (editing lands with #418's MR-bridge);
 validation markers and schema completion come from `/api/schema`, never a
 hand-written schema.
 
+## Run-Detail Structure (#547)
+
+The detail page groups into four zones — **masthead** (identity header + a
+`ds-facts` grid absorbing claim/objective), **watch** (execution graph +
+waterfall, the operator's first question), **read** (Workflow Code |
+Event Timeline, the #533 duo, now below the watch), **ledger** (runs, node
+results, evidence — `.tbl` tables, not stacked dl/card rows: the table is
+the product). The `ds-section` family finally carries its styles: bordered
+panels on `--bg-alt`, `sp-5` rhythm between zones, `sp-4/sp-2` around
+headings (more space above than below). No tabs — density over whitespace
+means everything visible in minimum scroll. Below 900px the sidebar topbar
+wraps (it used to push the page 141px wide at phone widths).
+
 ## data-testid Registry (ADR-0012 §6, #421)
 
 Every island and dynamic fragment the tests hook carries a `data-testid`.
@@ -97,5 +110,6 @@ headers change in one place; `data-island-state="ready"` plus the
 | `rev-option`, `rev-picker`, `rev-graph-diff`, `revisions-empty`, `topology-pane`, `topology-legend`, `yaml-diff`, `yaml-diff-line` | `pages/template_revisions.html` | topology diff assertions |
 | `tpl-table`, `tpl-row-link`, `tpl-new-workflow`, `graph-canvas` | `pages/templates.html`, `frag_run_graph.html`, `frag_topology.html` | workflows spec (library table + CTA), run-detail/topology (canvas) |
 | `trigger-edge`, `[data-node="trigger"]` | `frag_run_graph.html`, `frag_topology.html` | runs/topology specs (the virtual trigger node + its dashed cause-edge, #541) |
+| `fact-grid`, `runs-table`, `noderes-table`, `evidence-table` | `pages/attempt_detail.html` | run-detail specs (#547: masthead facts + ledger as tables) |
 | `wf-new-{link,form,name,cadence,template,templates,submit}` | `pages/workflow_new.html`, `pages/workflows.html` | workflows spec |
 | `data-island-state` (attribute), `window.harmostesCodeIsland` (JS handle) | island glue | code-island, inspector, propose specs |

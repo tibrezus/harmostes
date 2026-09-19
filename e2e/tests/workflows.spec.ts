@@ -1,6 +1,7 @@
 // E2E scenario 6 — the workflow catalog: read-only reference for the GitOps
 // YAML, with the compiled graph per workflow.
 import { test, expect } from '@playwright/test';
+import { WRITER } from './helpers';
 
 test('the workflow catalog lists both fixture workflows and renders their graphs', async ({ page }) => {
   await page.goto('/workflows');
@@ -48,4 +49,26 @@ test('GET /api/schema serves both CRD-derived schemas', async ({ request }) => {
   const body = await res.json();
   expect(body.workflow?.properties?.spec?.type).toBe('object');
   expect(body.workflowtemplate?.properties?.spec?.type).toBe('object');
+});
+
+// #538: Templates is first-class in the nav (the definitions get their own
+// entry — donor pattern: kestra Flows, conductor Workflows), the library is
+// a real table, and creation starts from the definition (per-row CTA).
+test('templates: nav entry, library table, per-row creation CTA', async ({ page }) => {
+  page.setExtraHTTPHeaders(WRITER);
+  await page.goto('/templates');
+
+  // The sidebar marks Templates active; the in-page tab pair is gone.
+  await expect(page.locator('.ds-sidebar-link--active')).toContainText('Templates');
+  await expect(page.locator('.page-tab')).toHaveCount(0);
+
+  // The library is a table: rows link the template, carry the pipeline
+  // shape, and expose the creation CTA (pre-filled template).
+  const row = page.locator('[data-testid="tpl-table"] tbody tr').first();
+  await expect(row.getByTestId('tpl-row-link')).toBeVisible();
+  await expect(row.locator('.pg-mini-node').first()).toBeVisible();
+  const cta = row.getByTestId('tpl-new-workflow');
+  await expect(cta).toHaveCount(1);
+  await cta.click();
+  await expect(page).toHaveURL(/\/workflows\/new\?template=/);
 });

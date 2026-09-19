@@ -22,6 +22,9 @@ type templateCardView struct {
 	GateName    string
 	Skill       string
 	MaxFixes    int
+	// #538: active instances composed from THIS template (by resolved
+	// templateRef) — the library's Workflows column.
+	WorkflowCount int
 }
 
 // templateDetailView is the display model for the template detail page.
@@ -117,14 +120,17 @@ func (s *Server) handleTemplateList(w http.ResponseWriter, r *http.Request) {
 
 	// Count workflows per template (by gate plugin name, since templateRef
 	// is optional — most workflows inherit structure by gate convention).
-	wfCounts := map[string][]string{}
+	// #538: instance counts key on the TEMPLATE the workflow composes from
+	// (spec.templateRef, resolved for thin instances) — the gate-name keying
+	// answered "which gate plugin" when the table asks "how many workflows".
+	wfCounts := map[string]int{}
 	if wfs, err := s.listAllWorkflows(r); err == nil {
-		for _, wf := range wfs {
-			gate := wf.Spec.Agent.Gate.Plugin.Name
-			if gate == "" {
-				gate = "noop"
+		for i := range wfs {
+			ref := wfs[i].Spec.TemplateRef
+			if ref == "" {
+				ref = "custom"
 			}
-			wfCounts[gate] = append(wfCounts[gate], wf.Name)
+			wfCounts[ref]++
 		}
 	}
 
@@ -135,18 +141,20 @@ func (s *Server) handleTemplateList(w http.ResponseWriter, r *http.Request) {
 			gateName = "noop"
 		}
 		cards = append(cards, templateCardView{
-			Name:        t.Name,
-			Description: t.Spec.Description,
-			Pipeline:    buildTemplatePipelineView(&t),
-			Tools:       t.Spec.Agent.Tools,
-			GateName:    gateName,
-			Skill:       t.Spec.Agent.Skill,
-			MaxFixes:    t.Spec.Agent.MaxFixes,
+			Name:          t.Name,
+			Description:   t.Spec.Description,
+			Pipeline:      buildTemplatePipelineView(&t),
+			Tools:         t.Spec.Agent.Tools,
+			GateName:      gateName,
+			Skill:         t.Spec.Agent.Skill,
+			MaxFixes:      t.Spec.Agent.MaxFixes,
+			WorkflowCount: wfCounts[t.Name],
 		})
 	}
 
 	s.render(w, r, "pages/templates.html", map[string]any{
 		"Templates": cards,
+		"MayWrite":  s.mayWrite(identityFromContext(r.Context())),
 	})
 }
 

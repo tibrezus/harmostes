@@ -7,6 +7,7 @@ import (
 	"html/template"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -36,12 +37,13 @@ const (
 	runGraphEventName = "rungraph"
 )
 
-// Geometry of the layered layout (server-side, deterministic).
+// Geometry of the layered layout (server-side, deterministic). Cards are
+// 224×92 identity cards (#541): type chip, headline, two fact lines.
 const (
-	graphNodeW      = 168
-	graphNodeH      = 40
-	graphColGap     = 44
-	graphRowGap     = 16
+	graphNodeW      = 224
+	graphNodeH      = 92
+	graphColGap     = 56
+	graphRowGap     = 20
 	graphMargin     = 12
 	graphLabelLimit = 22
 )
@@ -53,19 +55,21 @@ type graphNodeView struct {
 	Status string `json:"status"` // pending|running|ok|failed|skipped|external
 	X      int    `json:"x"`
 	Y      int    `json:"y"`
+	// Identity card (#541): what this node IS, on the canvas.
+	Chip       string `json:"chip"`
+	Title      string `json:"title"`
+	Fact1      string `json:"fact1,omitempty"`
+	Fact2      string `json:"fact2,omitempty"`
+	StatusText string `json:"statusText"` // glyph + word (grayscale-safe)
 	// Precomputed SVG anchors (the template stays arithmetic-free).
-	PulseX int `json:"pulseX"`
-	PulseY int `json:"pulseY"`
-	LabelX int `json:"labelX"`
-	LabelY int `json:"labelY"`
-	TypeX  int `json:"typeX"`
-	TypeY  int `json:"typeY"`
+	cardAnchors
 }
 
 type graphEdgeView struct {
-	From string `json:"from"`
-	To   string `json:"to"`
-	Path string `json:"path"` // SVG path data, right edge → left edge
+	From  string `json:"from"`
+	To    string `json:"to"`
+	Path  string `json:"path"`  // SVG path data, right edge → left edge
+	Cause bool   `json:"cause"` // dashed: the trigger's cause-edge (not data flow)
 }
 
 type runGraphView struct {
@@ -82,16 +86,22 @@ type runGraphView struct {
 	TimingW   int                 `json:"timingW,omitempty"` // strip width; template viewBox reads this
 }
 
-// nodeData is what pointing at a node yields: the live facts for that node.
+// nodeData is what pointing at a node yields: the identity rows first
+// (what this node IS — same facts as the card, spelled out), then the
+// live facts, then artifact links. Identity/config split (#541): the
+// click carries the config.
 type nodeData struct {
-	Status      string `json:"status"`
-	Summary     string `json:"summary,omitempty"`
-	RunID       string `json:"runID,omitempty"`
-	ProducedAt  string `json:"producedAt,omitempty"`
-	Duration    string `json:"duration,omitempty"` // humanized node execution time
-	Claims      int    `json:"claims,omitempty"`
-	Refs        int    `json:"refs,omitempty"`
-	TriggeredBy string `json:"triggeredBy,omitempty"`
+	Status      string   `json:"status"`
+	Defs        []defRow `json:"defs,omitempty"` // identity rows (from the card path)
+	Summary     string   `json:"summary,omitempty"`
+	RunID       string   `json:"runID,omitempty"`
+	ProducedAt  string   `json:"producedAt,omitempty"`
+	Duration    string   `json:"duration,omitempty"` // humanized node execution time
+	Claims      int      `json:"claims,omitempty"`
+	Refs        int      `json:"refs,omitempty"`
+	TriggeredBy string   `json:"triggeredBy,omitempty"`
+	RanWith     string   `json:"ranWith,omitempty"`    // window-resolved model (#494) from session meta
+	SessionURL  string   `json:"sessionURL,omitempty"` // agent nodes: the transcript viewer
 }
 
 // buildRunGraph compiles the attempt's workflow and merges the attempt's
@@ -115,6 +125,10 @@ func (s *Server) buildRunGraph(ctx context.Context, att *v1alpha1.Attempt) runGr
 	} else {
 		gs = graph.CompileWorkflow(&resolved)
 	}
+	// The trigger joins the canvas as a virtual root (#541): cause, not
+	// step — the projection decorates the document with its source; the
+	// compiled graph (what the worker walks) is untouched.
+	gs = withTriggerNode(gs, resolved.Spec.Source)
 	if len(gs.Nodes) == 0 {
 		view.Reason = "workflow has no compiled graph"
 		return view
@@ -142,22 +156,54 @@ func (s *Server) buildRunGraph(ctx context.Context, att *v1alpha1.Attempt) runGr
 	}
 
 	view.Available = true
-	view.Nodes, view.Edges, view.Width, view.Height = layoutGraph(gs, latest, inFlight)
-	for _, n := range view.Nodes {
-		if env, ok := latest[n.ID]; ok {
-			view.NodeData[n.ID] = nodeData{
-				Status:      env.Status,
-				Summary:     env.Summary,
-				RunID:       env.RunID,
-				ProducedAt:  env.ProducedAt.Format("2006-01-02 15:04:05 MST"),                 // matches the run rows above
-				Duration:    formatDuration(time.Duration(env.DurationMs) * time.Millisecond), // naming.go helper
-				Claims:      len(env.Claims),
-				Refs:        len(env.References),
-				TriggeredBy: env.Provenance.TriggeredBy,
-			}
-		} else {
-			view.NodeData[n.ID] = nodeData{Status: n.Status}
+	view.Nodes, view.Edges, view.Width, view.Height = layoutGraph(gs, &resolved.Spec, latest, inFlight)
+
+	// The agent node's session link + pinned model (#494): the worker
+	// resolves time-windowed models in-memory only, but session metadata
+	// persists the run's actual model — the panel reports the truth, the
+	// card reports the identity.
+	lastRun := ""
+	var lastAt time.Time
+	for _, run := range att.Status.Runs {
+		if run.StartedAt.After(lastAt) {
+			lastAt, lastRun = run.StartedAt.Time, run.Name
 		}
+	}
+	specOf := map[string]v1alpha1.NodeSpec{}
+	for _, n := range gs.Nodes {
+		specOf[n.ID] = n
+	}
+	for _, n := range view.Nodes {
+		spec := specOf[n.ID]
+		data := nodeData{Status: n.Status, Defs: cardDefs(spec, &resolved.Spec)}
+		if n.ID == triggerNodeID && lastRun != "" {
+			// The trigger card panel: the latest run's provenance is the
+			// cause made concrete.
+			data.Defs = append(data.Defs, defRow{Label: "Last run", Value: lastRun})
+		}
+		if env, ok := latest[n.ID]; ok {
+			if n.Type == "agent" {
+				// The agent's OWN run (the envelope's RunID — not the
+				// lexicographic last, which on multi-node runs is whatever
+				// sorts last, e.g. the prepare run).
+				agentRun := env.RunID
+				if agentRun == "" {
+					agentRun = runForNode(att.Status.Runs, n.ID, lastRun)
+				}
+				data.SessionURL = "/runs/" + att.Name + "/runs/" + agentRun + "/session"
+				if m := s.runSessionModel(ctx, att.Spec.WorkflowRef, agentRun); m != "" {
+					data.RanWith = m
+				}
+			}
+			data.Summary = env.Summary
+			data.RunID = env.RunID
+			data.ProducedAt = env.ProducedAt.Format("2006-01-02 15:04:05 MST") // matches the run rows above
+			data.Duration = formatDuration(time.Duration(env.DurationMs) * time.Millisecond)
+			data.Claims = len(env.Claims)
+			data.Refs = len(env.References)
+			data.TriggeredBy = env.Provenance.TriggeredBy
+		}
+		view.NodeData[n.ID] = data
 	}
 	view.Timing = buildTimingStrip(att, view.Nodes, latest)
 	view.TimingH = len(view.Timing) * 22 // lane height lives here; templates stay arithmetic-free
@@ -279,7 +325,7 @@ func buildTimingStrip(att *v1alpha1.Attempt, nodes []graphNodeView, latest map[s
 // layoutGraph computes the run graph's painting over the shared layout
 // engine (topology.go): execution state per node, the pulsing live position,
 // timing anchors. Geometry itself is identical to the topology projection.
-func layoutGraph(gs v1alpha1.GraphSpec, latest map[string]v1alpha1.NodeResultEnvelope, inFlight bool) ([]graphNodeView, []graphEdgeView, int, int) {
+func layoutGraph(gs v1alpha1.GraphSpec, spec *v1alpha1.WorkflowSpec, latest map[string]v1alpha1.NodeResultEnvelope, inFlight bool) ([]graphNodeView, []graphEdgeView, int, int) {
 	// Deterministic node order.
 	nodes := make([]v1alpha1.NodeSpec, len(gs.Nodes))
 	copy(nodes, gs.Nodes)
@@ -316,7 +362,10 @@ func layoutGraph(gs v1alpha1.GraphSpec, latest map[string]v1alpha1.NodeResultEnv
 		if label == "" {
 			label = n.ID
 		}
-		if n.Type == "external" {
+		// External = never-executable classification: env kernels AND the
+		// virtual trigger (cause, not step — it can never be pending or
+		// live, and must not read as unsettled work).
+		if n.Type == "external" || n.ID == triggerNodeID {
 			status = graphStateExternal
 		}
 		// Envelope state never overrides the external classification: external
@@ -337,20 +386,33 @@ func layoutGraph(gs v1alpha1.GraphSpec, latest map[string]v1alpha1.NodeResultEnv
 		}
 		x := graphMargin + c*(graphNodeW+graphColGap)
 		y := graphMargin + r*(graphNodeH+graphRowGap)
-		views = append(views, graphNodeView{
+		card := cardFacts(n, spec) // identity from the compiled node, spec fallback
+		view := graphNodeView{
 			ID:     n.ID,
 			Label:  truncateRunes(label, graphLabelLimit),
 			Type:   n.Type,
 			Status: status,
 			X:      x,
 			Y:      y,
-			PulseX: x + 14,
-			PulseY: y + graphNodeH/2,
-			LabelX: x + 30,
-			LabelY: y + 25,
-			TypeX:  x + graphNodeW - 8,
-			TypeY:  y + 25,
-		})
+			Chip:   card.Chip,
+			Title:  card.Title,
+			StatusText: map[string]string{
+				graphStatePending:  "· pending",
+				graphStateRunning:  "↻ running",
+				graphStateOK:       "✓ ok",
+				graphStateFailed:   "✗ failed",
+				graphStateSkipped:  "− skipped",
+				graphStateExternal: "◇ external",
+			}[status],
+			cardAnchors: cardAnchorsAt(x, y),
+		}
+		if len(card.Facts) > 0 {
+			view.Fact1 = card.Facts[0]
+		}
+		if len(card.Facts) > 1 {
+			view.Fact2 = card.Facts[1]
+		}
+		views = append(views, view)
 	}
 
 	// Edges in spec order (noise-filtered by the engine), paths from the
@@ -358,7 +420,7 @@ func layoutGraph(gs v1alpha1.GraphSpec, latest map[string]v1alpha1.NodeResultEnv
 	edgeViews := make([]graphEdgeView, 0, len(gs.Edges))
 	for _, e := range gs.Edges {
 		if p, ok := geo.edgeOf[e.From+"→"+e.To]; ok {
-			edgeViews = append(edgeViews, graphEdgeView{From: e.From, To: e.To, Path: p})
+			edgeViews = append(edgeViews, graphEdgeView{From: e.From, To: e.To, Path: p, Cause: e.From == triggerNodeID})
 		}
 	}
 	return views, edgeViews, geo.width, geo.height
@@ -367,7 +429,9 @@ func layoutGraph(gs v1alpha1.GraphSpec, latest map[string]v1alpha1.NodeResultEnv
 func isExternalNode(nodes []v1alpha1.NodeSpec, id string) bool {
 	for _, n := range nodes {
 		if n.ID == id {
-			return n.Type == "external"
+			// External = never-executable: env kernels AND the virtual
+			// trigger (cause, not step — it can never be the live position).
+			return n.Type == "external" || n.ID == triggerNodeID
 		}
 	}
 	return false
@@ -384,6 +448,18 @@ func truncateRunes(s string, n int) string {
 		return "…"
 	}
 	return string(runes[:n-1]) + "…"
+}
+
+// runForNode picks the run matching a node when the envelope carries no
+// RunID (graph-native fixtures name runs {prefix}-{node}); the lexical
+// last run is the final fallback.
+func runForNode(runs []v1alpha1.RunRecord, nodeID, fallback string) string {
+	for _, r := range runs {
+		if strings.HasSuffix(r.Name, "-"+nodeID) {
+			return r.Name
+		}
+	}
+	return fallback
 }
 
 // handleRunGraphSSE streams the run-detail graph fragment for one attempt.

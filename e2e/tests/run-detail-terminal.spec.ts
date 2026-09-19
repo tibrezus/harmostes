@@ -10,7 +10,8 @@ test('terminal run detail: graph, waterfall proportions, hover panel', async ({ 
 
   // Graph: the full 4-node pipeline.
   const nodes = page.getByTestId('graph-node');
-  await expect(nodes).toHaveCount(4);
+  // 5 = virtual trigger + the four graph nodes (#541).
+  await expect(nodes).toHaveCount(5);
 
   // Waterfall: overhead + 4 node lanes; the 13m agent bar must dominate.
   const lanes = page.getByTestId('timing-lane');
@@ -25,10 +26,20 @@ test('terminal run detail: graph, waterfall proportions, hover panel', async ({ 
   expect(agent).toBeGreaterThan(prepare);
   expect(agent).toBeGreaterThan(gate);
 
-  // Hover the agent node: the delegated panel shows its settled state and
-  // the humanized 13m duration.
+  // Hover the agent node: the delegated panel shows identity rows first
+  // (#541 — what the node IS), then the settled state and the humanized
+  // 13m duration, with the transcript one click away.
   await page.locator('[data-node="agent"]').hover();
   const panel = page.locator('#rg-panel');
+  await expect(panel).toContainText('litellm/zai/glm-5.3-flash');
+  await expect(panel).toContainText('skill pr-review');
+  await expect(panel).toContainText('maxFixes 3');
   await expect(panel).toContainText('ok');
   await expect(panel).toContainText('13.0m');
+  await expect(panel.locator('a[href*="/runs/pr-review-demo-42a1-agent/session"]')).toHaveCount(1);
+
+  // The trigger's panel: the cause, spelled out (kind + push target).
+  await page.locator('[data-node="trigger"]').hover();
+  await expect(panel).toContainText('webhook trigger');
+  await expect(panel).toContainText('demo-rezuscloud-harmostes');
 });

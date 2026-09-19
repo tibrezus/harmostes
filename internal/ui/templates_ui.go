@@ -220,7 +220,7 @@ func (s *Server) handleTemplateDetail(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	topo := buildTopology(graphForTemplate(spec), s.nodeTypePalette(r.Context()))
+	topo := buildTopology(graphForTemplate(spec), nil, s.nodeTypePalette(r.Context()))
 	topo.NodeLinks = nodeLinks(selRev) // the frag reads links off the view itself
 	data := templateDetailView{
 		Name:          tmpl.Name,

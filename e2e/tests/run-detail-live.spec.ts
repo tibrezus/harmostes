@@ -7,7 +7,8 @@ test('running run detail: live position on the agent node, settled lanes only', 
   await page.goto('/runs/attempt-pr-review-demo-43c2');
 
   const nodes = page.getByTestId('graph-node');
-  await expect(nodes).toHaveCount(4);
+  // 5 = virtual trigger + the four graph nodes (#541).
+  await expect(nodes).toHaveCount(5);
 
   await expect(page.locator('.rg-node--running')).toHaveCount(1);
   await expect(page.locator('.rg-node--ok')).toHaveCount(1);

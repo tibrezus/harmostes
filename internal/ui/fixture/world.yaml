@@ -13,6 +13,17 @@ spec:
   source:
     kind: webhook
     repo: demo-rezuscloud-harmostes
+  # The agent the graph's agent node refers to (#541 fixture richness): a
+  # pr-review workflow IS an agent workflow — model, skill, fix-loop budget,
+  # and the gate that validates it. Mirrors what an operator resolves from
+  # the pr-review template.
+  agent:
+    model: litellm/zai/glm-5.3-flash
+    skill: github.com/tibrezus/harmostes-skills//skills/pr-review
+    maxFixes: 3
+    gate:
+      plugin:
+        name: pr-review
   graph:
     nodes:
       - id: prepare

@@ -60,6 +60,13 @@ type topologyNodeView struct {
 	TypeY     int
 	DiffClass string
 	Ghost     bool
+	// Identity card (#541): same facts path as the run graph — the two
+	// projections can never disagree about what a node IS.
+	Chip  string
+	Title string
+	Fact1 string
+	Fact2 string
+	cardAnchors
 }
 
 type topologyEdgeView struct {
@@ -68,6 +75,7 @@ type topologyEdgeView struct {
 	Path      string
 	DiffClass string
 	Ghost     bool
+	Cause     bool // dashed: the trigger's cause-edge (not data flow)
 }
 
 type topologyView struct {
@@ -185,7 +193,7 @@ func sortedIDs(nodes []v1alpha1.NodeSpec) []string {
 
 // buildTopology projects a GraphSpec into render-ready views. palette is the
 // schema-derived node-type vocabulary (nil ⇒ every node renders generic).
-func buildTopology(gs v1alpha1.GraphSpec, palette map[string]bool) topologyView {
+func buildTopology(gs v1alpha1.GraphSpec, spec *v1alpha1.WorkflowSpec, palette map[string]bool) topologyView {
 	sorted := make([]v1alpha1.NodeSpec, len(gs.Nodes))
 	copy(sorted, gs.Nodes)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].ID < sorted[j].ID })
@@ -204,24 +212,37 @@ func buildTopology(gs v1alpha1.GraphSpec, palette map[string]bool) topologyView 
 		if label == "" {
 			label = n.ID
 		}
-		nodes = append(nodes, topologyNodeView{
-			ID:     id,
-			Label:  truncateRunes(label, graphLabelLimit),
-			Type:   n.Type,
-			Known:  palette[n.Type],
-			X:      x,
-			Y:      y,
-			LabelX: x + 30,
-			LabelY: y + 25,
-			TypeX:  x + graphNodeW - 8,
-			TypeY:  y + 25,
-		})
+		card := cardFacts(n, spec)
+		view := topologyNodeView{
+			ID:    id,
+			Label: truncateRunes(label, graphLabelLimit),
+			Type:  n.Type,
+			// The synthetic trigger is UI-native (not in the CRD enum) but
+			// known by construction — it must not render as unknown-type.
+			Known:       palette[n.Type] || n.ID == triggerNodeID,
+			X:           x,
+			Y:           y,
+			LabelX:      x + 14,
+			LabelY:      y + 45,
+			TypeX:       x + graphNodeW - 8,
+			TypeY:       y + 25,
+			Chip:        card.Chip,
+			Title:       card.Title,
+			cardAnchors: cardAnchorsAt(x, y),
+		}
+		if len(card.Facts) > 0 {
+			view.Fact1 = card.Facts[0]
+		}
+		if len(card.Facts) > 1 {
+			view.Fact2 = card.Facts[1]
+		}
+		nodes = append(nodes, view)
 	}
 	edges := make([]topologyEdgeView, 0, len(geo.edgeOf))
 	for _, e := range gs.Edges {
 		k := e.From + "→" + e.To
 		if p, ok := geo.edgeOf[k]; ok {
-			edges = append(edges, topologyEdgeView{From: e.From, To: e.To, Path: p})
+			edges = append(edges, topologyEdgeView{From: e.From, To: e.To, Path: p, Cause: e.From == triggerNodeID})
 		}
 	}
 	return topologyView{Available: true, Width: geo.width, Height: geo.height, Nodes: nodes, Edges: edges}
@@ -305,10 +326,19 @@ func buildTopologyDiff(a, b v1alpha1.GraphSpec, palette map[string]bool) (older,
 			if label == "" {
 				label = n.ID
 			}
+			card := cardFacts(n, nil)
 			v := topologyNodeView{
 				ID: id, Label: truncateRunes(label, graphLabelLimit), Type: n.Type,
 				Known: palette[n.Type],
-				X:     x, Y: y, LabelX: x + 30, LabelY: y + 25, TypeX: x + graphNodeW - 8, TypeY: y + 25,
+				X:     x, Y: y, LabelX: x + 14, LabelY: y + 45, TypeX: x + graphNodeW - 8, TypeY: y + 25,
+				Chip: card.Chip, Title: card.Title,
+				cardAnchors: cardAnchorsAt(x, y),
+			}
+			if len(card.Facts) > 0 {
+				v.Fact1 = card.Facts[0]
+			}
+			if len(card.Facts) > 1 {
+				v.Fact2 = card.Facts[1]
 			}
 			switch {
 			case own[id]:
@@ -515,7 +545,7 @@ func (s *Server) handleTemplateRevisions(w http.ResponseWriter, r *http.Request)
 			From: 1, To: 1, Revs: []int{1}, SingleRevision: true,
 		}
 		palette := s.nodeTypePalette(r.Context())
-		data.TopologyOlder = buildTopology(graphForTemplate(tmpl.Spec), palette)
+		data.TopologyOlder = buildTopology(graphForTemplate(tmpl.Spec), nil, palette)
 		data.TopologyNewer = data.TopologyOlder
 		s.render(w, r, "pages/template_revisions.html", data)
 		return

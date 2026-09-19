@@ -102,8 +102,26 @@ func TestComponent_RunDetail_TerminalGraphAndWaterfall(t *testing.T) {
 	doc := getAsFixtureUser(t, ts, "/runs/attempt-pr-review-demo-42a1")
 
 	nodes := testIDSelection(t, doc, "graph-node")
-	if nodes.Length() != 4 {
-		t.Errorf("graph nodes = %d, want 4 (prepare, agent, gate, deploy)", nodes.Length())
+	if nodes.Length() != 5 {
+		t.Errorf("graph nodes = %d, want 5 (trigger + prepare, agent, gate, deploy)", nodes.Length())
+	}
+	// #541 identity cards: the canvas carries workflow semantics.
+	trigger := doc.Find(`[data-testid="graph-node"][data-node="trigger"]`)
+	if trigger.Length() != 1 {
+		t.Fatal("the virtual trigger node must join the canvas (#541)")
+	}
+	if trigTxt := strings.TrimSpace(trigger.Text()); !strings.Contains(trigTxt, "webhook") {
+		t.Errorf("trigger card must name its kind (webhook), got %q", trigTxt)
+	}
+	if cause := doc.Find(`[data-testid="trigger-edge"]`); cause.Length() != 1 {
+		t.Errorf("cause edges = %d, want 1 (trigger → first root, dashed)", cause.Length())
+	}
+	agentCardText := strings.TrimSpace(doc.Find(`[data-testid="graph-node"][data-node="agent"]`).Text())
+	if txt := agentCardText; !strings.Contains(txt, "maxFixes 3") {
+		t.Errorf("agent card must carry the fix-loop budget (maxFixes 3), got %q", txt)
+	}
+	if txt := agentCardText; !strings.Contains(txt, "gate pr-review") {
+		t.Errorf("agent card must name its gate plugin, got %q", txt)
 	}
 
 	lanes := testIDSelection(t, doc, "timing-lane")
@@ -223,8 +241,14 @@ func TestComponent_RunDetail_DeterministicAttempt(t *testing.T) {
 	doc := getAsFixtureUser(t, ts, "/runs/attempt-merge-sync-demo-e5f6")
 
 	nodes := testIDSelection(t, doc, "graph-node")
-	if nodes.Length() != 2 {
-		t.Errorf("graph nodes = %d, want 2 (prepare, deploy)", nodes.Length())
+	if nodes.Length() != 3 {
+		t.Errorf("graph nodes = %d, want 3 (trigger + prepare, deploy)", nodes.Length())
+	}
+	// The deterministic attempt's trigger card is its schedule (the fixture
+	// merge-sync-demo source is kind: schedule, cron 0 */6 * * *).
+	trigger := doc.Find(`[data-testid="graph-node"][data-node="trigger"]`)
+	if txt := strings.TrimSpace(trigger.Text()); !strings.Contains(txt, "cron 0 */6 * * *") {
+		t.Errorf("schedule trigger card must show its cron expression, got %q", txt)
 	}
 	// The pinned contract is AgentEnabled gating the Session link: no anchor
 	// may target this attempt's session route.

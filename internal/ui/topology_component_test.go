@@ -52,8 +52,13 @@ func TestComponent_WorkflowDetail_MergedTopology(t *testing.T) {
 	doc := getAsFixtureUser(t, ts, "/workflows/pr-review-instance")
 
 	nodes := doc.Find(`[data-testid="topology-node"]`)
-	if nodes.Length() != 3 {
-		t.Fatalf("merged topology nodes = %d, want 3 (template defaults resolved)", nodes.Length())
+	if nodes.Length() != 4 {
+		t.Fatalf("merged topology nodes = %d, want 4 (trigger + template defaults resolved)", nodes.Length())
+	}
+	// The instance's own source is the virtual trigger (#541): the thin
+	// instance's webhook source renders as the canvas root.
+	if doc.Find(`[data-testid="topology-node"][data-node="trigger"]`).Length() != 1 {
+		t.Fatal("the instance topology must carry its virtual trigger node")
 	}
 	agent := nodes.FilterFunction(func(_ int, s *goquery.Selection) bool {
 		id, _ := s.Attr("data-node")
@@ -67,6 +72,14 @@ func TestComponent_WorkflowDetail_MergedTopology(t *testing.T) {
 	// (graphLabelLimit truncates to 22 runes — assert the surviving prefix.)
 	if got := strings.TrimSpace(agent.Text()); !strings.Contains(got, "litellm") {
 		t.Errorf("merged agent label = %q, want the template's model", got)
+	}
+	// The compiled agent card carries the fix-loop budget and the gate —
+	// the identity facts a thin spec alone could not provide (#541).
+	if got := strings.TrimSpace(agent.Text()); !strings.Contains(got, "maxFixes 3") {
+		t.Errorf("merged agent card must carry the compiled fix-loop budget, got %q", got)
+	}
+	if got := strings.TrimSpace(agent.Text()); !strings.Contains(got, "gate pr-review") {
+		t.Errorf("merged agent card must name the compiled gate plugin, got %q", got)
 	}
 }
 

@@ -256,7 +256,13 @@
 			dl.appendChild(dt);
 			dl.appendChild(dd);
 		}
+		// #541: identity first — what this node IS (the card's facts,
+		// spelled out) — then the runtime rows. Click carries the config.
+		(d.defs || []).forEach(function (r) {
+			if (r.label && r.value) row(r.label, r.value);
+		});
 		row('State', stateLabel(d.status));
+		if (d.ranWith) row('Ran with', d.ranWith);
 		if (d.summary) row('Summary', d.summary);
 		if (d.duration) row('Duration', d.duration);
 		if (d.runID) row('Run', d.runID);
@@ -265,6 +271,14 @@
 		if (d.refs) row('Evidence refs', d.refs);
 		if (d.triggeredBy) row('Triggered by', d.triggeredBy);
 		panel.appendChild(dl);
+		// Artifact link: the agent node's transcript is one click away.
+		if (d.sessionURL) {
+			var a = document.createElement('a');
+			a.href = d.sessionURL;
+			a.className = 'ds-btn ds-btn--secondary ds-btn--xs';
+			a.textContent = '📜 Open session';
+			panel.appendChild(a);
+		}
 	}
 
 	var graphSection = document.getElementById('run-detail-graph');

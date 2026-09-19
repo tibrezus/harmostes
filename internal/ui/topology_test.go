@@ -34,8 +34,8 @@ func chainGraph() v1alpha1.GraphSpec {
 // that makes "one projection" true in the code, not just the prose.
 func TestTopologyGeometry_MatchesRunGraph(t *testing.T) {
 	gs := chainGraph()
-	runNodes, runEdges, w, h := layoutGraph(gs, nil, false)
-	topo := buildTopology(gs, nil)
+	runNodes, runEdges, w, h := layoutGraph(gs, nil, nil, false)
+	topo := buildTopology(gs, nil, nil)
 
 	if topo.Width != w || topo.Height != h {
 		t.Errorf("canvas = %dx%d, run graph = %dx%d", topo.Width, topo.Height, w, h)
@@ -64,7 +64,7 @@ func TestBuildTopology_Palette(t *testing.T) {
 	gs.Nodes = append(gs.Nodes, v1alpha1.NodeSpec{ID: "weird", Type: "flux-hologram", Label: "w"})
 
 	palette := map[string]bool{"plugin": true, "agent": true}
-	topo := buildTopology(gs, palette)
+	topo := buildTopology(gs, nil, palette)
 	byID := map[string]topologyNodeView{}
 	for _, n := range topo.Nodes {
 		byID[n.ID] = n
@@ -76,7 +76,7 @@ func TestBuildTopology_Palette(t *testing.T) {
 		t.Error("unknown type must not be Known")
 	}
 	// nil palette (schema unreachable) degrades: nothing Known, nothing lost.
-	naked := buildTopology(gs, nil)
+	naked := buildTopology(gs, nil, nil)
 	if len(naked.Nodes) != len(topo.Nodes) {
 		t.Errorf("nil palette lost nodes: %d vs %d", len(naked.Nodes), len(topo.Nodes))
 	}

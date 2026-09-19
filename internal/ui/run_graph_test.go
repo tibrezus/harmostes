@@ -65,7 +65,7 @@ func TestLayoutGraphStateMerge(t *testing.T) {
 		t.Errorf("latest envelope = %q, want ok", merged["prepare"].Status)
 	}
 
-	nodes, edges, w, h := layoutGraph(graphTestSpec(), latest, true)
+	nodes, edges, w, h := layoutGraph(graphTestSpec(), nil, latest, true)
 	byID := map[string]graphNodeView{}
 	for _, n := range nodes {
 		byID[n.ID] = n
@@ -99,7 +99,7 @@ func TestLayoutGraphStateMerge(t *testing.T) {
 	}
 
 	// No run in flight → nothing pulses.
-	nodes, _, _, _ = layoutGraph(graphTestSpec(), latest, false)
+	nodes, _, _, _ = layoutGraph(graphTestSpec(), nil, latest, false)
 	for _, n := range nodes {
 		if n.Status == graphStateRunning {
 			t.Errorf("node %s running with no in-flight run", n.ID)
@@ -112,7 +112,7 @@ func TestLayoutGraphStateMerge(t *testing.T) {
 		"agent":   graphEnvelope("agent", "ok", now),
 		"deploy":  graphEnvelope("deploy", "ok", now),
 	}
-	nodes, _, _, _ = layoutGraph(graphTestSpec(), full, true)
+	nodes, _, _, _ = layoutGraph(graphTestSpec(), nil, full, true)
 	for _, n := range nodes {
 		if n.Status == graphStateRunning {
 			t.Errorf("node %s running with all envelopes present", n.ID)

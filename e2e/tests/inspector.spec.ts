@@ -29,7 +29,10 @@ test.describe('node inspector', () => {
     // the document came back from the structured transform.
     const after = await page.evaluate(() => window.harmostesCodeIsland.getText());
     expect(after).toContain('llama3:8b');
-    expect(after).not.toContain('litellm/ali/anthropic/qwen3.8-flash');
+    // The structured edit replaces agent.model ONLY — the pinned night
+    // window (models[0].model, values #536) keeps the route: exactly one
+    // occurrence survives, and it is the schedule's.
+    expect(after.split('litellm/ali/anthropic/qwen3.8-flash').length - 1).toBe(1);
 
     // The server-side projections did NOT move: the edit lives in the
     // working document only (persistence is #420's bridge). A fresh load

@@ -5888,6 +5888,11 @@ spec:
         name: pr-review
     maxFixes: 3
     model: litellm/ali/anthropic/qwen3.8-flash
+    models:
+    - end: "02:00"
+      model: litellm/ali/anthropic/qwen3.8-flash
+      start: "16:00"
+      tz: Europe/Paris
     skill: /skills/pr-review/SKILL.md
     taskTemplate:
       configMap: harmostes-tasks

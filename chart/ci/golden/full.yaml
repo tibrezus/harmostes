@@ -4851,7 +4851,11 @@ spec:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: harmostes-ui-crd-reader
+  # Release-unique: dev and prod share one cluster, and identically-named
+  # cluster-scoped objects from two Helm releases fight over subjects —
+  # the losing release's UI SA loses /api/schema (#549). The namespace
+  # discriminates the releases.
+  name: harmostes-ui-crd-reader-harmostes-ci
   labels:
     app.kubernetes.io/name: harmostes
     app.kubernetes.io/component: ui
@@ -4868,14 +4872,14 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: harmostes-ui-crd-reader
+  name: harmostes-ui-crd-reader-harmostes-ci
   labels:
     app.kubernetes.io/name: harmostes
     app.kubernetes.io/component: ui
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: harmostes-ui-crd-reader
+  name: harmostes-ui-crd-reader-harmostes-ci
 subjects:
   - kind: ServiceAccount
     name: harmostes-ui

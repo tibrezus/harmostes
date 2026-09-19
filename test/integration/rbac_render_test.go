@@ -67,6 +67,20 @@ func loadGoldenResources(t *testing.T) []goldenResource {
 	return out
 }
 
+// findGoldenPrefix locates the first golden resource whose name starts with
+// prefix — for release-unique names (#549: namespace-suffixed cluster RBAC).
+func findGoldenPrefix(t *testing.T, kind, prefix string) goldenResource {
+	t.Helper()
+	for _, r := range loadGoldenResources(t) {
+		name, _ := r.Metadata["name"].(string)
+		if r.Kind == kind && strings.HasPrefix(name, prefix) {
+			return r
+		}
+	}
+	t.Fatalf("golden render has no %s/%s*", kind, prefix)
+	return goldenResource{}
+}
+
 func findGolden(t *testing.T, kind, name string) goldenResource {
 	t.Helper()
 	for _, r := range loadGoldenResources(t) {
@@ -100,8 +114,14 @@ func contains(list []string, want string) bool {
 
 func TestGoldenUIRBAC(t *testing.T) {
 	// ClusterRole: exactly one rule — get on the two harmostes CRDs, narrowed
-	// by resourceNames. Nothing cluster-scoped beyond that.
-	cr := findGolden(t, "ClusterRole", "harmostes-ui-crd-reader")
+	// by resourceNames. Nothing cluster-scoped beyond that. The name is
+	// release-unique (namespace-suffixed): dev and prod share one cluster and
+	// identically-named cluster-scoped objects fight over subjects (#549).
+	cr := findGoldenPrefix(t, "ClusterRole", "harmostes-ui-crd-reader-")
+	crName, _ := cr.Metadata["name"].(string)
+	if !strings.Contains(crName, "harmostes-ui-crd-reader-") {
+		t.Fatalf("ClusterRole name = %v, want the namespace-suffixed reader", crName)
+	}
 	if len(cr.Rules) != 1 {
 		t.Fatalf("ClusterRole rules = %d, want exactly 1", len(cr.Rules))
 	}
@@ -231,9 +251,9 @@ func TestGoldenUIRBAC(t *testing.T) {
 	if got, _ := rb.RoleRef["kind"].(string); got != "Role" {
 		t.Errorf("RoleBinding roleRef.kind = %q, want Role", got)
 	}
-	crb := findGolden(t, "ClusterRoleBinding", "harmostes-ui-crd-reader")
-	if got, _ := crb.RoleRef["name"].(string); got != "harmostes-ui-crd-reader" {
-		t.Errorf("ClusterRoleBinding roleRef.name = %q, want harmostes-ui-crd-reader", got)
+	crb := findGoldenPrefix(t, "ClusterRoleBinding", "harmostes-ui-crd-reader-")
+	if got, _ := crb.RoleRef["name"].(string); got != crName {
+		t.Errorf("ClusterRoleBinding roleRef.name = %q, want %v (the namespaced CRD reader)", got, crName)
 	}
 	for kind, b := range map[string]goldenResource{"RoleBinding": rb, "ClusterRoleBinding": crb} {
 		if len(b.Subjects) != 1 {

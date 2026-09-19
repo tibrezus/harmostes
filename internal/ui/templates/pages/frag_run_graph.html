@@ -5,9 +5,17 @@
       swaps). */ -}}
 {{- with .Graph}}
 {{- if .Available}}
+<div class="rg-canvas" data-testid="graph-canvas">
 <svg id="run-graph-svg" viewBox="0 0 {{.Width}} {{.Height}}" width="{{.Width}}" height="{{.Height}}" role="img" aria-label="Workflow graph for {{.Workflow}}">
+	<defs>
+		{{- /* Arrowheads inherit the edge stroke (context-stroke) — the
+		marker is tokenized by construction, one def serves both themes. */ -}}
+		<marker id="rg-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+			<path d="M 0 1 L 9 5 L 0 9 z" fill="context-stroke"></path>
+		</marker>
+	</defs>
 	{{range .Edges}}
-	<path class="rg-edge" d="{{.Path}}"></path>
+	<path class="rg-edge" d="{{.Path}}" marker-end="url(#rg-arrow)"></path>
 	{{end}}
 	{{range .Nodes}}
 	<g class="rg-node rg-node--{{.Status}}" data-node="{{.ID}}" data-testid="graph-node" tabindex="0">
@@ -19,6 +27,7 @@
 	</g>
 	{{end}}
 </svg>
+</div>
 {{- with .Timing}}
 <div class="rg-timing-title">Step timing — bar width is wall-clock share</div>
 <svg class="rg-timing" role="img" aria-label="per-step timing waterfall" viewBox="0 0 {{$.Graph.TimingW}} {{$.Graph.TimingH}}" width="100%" preserveAspectRatio="xMinYMin meet">

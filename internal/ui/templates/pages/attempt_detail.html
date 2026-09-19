@@ -24,24 +24,54 @@
 	</div>
 	{{end}}
 
-	<!-- Execution views: graph + event timeline (ADR-0012 §4 tabs) -->
+	<!-- Execution views (ADR-0012 §4, amended #533): the Temporal composition —
+	     Workflow Code and Event Timeline read TOGETHER, side by side under the
+	     header; the graph (harmostes' native live-position projection) follows
+	     as its own section. The code pane shows the RESOLVED document (what
+	     this run's worker compiled); the timeline renders server-side first
+	     and converges by SSE — no lazy tab, reload equals live from byte one. -->
 	<div class="ds-section" id="run-detail-views">
-		<div class="ds-tabs" role="tablist">
-			<button type="button" class="ds-tab ds-tab--active" id="tab-graph" role="tab" aria-selected="true" aria-controls="pane-graph" data-testid="graph-tab">Graph</button>
-			<button type="button" class="ds-tab" id="tab-events" role="tab" aria-selected="false" aria-controls="event-timeline-pane" data-testid="event-timeline-tab"
-				hx-get="/runs/{{.Name}}/events" hx-target="#event-timeline-pane" hx-swap="innerHTML">Event Timeline</button>
+		<div class="rd-duo">
+			<section class="rd-pane rd-pane--code" data-testid="workflow-code-pane" aria-label="Workflow Code">
+				<h3 class="ds-section-heading">Workflow Code <span class="chip chip--neutral" data-testid="code-island-readonly">read-only</span></h3>
+				{{if .WorkflowYAML}}
+				<link rel="stylesheet" href="/static/vendor/code-island/code-island.css?v={{assetVersion}}">
+				<div id="code-island" class="code-island" data-testid="code-island" data-readonly="true" data-island-state="loading"></div>
+				<template id="code-island-source">{{.WorkflowYAML}}</template>
+				<script defer src="/static/vendor/code-island/code-island.js?v={{assetVersion}}"></script>
+				<script defer src="/static/js/code-island-glue.js?v={{assetVersion}}"></script>
+				<script>
+					document.addEventListener('DOMContentLoaded', function () {
+						var el = document.getElementById('code-island');
+						if (!el || !window.harmostesMountCodeIsland) return;
+						var src = document.getElementById('code-island-source');
+						harmostesMountCodeIsland(el, src.content.textContent.trim() + '\n',
+							'{{.ModelPath}}', 'workflow', 'harmostes://workflow');
+					});
+				</script>
+				{{else}}
+				<p class="ds-empty-text">Workflow not found — the attempt outlived its definition.</p>
+				{{end}}
+			</section>
+			<section class="rd-pane rd-pane--events" aria-label="Event Timeline">
+				<h3 class="ds-section-heading">Event Timeline</h3>
+				<div id="event-timeline-pane" data-testid="event-timeline-pane">{{.TimelineHTML}}</div>
+			</section>
 		</div>
-		<div id="pane-graph">
-			<div class="run-graph-layout">
-				<div class="run-graph-stream" id="run-graph-frag">
-					{{template "pages/frag_run_graph.html" .}}
-				</div>
-				<aside class="rg-panel" id="rg-panel" aria-live="polite">
-					<div class="rg-panel-empty">Hover or click a node for its live data.</div>
-				</aside>
+	</div>
+
+	<!-- Execution graph: live position + timing waterfall (harmostes-native
+	     projection; the dual pane above is the read, this is the watch). -->
+	<div class="ds-section" id="run-detail-graph" data-testid="run-graph-section">
+		<h3 class="ds-section-heading">Execution Graph</h3>
+		<div class="run-graph-layout">
+			<div class="run-graph-stream" id="run-graph-frag">
+				{{template "pages/frag_run_graph.html" .}}
 			</div>
+			<aside class="rg-panel" id="rg-panel" aria-live="polite">
+				<div class="rg-panel-empty">Hover or click a node for its live data.</div>
+			</aside>
 		</div>
-		<div id="event-timeline-pane" data-testid="event-timeline-pane" hidden></div>
 	</div>
 
 	{{if .Claim}}
@@ -169,39 +199,25 @@
 	var frag = document.getElementById('run-graph-frag');
 	var panel = document.getElementById('rg-panel');
 
-	// --- Tabs: graph (default) vs event timeline (lazy) ---
-	var tabGraph = document.getElementById('tab-graph');
-	var tabEvents = document.getElementById('tab-events');
-	var paneGraph = document.getElementById('pane-graph');
 	var eventsPane = document.getElementById('event-timeline-pane');
-	var eventsStream = null;
 
-	function activate(tab, pane, otherTab, otherPane) {
-		tab.classList.add('ds-tab--active');
-		tab.setAttribute('aria-selected', 'true');
-		otherTab.classList.remove('ds-tab--active');
-		otherTab.setAttribute('aria-selected', 'false');
-		pane.hidden = false;
-		otherPane.hidden = true;
-	}
-
-	tabGraph.addEventListener('click', function () {
-		activate(tabGraph, paneGraph, tabEvents, eventsPane);
-	});
-	tabEvents.addEventListener('click', function () {
-		activate(tabEvents, eventsPane, tabGraph, paneGraph);
-		openEventsStream();
-	});
-
-	// The events stream opens once, on first tab activation; the pane keeps
-	// refreshing in the background while hidden (cheap fragment, one probe).
+	// The Event Timeline stream opens on load (#533): the pane is
+	// server-rendered, SSE keeps it converging — code and timeline are
+	// co-equal panes now, neither hides behind a tab.
 	function openEventsStream() {
-		if (eventsStream || !window.EventSource) return;
-		eventsStream = new EventSource(location.pathname + '/events/stream');
+		if (!window.EventSource || !eventsPane) return;
+		var eventsStream = new EventSource(location.pathname + '/events/stream');
 		eventsStream.addEventListener('eventtimeline', function (e) {
+			// Append-only history, newest last: preserve the operator's scroll
+			// across fragment swaps — a live stream that snaps to top on every
+			// wake fights the reader (the SSE swap replaces innerHTML whole).
+			var atBottom = eventsPane.scrollHeight - eventsPane.scrollTop - eventsPane.clientHeight < 24;
+			var keep = eventsPane.scrollTop;
 			eventsPane.innerHTML = e.data;
+			eventsPane.scrollTop = atBottom ? eventsPane.scrollHeight : keep;
 		});
 	}
+	openEventsStream();
 
 	function dataFor(id) {
 		var el = document.getElementById('run-graph-data') ||
@@ -251,14 +267,17 @@
 		panel.appendChild(dl);
 	}
 
-	views.addEventListener('mouseover', function (e) {
-		var g = e.target.closest('[data-node]');
-		if (g && !paneGraph.hidden) show(g.getAttribute('data-node'));
-	});
-	views.addEventListener('click', function (e) {
-		var g = e.target.closest('[data-node]');
-		if (g && !paneGraph.hidden) show(g.getAttribute('data-node'));
-	});
+	var graphSection = document.getElementById('run-detail-graph');
+	if (graphSection) {
+		graphSection.addEventListener('mouseover', function (e) {
+			var g = e.target.closest('[data-node]');
+			if (g) show(g.getAttribute('data-node'));
+		});
+		graphSection.addEventListener('click', function (e) {
+			var g = e.target.closest('[data-node]');
+			if (g) show(g.getAttribute('data-node'));
+		});
+	}
 
 	if (!window.EventSource) return;
 	var es = new EventSource(location.pathname + '/graph/events');

@@ -313,26 +313,81 @@ func TestComponent_DevIdentity_ZeroSetup(t *testing.T) {
 	}
 }
 
-// The run detail page exposes the tabbed execution views (ADR-0012 §4): the
-// graph tab is the default, the Event Timeline tab lazy-loads its pane, and
-// both carry the data-testid contract the e2e tier pins.
-func TestComponent_RunDetail_EventTimelineTabs(t *testing.T) {
+// The run detail composes the Temporal band (#533, ADR-0012 §4 amended):
+// Workflow Code and Event Timeline side by side under the header, both
+// server-rendered on first paint — no tabs, no lazy pane — with the
+// Execution Graph as its own section below. The tabs are GONE: this pins
+// the composition the e2e tier drives.
+func TestComponent_RunDetail_CodeTimelineBand(t *testing.T) {
 	ts := newFixtureServer(t)
 	doc := getAsFixtureUser(t, ts, "/runs/attempt-pr-review-demo-42a1")
 
-	if testIDSelection(t, doc, "graph-tab").Length() != 1 {
-		t.Error("graph tab must exist (the default execution view)")
+	// Absence checks go through doc.Find directly — testIDSelection treats
+	// not-found as a failure of the lookup itself.
+	if doc.Find(`[data-testid="graph-tab"]`).Length() != 0 {
+		t.Error("graph tab must be gone (the band replaced the tabs)")
 	}
-	tab := testIDSelection(t, doc, "event-timeline-tab")
-	if tab.Length() != 1 {
-		t.Fatal("event timeline tab must exist on run detail")
+	if doc.Find(`[data-testid="event-timeline-tab"]`).Length() != 0 {
+		t.Error("event timeline tab must be gone (the pane is first-render)")
 	}
-	if pane := testIDSelection(t, doc, "event-timeline-pane"); pane.Length() != 1 {
-		t.Error("event timeline pane must exist (hidden until first activation)")
+
+	code := testIDSelection(t, doc, "workflow-code-pane")
+	if code.Length() != 1 {
+		t.Fatal("workflow code pane must exist on run detail")
 	}
-	href, ok := tab.Attr("hx-get")
-	if !ok || href != "/runs/attempt-pr-review-demo-42a1/events" {
-		t.Errorf("event timeline tab hx-get = %q (ok=%v), want the fragment route", href, ok)
+	if island := doc.Find("#code-island"); island.Length() != 1 {
+		t.Error("the code island must mount inside the code pane")
+	} else if ro, ok := island.Attr("data-readonly"); !ok || ro != "true" {
+		t.Errorf("run-detail island data-readonly = %q (ok=%v), want true", ro, ok)
+	}
+
+	// The pane carries the initial server-rendered narrative: the same
+	// fragment the SSE stream re-renders (reload equals live from byte one).
+	pane := testIDSelection(t, doc, "event-timeline-pane")
+	if pane.Length() != 1 {
+		t.Fatal("event timeline pane must exist on run detail")
+	}
+	if _, hidden := pane.Attr("hidden"); hidden {
+		t.Error("event timeline pane must be visible on first paint (not hidden)")
+	}
+	if rows := pane.Find("[data-testid=\"timeline-row\"]").Length(); rows != 21 {
+		t.Errorf("initial timeline rows = %d, want 21 (the fixture narrative, server-rendered)", rows)
+	}
+
+	if testIDSelection(t, doc, "run-graph-section").Length() != 1 {
+		t.Error("execution graph section must exist below the band")
+	}
+}
+
+// The Workflow Code pane shows the run's RESOLVED document (#533): identity
+// + spec in the canonical document shape — kind Workflow, the live CR's
+// name, and the compiled graph of the fixture's pr-review-demo.
+func TestComponent_RunDetail_WorkflowCodeDocument(t *testing.T) {
+	ts := newFixtureServer(t)
+	doc := getAsFixtureUser(t, ts, "/runs/attempt-pr-review-demo-42a1")
+
+	src := doc.Find("#code-island-source")
+	if src.Length() != 1 {
+		t.Fatal("code island source template must exist")
+	}
+	yamlDoc := src.Text()
+	for _, want := range []string{
+		"apiVersion: harmostes.dev/v1alpha1",
+		"kind: Workflow",
+		"name: pr-review-demo",
+	} {
+		if !strings.Contains(yamlDoc, want) {
+			t.Errorf("resolved workflow document missing %q", want)
+		}
+	}
+	// Graph-native fixture: the resolved spec carries the explicit graph —
+	// the exact shape the worker compiled for this attempt.
+	if !strings.Contains(yamlDoc, "prepare") || !strings.Contains(yamlDoc, "deploy") {
+		t.Error("resolved document must carry the workflow's graph nodes (what this run executed)")
+	}
+	// Document discipline: status never enters the document form.
+	if strings.Contains(yamlDoc, "status:") {
+		t.Error("status must not render in the workflow document (live state lives in the timeline/graph panes)")
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	sigsyaml "sigs.k8s.io/yaml"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
 	"github.com/tibrezus/harmostes/internal/agent"
@@ -337,9 +338,12 @@ type attemptDetailData struct {
 	AgentEnabled   bool
 	Claim          *claimView // review-gate claim state (nil = not a gated attempt)
 	LastRunAt      string
-	TotalDuration  string       // earliest run start → latest run end ("" if unknown)
-	Graph          runGraphView // timeline graph: compiled workflow + node state
-	NodeDataJSON   template.JS  // hover payload (own json.Marshal output: safe raw)
+	TotalDuration  string        // earliest run start → latest run end ("" if unknown)
+	Graph          runGraphView  // timeline graph: compiled workflow + node state
+	NodeDataJSON   template.JS   // hover payload (own json.Marshal output: safe raw)
+	WorkflowYAML   string        // the run's resolved workflow document (Workflow Code pane)
+	ModelPath      string        // island model path (workflow-<name>.yaml)
+	TimelineHTML   template.HTML // Event Timeline initial render (own renderEventTimeline output: safe)
 }
 
 // claimView is the review-gate claim state attached to a run.
@@ -428,10 +432,18 @@ func (s *Server) handleAttemptDetail(w http.ResponseWriter, r *http.Request) {
 	// Fetch the Workflow to determine whether the agent is enabled.
 	// This controls whether the Session link is shown for runs. The ref is
 	// platform-prefixed ("ns/name"); the CR is addressed by its bare name.
+	// The same fetch feeds the Workflow Code pane: the document is the
+	// RESOLVED spec (instance overlaid on template defaults) — the exact
+	// shape this attempt's worker compiled, not the thin stored CR.
 	agentEnabled := false
 	var wf v1alpha1.Workflow
+	workflowYAML := ""
+	modelPath := ""
 	if err := s.k8sClient.Get(r.Context(), client.ObjectKey{Namespace: s.namespace, Name: workflowCRName(att.Spec.WorkflowRef)}, &wf); err == nil {
 		agentEnabled = s.agentEnabledFor(r.Context(), &wf)
+		resolved := s.resolveWorkflow(r.Context(), &wf)
+		workflowYAML = workflowYAMLOf(&wf, resolved.Spec)
+		modelPath = "workflow-" + wf.Name + ".yaml"
 	}
 
 	data := attemptDetailData{
@@ -476,7 +488,51 @@ func (s *Server) handleAttemptDetail(w http.ResponseWriter, r *http.Request) {
 		nodeJSON = []byte("{}")
 	}
 	data.NodeDataJSON = template.JS(nodeJSON)
+	// Workflow Code pane (#533): the resolved document. A failed timeline
+	// render degrades to empty — the SSE stream fills the pane on load and
+	// the first wake; the page never fails because a projection did.
+	data.WorkflowYAML = workflowYAML
+	data.ModelPath = modelPath
+	if frag, err := s.renderEventTimeline(r, att); err == nil {
+		data.TimelineHTML = template.HTML(frag)
+	} else {
+		s.logger.Error("initial timeline render", "attempt", att.Name, "err", err)
+	}
 	s.render(w, r, "pages/attempt_detail.html", data)
+}
+
+// workflowDocument is the canonical YAML projection of a Workflow as the
+// run executed it: identity + RESOLVED spec (template defaults overlaid,
+// instance fields win), no status, no server bookkeeping — the same
+// document discipline as templateDocument, one shape down: what a review
+// reads beside the event stream is what the worker compiled.
+type workflowDocument struct {
+	APIVersion string                `json:"apiVersion"`
+	Kind       string                `json:"kind"`
+	Metadata   templateDocumentMeta  `json:"metadata"`
+	Spec       v1alpha1.WorkflowSpec `json:"spec"`
+}
+
+// workflowYAMLOf renders the Workflow's resolved document YAML for an
+// explicit spec (identity stays the live CR's). Marshal failure is a
+// programming error (structs with json tags); degrade to a marked
+// placeholder rather than panicking — the pane shows the failure honestly.
+func workflowYAMLOf(wf *v1alpha1.Workflow, spec v1alpha1.WorkflowSpec) string {
+	doc := workflowDocument{
+		APIVersion: v1alpha1.SchemeGroupVersion.Identifier(),
+		Kind:       "Workflow",
+		Metadata: templateDocumentMeta{
+			Name:      wf.Name,
+			Namespace: wf.Namespace,
+			Labels:    wf.Labels,
+		},
+		Spec: spec,
+	}
+	b, err := sigsyaml.Marshal(doc)
+	if err != nil {
+		return "# workflow serialization failed: " + err.Error()
+	}
+	return string(b)
 }
 
 // formatMetaTime renders a metav1.Time for dense display; zero → "".

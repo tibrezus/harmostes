@@ -6,9 +6,15 @@
       deterministic. */ -}}
 {{- with .}}
 {{- if .Available}}
+<div class="rg-canvas" data-testid="graph-canvas">
 <svg class="tp-svg" viewBox="0 0 {{.Width}} {{.Height}}" width="{{.Width}}" height="{{.Height}}" role="img" aria-label="Workflow topology" data-testid="topology">
+	<defs>
+		<marker id="tp-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+			<path d="M 0 1 L 9 5 L 0 9 z" fill="context-stroke"></path>
+		</marker>
+	</defs>
 	{{range .Edges}}
-	<path class="tp-edge{{if .DiffClass}} tp-edge--{{.DiffClass}}{{end}}{{if .Ghost}} tp-edge--ghost{{end}}" d="{{.Path}}" data-testid="topology-edge" data-edge="{{.From}}→{{.To}}"{{if .DiffClass}} data-diff="{{.DiffClass}}"{{end}}></path>
+	<path class="tp-edge{{if .DiffClass}} tp-edge--{{.DiffClass}}{{end}}{{if .Ghost}} tp-edge--ghost{{end}}" d="{{.Path}}" marker-end="url(#tp-arrow)" data-testid="topology-edge" data-edge="{{.From}}→{{.To}}"{{if .DiffClass}} data-diff="{{.DiffClass}}"{{end}}></path>
 	{{end}}
 	{{range .Nodes}}
 	{{$link := index $.NodeLinks .ID}}
@@ -22,6 +28,7 @@
 	</g>
 	{{end}}
 </svg>
+</div>
 {{- else}}
 <div class="ds-callout ds-callout--info">{{.Reason}}</div>
 {{- end}}

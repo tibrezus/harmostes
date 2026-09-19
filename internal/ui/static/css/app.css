@@ -1821,6 +1821,7 @@ code, pre {
 	gap: 0.75rem;
 	flex-wrap: wrap;
 	margin-bottom: 0.75rem;
+}
 
 /* ===== Session viewer: fork hint ===== */
 .pi-fork-hint {
@@ -1976,25 +1977,44 @@ code, pre {
 .rg-node:focus {
 	outline: none;
 }
+/* Graph canvas (#537, donor language: xyflow-family canvases — kestra
+   @vue-flow/background, windmill @xyflow/svelte, conductor reaflow). The
+   dot grid IS this surface's subject (a graph canvas), the one legitimate
+   grid case; dots tint from the border token so both themes read. */
+.rg-canvas {
+	border: 1px solid var(--ds-border-faint, var(--ds-border));
+	border-radius: var(--radius-lg);
+	padding: var(--sp-4);
+	margin: var(--sp-2) 0;
+	background-color: var(--bg-alt);
+	background-image: radial-gradient(
+		color-mix(in oklab, var(--ds-border) 55%, transparent) 1px,
+		transparent 1.2px
+	);
+	background-size: 16px 16px;
+	background-position: -1px -1px;
+	overflow-x: auto;
+}
+
 .rg-box {
-	fill: var(--ds-bg-elevated, var(--ds-bg, #fff));
+	fill: var(--ds-bg-elevated);
 	stroke: var(--ds-border);
 	stroke-width: 1.5;
 }
-.rg-node--ok .rg-box { stroke: var(--ds-positive, #2e7d32); stroke-width: 2; }
-.rg-node--failed .rg-box { stroke: var(--ds-negative, #c62828); stroke-width: 2; }
+.rg-node--ok .rg-box { stroke: var(--ds-positive); stroke-width: 2; }
+.rg-node--failed .rg-box { stroke: var(--ds-negative); stroke-width: 2; }
 .rg-node--skipped .rg-box { stroke-dasharray: 4 3; }
 .rg-node--skipped .rg-label { fill: var(--ds-text-muted); }
 .rg-node--external .rg-box { stroke-dasharray: 2 3; }
 .rg-node--external .rg-label { fill: var(--ds-text-muted); }
 .rg-node--pending .rg-box { stroke-dasharray: none; opacity: 0.75; }
 .rg-node--running .rg-box {
-	stroke: var(--ds-warning, #ef6c00);
+	stroke: var(--ds-warning);
 	stroke-width: 2.5;
 	animation: rg-live 1.6s ease-in-out infinite;
 }
 .rg-pulse {
-	fill: var(--ds-warning, #ef6c00);
+	fill: var(--ds-warning);
 	animation: rg-pulse 1.6s ease-in-out infinite;
 }
 @keyframes rg-live {
@@ -2036,12 +2056,13 @@ code, pre {
 .rg-timing-bar { opacity: 0.85; }
 .rg-timing-dur { font-size: 10px; fill: var(--ink-soft); }
 .rg-timing-dur-in { fill: var(--paper); }
+.rg-timing-bar { fill: var(--neutral); }
 .rg-timing-bar.rg-state-overhead { opacity: 0.4; }
 /* Waterfall bars share the node-graph state palette so a red run reads red. */
-.rg-timing-bar.rg-state-ok { fill: var(--ds-positive, #2e7d32); }
-.rg-timing-bar.rg-state-failed { fill: var(--ds-negative, #c62828); opacity: 0.9; }
-.rg-timing-bar.rg-state-skipped { fill: var(--ink-soft, #888); opacity: 0.5; }
-.rg-timing-bar.rg-state-running { fill: var(--ink, #222); opacity: 0.85; }
+.rg-timing-bar.rg-state-ok { fill: var(--ds-positive); }
+.rg-timing-bar.rg-state-failed { fill: var(--ds-negative); opacity: 0.9; }
+.rg-timing-bar.rg-state-skipped { fill: var(--ink-soft); opacity: 0.5; }
+.rg-timing-bar.rg-state-running { fill: var(--running); opacity: 0.85; }
 
 /* ---- Topology projection (#417, ADR-0012 §3) ----
    Same visual language as the run graph (shared geometry engine), painted

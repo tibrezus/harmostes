@@ -99,6 +99,37 @@
 	--color-next-teal: var(--accent);
 	--color-next-teal-hi: var(--accent);
 
+	/* ── design-system surface aliases (#537) ─────────────────────────
+	   The component layer (app.css / components.css) reads these; before
+	   #537 six of them were NEVER defined and 33 usages silently fell
+	   back to hardcoded hex — white node cards in dark mode. They are
+	   late-bound references to the theme vars, so the dark block needs
+	   no copies: only --bg & friends flip, these follow. A Go contract
+	   test (tokens_test-style, css vars) enforces defined-ness forever. */
+	--ds-bg: var(--bg);
+	--ds-bg-elevated: var(--bg-elevated);
+	--ds-border: var(--border);
+	--ds-positive: var(--success);
+	--ds-negative: var(--danger);
+	--ds-warning: var(--warning);
+
+	/* Legacy-era names still referenced by the component layer (#537
+	   contract sweep): normalized onto the canonical scale — the inline
+	   fallbacks they carried were dead weight rendering a frozen theme. */
+	--bg-elev: var(--bg-elevated);
+	--bg-inset: var(--bg-muted);
+	--ds-accent: var(--accent);
+	--ds-font-mono: var(--font-mono);
+	--ink: var(--fg);
+	--next-black: var(--fg);
+	--next-light: var(--fg-muted);
+	--paper: var(--bg);
+	--space-3: var(--sp-3);
+	--space-4: var(--sp-4);
+	--space-5: var(--sp-5);
+	--surface-2: var(--bg-alt);
+	--text-muted: var(--fg-muted);
+
 	/* chip soft backgrounds */
 	--chip-ok-bg: oklch(0.58 0.14 150 / 0.12);
 	--chip-warn-bg: oklch(0.62 0.14 75 / 0.14);

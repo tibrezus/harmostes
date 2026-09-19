@@ -32,6 +32,12 @@ export const DEFAULT_FALLBACKS: Record<string, string[]> = {
   // LiteLLM admin must add the model and grant the fleet key access
   // (probe evidence, #507: absent from /v1/models, key not allowed).
   "ali/anthropic/deepseek-v4.1-flash": ["zai/anthropic/glm-5.3-flash"],
+  // Night-window primary (owner directive, #536 → -230): qwen3.8-max
+  // 16:00-02:00 CET. Proxy-verified served (991,808 in / 131,072 out);
+  // unproven on the finalize contract, so its net is flash — the only id
+  // with green fleet history on the review round — and flash is larger in
+  // both dims, so this chain clamps nothing.
+  "ali/anthropic/qwen3.8-max": ["ali/anthropic/qwen3.8-flash"],
   // glm is a live primary too — the --model default of cmd/harmostes-agent
   // and harmostes.py (#401 review r2): without an entry a glm-primary run
   // attaches no failover at all. flash is LARGER in both dimensions, so

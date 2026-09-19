@@ -241,7 +241,7 @@ func TestWallSSEReRendersOnEvent(t *testing.T) {
 }
 
 // Nav shrinks to the three confirmed surfaces; killed destinations stay dead.
-func TestNavShrinksToThree(t *testing.T) {
+func TestNavIsFourEntries(t *testing.T) {
 	s := wallTestServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("X-Authentik-Username", "alice")
@@ -249,12 +249,15 @@ func TestNavShrinksToThree(t *testing.T) {
 	s.Routes().ServeHTTP(rec, req)
 	body := rec.Body.String()
 
-	for _, want := range []string{`href="/"`, `href="/runs"`, `href="/workflows"`} {
+	// #538: Templates joined the nav (Live / Runs / Workflows / Templates) —
+	// definitions are first-class beside executions (donor pattern); the
+	// #290 three-entry shrink is deliberately superseded.
+	for _, want := range []string{`href="/"`, `href="/runs"`, `href="/workflows"`, `href="/templates"`} {
 		if !strings.Contains(body, `class="ds-sidebar-link`) || !strings.Contains(body, want) {
 			t.Errorf("nav missing %q", want)
 		}
 	}
-	for _, gone := range []string{`href="/map"`, `href="/timeline"`, `href="/metrics"`, `href="/sessions"`, `href="/templates"`} {
+	for _, gone := range []string{`href="/map"`, `href="/timeline"`, `href="/metrics"`, `href="/sessions"`} {
 		if strings.Contains(body, gone) {
 			t.Errorf("nav still links %q", gone)
 		}

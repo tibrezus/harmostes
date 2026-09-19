@@ -1,8 +1,5 @@
 {{define "pages/workflows.html"}}
-<div class="page-tabs">
-	<a href="/workflows" class="page-tab page-tab--active">Workflows</a>
-	<a href="/templates" class="page-tab">Templates</a>
-</div>
+{{/* #538: the nav owns Workflows|Templates; the in-page tab pair is gone. */}}
 <div class="ds-section ds-section--row">
 	<p class="ds-empty-text">Workflows are created here — instantiate a reusable template. Every workflow you create is owner-stamped from your session and visible to you.</p>
 	{{if .MayWrite}}<a href="/workflows/new" class="ds-button ds-button--primary" data-testid="wf-new-link">New Workflow</a>{{end}}
@@ -23,8 +20,10 @@
 	<header class="gate-group-header">
 		<div class="gate-group-header-main">
 			<div class="gate-group-header-text">
-				<h2 class="gate-group-title">{{.Label}}</h2>
-				<span class="gate-group-gatename">{{.Gate}}</span>
+				{{/* #538: speak templates, not gates — the group IS the
+				     instance's template; the gate plugin demotes to meta. */}}
+				<h2 class="gate-group-title"><a href="/templates/{{.Label}}" class="ds-link">{{.Label}}</a></h2>
+				<span class="gate-group-gatename">template{{if .Gate}} · gate: {{.Gate}}{{end}}</span>
 			</div>
 		</div>
 		<div class="gate-group-header-meta">

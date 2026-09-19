@@ -470,3 +470,64 @@ func TestComponent_TemplateDetail_CodeIslandScaffold(t *testing.T) {
 		t.Error("inline init must pass the workflowtemplate schema key")
 	}
 }
+
+// #538: the template library is a table (principle 1) with the instance
+// count per template and the creation CTA; the workflows catalog groups
+// speak template vocabulary with the gate demoted to meta.
+func TestComponent_TemplateLibraryTable(t *testing.T) {
+	ts := newFixtureServer(t)
+	doc := getAsFixtureUser(t, ts, "/templates")
+
+	table := doc.Find("[data-testid=\"tpl-table\"]")
+	if table.Length() != 1 {
+		t.Fatal("the template library must be a table")
+	}
+	rows := table.Find("tbody tr")
+	if rows.Length() < 1 {
+		t.Errorf("template rows = %d, want ≥1 (the fixture world ships the chart's pr-review)", rows.Length())
+	}
+	first := rows.First()
+	if link := first.Find("[data-testid=\"tpl-row-link\"]"); link.Length() != 1 {
+		t.Error("each row links its template")
+	} else if href, _ := link.Attr("href"); href != "/templates/pr-review" {
+		t.Errorf("first row links %q, want /templates/pr-review (alphabetical)", href)
+	}
+	if cta := first.Find("[data-testid=\"tpl-new-workflow\"]"); cta.Length() != 1 {
+		t.Error("the creation CTA rides every row (creation starts from the definition)")
+	} else if href, _ := cta.Attr("href"); href != "/workflows/new?template=pr-review" {
+		t.Errorf("CTA href = %q, want the pre-filled template", href)
+	}
+	if first.Find(".pg-mini-node").Length() == 0 {
+		t.Error("the pipeline shape renders in the row")
+	}
+	// The fixture world's pr-review-instance composes from pr-review —
+	// the count column is the templateRef census, not gate-name keying.
+	if !strings.Contains(first.Text(), "1 active") {
+		t.Errorf("row must show the instance census (pr-review: 1 active), got %q", strings.TrimSpace(first.Find("td").Eq(2).Text()))
+	}
+	if doc.Find(".tpl-card").Length() != 0 {
+		t.Error("the tpl-card grid is retired")
+	}
+}
+
+func TestComponent_WorkflowsGroupsSpeakTemplates(t *testing.T) {
+	ts := newFixtureServer(t)
+	doc := getAsFixtureUser(t, ts, "/workflows")
+
+	// The group title LINKS the template it groups by — the relationship
+	// the page exists to show.
+	title := doc.Find(".gate-group-title a").First()
+	if title.Length() != 1 {
+		t.Fatal("group titles must link their template")
+	}
+	if href, _ := title.Attr("href"); !strings.Contains(href, "/templates/") {
+		t.Errorf("group title href = %q, want /templates/<name>", href)
+	}
+	meta := doc.Find(".gate-group-gatename").First().Text()
+	if !strings.Contains(meta, "template") {
+		t.Errorf("group meta = %q, want template vocabulary (gate demoted to meta)", meta)
+	}
+	if doc.Find(".page-tab").Length() != 0 {
+		t.Error("the in-page tab pair is gone (the nav owns Workflows|Templates)")
+	}
+}

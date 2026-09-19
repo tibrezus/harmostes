@@ -669,6 +669,17 @@
 	overflow-x: auto;
 }
 
+/* Template library table (#538): the tpl-card grid retired — the library
+   is a table like every other list (principle 1); shape + meta live in
+   the row, the CTA rides the last column. */
+.tpl-row-desc {
+	color: var(--fg-muted);
+	font-size: var(--fs-sm);
+	max-width: 42ch;
+}
+.tpl-row-meta { display: flex; gap: var(--sp-1); flex-wrap: wrap; margin-top: var(--sp-1); }
+.tpl-table td { vertical-align: top; }
+
 /* Run-detail dual pane (#533, ADR-0012 §4 amendment) — the Temporal
    composition: Workflow Code and Event Timeline read together, side by side
    under the header. Code is the document (wider, fixed read height); the

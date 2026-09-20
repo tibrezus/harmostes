@@ -35,6 +35,15 @@ var PullRequestWakeActions = map[string]bool{
 	"ci_completed": true,
 }
 
+// CIWakeAction is the wake action for HOST-NATIVE CI completions (#556):
+// GitHub check_suite/workflow_run/status events normalized at the webhook
+// edge. Unlike the ci_completed POST path above, these payloads carry NO
+// PR number — only (repo, sha) — so the wake rides the repo annotation and
+// the gate re-derives the PR from its armed claims. Same action name: the
+// downstream contract (wake → re-verify → dispatch-on-green) is identical;
+// only the payload shape at the edge differs.
+const CIWakeAction = "ci_completed"
+
 // requestShapedActions is DERIVED from PullRequestWakeActions, not copied:
 // the label-touching subset — the actions that may supersede a live claim.
 // Derivation is the drift guard (#357 r18 P2: a hand-copied subset let a

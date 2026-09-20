@@ -85,6 +85,33 @@ type PullRequestEvent struct {
 	} `json:"repository"`
 }
 
+// CIEvent captures the HOST-NATIVE CI-completion shapes (#556): GitHub's
+// check_suite and workflow_run events (action-dispatched, sha nested) and
+// status events (state + top-level sha, no action). The payload contract is
+// exactly (repository, sha) — the gate re-derives the PR from its armed
+// claims, so the handler captures nothing else (and never trusts the
+// conclusion; that is the evaluator's job).
+type CIEvent struct {
+	Action     string `json:"action"`
+	State      string `json:"state"`
+	SHA        string `json:"sha"`
+	CheckSuite *struct {
+		HeadSHA string `json:"head_sha"`
+	} `json:"check_suite"`
+	WorkflowRun *struct {
+		HeadSHA string `json:"head_sha"`
+	} `json:"workflow_run"`
+	Repository struct {
+		FullName string `json:"full_name"`
+		HTMLURL  string `json:"html_url"`
+	} `json:"repository"`
+}
+
+// statusTerminalStates are the status-event states worth a wake: a
+// terminal completion (good or bad — the gate stands down on red) or an
+// error. "pending" wakes would only burn a run cycle on a no-op re-read.
+var statusTerminalStates = map[string]bool{"success": true, "failure": true, "error": true}
+
 // ServeHTTP handles webhook POST requests.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request, workflowName string) {
 	// Only POST is supported
@@ -152,11 +179,31 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request, workflowNa
 	}
 
 	// Parse: git push event (branch/revision trigger) or consolidated
-	// pull_request event (Review-Ready Gate arming, ADR-0006).
+	// pull_request event (Review-Ready Gate arming, ADR-0006), or a
+	// host-native CI completion (check_suite / workflow_run / status —
+	// #556). CI shapes probe FIRST: check_suite and workflow_run carry an
+	// action field and would otherwise be mis-read as pull_request events.
+	// The object fields are RawMessage: they are JSON objects, and a plain
+	// string probe would fail the whole unmarshal (partial-fill + ignored
+	// error) and route a CI event into the pull_request path.
 	var probe struct {
-		Action string `json:"action"`
+		Action      string          `json:"action"`
+		State       string          `json:"state"`
+		SHA         string          `json:"sha"`
+		CheckSuite  json.RawMessage `json:"check_suite"`
+		WorkflowRun json.RawMessage `json:"workflow_run"`
 	}
 	_ = json.Unmarshal(body, &probe)
+	if len(probe.CheckSuite) > 0 || len(probe.WorkflowRun) > 0 || (probe.State != "" && probe.SHA != "" && probe.Action == "") {
+		var cie CIEvent
+		if err := json.Unmarshal(body, &cie); err != nil {
+			h.log.Error(err, "failed to parse CI completion event")
+			http.Error(w, "invalid event payload", http.StatusBadRequest)
+			return
+		}
+		h.serveCIWake(w, req, &wf, cie)
+		return
+	}
 	if probe.Action != "" {
 		var pre PullRequestEvent
 		if err := json.Unmarshal(body, &pre); err != nil {
@@ -227,6 +274,87 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request, workflowNa
 // GitHub-shaped set in v1alpha1 BEFORE the action is stamped, so every
 // downstream consumer sees one vocabulary (r18 P2 — the previous comment
 // claimed this normalization; now it exists).
+// serveCIWake handles a host-native CI completion (check_suite /
+// workflow_run / status — #556). Same contract as the ci_completed POST
+// path (api/v1alpha1.CIWakeAction): the handler stays DUMB — verify,
+// normalize to (repo, sha), annotate — and the Review-Ready Gate
+// re-derives the PR from its armed claims and re-verifies label ∧ CI
+// against the host API. A wake finding nothing armed at that sha is a
+// cheap no-op sweep; a payload conclusion is never trusted.
+//
+// Terminal-completion filter: check_suite/workflow_run wake only on
+// action=completed (requested/rerequested are CI starting, not ending);
+// status events wake on success/failure/error (pending would burn a run
+// cycle on a no-op re-read). Non-terminal events are 200-ignored —
+// hosts retry non-2xx and an ignored completion must not look like a
+// lost delivery.
+func (h *Handler) serveCIWake(w http.ResponseWriter, req *http.Request, wf *v1alpha1.Workflow, cie CIEvent) {
+	sha := cie.SHA
+	switch {
+	case cie.CheckSuite != nil:
+		if cie.Action != "completed" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprintf(w, "check_suite action %q ignored\n", cie.Action)
+			return
+		}
+		sha = cie.CheckSuite.HeadSHA
+		if sha == "" && cie.SHA != "" {
+			sha = cie.SHA // some hosts flatten the sha to the top level
+		}
+	case cie.WorkflowRun != nil:
+		if cie.Action != "completed" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprintf(w, "workflow_run action %q ignored\n", cie.Action)
+			return
+		}
+		sha = cie.WorkflowRun.HeadSHA
+		if sha == "" && cie.SHA != "" {
+			sha = cie.SHA
+		}
+	default: // status event (state + top-level sha)
+		if !statusTerminalStates[cie.State] {
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprintf(w, "status state %q ignored\n", cie.State)
+			return
+		}
+	}
+	if sha == "" {
+		h.log.Info("CI completion event missing head sha")
+		http.Error(w, "missing head sha", http.StatusBadRequest)
+		return
+	}
+	if cie.Repository.FullName == "" {
+		http.Error(w, "missing repository full_name", http.StatusBadRequest)
+		return
+	}
+	repo := normalizeRepo(cie.Repository.HTMLURL, cie.Repository.FullName)
+
+	base := wf.DeepCopy()
+	if wf.Annotations == nil {
+		wf.Annotations = make(map[string]string)
+	}
+	wf.Annotations[TriggerRevisionAnnotation] = sha
+	wf.Annotations[TriggerActionAnnotation] = v1alpha1.CIWakeAction
+	wf.Annotations[v1alpha1.TriggerRepoAnnotation] = repo
+	// TriggerPRAnnotation is deliberately NOT set: CI payloads carry no PR
+	// number, and a stale pointer from a previous wake would mis-arm the
+	// gate's leading candidate. The controller clears this annotation
+	// alongside the others at schedule time.
+
+	if err := h.Patch(req.Context(), wf, client.MergeFrom(base)); err != nil {
+		h.log.Error(err, "failed to annotate workflow (ci_completed)", "workflow", wf.Name)
+		http.Error(w, "failed to trigger workflow", http.StatusInternalServerError)
+		return
+	}
+	shaShort := sha
+	if len(shaShort) > 12 {
+		shaShort = shaShort[:12]
+	}
+	h.log.Info("webhook armed workflow (ci_completed)", "workflow", wf.Name, "repo", repo, "head", shaShort)
+	w.WriteHeader(http.StatusOK)
+	_, _ = fmt.Fprintf(w, "workflow %s woken for %s@%s (ci_completed)\n", wf.Name, repo, shaShort)
+}
+
 func (h *Handler) servePullRequest(w http.ResponseWriter, req *http.Request, wf *v1alpha1.Workflow, pre PullRequestEvent) {
 	if pre.Action == "synchronized" {
 		pre.Action = "synchronize" // Forgejo alias → the canonical GitHub shape

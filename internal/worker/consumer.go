@@ -47,14 +47,16 @@ type ConsumerConfig struct {
 	Logger     *slog.Logger
 	Namespace  string // the namespace the workflows live in (fast-poll runs)
 
-	// FastPoll arms the leg-2 fast path (owner requirement): every tick,
-	// ArmedWaitingWorkflows names the review-ready workflows holding an
-	// ARMED, NEVER-DISPATCHED claim (the durable queue — the PR asked for
-	// a review and the gate is only waiting for CI), and each gets a
-	// synthetic schedule trigger through RunFunc. CI-green is therefore
-	// detected within one tick of the last context landing instead of on
-	// the next cron tick — the workflow starts instantly when the
-	// conditions are met. 0 = off (cron-only backstop).
+	// FastPoll is the BASE cadence of the kernel's reconciliation floor
+	// (owner requirement, #556): every pass, ArmedWaitingWorkflows names
+	// the review-ready workflows holding an ARMED, NEVER-DISPATCHED claim,
+	// and each gets a sweep through RunFunc. The INSTANT dispatch path is
+	// the CI wake (host-native ci_completed events → a run cycle within
+	// seconds of the last check landing); this loop is the at-most-once
+	// webhook recovery floor, so its cadence backs off exponentially
+	// (base ×2 per stalled pass, 30m cap) and resets to base whenever the
+	// armed set shrinks or grows. It fires ONLY while armed claims exist
+	// and publishes no trigger events. 0 = off.
 	FastPoll time.Duration
 	// ArmedWaitingWorkflows returns the review-ready workflow NAMES with
 	// armed-not-dispatched claims. Nil disables the fast poll.
@@ -80,6 +82,10 @@ type RunRequest struct {
 	Action      string
 	Revision    string
 	PrTitle     string
+	// Repo carries the host-native CI wake's repository (#556): CI payloads
+	// have (repo, sha) but no PR number, so the gate re-derives the PR from
+	// its armed claims. Empty on PR-shaped wakes (the pointer carries it).
+	Repo string
 }
 
 // Consumer is the pub/sub-triggered workflow executor.
@@ -133,7 +139,7 @@ func (c *Consumer) Start(ctx context.Context) error {
 	}
 
 	if c.cfg.FastPoll > 0 && c.cfg.ArmedWaitingWorkflows != nil {
-		go c.fastPollLoop(ctx)
+		go c.armedBackoffLoop(ctx)
 	}
 
 	c.cfg.Logger.Info("consumer listening",
@@ -152,38 +158,60 @@ func (c *Consumer) Start(ctx context.Context) error {
 	return c.server.ListenAndServe()
 }
 
-// fastPollLoop runs the leg-2 fast path: while any review-ready workflow
-// holds an armed-not-dispatched claim, fire synthetic schedule triggers at
-// the FastPoll cadence. The sweep is idempotent and capacity-safe (the
-// dispatcher's createMu + the gate's own dedupe), so overlap degrades to a
-// no-op; a busy flag keeps one sweep per tick even when a sweep overruns
-// the interval.
-func (c *Consumer) fastPollLoop(ctx context.Context) {
-	ticker := time.NewTicker(c.cfg.FastPoll)
-	defer ticker.Stop()
+// armedBackoffLoop is the kernel's reconciliation floor (#556): while any
+// review-ready workflow holds an armed-not-dispatched claim, re-sweep at an
+// exponentially backing-off cadence — FastPoll at base, ×2 per stalled
+// pass (the armed set unchanged), capped at 30m; any change in the armed
+// set (a dispatch landed, or a fresh arm arrived) resets to base, because
+// either event is exactly when the next few seconds matter. The sweep is
+// idempotent and capacity-safe (the dispatcher's createMu + the gate's own
+// dedupe), so overlap degrades to a no-op; a busy flag keeps one pass per
+// tick even when a pass overruns. An idle fleet runs ZERO passes: the loop
+// publishes nothing and touches nothing when ArmedWaitingWorkflows is
+// empty (the CI wake owns latency; this loop only bounds webhook loss).
+func (c *Consumer) armedBackoffLoop(ctx context.Context) {
+	const backoffCap = 30 * time.Minute
+	delay := c.cfg.FastPoll
+	lastLen := -1
 	var busy atomic.Bool
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-timer.C:
 		}
 		if !busy.CompareAndSwap(false, true) {
+			// Overrun: retry shortly without treating it as a stalled pass.
+			timer.Reset(time.Second)
 			continue
 		}
-		for _, wf := range c.cfg.ArmedWaitingWorkflows(ctx) {
-			req := RunRequest{
+		list := c.cfg.ArmedWaitingWorkflows(ctx)
+		for _, wf := range list {
+			runCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+			if err := c.cfg.RunFunc(runCtx, RunRequest{
 				Workflow:  wf,
 				Namespace: c.cfg.Namespace,
 				Source:    "fast-poll",
-			}
-			runCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-			if err := c.cfg.RunFunc(runCtx, req); err != nil {
-				c.cfg.Logger.Info("fast-poll sweep failed (retried next tick)", "workflow", wf, "error", err)
+			}); err != nil {
+				c.cfg.Logger.Info("backoff sweep failed (retried next pass)", "workflow", wf, "error", err)
 			}
 			cancel()
 		}
 		busy.Store(false)
+		// Cadence: any movement in the armed set resets to base — a shrink
+		// means a dispatch just landed (the next one should not wait out a
+		// backoff), a growth means a fresh arm (same). Only a stalled set
+		// (same size, sweeps converging to no-ops) earns the doubling.
+		switch {
+		case lastLen < 0 || len(list) != lastLen:
+			delay = c.cfg.FastPoll
+		case delay < backoffCap:
+			delay = min(delay*2, backoffCap)
+		}
+		lastLen = len(list)
+		timer.Reset(delay)
 	}
 }
 
@@ -262,6 +290,7 @@ func (c *Consumer) handleTrigger(w http.ResponseWriter, r *http.Request) {
 		Action:      trigger.Action,
 		Revision:    trigger.Revision,
 		PrTitle:     trigger.PrTitle,
+		Repo:        trigger.Repo,
 	}); err != nil {
 		c.cfg.Logger.Error("workflow run failed", "workflow", trigger.Workflow, "error", err)
 		http.Error(w, fmt.Sprintf("run failed: %v", err), http.StatusInternalServerError)
@@ -286,6 +315,7 @@ type TriggerEvent struct {
 	Pr          string `json:"pr,omitempty"`
 	PrTitle     string `json:"prTitle,omitempty"`
 	Action      string `json:"action,omitempty"`
+	Repo        string `json:"repo,omitempty"`
 }
 
 // RunConsumer is the entry point for consumer mode. Called from main's

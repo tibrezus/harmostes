@@ -440,3 +440,131 @@ func TestPullRequestEventReviewRequestedArms(t *testing.T) {
 		})
 	}
 }
+
+// --- host-native CI completion wakes (#556) ---
+
+// ciAssertion reads the workflow back and checks the three wake annotations.
+func ciAssertion(t *testing.T, h *Handler, wfName, wantRepo string, wantActionSet bool) map[string]string {
+	t.Helper()
+	var got v1alpha1.Workflow
+	_ = h.Get(context.Background(), types.NamespacedName{Namespace: "harmostes", Name: wfName}, &got)
+	ann := got.Annotations
+	if ann[TriggerActionAnnotation] != "ci_completed" {
+		t.Errorf("trigger-action = %q, want ci_completed", ann[TriggerActionAnnotation])
+	}
+	if wantActionSet && ann[v1alpha1.TriggerRepoAnnotation] != wantRepo {
+		t.Errorf("trigger-repo = %q, want %q", ann[v1alpha1.TriggerRepoAnnotation], wantRepo)
+	}
+	if _, hasPR := ann[TriggerPRAnnotation]; hasPR {
+		t.Errorf("CI wakes must NOT set trigger-pr (payloads carry no PR number); got %q", ann[TriggerPRAnnotation])
+	}
+	return ann
+}
+
+func TestCIWakeCheckSuiteAnnotates(t *testing.T) {
+	wf, _ := prWorkflow("w-ci", "", "")
+	h := newTestHandler(wf)
+	body := []byte(`{"action":"completed","check_suite":{"head_sha":"` + validSHA + `","conclusion":"success"},"repository":{"full_name":"tibrezus/harmostes","html_url":"https://github.com/tibrezus/harmostes"}}`)
+	req := httptest.NewRequest(http.MethodPost, "/webhook/w-ci?namespace=harmostes", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req, "w-ci")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+	ann := ciAssertion(t, h, "w-ci", "github.com/tibrezus/harmostes", true)
+	if ann[TriggerRevisionAnnotation] != validSHA {
+		t.Errorf("trigger-revision = %q", ann[TriggerRevisionAnnotation])
+	}
+}
+
+func TestCIWakeCheckSuiteNonTerminalIgnored(t *testing.T) {
+	wf, _ := prWorkflow("w-ci2", "", "")
+	h := newTestHandler(wf)
+	body := []byte(`{"action":"requested","check_suite":{"head_sha":"` + validSHA + `"},"repository":{"full_name":"tibrezus/harmostes","html_url":"https://github.com/tibrezus/harmostes"}}`)
+	req := httptest.NewRequest(http.MethodPost, "/webhook/w-ci2?namespace=harmostes", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req, "w-ci2")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("non-terminal completions are 200-ignored (hosts retry non-2xx), got %d", rec.Code)
+	}
+	var got v1alpha1.Workflow
+	_ = h.Get(context.Background(), types.NamespacedName{Namespace: "harmostes", Name: "w-ci2"}, &got)
+	if got.Annotations[TriggerActionAnnotation] == "ci_completed" {
+		t.Fatal("check_suite requested must not wake")
+	}
+}
+
+func TestCIWakeWorkflowRunAnnotates(t *testing.T) {
+	wf, _ := prWorkflow("w-ci3", "", "")
+	h := newTestHandler(wf)
+	body := []byte(`{"action":"completed","workflow_run":{"head_sha":"` + validSHA + `","conclusion":"failure"},"repository":{"full_name":"tibrezus/harmostes","html_url":"https://github.com/tibrezus/harmostes"}}`)
+	req := httptest.NewRequest(http.MethodPost, "/webhook/w-ci3?namespace=harmostes", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req, "w-ci3")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+	ann := ciAssertion(t, h, "w-ci3", "github.com/tibrezus/harmostes", true)
+	if ann[TriggerRevisionAnnotation] != validSHA {
+		t.Errorf("trigger-revision = %q", ann[TriggerRevisionAnnotation])
+	}
+}
+
+func TestCIWakeStatusTerminalWakes(t *testing.T) {
+	wf, _ := prWorkflow("w-ci4", "", "")
+	h := newTestHandler(wf)
+	for _, state := range []string{"success", "failure", "error"} {
+		body := []byte(`{"state":"` + state + `","sha":"` + validSHA + `","repository":{"full_name":"tibrezus/harmostes","html_url":"https://github.com/tibrezus/harmostes"}}`)
+		req := httptest.NewRequest(http.MethodPost, "/webhook/w-ci4?namespace=harmostes", bytes.NewReader(body))
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req, "w-ci4")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status %s: code %d", state, rec.Code)
+		}
+		if ann := ciAssertion(t, h, "w-ci4", "github.com/tibrezus/harmostes", true); ann[TriggerRevisionAnnotation] != validSHA {
+			t.Fatalf("state %s: trigger-revision = %q", state, ann[TriggerRevisionAnnotation])
+		}
+	}
+}
+
+func TestCIWakeStatusPendingIgnored(t *testing.T) {
+	wf, _ := prWorkflow("w-ci5", "", "")
+	h := newTestHandler(wf)
+	body := []byte(`{"state":"pending","sha":"` + validSHA + `","repository":{"full_name":"tibrezus/harmostes","html_url":"https://github.com/tibrezus/harmostes"}}`)
+	req := httptest.NewRequest(http.MethodPost, "/webhook/w-ci5?namespace=harmostes", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req, "w-ci5")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("pending is 200-ignored, got %d", rec.Code)
+	}
+	var got v1alpha1.Workflow
+	_ = h.Get(context.Background(), types.NamespacedName{Namespace: "harmostes", Name: "w-ci5"}, &got)
+	if got.Annotations[TriggerActionAnnotation] == "ci_completed" {
+		t.Fatal("status pending must not wake")
+	}
+}
+
+func TestCIWakeMissingSHA400(t *testing.T) {
+	wf, _ := prWorkflow("w-ci6", "", "")
+	h := newTestHandler(wf)
+	body := []byte(`{"action":"completed","check_suite":{"head_sha":""},"repository":{"full_name":"tibrezus/harmostes","html_url":"https://github.com/tibrezus/harmostes"}}`)
+	req := httptest.NewRequest(http.MethodPost, "/webhook/w-ci6?namespace=harmostes", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req, "w-ci6")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("missing head sha must 400, got %d", rec.Code)
+	}
+}
+
+func TestCIWakeForgejoHostNormalized(t *testing.T) {
+	wf, _ := prWorkflow("w-ci7", "", "")
+	h := newTestHandler(wf)
+	body := []byte(`{"action":"completed","check_suite":{"head_sha":"` + validSHA + `"},"repository":{"full_name":"tibrez/rhesadox","html_url":"https://git.rezus.cloud/tibrez/rhesadox"}}`)
+	req := httptest.NewRequest(http.MethodPost, "/webhook/w-ci7?namespace=harmostes", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req, "w-ci7")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d", rec.Code)
+	}
+	ciAssertion(t, h, "w-ci7", "git.rezus.cloud/tibrez/rhesadox", true)
+}

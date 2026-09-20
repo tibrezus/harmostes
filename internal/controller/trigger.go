@@ -38,10 +38,13 @@ type TriggerEvent struct {
 	AttemptName string `json:"attemptName,omitempty"`
 	// PR + Action carry the pull_request wake (ADR-0006) to the worker: the
 	// controller clears the trigger annotations at schedule time, so the
-	// Review-Ready Gate receives its target through this payload.
+	// Review-Ready Gate receives its target through this payload. Repo rides
+	// the host-native CI wake (#556): those payloads carry (repo, sha) only
+	// — no PR number — and the gate re-derives the PR from its armed claims.
 	Pr      string `json:"pr,omitempty"`
 	PrTitle string `json:"prTitle,omitempty"`
 	Action  string `json:"action,omitempty"`
+	Repo    string `json:"repo,omitempty"`
 }
 
 // publishTrigger publishes a trigger event to the Dapr pub/sub topic. The
@@ -72,6 +75,7 @@ func (r *WorkflowReconciler) publishTrigger(ctx context.Context, wf *v1alpha1.Wo
 		Pr:          wf.Annotations["harmostes.dev/trigger-pr"],
 		PrTitle:     wf.Annotations["harmostes.dev/trigger-title"],
 		Action:      wf.Annotations["harmostes.dev/trigger-action"],
+		Repo:        wf.Annotations[v1alpha1.TriggerRepoAnnotation],
 	}
 	b, err := json.Marshal(payload)
 	if err != nil {

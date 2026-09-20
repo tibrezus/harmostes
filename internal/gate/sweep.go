@@ -139,6 +139,13 @@ type GateWake struct {
 	PR       string
 	Action   string
 	Revision string
+	// Repo carries the host-native CI wake's repository (#556): CI payloads
+	// have (repo, sha) but no PR number. A Repo-shaped wake creates NO
+	// candidate — the gate re-derives the PR from its armed claims (section
+	// A re-evaluates them and dispatches on green) — and is recorded in the
+	// status aggregates (LastWake) so the wake that scheduled a run is
+	// visible to humans.
+	Repo string
 }
 
 // wake converts the threaded trigger event into the scan's leading
@@ -325,6 +332,12 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 	ctx, cancel := context.WithTimeout(ctx, gateSweepDeadline)
 	defer cancel()
 	log := deps.log()
+	if deps.Wake.PR == "" && deps.Wake.Repo != "" {
+		// A host-native CI wake (#556): no candidate — section A's armed
+		// re-evaluation IS the dispatch path. Say so, or the log shows a
+		// dispatch with no visible cause.
+		log("review-ready: ci wake %s@%s (%s) — re-evaluating armed claims", deps.Wake.Repo, deps.Wake.Revision, deps.Wake.Action)
+	}
 	now := time.Now()
 	capacity := rr.EffectiveMaxConcurrent(deps.FleetMaxConcurrent)
 	api := newReviewAPI()
@@ -984,6 +997,7 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 			LastDecision:     lastDecision,
 			LastReason:       lastReason,
 			LastSweepAbortAt: abortAt,
+			LastWake:         wakeRecord(deps.Wake, liveAgg),
 		}
 	}); err != nil {
 		log("review-ready: aggregates patch failed: %v", err)
@@ -1023,6 +1037,29 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 }
 
 func candSha(c candidate) string { return c.sha }
+
+// wakeRecord renders the wake that scheduled this sweep for the status
+// aggregates (#556): PR-shaped wakes as "pointer (action)", CI-shaped wakes
+// as "repo@shorthash (action)". A sweep with no wake (poll/backoff) keeps
+// the PREVIOUS wake visible — the field explains what scheduled the run a
+// human is looking at, and a no-op poll must not erase that answer.
+func wakeRecord(w GateWake, liveAgg *v1alpha1.ReviewReadyStatus) string {
+	switch {
+	case w.PR != "":
+		return fmt.Sprintf("%s (%s)", w.PR, w.Action)
+	case w.Repo != "":
+		sha := w.Revision
+		if len(sha) > 12 {
+			sha = sha[:12]
+		}
+		return fmt.Sprintf("%s@%s (%s)", w.Repo, sha, w.Action)
+	default:
+		if liveAgg != nil {
+			return liveAgg.LastWake
+		}
+		return ""
+	}
+}
 
 func findClaim(claims []v1alpha1.Attempt, pointer string) *v1alpha1.Attempt {
 	for i := range claims {

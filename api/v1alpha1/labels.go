@@ -50,6 +50,14 @@ const (
 	// recent MaxTemplateRevisions entries.
 	TemplateRevisionsAnnotation = "template.harmostes.dev/revisions"
 
+	// TriggerRepoAnnotation carries the CI wake's repository
+	// (host/owner/name) from a check_suite/workflow_run/status event to the
+	// Review-Ready Gate (#556). CI completions carry no PR number — the
+	// (repo, sha) pair is the whole payload contract; the gate re-derives
+	// the PR from its armed claims. Cleared alongside the other trigger
+	// annotations at schedule time.
+	TriggerRepoAnnotation = "harmostes.dev/trigger-repo"
+
 	// MaxTemplateRevisions bounds the recorder's history — templates are
 	// small, but a CR is not a git log. The full history lives in the
 	// template's git source; the CR carries the recent window only.

@@ -82,6 +82,17 @@ func splitLines(s string) []string {
 	return strings.Split(s, "\n")
 }
 
+// splitLinesDesc is splitLines in reverse: the log drawer renders
+// newest-first (#551) — the most recent (most relevant) line is the first
+// one the operator sees, and the drawer top is where new lines arrive.
+func splitLinesDesc(s string) []string {
+	lines := splitLines(s)
+	for i, j := 0, len(lines)-1; i < j; i, j = i+1, j-1 {
+		lines[i], lines[j] = lines[j], lines[i]
+	}
+	return lines
+}
+
 // logLineClass returns a CSS class for a formatted log line based on its level
 // prefix (for color-coded output in the run detail view).
 func logLineClass(line string) string {

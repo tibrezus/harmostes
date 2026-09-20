@@ -124,12 +124,8 @@
 						<td class="time">{{if .EndedAt}}{{.EndedAt}}{{else}}—{{end}}</td>
 						<td class="num">{{if .Duration}}{{.Duration}}{{else}}—{{end}}</td>
 						<td class="rd-row-actions">
-							<div class="runlogs-slot" id="runlogs-{{.Name}}"
-								hx-get="/runs/{{$.Name}}/runs/{{.Name}}/logs"
-								hx-target="#runlogs-{{.Name}}"
-								hx-swap="outerHTML"
-								{{- if eq .Phase "running"}} hx-trigger="load delay:200ms, every 3s"{{- else}} hx-trigger="click"{{- end}}>
-								<button type="button" class="ds-btn ds-btn--secondary ds-btn--xs" title="Pod log tail; the session transcript persists after the pod is recycled">Logs</button>
+							<div class="runlogs-open"{{if eq .Phase "running"}} hx-get="/runs/{{$.Name}}/runs/{{.Name}}/logs" hx-trigger="load delay:300ms" hx-target="#runlogs-drawer" hx-swap="outerHTML"{{end}}>
+								<button type="button" class="ds-btn ds-btn--secondary ds-btn--xs" title="Pod log tail — opens full width below the runs table, newest first; the session transcript persists after the pod is recycled" hx-get="/runs/{{$.Name}}/runs/{{.Name}}/logs" hx-target="#runlogs-drawer" hx-swap="outerHTML show:#runlogs-drawer:top">Logs</button>
 							</div>
 							{{if $.AgentEnabled}}<a href="/runs/{{$.Name}}/runs/{{.Name}}/session" class="ds-btn ds-btn--secondary ds-btn--xs" title="View agent session transcript">📜 Session</a>{{end}}
 						</td>
@@ -139,6 +135,11 @@
 			</table>
 		</div>
 		{{end}}
+
+		{{/* The log drawer (#551): full width, below the table — opened by a
+		     row's Logs button (or auto-opened for in-flight runs), replaced
+		     wholesale by the fragment; the ✕ empties it. */}}
+		<div id="runlogs-drawer" class="runlogs-drawer" data-testid="runlogs-drawer"></div>
 
 		{{if .NodeResults}}
 		<h3 class="ds-section-heading">Node Results ({{.TotalNodeRes}})</h3>
@@ -307,7 +308,16 @@
 	if (!window.EventSource) return;
 	var es = new EventSource(location.pathname + '/graph/events');
 	es.addEventListener('rungraph', function (e) {
+		// Preserve the canvas scroll across swaps (#551): the operator who
+		// scrolled right to reach a node must not be snapped back to the
+		// left column every time a node envelope lands.
+		var canvas = frag.querySelector('.rg-canvas');
+		var sx = canvas ? canvas.scrollLeft : 0;
 		frag.innerHTML = e.data;
+		if (sx) {
+			canvas = frag.querySelector('.rg-canvas');
+			if (canvas) canvas.scrollLeft = sx;
+		}
 	});
 })();
 </script>

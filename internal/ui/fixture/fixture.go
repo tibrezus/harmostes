@@ -148,10 +148,15 @@ func Attempts(namespace string) ([]ctrlclient.Object, error) {
 	// --- 1. terminal review attempt -------------------------------------
 	terminal := prReviewAttempt(namespace, "attempt-pr-review-demo-42a1", "demo-rezuscloud/harmostes#42", t(0, 0))
 	terminal.Status.Phase = v1alpha1.AttemptPhaseValidated
+	gateEnv := envelope("gate", "ok", t(14, 10), 40)
+	// A prod-realistic long gate summary (unbreakable words included): the
+	// node panel must WRAP this, never widen (#551 — the deploy panel once
+	// blew from 300px to 787px on exactly this shape of value).
+	gateEnv.Summary = "[pr-review] verdict REQUEST_CHANGES posted to demo-rezuscloud/harmostes#42 as harmostes-bot — image ghcr.io/rezuscloud/forgejo-16@sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08 failed digest pinning; 2 blocking findings, 8 non-blocking notes, 2 inline threads opened"
 	terminal.Status.NodeResults = []v1alpha1.NodeResultEnvelope{
 		envelope("prepare", "ok", t(0, 15), 5),
 		envelope("agent", "ok", t(13, 25), 780), // the 13m agent node
-		envelope("gate", "ok", t(14, 10), 40),
+		gateEnv,
 		envelope("deploy", "skipped", t(14, 15), 0),
 	}
 	terminal.Status.Runs = []v1alpha1.RunRecord{

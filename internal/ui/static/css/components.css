@@ -768,7 +768,6 @@
 
 /* Ledger rows: action cluster stays one line, summaries truncate. */
 .rd-row-actions { white-space: nowrap; text-align: right; }
-.rd-row-actions .runlogs-slot { display: inline-block; }
 .rd-cell-summary {
 	max-width: 56ch;
 	overflow: hidden;

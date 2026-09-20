@@ -323,12 +323,13 @@ func parseTemplates() (*template.Template, error) {
 		// etStateClass maps the shared chip vocabulary onto the Event
 		// Timeline's marker-class suffix — the SAME vocabulary the state-chip
 		// template arms, so a row's color and its chip can never disagree.
-		"etStateClass": etStateClass,
-		"add":          func(a, b int) int { return a + b },
-		"statusClass":  statusClass,
-		"statusText":   statusText,
-		"splitLines":   splitLines,
-		"logLineClass": logLineClass,
+		"etStateClass":   etStateClass,
+		"add":            func(a, b int) int { return a + b },
+		"statusClass":    statusClass,
+		"statusText":     statusText,
+		"splitLines":     splitLines,
+		"splitLinesDesc": splitLinesDesc,
+		"logLineClass":   logLineClass,
 		"default": func(def any, val any) any { /* note: arg order is def, val */
 			if val == nil || val == "" {
 				return def

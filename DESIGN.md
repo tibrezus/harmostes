@@ -112,5 +112,6 @@ headers change in one place; `data-island-state="ready"` plus the
 | `trigger-edge`, `[data-node="trigger"]` | `frag_run_graph.html`, `frag_topology.html` | runs/topology specs (the virtual trigger node + its dashed cause-edge, #541) |
 | `fact-grid`, `runs-table`, `noderes-table`, `evidence-table` | `pages/attempt_detail.html` | run-detail specs (#547: masthead facts + ledger as tables) |
 | `runlogs-drawer`, `runlogs-lines` | `pages/frag_run_logs.html` + `_lines` | log-drawer specs (#551: full-width below the runs table, NEWEST FIRST, poll swaps only the lines element) |
+| `wall-section`, `wall-workflow-cell`, `wall-workflow-link`, `wall-steps`, `wall-more` | `pages/frag_wall.html` | wall specs (#554: template → workflow → subject sections; strips reuse `rg-state-*` paint) |
 | `wf-new-{link,form,name,cadence,template,templates,submit}` | `pages/workflow_new.html`, `pages/workflows.html` | workflows spec |
 | `data-island-state` (attribute), `window.harmostesCodeIsland` (JS handle) | island glue | code-island, inspector, propose specs |

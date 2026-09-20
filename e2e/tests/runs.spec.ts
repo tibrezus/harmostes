@@ -7,12 +7,12 @@ test('the runs list surfaces all phases and navigates into a run', async ({ page
   // v2 console list: attempts live in collapsed sub-rows, rendered with
   // short human labels (workflow · hash). The DOM carries them all.
   // The filter tabs carry the window summary: total, failed, in flight.
-  // Fixture world: #42 completed its review (verdict → history), #43 is the
-  // live one, merge-sync is superseded.
-  await expect(page.getByTestId('tab-all')).toHaveText(/All\s*3/);
+  // Fixture world: #42 and #44 completed their reviews (verdicts →
+  // history), #43 is the live one, merge-sync is superseded.
+  await expect(page.getByTestId('tab-all')).toHaveText(/All\s*4/);
   await expect(page.getByTestId('tab-failed')).toHaveText(/Failed\s*0/);
   await expect(page.getByTestId('tab-inflight')).toHaveText(/In flight\s*1/);
-  await expect(page.getByTestId('tab-verdicts')).toHaveText(/Verdicts\s*1/);
+  await expect(page.getByTestId('tab-verdicts')).toHaveText(/Verdicts\s*2/);
 
   const links = page.getByTestId('run-link');
   await expect(links.filter({ hasText: 'pr-review-demo · 42a1' })).toHaveCount(1);
@@ -21,9 +21,9 @@ test('the runs list surfaces all phases and navigates into a run', async ({ page
 
   // The fourth terminal phase is first-class in the list (phase rides the
   // data-phase attribute; the anchor text is the run name).
-  for (const phase of ['validated', 'reconciling', 'superseded']) {
-    await expect(page.locator(`[data-testid="run-link"][data-phase="${phase}"]`)).toHaveCount(1);
-  }
+  await expect(page.locator('[data-testid="run-link"][data-phase="validated"]')).toHaveCount(2);
+  await expect(page.locator('[data-testid="run-link"][data-phase="reconciling"]')).toHaveCount(1);
+  await expect(page.locator('[data-testid="run-link"][data-phase="superseded"]')).toHaveCount(1);
 
   // Navigation: expand the link's own group, then click through.
   const link = page.getByTestId('run-link').filter({ hasText: 'pr-review-demo · 42a1' });

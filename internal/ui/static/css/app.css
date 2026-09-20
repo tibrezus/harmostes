@@ -1924,6 +1924,62 @@ code, pre {
 	color: var(--ds-text-muted);
 	font-size: 0.8rem;
 }
+
+/* Wall v2 (#554): template → workflow → subject. Sections carry the
+   template name; each workflow block (a rowspan cell) owns its
+   step-timing strip — the compiled shape with the latest attempt's
+   wall-clock shares, painted by the SAME rg-state tokens as the
+   run-detail waterfall (one palette, no second truth). */
+.wall-section {
+	margin-bottom: 1.4rem;
+}
+.wall-section:last-child {
+	margin-bottom: 0;
+}
+.wall-section-h {
+	display: flex;
+	align-items: baseline;
+	gap: 0.6rem;
+	margin: 0 0 0.45rem;
+	font-size: 0.78rem;
+	font-weight: 600;
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+	color: var(--fg-muted);
+}
+.wall-section-h .ids {
+	color: var(--fg);
+}
+.wall-section-count {
+	color: var(--ds-text-muted);
+	font-weight: 400;
+	letter-spacing: 0;
+	text-transform: none;
+}
+.wall-wf-cell {
+	vertical-align: top;
+	padding-right: 1rem;
+	min-width: 9.5rem;
+}
+.wall-wf {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-start;
+	gap: 0.35rem;
+}
+.wall-wf .ids {
+	font-weight: 600;
+}
+.wall-steps {
+	display: block;
+}
+.rg-timing-bar.rg-state-pending {
+	fill: var(--ds-border);
+}
+.wall-more {
+	margin-top: 0.6rem;
+	font-size: 0.82rem;
+}
 .wall-grid {
 	display: grid;
 	grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));

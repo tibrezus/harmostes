@@ -114,6 +114,16 @@ func prReviewAttempt(namespace, name, pr string, created metav1.Time) *v1alpha1.
 	}
 }
 
+// templateInstanceAttempt builds a review-class attempt against the thin
+// template-backed instance (templateRef: pr-review) — the wall's sectioning
+// and the strip's template-resolved compiled shape need exactly this shape
+// in the world (#554).
+func templateInstanceAttempt(namespace, name, pr string, created metav1.Time) *v1alpha1.Attempt {
+	a := prReviewAttempt(namespace, name, pr, created)
+	a.Spec.WorkflowRef = namespace + "/pr-review-instance"
+	return a
+}
+
 // mergeSyncAttempt builds a deterministic (merge-sync) attempt skeleton.
 func mergeSyncAttempt(namespace, name string, created metav1.Time) *v1alpha1.Attempt {
 	return &v1alpha1.Attempt{
@@ -134,7 +144,7 @@ func mergeSyncAttempt(namespace, name string, created metav1.Time) *v1alpha1.Att
 	}
 }
 
-// Attempts returns the fixture attempts. Three states, one narrative:
+// Attempts returns the fixture attempts. Four states, one narrative:
 //
 //  1. pr-review-demo / demo-rezuscloud-harmostes#42 — terminal (validated),
 //     full ledger including the 13m agent node, so the run graph and timing
@@ -144,6 +154,8 @@ func mergeSyncAttempt(namespace, name string, created metav1.Time) *v1alpha1.Att
 //     lands on the agent node.
 //  3. merge-sync-demo — superseded (a newer targeted state replaced it),
 //     exercising the fourth terminal phase.
+//  4. pr-review-instance / #44 — a thin template-backed instance (the
+//     sectioning + template-resolved strip on the wall, #554).
 func Attempts(namespace string) ([]ctrlclient.Object, error) {
 	// --- 1. terminal review attempt -------------------------------------
 	terminal := prReviewAttempt(namespace, "attempt-pr-review-demo-42a1", "demo-rezuscloud/harmostes#42", t(0, 0))
@@ -205,7 +217,30 @@ func Attempts(namespace string) ([]ctrlclient.Object, error) {
 		{Name: "merge-sync-demo-e5f6-deploy", StartedAt: t(61, 30), EndedAt: t(62, 30), Phase: "succeeded"},
 	}
 
-	return []ctrlclient.Object{terminal, running, superseded}, nil
+	// --- 4. template-backed thin instance (#554) -------------------------
+	inst := templateInstanceAttempt(namespace, "attempt-pr-review-instance-44a", "demo-rezuscloud/harmostes#44", t(90, 0))
+	inst.Status.Phase = v1alpha1.AttemptPhaseValidated
+	// Envelope node ids match the TEMPLATE's compiled shape (prepare →
+	// agent → deploy — the instance stores no graph of its own), so the
+	// wall's strip proves the template defaults were resolved, not the
+	// stored thin CR.
+	inst.Status.NodeResults = []v1alpha1.NodeResultEnvelope{
+		envelope("prepare", "ok", t(90, 10), 6),
+		envelope("agent", "ok", t(95, 20), 300),
+		envelope("deploy", "ok", t(95, 40), 12),
+	}
+	inst.Status.Runs = []v1alpha1.RunRecord{
+		{Name: "pr-review-instance-44a-prepare", StartedAt: t(90, 2), EndedAt: t(90, 10), Phase: "succeeded"},
+		{Name: "pr-review-instance-44a-agent", StartedAt: t(90, 15), EndedAt: t(95, 20), Phase: "succeeded"},
+		{Name: "pr-review-instance-44a-deploy", StartedAt: t(95, 25), EndedAt: t(95, 40), Phase: "succeeded"},
+	}
+	inst.Status.Review = &v1alpha1.ReviewClaimStatus{
+		PR: "demo-rezuscloud/harmostes#44", HeadSHA: "d4a1190cc0ffee",
+		Label:    "needs-review",
+		Released: true, ReleaseReason: "consumed",
+	}
+
+	return []ctrlclient.Object{terminal, running, superseded, inst}, nil
 }
 
 // Scheme returns the full API scheme (v1alpha1 + core types) the fake

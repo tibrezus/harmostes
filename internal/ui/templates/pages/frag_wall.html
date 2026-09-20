@@ -1,10 +1,13 @@
 {{define "pages/frag_wall.html"}}
-{{- /* frag_wall.html — the live console: one row per active workflow.
-      Rendered by the page AND streamed as an SSE fragment (one truth).
-      Repeated dispatch-losses aggregate into an alert line instead of
-      repeating as indistinguishable rows. */ -}}
+{{- /* frag_wall.html — the live console, read the way the operator reads
+      it (#554): template → workflow → subject. Each workflow block (a
+      rowspan cell) carries its compiled shape as a step-timing strip —
+      widths ∝ the latest attempt's wall clock, pending nodes as slots.
+      One truth for the page and the SSE fragment. Repeated
+      dispatch-losses aggregate into an alert line instead of repeating
+      as indistinguishable rows. */ -}}
 {{- $lost := 0 -}}
-{{- range .Groups}}{{if eq (wallState .) "dispatch lost"}}{{$lost = add $lost 1}}{{end}}{{end -}}
+{{- range .Sections}}{{range .Workflows}}{{range .Groups}}{{if eq (wallState .) "dispatch lost"}}{{$lost = add $lost 1}}{{end}}{{end}}{{end}}{{end -}}
 {{- if gt $lost 1}}
 <div class="alertline" data-testid="wall-alert">
 	<span class="alertline-icon"><svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 1L15 14H1L8 1zm0 4.5L4.6 11.5h6.8L8 5.5zM8 9a.9.9 0 01.9.9v.7a.9.9 0 01-1.8 0v-.7A.9.9 0 018 9zm0 2.2a.8.8 0 110 1.6.8.8 0 010-1.6z" fill-rule="evenodd"/></svg></span>
@@ -12,43 +15,60 @@
 	<a href="/runs?window=24h&status=failed">View in Runs →</a>
 </div>
 {{- end -}}
-<div class="wall-grid">
-{{- if .Groups}}
+{{- range $sec := .Sections}}
+<section class="wall-section" data-testid="wall-section" data-template="{{$sec.Name}}">
+	<h2 class="wall-section-h"><span class="ids">{{$sec.Name}}</span>
+		<span class="wall-section-count">{{len $sec.Workflows}} workflow{{if ne (len $sec.Workflows) 1}}s{{end}}</span></h2>
 	<div class="tbl-wrap">
 		<table class="tbl">
 			<thead>
 				<tr>
+					<th>Workflow</th>
 					<th>State</th>
 					<th>Subject</th>
-					<th>Workflow</th>
 					<th class="num">Runs</th>
 					<th class="num">Tokens</th>
 					<th class="time">Updated</th>
 				</tr>
 			</thead>
 			<tbody>
-			{{- range .Groups}}
-				{{- $st := wallState . -}}
-				<tr data-testid="wall-card" data-subject="{{.Subject}}" {{if .IsReview}}data-review="true"{{end}} {{if eq $st "failed"}}class="is-failed"{{end}}>
-					<td>{{template "state-chip" $st}}</td>
-					<td>
-						<a href="{{.LastRunURL}}" data-testid="wall-card-title">{{if .IsReview}}<strong>{{.Subject}}</strong>{{else}}<span class="ids">{{.Subject}}</span>{{end}}</a>
-						{{if .HeadSHA}} <span class="ids" style="color:var(--fg-muted)">{{.HeadSHA}}</span>{{end}}
-					</td>
-					<td><span class="ids">{{.WorkflowRef}}</span></td>
-					<td class="num">{{.Count}}</td>
-					<td class="num">{{if .Usage}}<span {{if .Usage.Model}}title="{{.Usage.Model}}"{{end}}>↑{{.Usage.InputTokens}} ↓{{.Usage.OutputTokens}}</span>{{if .Usage.Model}} <span class="wall-usage-model ids" style="color:var(--ink-soft)">{{.Usage.Model}}</span>{{end}}{{end}}</td>
-					<td class="time">{{.LastActivity}}</td>
-				</tr>
+			{{- range $w := $sec.Workflows}}
+				{{- range $gi, $g := $w.Groups}}
+					{{- $st := wallState $g -}}
+					<tr data-testid="wall-card" data-subject="{{$g.Subject}}" {{if $g.IsReview}}data-review="true"{{end}} {{if eq $st "failed"}}class="is-failed"{{end}}>
+						{{- if eq $gi 0}}
+						<td rowspan="{{len $w.Groups}}" class="wall-wf-cell" data-testid="wall-workflow-cell">
+							<a class="wall-wf" href="{{$w.URL}}" data-testid="wall-workflow-link"><span class="ids">{{$w.Name}}</span></a>
+							{{- if $w.Strip}}
+							<svg class="wall-steps" width="{{$w.StripW}}" height="12" role="img" aria-label="step timing: {{$w.Name}}" data-testid="wall-steps">
+								{{- range $w.Strip}}<rect class="rg-timing-bar rg-state-{{.Status}}" x="{{.X}}" y="1" width="{{.Width}}" height="10" rx="2"><title>{{.Title}}</title></rect>{{end}}
+							</svg>
+							{{- end}}
+						</td>
+						{{- end}}
+						<td>{{template "state-chip" $st}}</td>
+						<td>
+							<a href="{{$g.LastRunURL}}" data-testid="wall-card-title">{{if $g.IsReview}}<strong>{{$g.Subject}}</strong>{{else}}<span class="ids">{{$g.Subject}}</span>{{end}}</a>
+							{{if $g.HeadSHA}} <span class="ids" style="color:var(--fg-muted)">{{$g.HeadSHA}}</span>{{end}}
+						</td>
+						<td class="num">{{$g.Count}}</td>
+						<td class="num">{{if $g.Usage}}<span {{if $g.Usage.Model}}title="{{$g.Usage.Model}}"{{end}}>↑{{$g.Usage.InputTokens}} ↓{{$g.Usage.OutputTokens}}</span>{{if $g.Usage.Model}} <span class="wall-usage-model ids" style="color:var(--ink-soft)">{{$g.Usage.Model}}</span>{{end}}{{end}}</td>
+						<td class="time">{{$g.LastActivity}}</td>
+					</tr>
+				{{- end}}
 			{{- end}}
 			</tbody>
 		</table>
 	</div>
-{{- else}}
+</section>
+{{end -}}
+{{- if .Overflow}}
+<div class="wall-more" data-testid="wall-more"><a href="/runs">+{{.Overflow}} more subjects — view all runs →</a></div>
+{{- end -}}
+{{- if not .Sections}}
 	<div class="ds-empty-state">
 		<p>Nothing has run yet. The console lights up when a workflow fires.</p>
 		<p><a href="/workflows">View workflows →</a></p>
 	</div>
 {{- end}}
-</div>
 {{end}}

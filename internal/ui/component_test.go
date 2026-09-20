@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -145,8 +146,10 @@ func TestComponent_Wall_RendersAllFixtureSubjects(t *testing.T) {
 	xs := []int{}
 	demoStrip.Find("rect").Each(func(_ int, s *goquery.Selection) {
 		x, _ := s.Attr("x")
-		var v int
-		fmt.Sscanf(x, "%d", &v)
+		v, err := strconv.Atoi(x)
+		if err != nil {
+			t.Errorf("segment x %q not an int: %v", x, err)
+		}
 		xs = append(xs, v)
 	})
 	if len(xs) != 4 || !(xs[0] < xs[1] && xs[1] < xs[2] && xs[2] < xs[3]) {

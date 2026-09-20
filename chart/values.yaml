@@ -14,7 +14,8 @@ skills:
   # workflow owns freshness (scheduled PR bumping this value when agents
   # main moves). Empty string = track the repo's default branch (the
   # pre-#408 behavior; the manifest log line remains the only provenance).
-  rev: "1b1d1f3e249dabfdb5009aa0a3caf21eca9f42f0" # 1b1d1f3: fork-maintenance skill gains the go_test gate-5 check type (#564)
+  # 1b1d1f3: fork-maintenance skill gains the go_test gate-5 check type (#564).
+  rev: "1b1d1f3e249dabfdb5009aa0a3caf21eca9f42f0"
 
 agent:
   # Hard tool-call cap per agent session (#484): past the cap only the

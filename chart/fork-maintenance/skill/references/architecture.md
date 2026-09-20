@@ -161,6 +161,7 @@ Adding a host (GitLab, Bitbucket…): add a `case` arm to `host_setup` / `host_l
 |------------|-----|------------------|
 | Toolchain | `validation.toolchain.go` | pins the exact Go minor via `GOTOOLCHAIN` (precedence: declared > `go.mod`) |
 | Go build | `validation.go_build[]` | declared packages compile, per module, with the declared toolchain |
+| Go test | `validation.go_test[]` | declared packages' tests pass — the BEHAVIORAL gate (#564): a signature proves the patch text survived the merge, a test proves the feature works. Declare targeted feature packages, never upstream's full suite (the gate runs per sync: fast + deterministic) |
 | Clean tree | `validation.clean_tree.paths` | generated code committed matches freshly-regenerated (no codegen drift) |
 | Integration | `validation.integration.kind` | opt-in harness routine (e.g. `forgejo-live`) |
 

@@ -2,7 +2,7 @@
 # =============================================================================
 # validate-fork.sh — Centralized, UNIVERSAL fork validation
 # =============================================================================
-# Runs build + clean-tree + integration checks against a fork's working
+# Runs build + test + clean-tree + integration checks against a fork's working
 # directory. Which checks run is declared per-fork in the fork definition
 # (`forks/<name>.yaml` → `validation:`), so this script is host-agnostic and
 # language-agnostic — it does NOT hardcode any fork's structure.
@@ -17,6 +17,10 @@
 #     go_build:               # compile Go packages (any Go fork)
 #       - module: .           #   working dir (module root) within the workdir
 #         packages: [./cmd/community]
+#     go_test:                # run Go packages' tests (BEHAVIORAL gate #564)
+#       - module: pkg/metrics #   presence ≠ behavior: signatures prove the
+#         packages: [./...]   #   patch survived the merge; tests prove the
+#                             #   feature still works on the merged tree
 #     clean_tree:             # verify generated code is committed (codegen drift)
 #       paths: [staging/.../zz_generated_*.go]
 #     integration:            # opt-in; `kind` selects the harness routine
@@ -98,6 +102,37 @@ if [ "${BUILD_COUNT:-0}" -gt 0 ]; then
     echo "  $status  $module  [${pkgs[*]}]"
     echo "  $module [${pkgs[*]}]: $status" >> "$RESULTS_FILE"
     $build_ok || ALL_PASS=false
+  done
+  echo '```' >> "$RESULTS_FILE"
+fi
+
+# =============================================================================
+# Check: go_test — run declared Go packages' tests (behavioral gate, #564)
+# =============================================================================
+# Complementary to signatures: a signature proves the patch TEXT survived the
+# merge; a test proves the FEATURE works on the merged tree. A semantic break
+# (upstream changed an API our patch depends on) greps clean and compiles —
+# only the tests fail. Declare TARGETED feature packages, never upstream's
+# full suite: the gate runs per sync and must stay fast and deterministic.
+TEST_COUNT=$(ry '.validation.go_test // [] | length')
+if [ "${TEST_COUNT:-0}" -gt 0 ]; then
+  HAS_ANY=true
+  echo "=== Check: Go test ==="
+  {
+    echo "### Go Test"
+    echo ""
+    echo '```'
+  } >> "$RESULTS_FILE"
+  for i in $(seq 0 $((TEST_COUNT - 1))); do
+    module=$(ry ".validation.go_test[$i].module // \".\"")
+    mapfile -t pkgs < <(ry ".validation.go_test[$i].packages[]")
+    [ "${#pkgs[@]}" -eq 0 ] && pkgs=("./...")
+    test_ok=true
+    ( cd "$WORKDIR/$module" && go test "${pkgs[@]}" 2>&1 ) || test_ok=false
+    status=$(if $test_ok; then echo '✅'; else echo '❌'; fi)
+    echo "  $status  $module  [${pkgs[*]}]"
+    echo "  $module [${pkgs[*]}]: $status" >> "$RESULTS_FILE"
+    $test_ok || ALL_PASS=false
   done
   echo '```' >> "$RESULTS_FILE"
 fi

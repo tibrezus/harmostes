@@ -3355,7 +3355,7 @@ data:
     # =============================================================================
     # validate-fork.sh — Centralized, UNIVERSAL fork validation
     # =============================================================================
-    # Runs build + clean-tree + integration checks against a fork's working
+    # Runs build + test + clean-tree + integration checks against a fork's working
     # directory. Which checks run is declared per-fork in the fork definition
     # (`forks/<name>.yaml` → `validation:`), so this script is host-agnostic and
     # language-agnostic — it does NOT hardcode any fork's structure.
@@ -3370,6 +3370,10 @@ data:
     #     go_build:               # compile Go packages (any Go fork)
     #       - module: .           #   working dir (module root) within the workdir
     #         packages: [./cmd/community]
+    #     go_test:                # run Go packages' tests (BEHAVIORAL gate #564)
+    #       - module: pkg/metrics #   presence ≠ behavior: signatures prove the
+    #         packages: [./...]   #   patch survived the merge; tests prove the
+    #                             #   feature still works on the merged tree
     #     clean_tree:             # verify generated code is committed (codegen drift)
     #       paths: [staging/.../zz_generated_*.go]
     #     integration:            # opt-in; `kind` selects the harness routine
@@ -3451,6 +3455,37 @@ data:
         echo "  $status  $module  [${pkgs[*]}]"
         echo "  $module [${pkgs[*]}]: $status" >> "$RESULTS_FILE"
         $build_ok || ALL_PASS=false
+      done
+      echo '```' >> "$RESULTS_FILE"
+    fi
+    
+    # =============================================================================
+    # Check: go_test — run declared Go packages' tests (behavioral gate, #564)
+    # =============================================================================
+    # Complementary to signatures: a signature proves the patch TEXT survived the
+    # merge; a test proves the FEATURE works on the merged tree. A semantic break
+    # (upstream changed an API our patch depends on) greps clean and compiles —
+    # only the tests fail. Declare TARGETED feature packages, never upstream's
+    # full suite: the gate runs per sync and must stay fast and deterministic.
+    TEST_COUNT=$(ry '.validation.go_test // [] | length')
+    if [ "${TEST_COUNT:-0}" -gt 0 ]; then
+      HAS_ANY=true
+      echo "=== Check: Go test ==="
+      {
+        echo "### Go Test"
+        echo ""
+        echo '```'
+      } >> "$RESULTS_FILE"
+      for i in $(seq 0 $((TEST_COUNT - 1))); do
+        module=$(ry ".validation.go_test[$i].module // \".\"")
+        mapfile -t pkgs < <(ry ".validation.go_test[$i].packages[]")
+        [ "${#pkgs[@]}" -eq 0 ] && pkgs=("./...")
+        test_ok=true
+        ( cd "$WORKDIR/$module" && go test "${pkgs[@]}" 2>&1 ) || test_ok=false
+        status=$(if $test_ok; then echo '✅'; else echo '❌'; fi)
+        echo "  $status  $module  [${pkgs[*]}]"
+        echo "  $module [${pkgs[*]}]: $status" >> "$RESULTS_FILE"
+        $test_ok || ALL_PASS=false
       done
       echo '```' >> "$RESULTS_FILE"
     fi
@@ -3904,7 +3939,7 @@ data:
     2. **Permanent divergences re-applied** — deleted upstream dirs re-deleted; additive paths preserved.
     3. **Post-merge hook succeeded** — per-fork code generation (SDK regen, swagger, `go mod tidy`, ee-stripping) ran and produced the expected artifacts.
     4. **Patch signatures intact** — every feature patch's grep-verifiable proof string is still present (a merge didn't silently drop it).
-    5. **Validation passed** — the checks *this fork* declares (go_build / clean_tree / integration), built with the **fork's declared toolchain**, all green, run in a real toolchain.
+    5. **Validation passed** — the checks *this fork* declares (go_build / go_test / clean_tree / integration), built with the **fork's declared toolchain**, all green, run in a real toolchain.
     6. **(Agentic) conflict resolved & re-validated** — if a semantic conflict required agent resolution, the resolution itself was validated before the PR is marked auto-mergeable.
     7. **(Opt-in) Auto-merge + auto-release** — if all above pass *and* `auto.merge: true`, the plugin merges the PR immediately; if `auto.release: true` it also cuts the next machine tag `<upstream-ver>-rezus.<N+1>` so the fork's tag-triggered workflow builds an image that Flux image automation deploys (identity = upstream version; see [Version identity](#version-identity-upstream-identity-versioning)).
     
@@ -4109,6 +4144,9 @@ data:
     validation:                               # ← multi-project: declare YOUR checks
       toolchain: { go: "1.25.7" }             # pin Go minor (precedence: declared > go.mod)
       go_build:   [{ module, packages }]
+      go_test:    [{ module, packages }]   # behavioral gate (#564): declare TARGETED
+                                           # feature packages, never upstream's suite
+                                           # (fast + deterministic — runs every sync)
       clean_tree: { paths: [...] }
       integration: { kind: forgejo-live, image, module, env }
     ```
@@ -4336,6 +4374,7 @@ data:
     |------------|-----|------------------|
     | Toolchain | `validation.toolchain.go` | pins the exact Go minor via `GOTOOLCHAIN` (precedence: declared > `go.mod`) |
     | Go build | `validation.go_build[]` | declared packages compile, per module, with the declared toolchain |
+    | Go test | `validation.go_test[]` | declared packages' tests pass — the BEHAVIORAL gate (#564): a signature proves the patch text survived the merge, a test proves the feature works. Declare targeted feature packages, never upstream's full suite (the gate runs per sync: fast + deterministic) |
     | Clean tree | `validation.clean_tree.paths` | generated code committed matches freshly-regenerated (no codegen drift) |
     | Integration | `validation.integration.kind` | opt-in harness routine (e.g. `forgejo-live`) |
     
@@ -5155,7 +5194,7 @@ spec:
         # (stale-pod-wins; #368-1). Checksums cover everything the pod mounts:
         # the fork-maintenance.yaml template output (scripts/checks/defs/
         # hooks/skill CMs) and the litellm extension payload.
-        checksum/fork-maintenance: 082d8c5472ee15b9beacfd112a46beff3f5121af68d95f1af2eadb6fd64372f4
+        checksum/fork-maintenance: 962555c810fbdceaa7c4aa9085e30a16b3ddee4bcd93a4183f02ab7ad3f012cc
         checksum/litellm-extension: 883d76f7ef3dcce17099fbf3c7b7aea0e7d7d16003ca83cfb465a7422078b4e1
     spec:
       imagePullSecrets:

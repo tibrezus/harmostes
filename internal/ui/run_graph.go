@@ -239,8 +239,7 @@ func buildTimingStrip(nodes []graphNodeView, latest map[string]v1alpha1.NodeResu
 	}
 	var lanes []lane
 
-	// Node lanes in graph order.
-	earliest := time.Time{}
+	// Filter to nodes with known timing, preserving graph order.
 	ordered := make([]graphNodeView, 0, len(nodes))
 	for _, n := range nodes {
 		env, ok := latest[n.ID]
@@ -248,14 +247,11 @@ func buildTimingStrip(nodes []graphNodeView, latest map[string]v1alpha1.NodeResu
 			continue
 		}
 		ordered = append(ordered, n)
-		start := env.ProducedAt.Add(-time.Duration(env.DurationMs) * time.Millisecond)
-		if earliest.IsZero() || start.Before(earliest) {
-			earliest = start
-		}
 	}
-	if len(ordered) == 0 || earliest.IsZero() {
+	if len(ordered) == 0 {
 		return nil
 	}
+	// Node lanes in graph order.
 	for _, n := range ordered {
 		env := latest[n.ID]
 		lanes = append(lanes, lane{

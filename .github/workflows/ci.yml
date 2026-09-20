@@ -80,6 +80,44 @@ jobs:
       - name: go test (race + coverage)
         run: go test -race -cover ./...
 
+      - name: fork-maintenance go_test gate fixture (behavioral proof, #564)
+        # The gate that blocks syncs on failing feature tests must itself have
+        # executable proof — otherwise any future edit to the loop can turn it
+        # from blocking to decorative. Four assertions over the committed
+        # fixture (chart/fork-maintenance/checks/testdata/gotest-fixture):
+        #   1. absent validation block → exit 0 (no checks declared, no error)
+        #   2. broken behavior (mutation) → exit 1 — the gate BLOCKS
+        #   3. behavior restored → exit 0 — the gate passes on green
+        #   4. forgotten packages key → exit 1 — hard error, never silent ./...
+        run: |
+          set -euo pipefail
+          FIXTURE=chart/fork-maintenance/checks/testdata/gotest-fixture
+          TMP=$(mktemp -d)
+          # MUST mirror the deployed layout: <MAINT_DIR>/checks/validate-fork.sh
+          # — the script derives the fork-defs dir from ITS OWN location
+          # (dirname²), so a flat copy silently points MAINT_DIR at $TMP and
+          # every assertion below would pass vacuously on "def not found".
+          mkdir -p "$TMP/checks"
+          cp chart/fork-maintenance/checks/validate-fork.sh "$TMP/checks/"
+          cp -r "$FIXTURE/forks" "$FIXTURE/work" "$TMP/"
+          # 1: no checks declared → pass
+          bash "$TMP/checks/validate-fork.sh" empty "$TMP/work" >/dev/null 2>&1 \
+            || { echo "::error::empty validation block must exit 0"; exit 1; }
+          # 2: mutate the contract → gate must BLOCK
+          sed -i 's/return 2/return 3/' "$TMP/work/badpkg/bad.go"
+          if bash "$TMP/checks/validate-fork.sh" smoke "$TMP/work" >/dev/null 2>&1; then
+            echo "::error::go_test gate did NOT block broken behavior (mutation survived)"; exit 1
+          fi
+          # 3: restore the contract → gate must pass
+          sed -i 's/return 3/return 2/' "$TMP/work/badpkg/bad.go"
+          bash "$TMP/checks/validate-fork.sh" smoke "$TMP/work" >/dev/null 2>&1 \
+            || { echo "::error::go_test gate failed on green behavior"; exit 1; }
+          # 4: forgotten packages key → hard error, exit 1
+          if bash "$TMP/checks/validate-fork.sh" nopackages "$TMP/work" >/dev/null 2>&1; then
+            echo "::error::missing packages must be a hard error, not a silent ./..."; exit 1
+          fi
+          echo "go_test gate fixture: blocked broken behavior, passed green, errored on bad def ✓"
+
       - name: extensions (node --test · rig-query)
         # The lockfile pins typebox to pi's shipped version so tests validate the
         # same schema shape production loads. make test-extensions runs npm ci

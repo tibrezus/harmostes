@@ -84,6 +84,7 @@ resolution — the actual 07-09 path). RED ⟹ `needs-fix` / no auto-merge.
 `validate-fork.sh` runs only the checks in the fork's `validation:` block, in a **real toolchain** (the CronJob image must match the project's build env — e.g. `golang:1.25-alpine` for a Go `1.25.x` project, not whatever Go the operator's laptop has).
 
 - `go_build` — declared packages compile.
+- `go_test` — declared feature packages' tests pass (#564 behavioral gate: a signature proves the patch text survived the merge, a test proves the feature works; packages must be declared explicitly — no `./...` fallback — and each run is bounded by an explicit `-timeout`, default 120s).
 - `clean_tree` — after the hook regenerated code, `git status` shows no drift (generated == committed).
 - `integration` — opt-in live harness (e.g. spin up the real server, run SDK tests).
 

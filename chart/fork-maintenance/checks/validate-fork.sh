@@ -20,7 +20,9 @@
 #     go_test:                # run Go packages' tests (BEHAVIORAL gate #564)
 #       - module: pkg/metrics #   presence ≠ behavior: signatures prove the
 #         packages: [./...]   #   patch survived the merge; tests prove the
-#                             #   feature still works on the merged tree
+#         timeout: 120s       #   feature still works (timeout REQUIRED-guard:
+#                             #   packages must be declared EXPLICITLY — no
+#                             #   silent ./... fallback)
 #     clean_tree:             # verify generated code is committed (codegen drift)
 #       paths: [staging/.../zz_generated_*.go]
 #     integration:            # opt-in; `kind` selects the harness routine
@@ -126,9 +128,20 @@ if [ "${TEST_COUNT:-0}" -gt 0 ]; then
   for i in $(seq 0 $((TEST_COUNT - 1))); do
     module=$(ry ".validation.go_test[$i].module // \".\"")
     mapfile -t pkgs < <(ry ".validation.go_test[$i].packages[]")
-    [ "${#pkgs[@]}" -eq 0 ] && pkgs=("./...")
+    if [ "${#pkgs[@]}" -eq 0 ]; then
+      # Hard, visible error — NOT a ./... default. A forgotten packages key
+      # on a monorepo module would run upstream's entire (flaky, networked)
+      # suite in a blocking gate and fail every sync for an unreadable reason.
+      echo "  ❌  go_test[$i]: packages must be declared explicitly (no silent ./... fallback)"
+      echo "  go_test[$i]: ❌ packages must be declared explicitly (no silent ./... fallback)" >> "$RESULTS_FILE"
+      ALL_PASS=false
+      continue
+    fi
+    timeout_s=$(ry ".validation.go_test[$i].timeout // \"120s\"")
     test_ok=true
-    ( cd "$WORKDIR/$module" && go test "${pkgs[@]}" 2>&1 ) || test_ok=false
+    # Explicit bound: go's default is 10m PER PACKAGE — a hung test would
+    # cost N×10m inside the sync and yield no verdict at all.
+    ( cd "$WORKDIR/$module" && go test -timeout="$timeout_s" "${pkgs[@]}" 2>&1 ) || test_ok=false
     status=$(if $test_ok; then echo '✅'; else echo '❌'; fi)
     echo "  $status  $module  [${pkgs[*]}]"
     echo "  $module [${pkgs[*]}]: $status" >> "$RESULTS_FILE"

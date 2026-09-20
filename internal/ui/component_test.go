@@ -159,7 +159,7 @@ func TestComponent_Wall_RendersAllFixtureSubjects(t *testing.T) {
 }
 
 // The terminal review attempt renders the full graph (4 nodes) and the
-// timing waterfall (overhead + 4 node lanes, agent widest).
+// timing waterfall (node lanes only — one per envelope, agent widest).
 func TestComponent_RunDetail_TerminalGraphAndWaterfall(t *testing.T) {
 	ts := newFixtureServer(t)
 	doc := getAsFixtureUser(t, ts, "/runs/attempt-pr-review-demo-42a1")
@@ -294,16 +294,18 @@ func TestComponent_RunDetail_LivePositionOnRunningAttempt(t *testing.T) {
 	if doc.Find(".rg-pulse").Length() != 1 {
 		t.Errorf("rg-pulse elements = %d, want 1 (the in-flight node)", doc.Find(".rg-pulse").Length())
 	}
-	// A mid-flight attempt's waterfall may only show settled work. The
-	// invariant: no lane for a node without an envelope — whether the
-	// overhead lane renders depends on the attempt's creation gap, which is
-	// not this contract.
-	unsettled := map[string]bool{"agent": true, "gate": true, "deploy": true}
-	doc.Find(`[data-testid="timing-lane"]`).Each(func(_ int, s *goquery.Selection) {
-		if label := s.AttrOr("data-label", ""); unsettled[label] {
-			t.Errorf("timing lane %q rendered for a mid-flight attempt; only settled nodes may appear", label)
-		}
-	})
+	// A mid-flight attempt's waterfall shows EXACTLY the settled work: one
+	// lane per envelope, nothing else. The fixture (attempt-...-43c2) has
+	// one envelope (prepare/ok); agent/gate/deploy have none and must not
+	// appear — positive pins, because a pass-on-nothing loop cannot catch a
+	// lane regrowing (r34 round 2, finding 2).
+	lanes := testIDSelection(t, doc, "timing-lane")
+	if lanes.Length() != 1 {
+		t.Errorf("timing lanes = %d, want 1 (prepare only — one envelope in the fixture)", lanes.Length())
+	}
+	if lanes.AttrOr("data-label", "") != "prepare" {
+		t.Errorf("timing lane label = %q, want prepare", lanes.AttrOr("data-label", ""))
+	}
 }
 
 // The runs list surfaces all three attempts with their phases, including the

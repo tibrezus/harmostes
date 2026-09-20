@@ -50,14 +50,15 @@ func TestFixture_Objects(t *testing.T) {
 	}
 }
 
-// The three attempts cover the narrative states with honest owner labels.
+// The four attempts cover the narrative states with honest owner labels
+// (#554 added the template-backed instance for the wall's sections).
 func TestFixture_Attempts(t *testing.T) {
 	atts, err := Attempts("fixture-ns")
 	if err != nil {
 		t.Fatalf("Attempts: %v", err)
 	}
-	if len(atts) != 3 {
-		t.Fatalf("attempts = %d, want 3", len(atts))
+	if len(atts) != 4 {
+		t.Fatalf("attempts = %d, want 4", len(atts))
 	}
 	phases := map[string]int{}
 	for _, o := range atts {
@@ -70,8 +71,8 @@ func TestFixture_Attempts(t *testing.T) {
 		}
 		phases[a.Status.Phase]++
 	}
-	if phases["validated"] != 1 || phases["reconciling"] != 1 || phases["superseded"] != 1 {
-		t.Errorf("phase distribution %v, want one of each terminal+running", phases)
+	if phases["validated"] != 2 || phases["reconciling"] != 1 || phases["superseded"] != 1 {
+		t.Errorf("phase distribution %v, want 2 validated + reconciling + superseded", phases)
 	}
 }
 

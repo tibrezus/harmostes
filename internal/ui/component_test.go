@@ -81,8 +81,8 @@ func TestComponent_Wall_RendersAllFixtureSubjects(t *testing.T) {
 	doc := getAsFixtureUser(t, ts, "/")
 
 	cards := testIDSelection(t, doc, "wall-card")
-	if got := cards.Length(); got != 3 {
-		t.Errorf("wall cards = %d, want 3 (two review PRs + one deterministic subject)", got)
+	if got := cards.Length(); got != 4 {
+		t.Errorf("wall cards = %d, want 4 (three review PRs + one deterministic subject)", got)
 	}
 	cards.Each(func(_ int, s *goquery.Selection) {
 		if s.AttrOr("data-subject", "") == "" {
@@ -90,8 +90,67 @@ func TestComponent_Wall_RendersAllFixtureSubjects(t *testing.T) {
 		}
 	})
 	reviewMarked := doc.Find(`[data-testid="wall-card"][data-review="true"]`).Length()
-	if reviewMarked != 2 {
-		t.Errorf("review-marked rows = %d, want 2", reviewMarked)
+	if reviewMarked != 3 {
+		t.Errorf("review-marked rows = %d, want 3", reviewMarked)
+	}
+
+	// #554 organization: the wall is sectioned by template. The fixture
+	// world has one template-backed instance (pr-review → pr-review-instance)
+	// and two graph-native workflows (no templateRef → "other workflows").
+	sections := testIDSelection(t, doc, "wall-section")
+	if got := sections.Length(); got != 2 {
+		t.Errorf("wall sections = %d, want 2 (pr-review + other workflows)", got)
+	}
+	prSec := doc.Find(`[data-testid="wall-section"][data-template="pr-review"]`)
+	if prSec.Length() != 1 {
+		t.Fatalf("pr-review section missing")
+	}
+	if got := prSec.Find(`[data-testid="wall-card"]`).Length(); got != 1 {
+		t.Errorf("pr-review section cards = %d, want 1 (the template-backed instance)", got)
+	}
+	otherSec := doc.Find(`[data-testid="wall-section"][data-template="other workflows"]`)
+	if got := otherSec.Find(`[data-testid="wall-card"]`).Length(); got != 3 {
+		t.Errorf("other-workflows section cards = %d, want 3 (two PRs on pr-review-demo + merge-sync)", got)
+	}
+	// The graph-native workflow tracks two subjects → its block cell
+	// spans both rows.
+	demoCell := otherSec.Find(`[data-testid="wall-workflow-cell"]`).FilterFunction(func(_ int, s *goquery.Selection) bool {
+		return s.Find(`[data-testid="wall-workflow-link"]`).Text() == "pr-review-demo"
+	})
+	if demoCell.Length() != 1 {
+		t.Fatalf("pr-review-demo workflow cell missing")
+	}
+	if got, _ := demoCell.Attr("rowspan"); got != "2" {
+		t.Errorf("pr-review-demo cell rowspan = %q, want 2 (two live PRs)", got)
+	}
+	// Every workflow with envelopes carries a strip; the strips paint with
+	// the run-detail waterfall's own state classes.
+	strips := testIDSelection(t, doc, "wall-steps")
+	if got := strips.Length(); got != 3 {
+		t.Errorf("wall step strips = %d, want 3 (every live workflow has a latest attempt)", got)
+	}
+	if got := doc.Find(`.wall-steps .rg-timing-bar.rg-state-ok`).Length(); got == 0 {
+		t.Error("no ok-painted segments — strips must reuse the waterfall palette")
+	}
+	if doc.Find(`.wall-steps .rg-timing-bar.rg-state-running`).Length() == 0 {
+		t.Error("no running segment — the in-flight attempt's agent node must paint live")
+	}
+	// Segments are in dependency order: within the pr-review-demo strip the
+	// prepare segment's x is left of the agent segment's x (4 nodes:
+	// prepare → agent → gate → deploy).
+	demoStrip := demoCell.Find(`[data-testid="wall-steps"]`)
+	if demoStrip.Length() != 1 {
+		t.Fatalf("pr-review-demo strip missing")
+	}
+	xs := []int{}
+	demoStrip.Find("rect").Each(func(_ int, s *goquery.Selection) {
+		x, _ := s.Attr("x")
+		var v int
+		fmt.Sscanf(x, "%d", &v)
+		xs = append(xs, v)
+	})
+	if len(xs) != 4 || !(xs[0] < xs[1] && xs[1] < xs[2] && xs[2] < xs[3]) {
+		t.Errorf("pr-review-demo strip segments out of dependency order: %v", xs)
 	}
 }
 
@@ -377,8 +436,8 @@ func TestComponent_DevIdentity_ZeroSetup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if got := doc.Find(`[data-testid="wall-card"]`).Length(); got != 3 {
-		t.Errorf("wall cards visible to the injected dev user = %d, want 3", got)
+	if got := doc.Find(`[data-testid="wall-card"]`).Length(); got != 4 {
+		t.Errorf("wall cards visible to the injected dev user = %d, want 4", got)
 	}
 }
 

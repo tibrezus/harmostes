@@ -138,6 +138,22 @@ func TestComponent_RunDetail_TerminalGraphAndWaterfall(t *testing.T) {
 	if n := doc.Find(`[data-testid="runs-table"] a[href*="/session"]`); n.Length() != 3 {
 		t.Errorf("per-run session links = %d, want 3 (agent-enabled attempt)", n.Length())
 	}
+	// Log drawer (#551): the open buttons TARGET the full-width drawer below
+	// the table — logs must never render inside the ledger's action cell.
+	if n := doc.Find(`[data-testid="runs-table"] button[hx-target="#runlogs-drawer"]`); n.Length() != 3 {
+		t.Errorf("log open buttons targeting #runlogs-drawer = %d, want 3", n.Length())
+	}
+	drawer := doc.Find(`[data-testid="runlogs-drawer"]`)
+	if drawer.Length() != 1 {
+		t.Fatalf("log drawer container = %d, want exactly 1 (below the runs table)", drawer.Length())
+	}
+	if inCell := doc.Find(`[data-testid="runs-table"] td [data-testid="runlogs-drawer"]`); inCell.Length() != 0 {
+		t.Errorf("log drawer must live OUTSIDE the runs table cells")
+	}
+	drawerY, _ := drawer.Attr("class")
+	if !strings.Contains(drawerY, "runlogs-drawer") {
+		t.Errorf("drawer missing runlogs-drawer class")
+	}
 	res := doc.Find(`[data-testid="noderes-table"] tbody tr`)
 	if res.Length() != 4 {
 		t.Errorf("node-results rows = %d, want 4", res.Length())

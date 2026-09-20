@@ -15,12 +15,18 @@
 		<marker id="rg-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
 			<path d="M 0 1 L 9 5 L 0 9 z" fill="context-stroke"></path>
 		</marker>
+		{{- /* Per-card clip paths (#551): SVG text does not wrap or clip on
+		its own — a long title/fact on a platform with a wider fallback font
+		would paint over the neighboring card (and intercept its clicks).
+		Server-side truncation is the first line; the clip is the guarantee:
+		ink NEVER leaves the 224×92 card. One SVG per page — ids are safe. */ -}}
+		{{range .Nodes}}<clipPath id="rg-clip-{{.ID}}"><rect x="{{.X}}" y="{{.Y}}" width="224" height="92" rx="8"></rect></clipPath>{{end}}
 	</defs>
 	{{range .Edges}}
 	<path class="rg-edge{{if .Cause}} rg-edge--cause{{end}}" d="{{.Path}}" marker-end="url(#rg-arrow)"{{if .Cause}} data-testid="trigger-edge"{{end}}></path>
 	{{end}}
 	{{range .Nodes}}
-	<g class="rg-node rg-node--{{.Status}} rg-chipkind--{{.Chip}}" data-node="{{.ID}}" data-testid="graph-node" data-type="{{.Type}}" tabindex="0">
+	<g class="rg-node rg-node--{{.Status}} rg-chipkind--{{.Chip}}" data-node="{{.ID}}" data-testid="graph-node" data-type="{{.Type}}" tabindex="0" clip-path="url(#rg-clip-{{.ID}})">
 		<title>{{.Title}} — {{.Status}}</title>
 		<rect class="rg-box" x="{{.X}}" y="{{.Y}}" width="224" height="92" rx="8"></rect>
 		{{- /* Status accent bar + glyph chip: color AND glyph — status

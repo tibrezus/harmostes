@@ -57,4 +57,24 @@ test('terminal run detail: graph, waterfall proportions, hover panel', async ({ 
   const results = page.getByTestId('noderes-table');
   await expect(results.locator('tbody tr')).toHaveCount(4);
   await expect(results).toContainText('13.0m');
+
+  // #551 log drawer: Logs opens FULL WIDTH below the runs table (never
+  // inside the action cell), names the run, and advertises the ordering.
+  // The fixture seeds no pods — the honest pod-gone note is the body.
+  await runs.locator('button[hx-target="#runlogs-drawer"]').first().click();
+  const drawer = page.getByTestId('runlogs-drawer');
+  await expect(drawer).toBeVisible();
+  await expect(drawer).toContainText('pr-review-demo-42a1-prepare');
+  await expect(drawer).toContainText('newest first');
+  await expect(drawer).toContainText('Pod recycled');
+  const below = await drawer.evaluate((el) => {
+    const t = document.querySelector('[data-testid="runs-table"]')!.getBoundingClientRect();
+    const d = el.getBoundingClientRect();
+    return d.top >= t.bottom - 2 && d.width >= t.width - 10;
+  });
+  expect(below).toBe(true);
+
+  // The ✕ closes it; the next Logs click reopens (swap replaces wholesale).
+  await drawer.locator('.runlogs-close').click();
+  await expect(drawer).not.toBeVisible(); // :empty { display: none }
 });

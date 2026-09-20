@@ -1,0 +1,14 @@
+{{define "pages/frag_run_logs_lines.html"}}
+{{- /* frag_run_logs_lines.html — the drawer's live-poll swap surface. The
+      element REPLACES ITSELF (hx-swap="outerHTML") on every 3s tick: the
+      fresh copy re-arms polling only while the server says so ($poll), so
+      a recycled pod stops the churn on the next beat. The scroller above
+      it (#runlogs-scroll) is never touched by the swap — the operator's
+      reading position survives; console.js compensates scrollTop by the
+      height delta. Lines render NEWEST FIRST (#551). */ -}}
+{{- $poll := and (eq .RunPhase "running") (not .LogsError) .PodName -}}
+<div class="runlogs-lines" id="runlogs-lines" data-testid="runlogs-lines"{{if $poll}} hx-get="/runs/{{.AttemptName}}/runs/{{.RunName}}/logs?part=lines" hx-trigger="every 3s" hx-swap="outerHTML"{{end}}>
+{{- range $line := splitLinesDesc .Logs}}<div class="log-line {{$line | logLineClass}}">{{$line}}</div>
+{{else}}<div class="log-line log-line--empty">— no log output yet —</div>
+{{end}}</div>
+{{end}}

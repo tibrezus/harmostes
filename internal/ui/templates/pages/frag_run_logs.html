@@ -1,19 +1,30 @@
 {{define "pages/frag_run_logs.html"}}
-{{- /* frag_run_logs.html — replaces the per-run logs slot (HTMX outerHTML).
-      Polling continues only while the run is in flight, the pod is alive, and
-      nothing errored: a terminal or failed fetch renders a static node so the
-      3s churn stops. */ -}}
+{{- /* frag_run_logs.html — the run-log drawer (#551). Opens FULL WIDTH below
+      the Runs table (never inside the ledger's action cell). Lines render
+      NEWEST FIRST — the most recent line is the first thing read — and the
+      3s live poll swaps only the inner line list (?part=lines), so the
+      scroller, header, and the operator's reading position survive.
+      Polling continues only while the run is in flight, the pod is alive,
+      and nothing errored. */ -}}
 {{- $poll := and (eq .RunPhase "running") (not .LogsError) .PodName -}}
-<div id="runlogs-{{.RunName}}"{{if $poll}} hx-get="/runs/{{.AttemptName}}/runs/{{.RunName}}/logs" hx-trigger="every 3s" hx-swap="outerHTML"{{end}}>
-{{- if .LogsError}}
+<div id="runlogs-drawer" class="runlogs-drawer" data-testid="runlogs-drawer" data-run="{{.RunName}}">
+	<div class="runlogs-head">
+		<span class="runlogs-title"><code>{{.RunName}}</code></span>
+		<span class="runlogs-meta">
+			{{- if .PodName}}{{.PodName}} · {{.PodPhase}}{{if .ExitNote}} · {{.ExitNote}}{{end}}{{if .Duration}} · {{.Duration}}{{end}} · {{end -}}
+			newest first{{if $poll}} · <span class="chip chip--run">↻ live 3s</span>{{end}}
+		</span>
+		<button type="button" class="ds-btn ds-btn--xs runlogs-close" title="Close log drawer" aria-label="Close log drawer">✕</button>
+	</div>
+	{{- if .LogsError}}
 	<div class="ds-callout ds-callout--warning">{{.LogsError}}</div>
-{{- else if .PodGone}}
+	{{- else if .PodGone}}
 	<div class="ds-callout ds-callout--info">Pod recycled — the live log is gone.
 		<a class="ds-link" href="/runs/{{.AttemptName}}/runs/{{.RunName}}/session">Session transcript</a> persists.</div>
-{{- else}}
-	<div class="ds-card-meta">{{.PodName}} · {{.PodPhase}}{{if .ExitNote}} · {{.ExitNote}}{{end}}{{if .Duration}} · {{.Duration}}{{end}}</div>
-	<pre class="log-output">{{range $line := splitLines .Logs}}<div class="log-line {{$line | logLineClass}}">{{$line}}</div>
-{{end}}</pre>
-{{- end}}
+	{{- else}}
+	<div class="runlogs-body" id="runlogs-scroll">
+		{{template "pages/frag_run_logs_lines.html" .}}
+	</div>
+	{{- end}}
 </div>
 {{end}}

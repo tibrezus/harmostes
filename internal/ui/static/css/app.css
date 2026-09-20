@@ -297,6 +297,56 @@ code, pre {
 	color: var(--warning);
 }
 
+/* ---- Run-log drawer (#551) — full width below the Runs table ----
+   Opens where the eyes are (never inside the ledger's action cell),
+   newest line first, live polls swap only the inner line list so the
+   reading position survives. */
+.runlogs-drawer {
+	margin-top: var(--sp-3);
+	border: 1px solid var(--ds-border-faint);
+	border-radius: var(--radius-lg, 6px);
+	background: var(--ds-bg-elevated, var(--bg-elevated));
+}
+.runlogs-drawer:empty {
+	display: none;
+}
+.runlogs-head {
+	display: flex;
+	align-items: center;
+	gap: var(--sp-3);
+	flex-wrap: wrap;
+	padding: 0.45rem 0.75rem;
+	border-bottom: 1px solid var(--ds-border-faint);
+}
+.runlogs-title {
+	font-size: 0.82rem;
+	font-weight: 600;
+}
+.runlogs-meta {
+	margin-left: auto;
+	font-size: 0.72rem;
+	color: var(--ds-text-muted);
+	display: inline-flex;
+	align-items: center;
+	gap: 0.4rem;
+}
+.runlogs-body {
+	max-height: 22rem;
+	overflow-y: auto;
+	overscroll-behavior: contain;
+	background: var(--bg-elevated);
+}
+.runlogs-lines {
+	font-family: var(--font-mono);
+	font-size: 0.75rem;
+	line-height: 1.6;
+	padding: 0.4rem 0.75rem;
+}
+.log-line--empty {
+	color: var(--ds-text-muted);
+	font-style: italic;
+}
+
 /* ===== Gate-centric workflow grouping ===== */
 
 .gate-group-section {
@@ -1958,11 +2008,35 @@ code, pre {
 }
 .rg-panel {
 	flex: 0 1 300px;
+	/* min-width: 0 lets the panel shrink below its content's min-content
+	   width — long dd values (summaries, run ids) must WRAP, never blow
+	   the panel across the graph (#551: the deploy details box covered
+	   the window when selected). */
+	min-width: 0;
+	overflow: hidden;
 	border: 1px solid var(--ds-border-faint);
 	border-radius: 6px;
 	padding: 0.75rem 1rem;
 	min-height: 4rem;
 	background: var(--ds-bg-elevated, transparent);
+}
+.rg-panel .ds-definition-list {
+	margin: 0;
+	min-width: 0;
+}
+.rg-panel .ds-definition-list dt {
+	font-size: 0.68rem;
+	font-weight: 700;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	color: var(--ds-text-muted);
+	margin-top: 0.45rem;
+}
+.rg-panel .ds-definition-list dd {
+	margin: 0.1rem 0 0;
+	font-size: 0.78rem;
+	overflow-wrap: anywhere; /* unbreakable ids/summaries wrap, not shove */
+	color: var(--ds-text);
 }
 .rg-panel-empty {
 	color: var(--ds-text-muted);

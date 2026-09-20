@@ -269,25 +269,31 @@ workflowTemplates:
         plugin:
           name: pr-review
       maxFixes: 3
-      # OWNER DIRECTIVE (supersedes #542): the night window is expressed
-      # in the DISCOUNT'S OWN CLOCK — Asia/Shanghai (UTC+8, no DST),
-      # 22:00-08:00 — exactly Alibaba's Night Plan off-peak (Token Plan:
-      # qwen3.8-max Credits at 50%, automatic; deepseek-v4-pro-0813 and
-      # deepseek-v4-flash-0731 also discounted). Pinning UTC+8 makes the
-      # alignment permanent: a Europe/Paris window would drift an hour
-      # every DST flip (Paris has DST, Beijing does not). Accepted trade:
-      # the window drifts in PARIS terms instead — 16:00-02:00 CEST,
-      # 15:00-01:00 CET — which does not matter for automated reviews.
-      # The worker image ships /usr/share/zoneinfo (verified live), so
-      # ResolveModel's time.LoadLocation resolves the zone; a missing
-      # zone would degrade to the day model silently by design (#494).
-      # Day stays qwen3.8-flash → glm-5.3-flash. History: deepseek-v4.1-
-      # flash owned this window until its first live rounds explored
-      # (27 calls) then failed to finalize (2026-09-16/17 fleet
-      # sessions); #536 re-pinned to flash; #542 corrected to max.
+      # OWNER DIRECTIVE (supersedes #542/#543): the night window stays on
+      # the SAME anthropic route as the day model — qwen3.8-flash. The
+      # qwen3.8-max window experiment (#542, Asia/Shanghai 22:00-08:00 =
+      # the Token Plan Night Plan 50%-off hours) FAILED its first live
+      # review round (2026-09-20, fleet PR #557): 45m of exploration hit
+      # the run bound, and the attempt-scoped resume then died on an EMPTY
+      # 0-token completion — the deepseek-class finalize failure
+      # (2026-09-16/17), at ~6x the cost per strike. The litellm flash
+      # fallback cannot catch it: an empty 200 is not a routing error, so
+      # the proxy chain never fires. Re-enable max ONLY after the
+      # empty-completion behavior is fixed proxy-side (or the run bound is
+      # raised to fit max's latency profile); the fallback chain
+      # (fallbacks.ts) stays — it is inert until the window model flips
+      # back. The discount-clock window (UTC+8, DST-proof) STAYS: it is
+      # exactly Alibaba's Night Plan off-peak and costs nothing while the
+      # model is flash. The worker image ships /usr/share/zoneinfo
+      # (verified live), so ResolveModel resolves the zone (#494 would
+      # degrade silently otherwise). Day stays qwen3.8-flash →
+      # glm-5.3-flash. History: deepseek-v4.1-flash owned this window
+      # until it failed to finalize (2026-09-16/17); #536 pinned flash;
+      # #542/#543 corrected to max on the discount clock; this reverts the
+      # MODEL to flash and keeps the clock for a future max retry.
       model: litellm/ali/anthropic/qwen3.8-flash
       models:
-        - model: litellm/ali/anthropic/qwen3.8-max
+        - model: litellm/ali/anthropic/qwen3.8-flash
           start: "22:00"
           end: "08:00"
           tz: Asia/Shanghai

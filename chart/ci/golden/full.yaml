@@ -5917,7 +5917,7 @@ spec:
     model: litellm/ali/anthropic/qwen3.8-flash
     models:
     - end: "08:00"
-      model: litellm/ali/anthropic/qwen3.8-max
+      model: litellm/ali/anthropic/qwen3.8-flash
       start: "22:00"
       tz: Asia/Shanghai
     skill: /skills/pr-review/SKILL.md

@@ -338,6 +338,7 @@ spec:
                     lastDecision: { type: string, enum: [proceed, waiting, standdown, idle] }
                     lastReason:   { type: string }
                     lastSweepAbortAt: { type: string, format: date-time, description: "When a sweep last died before completing arm-to-dispatch (#379) — claims stranded by an abort release as sweep-aborted, not dispatch-lost (no churn strike)" }
+                    lastWake:       { type: string, description: "The trigger event the last sweep ran on (#556) — 'repo#N (labeled)' or 'repo@shorthash (ci_completed)'; a no-op poll keeps the previous wake visible" }
                 lastRunAt: { type: string }
                 message: { type: string }
                 conditions:

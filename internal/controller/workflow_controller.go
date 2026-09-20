@@ -173,9 +173,11 @@ func (r *WorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			delete(fresh.Annotations, v1alpha1.TriggerRevisionAnnotation)
 			// The PR pointer rode the TriggerEvent payload (Pr/Action); clearing
 			// here too prevents a stale wake from re-arming every poll cycle.
+			// TriggerRepoAnnotation rides the CI wake (#556) — same hygiene.
 			delete(fresh.Annotations, "harmostes.dev/trigger-pr")
 			delete(fresh.Annotations, "harmostes.dev/trigger-action")
 			delete(fresh.Annotations, "harmostes.dev/trigger-title")
+			delete(fresh.Annotations, v1alpha1.TriggerRepoAnnotation)
 			patch := client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})
 			return r.Patch(ctx, &fresh, patch)
 		}); err != nil {

@@ -361,7 +361,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req RunRequest) error {
 		DisableCancelOnSupersede: d.cfg.DisableCancelOnSupersede,
 		NewReviewAPI:             d.cfg.NewReviewAPI,
 		Log:                      d.logf,
-		Wake:                     gate.GateWake{PR: req.Pr, Action: req.Action, Revision: req.Revision},
+		Wake:                     gate.GateWake{PR: req.Pr, Action: req.Action, Revision: req.Revision, Repo: req.Repo},
 		TL: timeline.NewGateWriter(dapr.Tracing(dapr.New(os.Getenv("DAPR_HTTP_ENDPOINT"))),
 			envOr("HARMOSTES_STATE_STORE", "statestore"), wf.Name, "", triggerSubject(req)),
 	}

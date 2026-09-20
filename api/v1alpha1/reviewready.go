@@ -285,4 +285,11 @@ type ReviewReadyStatus struct {
 	// (only observed dispatches burn the budget). Cleared implicitly by
 	// age: the release pass trusts it for reDispatchGrace.
 	LastSweepAbortAt *metav1.Time `json:"lastSweepAbortAt,omitempty"`
+
+	// LastWake records the trigger event this sweep ran on (#556) —
+	// "host/owner/name#N (labeled)" for PR-shaped wakes, "repo@shorthash
+	// (ci_completed)" for host-native CI wakes, empty for poll sweeps
+	// (the previous wake stays visible: the field explains WHAT ran, and
+	// a blanking poll would erase the answer).
+	LastWake string `json:"lastWake,omitempty"`
 }

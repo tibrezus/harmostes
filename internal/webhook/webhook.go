@@ -336,10 +336,15 @@ func (h *Handler) serveCIWake(w http.ResponseWriter, req *http.Request, wf *v1al
 	wf.Annotations[TriggerRevisionAnnotation] = sha
 	wf.Annotations[TriggerActionAnnotation] = v1alpha1.CIWakeAction
 	wf.Annotations[v1alpha1.TriggerRepoAnnotation] = repo
-	// TriggerPRAnnotation is deliberately NOT set: CI payloads carry no PR
-	// number, and a stale pointer from a previous wake would mis-arm the
-	// gate's leading candidate. The controller clears this annotation
-	// alongside the others at schedule time.
+	// Clear the PR-shaped wake fields: not-setting them is not enough — a
+	// pull_request wake earlier in the same annotation generation would
+	// leave its pointer/title in place and the controller would publish an
+	// incoherent TriggerEvent (Pr of the old wake + Action=ci_completed),
+	// arming the gate's leading candidate for the WRONG PR (r34 finding 1).
+	// Annotation patches replace the whole map, so an explicit delete is
+	// the only enforcement point.
+	delete(wf.Annotations, TriggerPRAnnotation)
+	delete(wf.Annotations, TriggerTitleAnnotation)
 
 	if err := h.Patch(req.Context(), wf, client.MergeFrom(base)); err != nil {
 		h.log.Error(err, "failed to annotate workflow (ci_completed)", "workflow", wf.Name)

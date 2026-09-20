@@ -568,3 +568,35 @@ func TestCIWakeForgejoHostNormalized(t *testing.T) {
 	}
 	ciAssertion(t, h, "w-ci7", "git.rezus.cloud/tibrez/rhesadox", true)
 }
+
+// r34 finding 1: a CI wake arriving while PR-shaped wake annotations are
+// still pending must CLEAR them — the controller would otherwise publish
+// TriggerEvent{Pr: old-wake-pointer, Action: ci_completed} and arm the
+// gate's leading candidate for the WRONG PR.
+func TestCIWakeClearsStalePRWakeAnnotations(t *testing.T) {
+	wf, _ := prWorkflow("w-ci8", "", "")
+	// Simulate a pending pull_request wake from earlier in the generation.
+	wf.Annotations = map[string]string{
+		TriggerPRAnnotation:    "git.rezus.cloud/tibrez/rhesadox#7",
+		TriggerTitleAnnotation: "an older PR wake",
+	}
+	h := newTestHandler(wf)
+	body := []byte(`{"action":"completed","check_suite":{"head_sha":"` + validSHA + `"},"repository":{"full_name":"tibrezus/harmostes","html_url":"https://github.com/tibrezus/harmostes"}}`)
+	req := httptest.NewRequest(http.MethodPost, "/webhook/w-ci8?namespace=harmostes", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req, "w-ci8")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+	var got v1alpha1.Workflow
+	_ = h.Get(context.Background(), types.NamespacedName{Namespace: "harmostes", Name: "w-ci8"}, &got)
+	if _, has := got.Annotations[TriggerPRAnnotation]; has {
+		t.Error("CI wake must clear a stale trigger-pr pointer, still present")
+	}
+	if _, has := got.Annotations[TriggerTitleAnnotation]; has {
+		t.Error("CI wake must clear a stale trigger-title, still present")
+	}
+	if got.Annotations[v1alpha1.TriggerRepoAnnotation] != "github.com/tibrezus/harmostes" {
+		t.Errorf("trigger-repo = %q", got.Annotations[v1alpha1.TriggerRepoAnnotation])
+	}
+}

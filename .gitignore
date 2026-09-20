@@ -18,6 +18,7 @@ __pycache__/
 # Playwright E2E tier (e2e/)
 e2e/node_modules/
 e2e/test-results/
+/test-results/
 e2e/playwright-report/
 /harmostes-agent
 /rig.db

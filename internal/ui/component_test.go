@@ -233,8 +233,8 @@ func TestComponent_RunDetail_TerminalGraphAndWaterfall(t *testing.T) {
 	}
 
 	lanes := testIDSelection(t, doc, "timing-lane")
-	if lanes.Length() != 5 {
-		t.Errorf("timing lanes = %d, want 5 (queue+pod + prepare, agent, gate, deploy)", lanes.Length())
+	if lanes.Length() != 4 {
+		t.Errorf("timing lanes = %d, want 4 (prepare, agent, gate, deploy — no overhead lane since #557)", lanes.Length())
 	}
 
 	// The agent node's bar must dominate: the 13m agent vs a 5s prepare and a

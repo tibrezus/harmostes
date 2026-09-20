@@ -13,9 +13,10 @@ test('terminal run detail: graph, waterfall proportions, hover panel', async ({ 
   // 5 = virtual trigger + the four graph nodes (#541).
   await expect(nodes).toHaveCount(5);
 
-  // Waterfall: overhead + 4 node lanes; the 13m agent bar must dominate.
+  // Waterfall: 4 node lanes (no overhead since #557); the 13m agent bar
+  // must dominate.
   const lanes = page.getByTestId('timing-lane');
-  await expect(lanes).toHaveCount(5);
+  await expect(lanes).toHaveCount(4);
 
   const widthOf = (label: string) =>
     page.locator(`[data-testid="timing-lane"][data-label="${label}"] rect`).first()

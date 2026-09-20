@@ -205,15 +205,14 @@ func (s *Server) buildRunGraph(ctx context.Context, att *v1alpha1.Attempt) runGr
 		}
 		view.NodeData[n.ID] = data
 	}
-	view.Timing = buildTimingStrip(att, view.Nodes, latest)
+	view.Timing = buildTimingStrip(view.Nodes, latest)
 	view.TimingH = len(view.Timing) * 22 // lane height lives here; templates stay arithmetic-free
 	view.TimingW = 640
 	return view
 }
 
 // timingSegment is one bar in the waterfall strip: a node's execution window
-// (start = producedAt - duration, end = producedAt), or an overhead window
-// (trigger→pod→first node) before the first bar.
+// (start = producedAt - duration, end = producedAt).
 type timingSegment struct {
 	Label  string `json:"label"`
 	Status string `json:"status"` // segment color class (rg-state-*)
@@ -227,18 +226,20 @@ type timingSegment struct {
 }
 
 // buildTimingStrip computes the per-step waterfall: one lane per node in
-// graph order, bar width proportional to wall-clock share, plus an overhead
-// lane (attempt creation → first node start). Nodes without envelopes are
-// skipped (no timing known); an all-zero span degrades to an empty strip.
-func buildTimingStrip(att *v1alpha1.Attempt, nodes []graphNodeView, latest map[string]v1alpha1.NodeResultEnvelope) []timingSegment {
+// graph order, bar width proportional to wall-clock share (#298). Nodes
+// without envelopes are skipped (no timing known); an all-zero span degrades
+// to an empty strip. There is deliberately NO overhead lane: with event-
+// driven triggers (#557) the run starts when the conditions are met — there
+// is no queue-wait phase to measure, and pre-#557 the lane's only real
+// content was the dispatch latency the wake path deleted.
+func buildTimingStrip(nodes []graphNodeView, latest map[string]v1alpha1.NodeResultEnvelope) []timingSegment {
 	type lane struct {
 		label, status string
 		start, end    time.Time
 	}
 	var lanes []lane
 
-	// Overhead lane: attempt creation → earliest node start.
-	earliest := time.Time{}
+	// Filter to nodes with known timing, preserving graph order.
 	ordered := make([]graphNodeView, 0, len(nodes))
 	for _, n := range nodes {
 		env, ok := latest[n.ID]
@@ -246,17 +247,11 @@ func buildTimingStrip(att *v1alpha1.Attempt, nodes []graphNodeView, latest map[s
 			continue
 		}
 		ordered = append(ordered, n)
-		start := env.ProducedAt.Add(-time.Duration(env.DurationMs) * time.Millisecond)
-		if earliest.IsZero() || start.Before(earliest) {
-			earliest = start
-		}
 	}
-	if len(ordered) == 0 || att.CreationTimestamp.IsZero() || earliest.IsZero() {
+	if len(ordered) == 0 {
 		return nil
 	}
-	if create := att.CreationTimestamp.Time; create.Before(earliest) {
-		lanes = append(lanes, lane{label: "queue+pod", status: "overhead", start: create, end: earliest})
-	}
+	// Node lanes in graph order.
 	for _, n := range ordered {
 		env := latest[n.ID]
 		lanes = append(lanes, lane{
@@ -286,7 +281,7 @@ func buildTimingStrip(att *v1alpha1.Attempt, nodes []graphNodeView, latest map[s
 	// an empty strip is more honest than 3px floors implying distribution.
 	timed := false
 	for _, l := range lanes {
-		if l.label != "queue+pod" && l.end.After(l.start) {
+		if l.end.After(l.start) {
 			timed = true
 			break
 		}

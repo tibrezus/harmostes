@@ -17,10 +17,9 @@ test('running run detail: live position on the agent node, settled lanes only', 
   // The pulse rides the running node — the "where is it" answer.
   await expect(page.locator('.rg-pulse')).toHaveCount(1);
 
-  // Settled lanes only: the agent/gate/deploy nodes have no envelopes yet.
-  const laneLabels = await page.getByTestId('timing-lane').evaluateAll((els) =>
-    els.map((el) => el.getAttribute('data-label')));
-  for (const label of laneLabels) {
-    expect(['agent', 'gate', 'deploy'], `unsettled lane ${label} must not render`).not.toContain(label);
-  }
+  // Settled lanes only — EXACTLY one lane per envelope: the fixture has a
+  // single prepare/ok envelope, so the strip is one prepare lane. A
+  // pass-on-nothing loop cannot catch a lane regrowing; the count pins it.
+  await expect(page.getByTestId('timing-lane')).toHaveCount(1);
+  await expect(page.locator('[data-testid="timing-lane"][data-label="prepare"]')).toHaveCount(1);
 });

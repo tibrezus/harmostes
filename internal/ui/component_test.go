@@ -152,7 +152,8 @@ func TestComponent_Wall_RendersAllFixtureSubjects(t *testing.T) {
 		}
 		xs = append(xs, v)
 	})
-	if len(xs) != 4 || !(xs[0] < xs[1] && xs[1] < xs[2] && xs[2] < xs[3]) {
+	sorted := xs[0] < xs[1] && xs[1] < xs[2] && xs[2] < xs[3]
+	if len(xs) != 4 || !sorted {
 		t.Errorf("pr-review-demo strip segments out of dependency order: %v", xs)
 	}
 }

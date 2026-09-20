@@ -155,7 +155,7 @@ A sync PR may merge only after **all** gates pass, in order. Each gate is a sepa
 2. **Permanent divergences re-applied** — deleted upstream dirs re-deleted; additive paths preserved.
 3. **Post-merge hook succeeded** — per-fork code generation (SDK regen, swagger, `go mod tidy`, ee-stripping) ran and produced the expected artifacts.
 4. **Patch signatures intact** — every feature patch's grep-verifiable proof string is still present (a merge didn't silently drop it).
-5. **Validation passed** — the checks *this fork* declares (go_build / clean_tree / integration), built with the **fork's declared toolchain**, all green, run in a real toolchain.
+5. **Validation passed** — the checks *this fork* declares (go_build / go_test / clean_tree / integration), built with the **fork's declared toolchain**, all green, run in a real toolchain.
 6. **(Agentic) conflict resolved & re-validated** — if a semantic conflict required agent resolution, the resolution itself was validated before the PR is marked auto-mergeable.
 7. **(Opt-in) Auto-merge + auto-release** — if all above pass *and* `auto.merge: true`, the plugin merges the PR immediately; if `auto.release: true` it also cuts the next machine tag `<upstream-ver>-rezus.<N+1>` so the fork's tag-triggered workflow builds an image that Flux image automation deploys (identity = upstream version; see [Version identity](#version-identity-upstream-identity-versioning)).
 
@@ -360,6 +360,9 @@ release: { dockerfiles, multi_arch, image_registry, chart_registry, build_cli, v
 validation:                               # ← multi-project: declare YOUR checks
   toolchain: { go: "1.25.7" }             # pin Go minor (precedence: declared > go.mod)
   go_build:   [{ module, packages }]
+  go_test:    [{ module, packages }]   # behavioral gate (#564): declare TARGETED
+                                       # feature packages, never upstream's suite
+                                       # (fast + deterministic — runs every sync)
   clean_tree: { paths: [...] }
   integration: { kind: forgejo-live, image, module, env }
 ```

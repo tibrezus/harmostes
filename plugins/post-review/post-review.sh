@@ -231,9 +231,13 @@ else:
     # flat threads to the count). Closure requirements, all deliberate:
     #   same anchor  — path + (line, else position): a marker for another
     #                  conversation never closes this one
-    #   later        — created_at strictly after the thread's (RFC3339
-    #                  sorts lexicographically; entries without created_at
-    #                  never close via the marker — conservative)
+    #   later        — created_at strictly after the thread's. Both
+    #                  sides must be Z-suffixed RFC3339 (both hosts emit
+    #                  Z today): a +hh:mm offset sorts lexically by
+    #                  wall-clock text and can read "later" while being
+    #                  earlier (#573 review round 1). Non-Z entries never
+    #                  close via the marker — conservative, same posture
+    #                  as the missing-timestamp case.
     #   id in body   — the leading enumeration form `path:line (comment N)`
     #                  must OPEN the body and NAME the thread's id (#573
     #                  review): a mid-body cross-reference ("dup of
@@ -263,7 +267,9 @@ else:
                 and str(t.get("id"))==target_id
                 and str(t.get("id"))!=str(r.get("id"))
                 and anchor_key(t)==anchor_key(r)
-                and str(r.get("created_at") or "")>str(t.get("created_at") or "\x7f")):
+                and str(r.get("created_at") or "").endswith("Z")
+                and str(t.get("created_at") or "").endswith("Z")
+                and str(r.get("created_at"))>str(t.get("created_at"))):
                 addressed.add(t.get("id")); marker_ids.add(r.get("id"))
     open_threads=[c for c in cs
         if isinstance(c, dict)

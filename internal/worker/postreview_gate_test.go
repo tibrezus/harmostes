@@ -61,6 +61,17 @@ const (
 	// leading form ABSENT — must not close via the marker even though the
 	// id string is present somewhere in the body.
 	fjMarkerMidBodyId = `[{"id":40268,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T01:39:33Z"},{"id":40309,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T04:17:30Z","body":"note: related to comment 40268 but this is a new finding"}]`
+	// #573 review round 1 (CRITICAL): prefix-related ids at one anchor —
+	// the real rhesadox#2359 shape (dense growing ids). A marker naming
+	// 40268 must NOT close 4026 ("4026" is a substring of "40268" under
+	// an id-anywhere predicate; the leading form's bounded token +
+	// equality is the fix). Expected: 40268 closed + the marker consumed,
+	// 4026 stays open → 1 / REQUEST_CHANGES.
+	fjPrefixIdCollision = `[{"id":4026,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T01:00:00Z"},{"id":40268,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T02:00:00Z"},{"id":40305,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T04:00:00Z","body":"w.yml:433 (comment 40268) — fixed at abc"}]`
+	// #573 review round 1 (latent): a +hh:mm offset must never sort
+	// "later" lexically — 14:00+02:00 is EARLIER than 13:00Z but sorts
+	// after it as text. Non-Z timestamps never close via the marker.
+	fjOffsetTimestamp = `[{"id":40268,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T13:00:00Z"},{"id":40310,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T14:00:00+02:00","body":"w.yml:433 (comment 40268) — fixed at abc"}]`
 	// Marker EARLIER than the thread (created_at before) — a thread cannot
 	// be addressed by something written before it existed.
 	fjMarkerEarlier = `[{"id":40268,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T04:17:30Z"},{"id":40308,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T01:39:33Z","body":"w.yml:433 (comment 40268) — resolved"}]`
@@ -107,6 +118,8 @@ func TestPostReviewGateClassifier(t *testing.T) {
 		{"forgejo: same-anchor reply without the id reference does not close — and itself stays an open comment (#572)", fjMarkerNoIdRef, "CUR", "REQUEST_CHANGES", "2"},
 		{"forgejo: sibling findings cross-referencing each other both stay open (#573 review)", fjSiblingFindings, "CUR", "REQUEST_CHANGES", "2"},
 		{"forgejo: mid-body id reference without the leading form does not close (#573 review)", fjMarkerMidBodyId, "CUR", "REQUEST_CHANGES", "2"},
+		{"forgejo: prefix-related ids at one anchor — marker closes only its named thread (#573 review)", fjPrefixIdCollision, "CUR", "REQUEST_CHANGES", "1"},
+		{"forgejo: non-Z offset timestamps never close via the marker (#573 review)", fjOffsetTimestamp, "CUR", "REQUEST_CHANGES", "2"},
 		{"forgejo: marker predating the thread does not close — and itself stays an open comment (#572)", fjMarkerEarlier, "CUR", "REQUEST_CHANGES", "2"},
 		{"gitlab: unresolved prior discussion downgrades", gitlabOpen, "CUR", "REQUEST_CHANGES", "1"},
 		{"gitlab: resolved prior discussion passes", gitlabResolved, "CUR", "APPROVE", "0"},

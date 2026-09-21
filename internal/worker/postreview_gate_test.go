@@ -34,6 +34,22 @@ const (
 	// so every APPROVE downgraded on phantom open threads).
 	ghRepliedRestField = `[{"id":1,"path":"a.go","line":10,"commit_id":"OLD","in_reply_to_id":2},{"id":2,"path":"b.go","line":20,"commit_id":"OLD","in_reply_to_id":null}]`
 	forgejoDialect     = `[{"id":7,"path":"x.go","line":1,"commit_id":"OLD","in_reply_to":null},{"id":8,"path":"x.go","line":1,"commit_id":"OLD","in_reply_to":7}]`
+	// #572 fork-gap addressal marker: the pr-review skill's documented
+	// Forgejo protocol — a LATER same-anchor comment whose body references
+	// the original comment id. Real shape from the rhesadox#2359 burn: the
+	// fork serializes line=null with position=<diff anchor> for review
+	// comments, and REST create-review cannot set in_reply_to at all.
+	fjMarkerAddressed = `[{"id":40268,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T01:39:33Z"},{"id":40305,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T04:17:30Z","body":"w.yml:433 (comment 40268) — RESOLVED at abc: the coupled key re-armed"}]`
+	// Same marker shape but anchored on a DIFFERENT conversation — must
+	// not close (the anchor is part of the marker, not decoration).
+	fjMarkerWrongAnchor = `[{"id":40268,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T01:39:33Z"},{"id":40306,"path":"w.yml","line":null,"position":370,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T04:17:30Z","body":"w.yml:370 (comment 40268) — reply for another thread"}]`
+	// Same anchor, later, but the body never names the original id — a
+	// same-anchor comment that does not identify its thread must not close
+	// it (the id reference is the discriminator).
+	fjMarkerNoIdRef = `[{"id":40268,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T01:39:33Z"},{"id":40307,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T04:17:30Z","body":"fixed at abc — the coupled key re-armed"}]`
+	// Marker EARLIER than the thread (created_at before) — a thread cannot
+	// be addressed by something written before it existed.
+	fjMarkerEarlier = `[{"id":40268,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T04:17:30Z"},{"id":40308,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T01:39:33Z","body":"w.yml:433 (comment 40268) — resolved"}]`
 	gitlabOpen         = `[{"id":12,"path":"z.go","line":6,"commit_id":"OLD","resolvable":true,"resolved":false}]`
 	gitlabResolved     = `[{"id":11,"path":"y.go","line":5,"commit_id":"OLD","resolvable":true,"resolved":true}]`
 )
@@ -72,6 +88,10 @@ func TestPostReviewGateClassifier(t *testing.T) {
 		{"github: unreplied prior thread downgrades", ghUnreplied, "CUR", "REQUEST_CHANGES", "1"},
 		{"github: current-round thread does not downgrade", ghOpenCur, "CUR", "APPROVE", "0"},
 		{"forgejo in_reply_to dialect closes threads", forgejoDialect, "OLD", "APPROVE", "0"},
+		{"forgejo: same-anchor id-referencing marker closes the thread (#572)", fjMarkerAddressed, "CUR", "APPROVE", "0"},
+		{"forgejo: marker on a different anchor does not close — and itself stays an open comment (#572)", fjMarkerWrongAnchor, "CUR", "REQUEST_CHANGES", "2"},
+		{"forgejo: same-anchor reply without the id reference does not close — and itself stays an open comment (#572)", fjMarkerNoIdRef, "CUR", "REQUEST_CHANGES", "2"},
+		{"forgejo: marker predating the thread does not close — and itself stays an open comment (#572)", fjMarkerEarlier, "CUR", "REQUEST_CHANGES", "2"},
 		{"gitlab: unresolved prior discussion downgrades", gitlabOpen, "CUR", "REQUEST_CHANGES", "1"},
 		{"gitlab: resolved prior discussion passes", gitlabResolved, "CUR", "APPROVE", "0"},
 		{"github: resolved-but-unreplied thread is CLOSED (C1)", ghResolvedOnly, "CUR", "APPROVE", "0"},

@@ -217,10 +217,52 @@ else:
     def reply_parent(c):
         return c.get("in_reply_to_id") or c.get("in_reply_to")
     replied={reply_parent(c) for c in cs if isinstance(c, dict) and reply_parent(c)}
+    # Fork-gap addressal marker (#572): on Forgejo the REST create-review
+    # API cannot SET in_reply_to (a rezuscloud/forgejo follow-up) and the
+    # fork-native resolver (resolve_doer) is only settable through the
+    # web UI — so the documented author/reviewer protocol (the pr-review
+    # skill) addresses a thread with a follow-up review comment at the
+    # SAME anchor whose body references the original comment id
+    # (`path:line (comment N) — fix SHA + rationale`). Without parsing
+    # that marker, a REST-only review round can never close a prior-round
+    # thread: every round downgrades until a human uses the browser (the
+    # rhesadox#2359 burn — five consecutive downgrades over a fixed
+    # diff; the protocol-shaped replies themselves added unresolvable
+    # flat threads to the count). Closure requirements, all deliberate:
+    #   same anchor  — path + (line, else position): a marker for another
+    #                  conversation never closes this one
+    #   later        — created_at strictly after the thread's (RFC3339
+    #                  sorts lexicographically; entries without created_at
+    #                  never close via the marker — conservative)
+    #   id in body   — the original comment id string must appear in the
+    #                  reply body (the discriminator that keeps a same-
+    #                  anchor comment from closing a thread it never
+    #                  names)
+    def anchor_key(c):
+        return (c.get("path"), c.get("line") if c.get("line") is not None else c.get("position"))
+    addressed=set()   # thread ids a marker closed
+    marker_ids=set()  # the marker replies that closed them (a reply is not
+                      # itself a finding thread — without this, the flat
+                      # model counts every protocol reply as ANOTHER open
+                      # thread: the rhesadox#2359 count grew 1→2→3 as the
+                      # author followed the documented protocol)
+    for r in cs:
+        if not isinstance(r, dict) or r.get("id") is None:
+            continue
+        body=str(r.get("body") or "")
+        for t in cs:
+            if (isinstance(t, dict) and t.get("id") is not None
+                and str(t.get("id"))!=str(r.get("id"))
+                and anchor_key(t)==anchor_key(r)
+                and str(r.get("created_at") or "")>str(t.get("created_at") or "\x7f")
+                and str(t.get("id")) in body):
+                addressed.add(t.get("id")); marker_ids.add(r.get("id"))
     open_threads=[c for c in cs
         if isinstance(c, dict)
         and not reply_parent(c)
         and c.get("id") not in replied
+        and c.get("id") not in addressed
+        and c.get("id") not in marker_ids
         and not c.get("resolved")
         # No commit_id → round unattributable: never downgrade on it (C4).
         and c.get("commit_id") not in (None, "")

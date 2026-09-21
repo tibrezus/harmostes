@@ -249,18 +249,33 @@ else:
     #                  to one thread at a shared anchor.
     #   leads path:line — the body must OPEN with the anchor's own
     #                  `path:line` enumeration lead (markdown emphasis /
-    #                  bullet prefixes tolerated). This is what separates
-    #                  an addressal from a finding's cross-reference
-    #                  ("finding B, see comment 1" — sibling findings at
-    #                  one anchor, one review batch): findings never lead
-    #                  with the path:line form, so they close nothing and
-    #                  never erase themselves from the count.
+    #                  bullet prefixes tolerated).
+    #   other author  — the marker's author must DIFFER from the thread's
+    #                  (user.login): an addressal is written by the party
+    #                  being reviewed (the PR author), a finding by the
+    #                  reviewer. #573 round 4: the reviewer itself emits
+    #                  path:line-leading re-findings at an unresolved
+    #                  anchor ('w.yml:433 — still wrong, see 40268' — raw
+    #                  bodies on Forgejo, no marker prefix) which under a
+    #                  lead-only grammar closed the older thread AND
+    #                  erased themselves — a false APPROVE through the
+    #                  merge currency. Identity restores the round-2
+    #                  invariant (closure evidence never deletes
+    #                  itself): a same-author comment — sibling findings,
+    #                  reviewer cross-references — closes nothing; a
+    #                  missing user on either side reads as same-author
+    #                  (conservative). The reviewer's own verification
+    #                  still cannot close mechanically — the dev's reply
+    #                  is mandatory per the protocol, and THAT closes.
     import re as _re
     _lead_form=_re.compile(r'^\s*[*_>\-\s]*[\w./+-]+:\d+\b')
     def _bounded(tid):
         return _re.compile(r'(?<!\d)'+_re.escape(str(tid))+r'(?!\d)')
     def anchor_key(c):
         return (c.get("path"), c.get("line") if c.get("line") is not None else c.get("position"))
+    def author_of(c):
+        u=c.get("user")
+        return (u.get("login") if isinstance(u, dict) else None) or ""
     addressed=set()   # thread ids a marker closed
     marker_ids=set()  # the marker replies that closed them (a reply is not
                       # itself a finding thread — without this, the flat
@@ -276,6 +291,7 @@ else:
         for t in cs:
             if (isinstance(t, dict) and t.get("id") is not None
                 and str(t.get("id"))!=str(r.get("id"))
+                and author_of(r)!=author_of(t)
                 and _bounded(t.get("id")).search(body)
                 and anchor_key(t)==anchor_key(r)
                 and str(r.get("created_at") or "").endswith("Z")

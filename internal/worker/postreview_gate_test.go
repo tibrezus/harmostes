@@ -39,7 +39,7 @@ const (
 	// the original comment id. Real shape from the rhesadox#2359 burn: the
 	// fork serializes line=null with position=<diff anchor> for review
 	// comments, and REST create-review cannot set in_reply_to at all.
-	fjMarkerAddressed = `[{"id":40268,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T01:39:33Z"},{"id":40305,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T04:17:30Z","body":"w.yml:433 (comment 40268) — RESOLVED at abc: the coupled key re-armed"}]`
+	fjMarkerAddressed = `[{"id":40268,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T01:39:33Z","user":{"login":"harmostes-bot"}},{"id":40305,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T04:17:30Z","user":{"login":"tibrez"},"body":"w.yml:433 (comment 40268) — RESOLVED at abc: the coupled key re-armed"}]`
 	// Same marker shape but anchored on a DIFFERENT conversation — must
 	// not close (the anchor is part of the marker, not decoration).
 	fjMarkerWrongAnchor = `[{"id":40268,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T01:39:33Z"},{"id":40306,"path":"w.yml","line":null,"position":370,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T04:17:30Z","body":"w.yml:370 (comment 40268) — reply for another thread"}]`
@@ -67,12 +67,21 @@ const (
 	// an id-anywhere predicate; the leading form's bounded token +
 	// equality is the fix). Expected: 40268 closed + the marker consumed,
 	// 4026 stays open → 1 / REQUEST_CHANGES.
-	fjPrefixIdCollision = `[{"id":4026,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T01:00:00Z"},{"id":40268,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T02:00:00Z"},{"id":40305,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T04:00:00Z","body":"w.yml:433 (comment 40268) — fixed at abc"}]`
-	// #573 review round 3: protocol-conformant shapes beyond the
-	// parenthesized lead — the id as a bounded token anywhere in a body
-	// that LEADS with the anchor's path:line (markdown emphasis tolerated).
-	fjMarkerIdMidBodyLead = `[{"id":40268,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T01:39:33Z"},{"id":40311,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T04:17:30Z","body":"w.yml:433 — fixed at abc (see comment 40268)"}]`
-	fjMarkerMarkdownLead  = `[{"id":40268,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T01:39:33Z"},{"id":40312,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T04:17:30Z","body":"**w.yml:433** (comment 40268) fixed"}]`
+	fjPrefixIdCollision = `[{"id":4026,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T01:00:00Z","user":{"login":"harmostes-bot"}},{"id":40268,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T02:00:00Z","user":{"login":"harmostes-bot"}},{"id":40305,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T04:00:00Z","user":{"login":"tibrez"},"body":"w.yml:433 (comment 40268) — fixed at abc"}]`
+	// #573 review round 4: the reviewer itself emits path:line-leading
+	// re-findings at an unresolved anchor (raw bodies on Forgejo — the
+	// GitHub publisher's `_automated review_` prefix is host-specific).
+	// Same-author cross-references must close NOTHING and never erase
+	// themselves — even in the full marker shape.
+	fjReviewerCrossRef = `[{"id":1,"path":"a.go","line":9,"commit_id":"OLD","in_reply_to":null,"created_at":"2026-09-21T01:00:00Z","user":{"login":"harmostes-bot"},"body":"finding A"},{"id":2,"path":"a.go","line":9,"commit_id":"OLD","in_reply_to":null,"created_at":"2026-09-21T02:00:00Z","user":{"login":"harmostes-bot"},"body":"a.go:9 new finding, related to comment 1"}]`
+	// The same shape from the OTHER party (the PR author) — the documented
+	// addressal: closes the thread and consumes itself.
+	fjDevMarker = `[{"id":40268,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T01:39:33Z","user":{"login":"harmostes-bot"}},{"id":40315,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T04:17:30Z","user":{"login":"tibrez"},"body":"w.yml:433 — fixed at abc (comment 40268)"}]`
+	// Missing user on either side reads as same-author (conservative — no
+	// closure): the legacy fixtures' shape.
+	fjNoUser              = `[{"id":40268,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T01:39:33Z"},{"id":40316,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T04:17:30Z","body":"w.yml:433 (comment 40268) — fixed at abc"}]`
+	fjMarkerIdMidBodyLead = `[{"id":40268,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T01:39:33Z","user":{"login":"harmostes-bot"}},{"id":40311,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T04:17:30Z","user":{"login":"tibrez"},"body":"w.yml:433 — fixed at abc (see comment 40268)"}]`
+	fjMarkerMarkdownLead  = `[{"id":40268,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T01:39:33Z","user":{"login":"harmostes-bot"}},{"id":40312,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T04:17:30Z","user":{"login":"tibrez"},"body":"**w.yml:433** (comment 40268) fixed"}]`
 	// A path:line lead with NO id: cannot be attributed to one thread at a
 	// shared anchor — must not close (documented divergence from the
 	// reviewer's probe: id-required is what keeps the prefix-collision and
@@ -131,6 +140,9 @@ func TestPostReviewGateClassifier(t *testing.T) {
 		{"forgejo: same-anchor reply without the id reference does not close — and itself stays an open comment (#572)", fjMarkerNoIdRef, "CUR", "REQUEST_CHANGES", "2"},
 		{"forgejo: sibling findings cross-referencing each other both stay open (#573 review)", fjSiblingFindings, "CUR", "REQUEST_CHANGES", "2"},
 		{"forgejo: mid-body id reference without the leading form does not close (#573 review)", fjMarkerMidBodyId, "CUR", "REQUEST_CHANGES", "2"},
+		{"forgejo: reviewer's own path:line cross-reference closes nothing and stays open (#573 round 4)", fjReviewerCrossRef, "CUR", "REQUEST_CHANGES", "2"},
+		{"forgejo: the author's marker (different identity) closes and consumes itself (#573 round 4)", fjDevMarker, "CUR", "APPROVE", "0"},
+		{"forgejo: missing user fields read as same-author — no closure (conservative)", fjNoUser, "CUR", "REQUEST_CHANGES", "2"},
 		{"forgejo: id mid-body under a path:line lead closes (#573 round 3)", fjMarkerIdMidBodyLead, "CUR", "APPROVE", "0"},
 		{"forgejo: markdown emphasis on the path:line lead closes (#573 round 3)", fjMarkerMarkdownLead, "CUR", "APPROVE", "0"},
 		{"forgejo: path:line lead with no id does not close (#573 round 3, documented divergence)", fjMarkerNoId, "CUR", "REQUEST_CHANGES", "2"},

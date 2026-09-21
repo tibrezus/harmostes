@@ -234,10 +234,15 @@ else:
     #   later        — created_at strictly after the thread's (RFC3339
     #                  sorts lexicographically; entries without created_at
     #                  never close via the marker — conservative)
-    #   id in body   — the original comment id string must appear in the
-    #                  reply body (the discriminator that keeps a same-
-    #                  anchor comment from closing a thread it never
-    #                  names)
+    #   id in body   — the leading enumeration form `path:line (comment N)`
+    #                  must OPEN the body and NAME the thread's id (#573
+    #                  review): a mid-body cross-reference ("dup of
+    #                  comment 1" — sibling findings at one anchor, posted
+    #                  in one batch) is not an addressal; without the
+    #                  leading-form requirement such a finding closed its
+    #                  sibling AND erased itself from the count
+    import re as _re
+    _marker_form=_re.compile(r'^\s*[\w./+-]+:\d+\s*[（(]?\s*(?:comment|thread)\s*#?\s*(\d+)\b')
     def anchor_key(c):
         return (c.get("path"), c.get("line") if c.get("line") is not None else c.get("position"))
     addressed=set()   # thread ids a marker closed
@@ -249,13 +254,16 @@ else:
     for r in cs:
         if not isinstance(r, dict) or r.get("id") is None:
             continue
-        body=str(r.get("body") or "")
+        m=_marker_form.match(str(r.get("body") or ""))
+        if not m:
+            continue
+        target_id=m.group(1)
         for t in cs:
             if (isinstance(t, dict) and t.get("id") is not None
+                and str(t.get("id"))==target_id
                 and str(t.get("id"))!=str(r.get("id"))
                 and anchor_key(t)==anchor_key(r)
-                and str(r.get("created_at") or "")>str(t.get("created_at") or "\x7f")
-                and str(t.get("id")) in body):
+                and str(r.get("created_at") or "")>str(t.get("created_at") or "\x7f")):
                 addressed.add(t.get("id")); marker_ids.add(r.get("id"))
     open_threads=[c for c in cs
         if isinstance(c, dict)

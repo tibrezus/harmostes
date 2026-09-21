@@ -47,6 +47,20 @@ const (
 	// same-anchor comment that does not identify its thread must not close
 	// it (the id reference is the discriminator).
 	fjMarkerNoIdRef = `[{"id":40268,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T01:39:33Z"},{"id":40307,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T04:17:30Z","body":"fixed at abc — the coupled key re-armed"}]`
+	// #573 review: sibling findings at one anchor cross-referencing each
+	// other ("see comment N") — one review batch, one commit_id, the
+	// reviewer itself emits this shape. A mid-body id reference must NOT
+	// close the sibling NOR erase the referencing finding from the count.
+	// Expectation: BOTH stay open (2) — strictly conservative; the review
+	// text sketched "1" under cross-reference-closes-A semantics, but the
+	// leading-form rule treats cross-references as closure of NOTHING,
+	// which still pins the blocking property (never 0/APPROVE) and never
+	// undercounts unanswered findings.
+	fjSiblingFindings = `[{"id":1,"path":"a.go","line":9,"commit_id":"OLD","in_reply_to":null,"created_at":"2026-09-21T01:00:00Z","body":"finding A"},{"id":2,"path":"a.go","line":9,"commit_id":"OLD","in_reply_to":null,"created_at":"2026-09-21T02:00:00Z","body":"finding B, see comment 1"}]`
+	// The id appears mid-body (not the leading enumeration form) with the
+	// leading form ABSENT — must not close via the marker even though the
+	// id string is present somewhere in the body.
+	fjMarkerMidBodyId = `[{"id":40268,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T01:39:33Z"},{"id":40309,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T04:17:30Z","body":"note: related to comment 40268 but this is a new finding"}]`
 	// Marker EARLIER than the thread (created_at before) — a thread cannot
 	// be addressed by something written before it existed.
 	fjMarkerEarlier = `[{"id":40268,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T04:17:30Z"},{"id":40308,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T01:39:33Z","body":"w.yml:433 (comment 40268) — resolved"}]`
@@ -91,6 +105,8 @@ func TestPostReviewGateClassifier(t *testing.T) {
 		{"forgejo: same-anchor id-referencing marker closes the thread (#572)", fjMarkerAddressed, "CUR", "APPROVE", "0"},
 		{"forgejo: marker on a different anchor does not close — and itself stays an open comment (#572)", fjMarkerWrongAnchor, "CUR", "REQUEST_CHANGES", "2"},
 		{"forgejo: same-anchor reply without the id reference does not close — and itself stays an open comment (#572)", fjMarkerNoIdRef, "CUR", "REQUEST_CHANGES", "2"},
+		{"forgejo: sibling findings cross-referencing each other both stay open (#573 review)", fjSiblingFindings, "CUR", "REQUEST_CHANGES", "2"},
+		{"forgejo: mid-body id reference without the leading form does not close (#573 review)", fjMarkerMidBodyId, "CUR", "REQUEST_CHANGES", "2"},
 		{"forgejo: marker predating the thread does not close — and itself stays an open comment (#572)", fjMarkerEarlier, "CUR", "REQUEST_CHANGES", "2"},
 		{"gitlab: unresolved prior discussion downgrades", gitlabOpen, "CUR", "REQUEST_CHANGES", "1"},
 		{"gitlab: resolved prior discussion passes", gitlabResolved, "CUR", "APPROVE", "0"},

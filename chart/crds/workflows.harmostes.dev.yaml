@@ -351,6 +351,7 @@ spec:
                           headSha: { type: string, description: "the reviewed head (a verdict trailer stands at this SHA)" }
                           reason:  { type: string, description: "the refusal directive — the dev-facing close-out contract" }
                           at:      { type: string, format: date-time }
+                          emitted: { type: boolean, description: "the gate-standdown timeline event for THIS refusal has landed — per-candidate dedupe so repeat memo skips do not re-emit while other candidates' standdowns still land" }
                 lastRunAt: { type: string }
                 message: { type: string }
                 conditions:

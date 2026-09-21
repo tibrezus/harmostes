@@ -807,17 +807,21 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 				// refused PR on every sweep — a dev who re-arms and sees
 				// nothing lands HERE, and status+log alone was ruled
 				// insufficient for dropped candidates (#386/#357). Emit the
-				// standdown; the transition dedupe in emitGate keeps repeat
-				// sweeps from spamming the timeline (same decision + same
-				// reason = no event; a new head changes the reason and
-				// emits).
-				emitGate(ctx, deps.TL, liveAgg, review.Result{
-					Evaluation: review.Evaluation{
-						Decision: review.DecisionStanddown,
-						Code:     review.CodeVerdictStanding,
-						Reason:   lastReason,
-					},
-				}, cand.repo, cand.pr)
+				// standdown ONCE per refusal (F-B): the marker lives on the
+				// refusal record itself — per-candidate, persisted with the
+				// memo — so repeat sweeps at the same head stay silent
+				// while any OTHER candidate's standdown always lands (a
+				// workflow-level mute here suppressed those, r38 F-B).
+				if !ref.Emitted {
+					emitGate(ctx, deps.TL, liveAgg, review.Result{
+						Evaluation: review.Evaluation{
+							Decision: review.DecisionStanddown,
+							Code:     review.CodeVerdictStanding,
+							Reason:   lastReason,
+						},
+					}, cand.repo, cand.pr)
+					ref.Emitted = true // ref points into refusals — carried by the final patch
+				}
 				continue
 			}
 		}
@@ -945,12 +949,17 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 			emitGate(ctx, deps.TL, liveAgg, res, cand.repo, cand.pr)
 		case review.DecisionStanddown:
 			if res.Code == review.CodeVerdictStanding && res.Envelope != nil {
+				// Emitted=true: the case's emitGate below lands this
+				// refusal's standdown event — the memo skip must not add a
+				// second one for the same logical refusal (F-B: exactly one
+				// event per refusal, per candidate).
 				refusals = v1alpha1.RecordReviewRefusal(refusals, v1alpha1.ReviewRefusal{
 					Repo:    cand.repo,
 					PR:      cand.pr,
 					HeadSHA: res.Envelope.HeadSHA,
 					Reason:  res.Reason,
 					At:      &metav1.Time{Time: now},
+					Emitted: true,
 				})
 				log("review-ready: refused %s at %s — verdict standing (#567); memoised so the labeled scan will not re-arm it", cand.pointer, res.Envelope.HeadSHA)
 			}
@@ -1305,9 +1314,13 @@ func emitGate(ctx context.Context, tl timeline.Writer, agg *v1alpha1.ReviewReady
 		kind = timeline.KindGateProceed
 	case review.DecisionStanddown:
 		kind = timeline.KindGateStanddown
-		if agg != nil && agg.LastDecision == string(review.DecisionStanddown) && agg.LastReason == result.Reason {
-			return // same standdown state — not a transition (steady-state memo skips)
-		}
+		// r38 F-B: NO workflow-level dedupe here — a terminal standdown is
+		// per-candidate information (the reason may be identical across
+		// PRs, e.g. the closed/merged prose), so muting on the sweep's
+		// single headline drops OTHER candidates' events and oscillates
+		// with multi-PR sweeps. Repeat-suppression lives on the refusal
+		// record (ReviewRefusal.Emitted) where the dedupe key actually
+		// lives.
 	case review.DecisionWaiting:
 		kind = timeline.KindGateWaiting
 		if agg != nil && agg.LastDecision == string(review.DecisionWaiting) && agg.LastReason == result.Reason {

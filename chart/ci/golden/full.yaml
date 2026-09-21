@@ -5473,7 +5473,7 @@ spec:
             - name: HARMOSTES_SKILLS_REPO
               value: "https://github.com/tibrezus/agents.git"
             - name: HARMOSTES_SKILLS_REV
-              value: "cfcea8e61e575bce74d76793309615d355dd65d8"
+              value: "3707bc7ab02cd02a2bb7faad25207d22eb66f8d6"
           volumeMounts:
             - name: skills
               mountPath: /skills
@@ -5563,7 +5563,7 @@ spec:
             # #408 item 9: the dispatcher passes the pinned rev through so
             # per-Attempt Jobs serve the SAME revision the pool serves.
             - name: HARMOSTES_SKILLS_REV
-              value: "cfcea8e61e575bce74d76793309615d355dd65d8"
+              value: "3707bc7ab02cd02a2bb7faad25207d22eb66f8d6"
             # GH_TOKEN deliberately aliases the same secret the dispatch path
             # already mounts as HARMOSTES_GIT_TOKEN — the gh CLI wants its
             # canonical name; one credential, one secret, two env spellings.

@@ -352,6 +352,12 @@ type ReviewRefusal struct {
 	HeadSHA string       `json:"headSha"`
 	Reason  string       `json:"reason,omitempty"`
 	At      *metav1.Time `json:"at,omitempty"`
+	// Emitted: the gate-standdown timeline event for THIS refusal has
+	// landed. Per-candidate dedupe (r38 F-B): a workflow-level headline
+	// mute suppressed a DIFFERENT candidate's terminal standdown and
+	// oscillated with multi-PR sweeps — repetition state must live on the
+	// refusal, not on the sweep's single lastReason.
+	Emitted bool `json:"emitted,omitempty"`
 }
 
 // RecordRefusal upserts a refusal (newest first) and prunes to the cap.

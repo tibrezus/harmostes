@@ -2873,3 +2873,200 @@ func TestSweepMemoAndBreakerShareOneDirectionRead(t *testing.T) {
 		t.Fatal("the revived claim is armed-waiting (Evaluate's fetch fails on the degraded host), not dispatched")
 	}
 }
+
+// ── r38 F-B: the memo-skip standdown must land ONCE per refusal, per
+// candidate — a workflow-level mute suppressed OTHER candidates' terminal
+// standdowns and oscillated with multi-PR sweeps. These tests need a
+// timeline writer that RECORDS, so the events themselves are assertable. ──
+
+type recordedEvent struct {
+	kind    string
+	payload map[string]any
+}
+
+type recordingTL struct {
+	mu     sync.Mutex
+	events []recordedEvent
+}
+
+func (r *recordingTL) Emit(_ context.Context, kind, node string, payload any) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	m, _ := payload.(map[string]any)
+	r.events = append(r.events, recordedEvent{kind: kind, payload: m})
+	return nil
+}
+
+func (r *recordingTL) standdowns() []recordedEvent {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]recordedEvent, 0, len(r.events))
+	for _, e := range r.events {
+		if e.kind == "gate.standdown" {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// twoRefusedPRsHost = refusedPRServer's world with TWO labeled PRs (99 and
+// 100), both carrying a standing verdict trailer at their own heads.
+func twoRefusedPRsHost(t *testing.T) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	trailer := func(sha string) map[string]any {
+		return map[string]any{
+			"body":       "verdict\n\n<!-- pr-review: REQUEST_CHANGES @ " + sha + " -->",
+			"updated_at": "2026-09-21T00:00:00Z",
+		}
+	}
+	mux.HandleFunc("/", func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(req.URL.Path, "/pulls"):
+			_ = json.NewEncoder(w).Encode([]any{
+				map[string]any{"number": 99, "updated_at": "2026-09-21T00:00:00Z",
+					"head":   map[string]string{"sha": "deadbeef123"},
+					"labels": []map[string]string{{"name": "needs-review"}}},
+				map[string]any{"number": 100, "updated_at": "2026-09-21T00:00:00Z",
+					"head":   map[string]string{"sha": "cafe56789"},
+					"labels": []map[string]string{{"name": "needs-review"}}},
+			})
+		case strings.Contains(req.URL.Path, "/pulls/99"):
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"state": "open", "head": map[string]string{"sha": "deadbeef123"},
+				"base":   map[string]string{"ref": "main"},
+				"labels": []map[string]string{{"name": "needs-review"}},
+			})
+		case strings.Contains(req.URL.Path, "/pulls/100"):
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"state": "open", "head": map[string]string{"sha": "cafe56789"},
+				"base":   map[string]string{"ref": "main"},
+				"labels": []map[string]string{{"name": "needs-review"}},
+			})
+		case strings.Contains(req.URL.Path, "/comments"):
+			// Both conversations carry their own head's trailer; the
+			// since-filter emulation keeps window-scoped scans empty.
+			if since := req.URL.Query().Get("since"); since != "" {
+				if ts, err := time.Parse(time.RFC3339, since); err == nil &&
+					ts.After(time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC)) {
+					_ = json.NewEncoder(w).Encode([]any{})
+					return
+				}
+			}
+			_ = json.NewEncoder(w).Encode([]any{trailer("deadbeef123"), trailer("cafe56789")})
+		case strings.Contains(req.URL.Path, "/branch_protections/"):
+			_ = json.NewEncoder(w).Encode(map[string]any{"status_check_contexts": []string{}})
+		default:
+			http.NotFound(w, req)
+		}
+	})
+	return httptest.NewServer(mux)
+}
+
+// Pin 1+2: the FIRST refusal emits exactly one gate-standdown; repeat
+// sweeps at the same head emit NO further standdown (the refusal record's
+// Emitted marker is the per-candidate dedupe).
+func TestMemoSkipEmitsStanddownOncePerRefusal(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := refusedPRServer(t)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv.Server, true)
+	wf := gateWorkflow()
+	st := &fakeStatus{}
+	deps, ctx := gateEnv(t, wf, st)
+	rec := &recordingTL{}
+	deps.TL = rec
+
+	// Sweep 1: the refusal is created and memoised — exactly ONE standdown.
+	if _, err := RunReviewGateSweep(ctx, deps, wf); err != nil {
+		t.Fatalf("sweep 1: %v", err)
+	}
+	if got := len(rec.standdowns()); got != 1 {
+		t.Fatalf("the first refusal must emit exactly one standdown, got %d (%+v)", got, rec.events)
+	}
+	if ev := rec.standdowns()[0]; ev.payload["pr"] != 99 || ev.payload["repo"] != "git.rezus.cloud/tibrez/rhesadox" {
+		t.Fatalf("the standdown must name its candidate, got %+v", ev.payload)
+	}
+
+	// Sweeps 2-3: the memo skip must not re-emit.
+	for i := 2; i <= 3; i++ {
+		if _, err := RunReviewGateSweep(ctx, deps, wf); err != nil {
+			t.Fatalf("sweep %d: %v", i, err)
+		}
+	}
+	if got := len(rec.standdowns()); got != 1 {
+		t.Fatalf("repeat sweeps at the same head must not re-emit (Emitted marker), got %d standdowns", got)
+	}
+	// The marker must be persisted on the workflow status.
+	if len(st.last.ReviewReady.Refusals) != 1 || !st.last.ReviewReady.Refusals[0].Emitted {
+		t.Fatalf("the Emitted marker must persist on the refusal record, got %+v", st.last.ReviewReady.Refusals)
+	}
+}
+
+// Pin 3: a DIFFERENT PR's standdown in the same window still lands — the
+// workflow-level mute this replaces suppressed it (r38 F-B).
+func TestDistinctPRsStanddownsBothLand(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := twoRefusedPRsHost(t)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	st := &fakeStatus{}
+	deps, ctx := gateEnv(t, wf, st)
+	rec := &recordingTL{}
+	deps.TL = rec
+
+	if _, err := RunReviewGateSweep(ctx, deps, wf); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	sds := rec.standdowns()
+	prs := map[any]bool{}
+	for _, e := range sds {
+		prs[e.payload["pr"]] = true
+	}
+	if len(sds) != 2 || !prs[99] || !prs[100] {
+		t.Fatalf("each refused PR must get its own standdown event, got %d events covering %v", len(sds), prs)
+	}
+}
+
+// The fallback leg of the memo-skip emit: a refusal recorded WITHOUT the
+// Emitted marker (a pre-r38 status, or any producer that skipped the
+// timeline) must still speak on its first memo skip — and the marker must
+// then persist, so exactly one event lands for that refusal.
+func TestMemoSkipEmitsForLegacyUnemittedRefusal(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := refusedPRServer(t)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv.Server, true)
+	wf := gateWorkflow()
+	st := &fakeStatus{}
+	// Seed a PRE-r38 refusal: no Emitted marker.
+	st.last.ReviewReady = &v1alpha1.ReviewReadyStatus{
+		Refusals: []v1alpha1.ReviewRefusal{{
+			Repo: "git.rezus.cloud/tibrez/rhesadox", PR: 99, HeadSHA: "deadbeef123",
+			Reason: "verdict standing at deadbeef123 (legacy record)",
+		}},
+	}
+	deps, ctx := gateEnv(t, wf, st)
+	rec := &recordingTL{}
+	deps.TL = rec
+
+	if _, err := RunReviewGateSweep(ctx, deps, wf); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if got := len(rec.standdowns()); got != 1 {
+		t.Fatalf("a legacy unemitted refusal must speak on its first memo skip, got %d standdowns", got)
+	}
+	if len(st.last.ReviewReady.Refusals) != 1 || !st.last.ReviewReady.Refusals[0].Emitted {
+		t.Fatalf("the marker must persist after the fallback emit, got %+v", st.last.ReviewReady.Refusals)
+	}
+
+	// The next sweep stays silent (the marker now guards it).
+	if _, err := RunReviewGateSweep(ctx, deps, wf); err != nil {
+		t.Fatalf("sweep 2: %v", err)
+	}
+	if got := len(rec.standdowns()); got != 1 {
+		t.Fatalf("the marker must hold: still exactly one standdown, got %d", got)
+	}
+}

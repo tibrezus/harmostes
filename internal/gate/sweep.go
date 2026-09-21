@@ -245,6 +245,11 @@ type candidate struct {
 	// res.LabelPresent only covers wakes that never needed the pre-read
 	// (r2 P1: two reads must not decide one wake).
 	humanResolved *bool
+	// humanUnknown: the direction resolution failed (PR fetch error) —
+	// distinct from a resolved "absent" so the memo path can fail closed
+	// AND speak (fall into Evaluate) instead of presenting unknown as
+	// "no human asked" (#423, r38 F2).
+	humanUnknown bool
 }
 
 // humanApplied is the ONE spelling of #328's override predicate: did the
@@ -291,10 +296,17 @@ func humanOverride(ctx context.Context, api review.API, cand *candidate, wfName,
 	if !cand.granularLabel {
 		return false
 	}
+	if cand.humanResolved != nil {
+		// One presence read decides ONE wake (r2 P1): a resolution already
+		// carried by an earlier consumer (the memo block) is authoritative
+		// — refetching could disagree with the decision already made.
+		return *cand.humanResolved
+	}
 	pr, err := api.GetPullRequest(ctx, cand.repo, cand.pr)
 	if err != nil {
 		log("review-ready: override direction unknown: PR fetch failed (%v) — not overriding", err)
 		cand.humanResolved = &[]bool{false}[0]
+		cand.humanUnknown = true
 		recordReviewGateReason(ctx, wfName, cand.repo, "override-unknown")
 		return false
 	}
@@ -761,29 +773,33 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 		// candidate flows into Evaluate normally.
 		if ref := v1alpha1.ReviewRefusalFor(refusals, cand.repo, cand.pr); ref != nil {
 			head := candSha(cand)
-			var prr *review.PullRequest
-			if head == "" || cand.granularLabel {
-				// The deferred head fetch (scan candidates carry no sha) and
-				// the granular direction pre-read share one call — this is
-				// the ONLY host call a memo-hit scan candidate pays.
+			if head == "" {
+				// The deferred head fetch: scan candidates carry no sha and
+				// the memo match needs one. This is the ONLY host call a
+				// memo-hit scan candidate pays.
 				if p, err := api.GetPullRequest(ctx, cand.repo, cand.pr); err == nil && p != nil {
-					prr = p
-					if head == "" {
-						head = p.HeadSHA
-					}
+					head = p.HeadSHA
 				}
 			}
-			// #328 precedence (r36): an explicitly human-shaped re-request
-			// outranks the memo — it falls into Evaluate, whose
-			// verdict-standing refusal IS the visible directive (status +
-			// timeline, refreshed each time). Granular wakes (Forgejo's
-			// ambiguous label_updated) resolve direction off the PR's
-			// current labels: present = a re-request to answer; absent = a
-			// removal, nothing to answer. The SILENT skip is for candidates
-			// with no human face: the labeled scan's rediscovery every
-			// sweep (the gate cannot remove the label — this skip is the
-			// loop-prevention case) and poll re-checks.
-			humanRequest := cand.labeled || (cand.granularLabel && prr != nil && prr.HasLabel(label))
+			// #328 precedence (r36) + r2 P1 one-read: an explicitly
+			// human-shaped re-request outranks the memo — it falls into
+			// Evaluate, whose verdict-standing refusal IS the visible
+			// directive (status + timeline, refreshed each time). The
+			// granular direction resolves through humanOverride (the ONE
+			// authority: it fetches once, carries the fact, and flags
+			// unknown) — never a fresh presence read here: two reads at
+			// two times can disagree (#423). An UNKNOWN direction also
+			// falls into Evaluate: a blind silent skip would present
+			// "could not verify" as "no human asked". The SILENT skip is
+			// for candidates with no human face: the labeled scan's
+			// rediscovery every sweep (the gate cannot remove the label —
+			// this skip is the loop-prevention case), poll re-checks, and
+			// definite label REMOVALS (nothing to answer).
+			humanRequest := cand.labeled
+			if !humanRequest && cand.granularLabel {
+				humanOverride(ctx, api, &cand, wf.Name, label, log) // resolves + carries
+				humanRequest = cand.humanUnknown || cand.humanApplied(false)
+			}
 			if !humanRequest && ref.Matches(head) {
 				lastDecision, lastReason = "standdown", fmt.Sprintf("verdict standing at %s — memo (#567): push a fix commit to re-review", ref.HeadSHA)
 				log("review-ready: candidate %s skipped: verdict standing at %s (#567 memo) — push a fix commit to re-review", cand.pointer, ref.HeadSHA)

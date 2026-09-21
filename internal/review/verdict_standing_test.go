@@ -124,3 +124,36 @@ func TestInFlightUnaffectedByOldVerdict(t *testing.T) {
 		t.Fatalf("old verdict must not disturb an in-flight review, got %s (%s)", r.Decision, r.Reason)
 	}
 }
+
+func TestVerdictStandingTruncatedScanStaysWaiting(t *testing.T) {
+	// The truncation fail-closed branch (r36) is the fix for the >1000-comment
+	// hole: an ascending walk that hit the page cap returns the OLDEST pages,
+	// so "no trailer found" is INCONCLUSIVE — the newest verdict sits in
+	// exactly the history that was not read. Inconclusive must not proceed
+	// AND must not refuse (a refusal would memoise a decision made blind).
+	// Mutation-kill: disabling the `if truncated` guard (or the fake's
+	// truncated flag) re-classes this input as a standing refusal — this
+	// test fails on both.
+	api := verdictStubAPI("verdict\n\n<!-- pr-review: REQUEST_CHANGES @ abcdef1 -->")
+	api.required = nil
+
+	api.truncated = true
+	r := Evaluate(context.Background(), api, base)
+	if r.Decision != DecisionWaiting {
+		t.Fatalf("truncated scan must stay waiting (fail closed), got %s (%s)", r.Decision, r.Reason)
+	}
+	if r.Code == CodeVerdictStanding || strings.Contains(r.Reason, "exactly once") {
+		t.Fatalf("truncated scan must not produce a standing refusal made blind: %s (%s)", r.Code, r.Reason)
+	}
+	if !strings.Contains(r.Reason, "inconclusive") {
+		t.Fatalf("waiting reason must say why (scan inconclusive): %s", r.Reason)
+	}
+
+	// Same input, whole conversation visible: the trailer stands and the
+	// refusal fires — proves this test pins the guard, not the stub.
+	api.truncated = false
+	r = Evaluate(context.Background(), api, base)
+	if r.Decision != DecisionStanddown || r.Code != CodeVerdictStanding {
+		t.Fatalf("untruncated scan with a trailer at head must refuse, got %s/%s", r.Decision, r.Code)
+	}
+}

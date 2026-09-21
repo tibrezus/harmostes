@@ -24,6 +24,7 @@ type fakeAPI struct {
 	ctxErr       error
 	comments     []fakeComment
 	commentsErr  error
+	truncated    bool
 }
 
 // fakeComment pairs an IssueComment with its host-side updated_at (the
@@ -45,7 +46,7 @@ func (f *fakeAPI) ListCommentsAll(_ context.Context, _ string, _ int) ([]IssueCo
 	for _, c := range f.comments {
 		out = append(out, c.IssueComment)
 	}
-	return out, false, nil
+	return out, f.truncated, nil
 }
 
 func (f *fakeAPI) ListLabeledOpenPulls(_ context.Context, _, _ string) ([]PullRequest, error) {

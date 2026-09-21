@@ -3070,3 +3070,72 @@ func TestMemoSkipEmitsForLegacyUnemittedRefusal(t *testing.T) {
 		t.Fatalf("the marker must hold: still exactly one standdown, got %d", got)
 	}
 }
+
+// Kills the restored-mute mutant (r38 F-B, round 5): the deleted
+// workflow-level standdown mute compared the PREVIOUS sweep's headline
+// against this event's reason, and two closed labeled PRs produce the
+// IDENTICAL prose ("pull request closed" — no PR in it). With the mute
+// restored and the headline seeded, BOTH closures are suppressed and the
+// timeline silently loses two terminal events. The per-candidate world
+// must land both.
+func TestClosedPRsStanddownsBothLandDespiteHeadlineMatch(t *testing.T) {
+	clearTriggerEnv(t)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(req.URL.Path, "/pulls"):
+			_ = json.NewEncoder(w).Encode([]any{
+				map[string]any{"number": 99, "updated_at": "2026-09-21T00:00:00Z",
+					"labels": []map[string]string{{"name": "needs-review"}}},
+				map[string]any{"number": 100, "updated_at": "2026-09-21T00:00:00Z",
+					"labels": []map[string]string{{"name": "needs-review"}}},
+			})
+		case strings.Contains(req.URL.Path, "/pulls/99"):
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"state": "closed", "head": map[string]string{"sha": "deadbeef123"},
+				"base":   map[string]string{"ref": "main"},
+				"labels": []map[string]string{{"name": "needs-review"}},
+			})
+		case strings.Contains(req.URL.Path, "/pulls/100"):
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"state": "closed", "head": map[string]string{"sha": "cafe56789"},
+				"base":   map[string]string{"ref": "main"},
+				"labels": []map[string]string{{"name": "needs-review"}},
+			})
+		case strings.Contains(req.URL.Path, "/comments"):
+			_ = json.NewEncoder(w).Encode([]any{})
+		case strings.Contains(req.URL.Path, "/branch_protections/"):
+			_ = json.NewEncoder(w).Encode(map[string]any{"status_check_contexts": []string{}})
+		default:
+			http.NotFound(w, req)
+		}
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	st := &fakeStatus{}
+	// The poisoned headline: LAST sweep's standdown reason is the exact
+	// prose both candidates will produce this sweep. The restored mute
+	// suppresses BOTH events; the per-candidate world lands both.
+	st.last.ReviewReady = &v1alpha1.ReviewReadyStatus{
+		LastDecision: "standdown",
+		LastReason:   "pull request closed",
+	}
+	deps, ctx := gateEnv(t, wf, st)
+	rec := &recordingTL{}
+	deps.TL = rec
+
+	if _, err := RunReviewGateSweep(ctx, deps, wf); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	sds := rec.standdowns()
+	prs := map[any]bool{}
+	for _, e := range sds {
+		prs[e.payload["pr"]] = true
+	}
+	if len(sds) != 2 || !prs[99] || !prs[100] {
+		t.Fatalf("identical-reason standdowns are per-candidate information — both must land, got %d events covering %v", len(sds), prs)
+	}
+}

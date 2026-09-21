@@ -803,6 +803,21 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 			if !humanRequest && ref.Matches(head) {
 				lastDecision, lastReason = "standdown", fmt.Sprintf("verdict standing at %s — memo (#567): push a fix commit to re-review", ref.HeadSHA)
 				log("review-ready: candidate %s skipped: verdict standing at %s (#567 memo) — push a fix commit to re-review", cand.pointer, ref.HeadSHA)
+				// P8 (r38): the memo skip is the steady state for every
+				// refused PR on every sweep — a dev who re-arms and sees
+				// nothing lands HERE, and status+log alone was ruled
+				// insufficient for dropped candidates (#386/#357). Emit the
+				// standdown; the transition dedupe in emitGate keeps repeat
+				// sweeps from spamming the timeline (same decision + same
+				// reason = no event; a new head changes the reason and
+				// emits).
+				emitGate(ctx, deps.TL, liveAgg, review.Result{
+					Evaluation: review.Evaluation{
+						Decision: review.DecisionStanddown,
+						Code:     review.CodeVerdictStanding,
+						Reason:   lastReason,
+					},
+				}, cand.repo, cand.pr)
 				continue
 			}
 		}
@@ -1290,6 +1305,9 @@ func emitGate(ctx context.Context, tl timeline.Writer, agg *v1alpha1.ReviewReady
 		kind = timeline.KindGateProceed
 	case review.DecisionStanddown:
 		kind = timeline.KindGateStanddown
+		if agg != nil && agg.LastDecision == string(review.DecisionStanddown) && agg.LastReason == result.Reason {
+			return // same standdown state — not a transition (steady-state memo skips)
+		}
 	case review.DecisionWaiting:
 		kind = timeline.KindGateWaiting
 		if agg != nil && agg.LastDecision == string(review.DecisionWaiting) && agg.LastReason == result.Reason {

@@ -366,6 +366,13 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 	if st, err := deps.Status.GetStatus(ctx, wf.Name); err == nil && st.ReviewReady != nil {
 		liveAgg = st.ReviewReady
 	}
+	// Standing-verdict memo (#567): sweep-local so recording works even when
+	// liveAgg is nil (fresh workflow, no status yet); persisted by the final
+	// aggregates patch (carried past the construct-and-replace there).
+	var refusals []v1alpha1.ReviewRefusal
+	if liveAgg != nil {
+		refusals = liveAgg.Refusals
+	}
 	lastDecision, lastReason := "waiting", "nothing to evaluate this cycle"
 	heldRecorded := false // pass A preserved a live Job — its reason wins the sweep (#331, r8 F2)
 
@@ -745,6 +752,25 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 
 	// ── C. Evaluate + drain-to-capacity. ──────────────────────────────────
 	for i, cand := range cands {
+		// Standing-verdict memo (#567): a head with a verdict trailer standing
+		// is closed — the gate refused it and cannot remove the label (it is
+		// read-only), so the labeled scan would re-arm the PR every sweep.
+		// The memo is checked BEFORE any host call for non-suspect candidates
+		// (RefusalFor is a status slice scan); only a (repo,pr) hit pays the
+		// deferred head fetch. A push produces a new SHA → no match → the
+		// candidate flows into Evaluate normally.
+		if ref := v1alpha1.ReviewRefusalFor(refusals, cand.repo, cand.pr); ref != nil {
+			head := candSha(cand)
+			if head == "" {
+				if prr, err := api.GetPullRequest(ctx, cand.repo, cand.pr); err == nil && prr != nil {
+					head = prr.HeadSHA
+				}
+			}
+			if ref.Matches(head) {
+				log("review-ready: candidate %s skipped: verdict standing at %s (#567 memo) — push a fix commit to re-review", cand.pointer, ref.HeadSHA)
+				continue
+			}
+		}
 		claimed := liveOn[cand.pointer]
 		if claimed {
 			// Request-shaped wakes may supersede (head moved since the
@@ -868,6 +894,16 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 			lastDecision, lastReason = string(res.Decision), res.Reason
 			emitGate(ctx, deps.TL, liveAgg, res, cand.repo, cand.pr)
 		case review.DecisionStanddown:
+			if res.Code == review.CodeVerdictStanding && res.Envelope != nil {
+				refusals = v1alpha1.RecordReviewRefusal(refusals, v1alpha1.ReviewRefusal{
+					Repo:    cand.repo,
+					PR:      cand.pr,
+					HeadSHA: res.Envelope.HeadSHA,
+					Reason:  res.Reason,
+					At:      &metav1.Time{Time: now},
+				})
+				log("review-ready: refused %s at %s — verdict standing (#567); memoised so the labeled scan will not re-arm it", cand.pointer, res.Envelope.HeadSHA)
+			}
 			lastDecision, lastReason = string(res.Decision), res.Reason
 			emitGate(ctx, deps.TL, liveAgg, res, cand.repo, cand.pr)
 		}
@@ -999,6 +1035,11 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 			LastSweepAbortAt: abortAt,
 			LastWake:         wakeRecord(deps.Wake, liveAgg),
 		}
+		// The standing-verdict memo survives the construct-and-replace (#567):
+		// refusals recorded THIS sweep live in the sweep-local slice, and
+		// dropping them here would make the labeled scan re-arm refused heads
+		// every sweep — the exact churn the memo exists to stop.
+		s.ReviewReady.Refusals = refusals
 	}); err != nil {
 		log("review-ready: aggregates patch failed: %v", err)
 	}
@@ -1119,7 +1160,12 @@ func classifyRelease(ev review.Evaluation) string {
 	switch ev.Code {
 	case review.CodePRClosed:
 		return v1alpha1.ReleaseReasonPRClosed
-	case review.CodeConsumed:
+	case review.CodeConsumed, review.CodeVerdictStanding:
+		// verdict-standing (#567): the head was already reviewed and the
+		// refusal is terminal — semantically a consumption (the review
+		// happened; nothing is pending), so no breaker strike and no Job to
+		// cancel. The refusal itself is memoised by the caller before any
+		// release, so the labeled scan cannot re-arm the head.
 		return "consumed"
 	case review.CodeHorizon:
 		return v1alpha1.ReleaseReasonHorizon

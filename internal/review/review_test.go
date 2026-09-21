@@ -467,6 +467,10 @@ func TestRESTGitHubShapes(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"check_runs": []map[string]string{{"name": "lint", "status": "completed", "conclusion": "success"}},
 			})
+		case "/repos/tibrezus/harmostes/issues/10/comments":
+			// #567: the standing-verdict scan reads the conversation before
+			// any proceed — an empty history is the clean-slate fixture.
+			_ = json.NewEncoder(w).Encode([]any{})
 		default:
 			http.NotFound(w, req)
 		}

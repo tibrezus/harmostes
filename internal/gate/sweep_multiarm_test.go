@@ -129,6 +129,10 @@ func labeledListServer(t *testing.T, numbers ...int) *httptest.Server {
 			_ = json.NewEncoder(w).Encode([]map[string]string{
 				{"context": "ci / build-test (push)", "status": "success"},
 			})
+		case strings.Contains(req.URL.Path, "/comments"):
+			// #567: the standing-verdict scan reads the conversation before
+			// any proceed — the green-world fixture has no verdicts.
+			_ = json.NewEncoder(w).Encode([]any{})
 		default:
 			http.NotFound(w, req)
 		}
@@ -152,10 +156,14 @@ func consumedServer(t *testing.T) *httptest.Server {
 			})
 		case strings.Contains(req.URL.Path, "/pulls/100"):
 			_ = json.NewEncoder(w).Encode(greenPullBody())
-		case strings.Contains(req.URL.Path, "/comments"):
+		case strings.Contains(req.URL.Path, "/issues/99/comments"):
 			_ = json.NewEncoder(w).Encode([]map[string]string{
 				{"body": "review done\n<!-- pr-review: APPROVE @ deadbeef123 -->", "created_at": "2026-08-30T01:00:00Z"},
 			})
+		case strings.Contains(req.URL.Path, "/comments"):
+			// PR 100's conversation is its own (#567: the standing-verdict
+			// scan reads it pre-proceed) — clean, no verdicts.
+			_ = json.NewEncoder(w).Encode([]any{})
 		case strings.Contains(req.URL.Path, "/branch_protections/"):
 			_ = json.NewEncoder(w).Encode(map[string]any{"status_check_contexts": []string{"ci / build-test (push)"}})
 		case strings.HasSuffix(req.URL.Path, "/statuses"):
@@ -2563,7 +2571,11 @@ func TestSaturatedSweepSkipsScanWithLog(t *testing.T) {
 	wf.Spec.ReviewReady.MaxConcurrent = 1
 	st := &fakeStatus{}
 	disp := time.Now().Add(-2 * time.Minute)
-	live := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#42", "cafe1234567", time.Now().Add(-5*time.Minute), &disp)
+	// The claim's head MUST match the fixture's served head (deadbeef123):
+	// the standing-verdict scan made the conversation readable, so a stale
+	// head now correctly supersedes and frees the slot — masking that as a
+	// 404-wait was the fixture's old crutch.
+	live := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#42", "deadbeef123", time.Now().Add(-5*time.Minute), &disp)
 	logf, buf := captureLog()
 	deps, ctx := gateEnv(t, wf, st, live, liveJobFor(t, wf, live))
 	deps.Log = logf

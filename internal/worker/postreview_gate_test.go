@@ -68,10 +68,23 @@ const (
 	// equality is the fix). Expected: 40268 closed + the marker consumed,
 	// 4026 stays open → 1 / REQUEST_CHANGES.
 	fjPrefixIdCollision = `[{"id":4026,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T01:00:00Z"},{"id":40268,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T02:00:00Z"},{"id":40305,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T04:00:00Z","body":"w.yml:433 (comment 40268) — fixed at abc"}]`
+	// #573 review round 3: protocol-conformant shapes beyond the
+	// parenthesized lead — the id as a bounded token anywhere in a body
+	// that LEADS with the anchor's path:line (markdown emphasis tolerated).
+	fjMarkerIdMidBodyLead = `[{"id":40268,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T01:39:33Z"},{"id":40311,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T04:17:30Z","body":"w.yml:433 — fixed at abc (see comment 40268)"}]`
+	fjMarkerMarkdownLead  = `[{"id":40268,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T01:39:33Z"},{"id":40312,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T04:17:30Z","body":"**w.yml:433** (comment 40268) fixed"}]`
+	// A path:line lead with NO id: cannot be attributed to one thread at a
+	// shared anchor — must not close (documented divergence from the
+	// reviewer's probe: id-required is what keeps the prefix-collision and
+	// sibling-findings holes closed; the emitter's grammar is one regex,
+	// stated in the classifier block and the skill).
+	fjMarkerNoId = `[{"id":40268,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T01:39:33Z"},{"id":40313,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T04:17:30Z","body":"w.yml:433 → fixed at abc1234"}]`
 	// #573 review round 1 (latent): a +hh:mm offset must never sort
 	// "later" lexically — 14:00+02:00 is EARLIER than 13:00Z but sorts
-	// after it as text. Non-Z timestamps never close via the marker.
-	fjOffsetTimestamp = `[{"id":40268,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T13:00:00Z"},{"id":40310,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T14:00:00+02:00","body":"w.yml:433 (comment 40268) — fixed at abc"}]`
+	// after it as text. Non-Z timestamps never close via the marker (both
+	// lead shapes pinned).
+	fjOffsetTimestamp  = `[{"id":40268,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T13:00:00Z"},{"id":40310,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T14:00:00+02:00","body":"w.yml:433 (comment 40268) — fixed at abc"}]`
+	fjOffsetTimestamp2 = `[{"id":40268,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T13:00:00Z"},{"id":40314,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T14:00:00+02:00","body":"w.yml:433 — fixed at abc (comment 40268)"}]`
 	// Marker EARLIER than the thread (created_at before) — a thread cannot
 	// be addressed by something written before it existed.
 	fjMarkerEarlier = `[{"id":40268,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T04:17:30Z"},{"id":40308,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T01:39:33Z","body":"w.yml:433 (comment 40268) — resolved"}]`
@@ -118,8 +131,12 @@ func TestPostReviewGateClassifier(t *testing.T) {
 		{"forgejo: same-anchor reply without the id reference does not close — and itself stays an open comment (#572)", fjMarkerNoIdRef, "CUR", "REQUEST_CHANGES", "2"},
 		{"forgejo: sibling findings cross-referencing each other both stay open (#573 review)", fjSiblingFindings, "CUR", "REQUEST_CHANGES", "2"},
 		{"forgejo: mid-body id reference without the leading form does not close (#573 review)", fjMarkerMidBodyId, "CUR", "REQUEST_CHANGES", "2"},
+		{"forgejo: id mid-body under a path:line lead closes (#573 round 3)", fjMarkerIdMidBodyLead, "CUR", "APPROVE", "0"},
+		{"forgejo: markdown emphasis on the path:line lead closes (#573 round 3)", fjMarkerMarkdownLead, "CUR", "APPROVE", "0"},
+		{"forgejo: path:line lead with no id does not close (#573 round 3, documented divergence)", fjMarkerNoId, "CUR", "REQUEST_CHANGES", "2"},
 		{"forgejo: prefix-related ids at one anchor — marker closes only its named thread (#573 review)", fjPrefixIdCollision, "CUR", "REQUEST_CHANGES", "1"},
 		{"forgejo: non-Z offset timestamps never close via the marker (#573 review)", fjOffsetTimestamp, "CUR", "REQUEST_CHANGES", "2"},
+		{"forgejo: non-Z offset timestamps never close via the marker — mid-body id variant (#573 review)", fjOffsetTimestamp2, "CUR", "REQUEST_CHANGES", "2"},
 		{"forgejo: marker predating the thread does not close — and itself stays an open comment (#572)", fjMarkerEarlier, "CUR", "REQUEST_CHANGES", "2"},
 		{"gitlab: unresolved prior discussion downgrades", gitlabOpen, "CUR", "REQUEST_CHANGES", "1"},
 		{"gitlab: resolved prior discussion passes", gitlabResolved, "CUR", "APPROVE", "0"},

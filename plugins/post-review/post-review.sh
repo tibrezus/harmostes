@@ -238,15 +238,27 @@ else:
     #                  earlier (#573 review round 1). Non-Z entries never
     #                  close via the marker — conservative, same posture
     #                  as the missing-timestamp case.
-    #   id in body   — the leading enumeration form `path:line (comment N)`
-    #                  must OPEN the body and NAME the thread's id (#573
-    #                  review): a mid-body cross-reference ("dup of
-    #                  comment 1" — sibling findings at one anchor, posted
-    #                  in one batch) is not an addressal; without the
-    #                  leading-form requirement such a finding closed its
-    #                  sibling AND erased itself from the count
+    #   id in body   — the thread's id as a BOUNDED token anywhere in the
+    #                  body (`(?<!\d)N(?!\d)`): no substring matching
+    #                  ('4026' must not match inside '40268' — dense ids
+    #                  at one anchor are the collision domain, #573
+    #                  round 1) and not limited to a parenthesized lead
+    #                  (round 3: 'path:line — fixed at abc (see comment
+    #                  N)' is protocol-conformant and must close). An id
+    #                  is REQUIRED — an id-less reply cannot be attributed
+    #                  to one thread at a shared anchor.
+    #   leads path:line — the body must OPEN with the anchor's own
+    #                  `path:line` enumeration lead (markdown emphasis /
+    #                  bullet prefixes tolerated). This is what separates
+    #                  an addressal from a finding's cross-reference
+    #                  ("finding B, see comment 1" — sibling findings at
+    #                  one anchor, one review batch): findings never lead
+    #                  with the path:line form, so they close nothing and
+    #                  never erase themselves from the count.
     import re as _re
-    _marker_form=_re.compile(r'^\s*[\w./+-]+:\d+\s*[（(]?\s*(?:comment|thread)\s*#?\s*(\d+)\b')
+    _lead_form=_re.compile(r'^\s*[*_>\-\s]*[\w./+-]+:\d+\b')
+    def _bounded(tid):
+        return _re.compile(r'(?<!\d)'+_re.escape(str(tid))+r'(?!\d)')
     def anchor_key(c):
         return (c.get("path"), c.get("line") if c.get("line") is not None else c.get("position"))
     addressed=set()   # thread ids a marker closed
@@ -258,14 +270,13 @@ else:
     for r in cs:
         if not isinstance(r, dict) or r.get("id") is None:
             continue
-        m=_marker_form.match(str(r.get("body") or ""))
-        if not m:
+        body=str(r.get("body") or "")
+        if not _lead_form.match(body):
             continue
-        target_id=m.group(1)
         for t in cs:
             if (isinstance(t, dict) and t.get("id") is not None
-                and str(t.get("id"))==target_id
                 and str(t.get("id"))!=str(r.get("id"))
+                and _bounded(t.get("id")).search(body)
                 and anchor_key(t)==anchor_key(r)
                 and str(r.get("created_at") or "").endswith("Z")
                 and str(t.get("created_at") or "").endswith("Z")

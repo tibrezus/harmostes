@@ -217,10 +217,93 @@ else:
     def reply_parent(c):
         return c.get("in_reply_to_id") or c.get("in_reply_to")
     replied={reply_parent(c) for c in cs if isinstance(c, dict) and reply_parent(c)}
+    # Fork-gap addressal marker (#572): on Forgejo the REST create-review
+    # API cannot SET in_reply_to (a rezuscloud/forgejo follow-up) and the
+    # fork-native resolver (resolve_doer) is only settable through the
+    # web UI — so the documented author/reviewer protocol (the pr-review
+    # skill) addresses a thread with a follow-up review comment at the
+    # SAME anchor whose body references the original comment id
+    # (`path:line (comment N) — fix SHA + rationale`). Without parsing
+    # that marker, a REST-only review round can never close a prior-round
+    # thread: every round downgrades until a human uses the browser (the
+    # rhesadox#2359 burn — five consecutive downgrades over a fixed
+    # diff; the protocol-shaped replies themselves added unresolvable
+    # flat threads to the count). Closure requirements, all deliberate:
+    #   same anchor  — path + (line, else position): a marker for another
+    #                  conversation never closes this one
+    #   later        — created_at strictly after the thread's. Both
+    #                  sides must be Z-suffixed RFC3339 (both hosts emit
+    #                  Z today): a +hh:mm offset sorts lexically by
+    #                  wall-clock text and can read "later" while being
+    #                  earlier (#573 review round 1). Non-Z entries never
+    #                  close via the marker — conservative, same posture
+    #                  as the missing-timestamp case.
+    #   id in body   — the thread's id as a BOUNDED token anywhere in the
+    #                  body (`(?<!\d)N(?!\d)`): no substring matching
+    #                  ('4026' must not match inside '40268' — dense ids
+    #                  at one anchor are the collision domain, #573
+    #                  round 1) and not limited to a parenthesized lead
+    #                  (round 3: 'path:line — fixed at abc (see comment
+    #                  N)' is protocol-conformant and must close). An id
+    #                  is REQUIRED — an id-less reply cannot be attributed
+    #                  to one thread at a shared anchor.
+    #   leads path:line — the body must OPEN with the anchor's own
+    #                  `path:line` enumeration lead (markdown emphasis /
+    #                  bullet prefixes tolerated).
+    #   other author  — the marker's author must DIFFER from the thread's
+    #                  (user.login): an addressal is written by the party
+    #                  being reviewed (the PR author), a finding by the
+    #                  reviewer. #573 round 4: the reviewer itself emits
+    #                  path:line-leading re-findings at an unresolved
+    #                  anchor ('w.yml:433 — still wrong, see 40268' — raw
+    #                  bodies on Forgejo, no marker prefix) which under a
+    #                  lead-only grammar closed the older thread AND
+    #                  erased themselves — a false APPROVE through the
+    #                  merge currency. Identity restores the round-2
+    #                  invariant (closure evidence never deletes
+    #                  itself): a same-author comment — sibling findings,
+    #                  reviewer cross-references — closes nothing; a
+    #                  missing user on either side reads as same-author
+    #                  (conservative). The reviewer's own verification
+    #                  still cannot close mechanically — the dev's reply
+    #                  is mandatory per the protocol, and THAT closes.
+    import re as _re
+    _lead_form=_re.compile(r'^\s*[*_>\-\s]*[\w./+-]+:\d+\b')
+    def _bounded(tid):
+        return _re.compile(r'(?<!\d)'+_re.escape(str(tid))+r'(?!\d)')
+    def anchor_key(c):
+        return (c.get("path"), c.get("line") if c.get("line") is not None else c.get("position"))
+    def author_of(c):
+        u=c.get("user")
+        return (u.get("login") if isinstance(u, dict) else None) or ""
+    addressed=set()   # thread ids a marker closed
+    marker_ids=set()  # the marker replies that closed them (a reply is not
+                      # itself a finding thread — without this, the flat
+                      # model counts every protocol reply as ANOTHER open
+                      # thread: the rhesadox#2359 count grew 1→2→3 as the
+                      # author followed the documented protocol)
+    for r in cs:
+        if not isinstance(r, dict) or r.get("id") is None:
+            continue
+        body=str(r.get("body") or "")
+        if not _lead_form.match(body):
+            continue
+        for t in cs:
+            if (isinstance(t, dict) and t.get("id") is not None
+                and str(t.get("id"))!=str(r.get("id"))
+                and author_of(r)!=author_of(t)
+                and _bounded(t.get("id")).search(body)
+                and anchor_key(t)==anchor_key(r)
+                and str(r.get("created_at") or "").endswith("Z")
+                and str(t.get("created_at") or "").endswith("Z")
+                and str(r.get("created_at"))>str(t.get("created_at"))):
+                addressed.add(t.get("id")); marker_ids.add(r.get("id"))
     open_threads=[c for c in cs
         if isinstance(c, dict)
         and not reply_parent(c)
         and c.get("id") not in replied
+        and c.get("id") not in addressed
+        and c.get("id") not in marker_ids
         and not c.get("resolved")
         # No commit_id → round unattributable: never downgrade on it (C4).
         and c.get("commit_id") not in (None, "")

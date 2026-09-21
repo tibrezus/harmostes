@@ -245,6 +245,11 @@ type candidate struct {
 	// res.LabelPresent only covers wakes that never needed the pre-read
 	// (r2 P1: two reads must not decide one wake).
 	humanResolved *bool
+	// humanUnknown: the direction resolution failed (PR fetch error) —
+	// distinct from a resolved "absent" so the memo path can fail closed
+	// AND speak (fall into Evaluate) instead of presenting unknown as
+	// "no human asked" (#423, r38 F2).
+	humanUnknown bool
 }
 
 // humanApplied is the ONE spelling of #328's override predicate: did the
@@ -291,10 +296,17 @@ func humanOverride(ctx context.Context, api review.API, cand *candidate, wfName,
 	if !cand.granularLabel {
 		return false
 	}
+	if cand.humanResolved != nil {
+		// One presence read decides ONE wake (r2 P1): a resolution already
+		// carried by an earlier consumer (the memo block) is authoritative
+		// — refetching could disagree with the decision already made.
+		return *cand.humanResolved
+	}
 	pr, err := api.GetPullRequest(ctx, cand.repo, cand.pr)
 	if err != nil {
 		log("review-ready: override direction unknown: PR fetch failed (%v) — not overriding", err)
 		cand.humanResolved = &[]bool{false}[0]
+		cand.humanUnknown = true
 		recordReviewGateReason(ctx, wfName, cand.repo, "override-unknown")
 		return false
 	}
@@ -365,6 +377,13 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 	var liveAgg *v1alpha1.ReviewReadyStatus
 	if st, err := deps.Status.GetStatus(ctx, wf.Name); err == nil && st.ReviewReady != nil {
 		liveAgg = st.ReviewReady
+	}
+	// Standing-verdict memo (#567): sweep-local so recording works even when
+	// liveAgg is nil (fresh workflow, no status yet); persisted by the final
+	// aggregates patch (carried past the construct-and-replace there).
+	var refusals []v1alpha1.ReviewRefusal
+	if liveAgg != nil {
+		refusals = liveAgg.Refusals
 	}
 	lastDecision, lastReason := "waiting", "nothing to evaluate this cycle"
 	heldRecorded := false // pass A preserved a live Job — its reason wins the sweep (#331, r8 F2)
@@ -745,6 +764,67 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 
 	// ── C. Evaluate + drain-to-capacity. ──────────────────────────────────
 	for i, cand := range cands {
+		// Standing-verdict memo (#567): a head with a verdict trailer standing
+		// is closed — the gate refused it and cannot remove the label (it is
+		// read-only), so the labeled scan would re-arm the PR every sweep.
+		// The memo is checked BEFORE any host call for non-suspect candidates
+		// (RefusalFor is a status slice scan); only a (repo,pr) hit pays the
+		// deferred head fetch. A push produces a new SHA → no match → the
+		// candidate flows into Evaluate normally.
+		if ref := v1alpha1.ReviewRefusalFor(refusals, cand.repo, cand.pr); ref != nil {
+			head := candSha(cand)
+			if head == "" {
+				// The deferred head fetch: scan candidates carry no sha and
+				// the memo match needs one. This is the ONLY host call a
+				// memo-hit scan candidate pays.
+				if p, err := api.GetPullRequest(ctx, cand.repo, cand.pr); err == nil && p != nil {
+					head = p.HeadSHA
+				}
+			}
+			// #328 precedence (r36) + r2 P1 one-read: an explicitly
+			// human-shaped re-request outranks the memo — it falls into
+			// Evaluate, whose verdict-standing refusal IS the visible
+			// directive (status + timeline, refreshed each time). The
+			// granular direction resolves through humanOverride (the ONE
+			// authority: it fetches once, carries the fact, and flags
+			// unknown) — never a fresh presence read here: two reads at
+			// two times can disagree (#423). An UNKNOWN direction also
+			// falls into Evaluate: a blind silent skip would present
+			// "could not verify" as "no human asked". The SILENT skip is
+			// for candidates with no human face: the labeled scan's
+			// rediscovery every sweep (the gate cannot remove the label —
+			// this skip is the loop-prevention case), poll re-checks, and
+			// definite label REMOVALS (nothing to answer).
+			humanRequest := cand.labeled
+			if !humanRequest && cand.granularLabel {
+				humanOverride(ctx, api, &cand, wf.Name, label, log) // resolves + carries
+				humanRequest = cand.humanUnknown || cand.humanApplied(false)
+			}
+			if !humanRequest && ref.Matches(head) {
+				lastDecision, lastReason = "standdown", fmt.Sprintf("verdict standing at %s — memo (#567): push a fix commit to re-review", ref.HeadSHA)
+				log("review-ready: candidate %s skipped: verdict standing at %s (#567 memo) — push a fix commit to re-review", cand.pointer, ref.HeadSHA)
+				// P8 (r38): the memo skip is the steady state for every
+				// refused PR on every sweep — a dev who re-arms and sees
+				// nothing lands HERE, and status+log alone was ruled
+				// insufficient for dropped candidates (#386/#357). Emit the
+				// standdown ONCE per refusal (F-B): the marker lives on the
+				// refusal record itself — per-candidate, persisted with the
+				// memo — so repeat sweeps at the same head stay silent
+				// while any OTHER candidate's standdown always lands (a
+				// workflow-level mute here suppressed those, r38 F-B).
+				if !ref.Emitted {
+					emitGate(ctx, deps.TL, liveAgg, review.Result{
+						Evaluation: review.Evaluation{
+							Decision: review.DecisionStanddown,
+							Code:     review.CodeVerdictStanding,
+							Reason:   lastReason,
+						},
+					}, cand.repo, cand.pr)
+					ref.Emitted = true // ref points into refusals — carried by the final patch
+				}
+				continue
+			}
+		}
 		claimed := liveOn[cand.pointer]
 		if claimed {
 			// Request-shaped wakes may supersede (head moved since the
@@ -868,6 +948,21 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 			lastDecision, lastReason = string(res.Decision), res.Reason
 			emitGate(ctx, deps.TL, liveAgg, res, cand.repo, cand.pr)
 		case review.DecisionStanddown:
+			if res.Code == review.CodeVerdictStanding && res.Envelope != nil {
+				// Emitted=true: the case's emitGate below lands this
+				// refusal's standdown event — the memo skip must not add a
+				// second one for the same logical refusal (F-B: exactly one
+				// event per refusal, per candidate).
+				refusals = v1alpha1.RecordReviewRefusal(refusals, v1alpha1.ReviewRefusal{
+					Repo:    cand.repo,
+					PR:      cand.pr,
+					HeadSHA: res.Envelope.HeadSHA,
+					Reason:  res.Reason,
+					At:      &metav1.Time{Time: now},
+					Emitted: true,
+				})
+				log("review-ready: refused %s at %s — verdict standing (#567); memoised so the labeled scan will not re-arm it", cand.pointer, res.Envelope.HeadSHA)
+			}
 			lastDecision, lastReason = string(res.Decision), res.Reason
 			emitGate(ctx, deps.TL, liveAgg, res, cand.repo, cand.pr)
 		}
@@ -999,6 +1094,11 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 			LastSweepAbortAt: abortAt,
 			LastWake:         wakeRecord(deps.Wake, liveAgg),
 		}
+		// The standing-verdict memo survives the construct-and-replace (#567):
+		// refusals recorded THIS sweep live in the sweep-local slice, and
+		// dropping them here would make the labeled scan re-arm refused heads
+		// every sweep — the exact churn the memo exists to stop.
+		s.ReviewReady.Refusals = refusals
 	}); err != nil {
 		log("review-ready: aggregates patch failed: %v", err)
 	}
@@ -1119,7 +1219,12 @@ func classifyRelease(ev review.Evaluation) string {
 	switch ev.Code {
 	case review.CodePRClosed:
 		return v1alpha1.ReleaseReasonPRClosed
-	case review.CodeConsumed:
+	case review.CodeConsumed, review.CodeVerdictStanding:
+		// verdict-standing (#567): the head was already reviewed and the
+		// refusal is terminal — semantically a consumption (the review
+		// happened; nothing is pending), so no breaker strike and no Job to
+		// cancel. The refusal itself is memoised by the caller before any
+		// release, so the labeled scan cannot re-arm the head.
 		return "consumed"
 	case review.CodeHorizon:
 		return v1alpha1.ReleaseReasonHorizon
@@ -1209,6 +1314,13 @@ func emitGate(ctx context.Context, tl timeline.Writer, agg *v1alpha1.ReviewReady
 		kind = timeline.KindGateProceed
 	case review.DecisionStanddown:
 		kind = timeline.KindGateStanddown
+		// r38 F-B: NO workflow-level dedupe here — a terminal standdown is
+		// per-candidate information (the reason may be identical across
+		// PRs, e.g. the closed/merged prose), so muting on the sweep's
+		// single headline drops OTHER candidates' events and oscillates
+		// with multi-PR sweeps. Repeat-suppression lives on the refusal
+		// record (ReviewRefusal.Emitted) where the dedupe key actually
+		// lives.
 	case review.DecisionWaiting:
 		kind = timeline.KindGateWaiting
 		if agg != nil && agg.LastDecision == string(review.DecisionWaiting) && agg.LastReason == result.Reason {

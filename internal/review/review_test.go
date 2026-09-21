@@ -24,6 +24,7 @@ type fakeAPI struct {
 	ctxErr       error
 	comments     []fakeComment
 	commentsErr  error
+	truncated    bool
 }
 
 // fakeComment pairs an IssueComment with its host-side updated_at (the
@@ -35,6 +36,17 @@ type fakeComment struct {
 
 func (f *fakeAPI) GetPullRequest(ctx context.Context, repo string, n int) (*PullRequest, error) {
 	return f.pr, f.prErr
+}
+
+func (f *fakeAPI) ListCommentsAll(_ context.Context, _ string, _ int) ([]IssueComment, bool, error) {
+	if f.commentsErr != nil {
+		return nil, false, f.commentsErr
+	}
+	out := make([]IssueComment, 0, len(f.comments))
+	for _, c := range f.comments {
+		out = append(out, c.IssueComment)
+	}
+	return out, f.truncated, nil
 }
 
 func (f *fakeAPI) ListLabeledOpenPulls(_ context.Context, _, _ string) ([]PullRequest, error) {
@@ -467,6 +479,10 @@ func TestRESTGitHubShapes(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"check_runs": []map[string]string{{"name": "lint", "status": "completed", "conclusion": "success"}},
 			})
+		case "/repos/tibrezus/harmostes/issues/10/comments":
+			// #567: the standing-verdict scan reads the conversation before
+			// any proceed — an empty history is the clean-slate fixture.
+			_ = json.NewEncoder(w).Encode([]any{})
 		default:
 			http.NotFound(w, req)
 		}

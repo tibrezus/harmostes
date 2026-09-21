@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+
+	"github.com/tibrezus/harmostes/internal/review"
 	"testing"
 	"time"
 
@@ -129,6 +131,10 @@ func labeledListServer(t *testing.T, numbers ...int) *httptest.Server {
 			_ = json.NewEncoder(w).Encode([]map[string]string{
 				{"context": "ci / build-test (push)", "status": "success"},
 			})
+		case strings.Contains(req.URL.Path, "/comments"):
+			// #567: the standing-verdict scan reads the conversation before
+			// any proceed — the green-world fixture has no verdicts.
+			_ = json.NewEncoder(w).Encode([]any{})
 		default:
 			http.NotFound(w, req)
 		}
@@ -152,10 +158,14 @@ func consumedServer(t *testing.T) *httptest.Server {
 			})
 		case strings.Contains(req.URL.Path, "/pulls/100"):
 			_ = json.NewEncoder(w).Encode(greenPullBody())
-		case strings.Contains(req.URL.Path, "/comments"):
+		case strings.Contains(req.URL.Path, "/issues/99/comments"):
 			_ = json.NewEncoder(w).Encode([]map[string]string{
 				{"body": "review done\n<!-- pr-review: APPROVE @ deadbeef123 -->", "created_at": "2026-08-30T01:00:00Z"},
 			})
+		case strings.Contains(req.URL.Path, "/comments"):
+			// PR 100's conversation is its own (#567: the standing-verdict
+			// scan reads it pre-proceed) — clean, no verdicts.
+			_ = json.NewEncoder(w).Encode([]any{})
 		case strings.Contains(req.URL.Path, "/branch_protections/"):
 			_ = json.NewEncoder(w).Encode(map[string]any{"status_check_contexts": []string{"ci / build-test (push)"}})
 		case strings.HasSuffix(req.URL.Path, "/statuses"):
@@ -2563,7 +2573,11 @@ func TestSaturatedSweepSkipsScanWithLog(t *testing.T) {
 	wf.Spec.ReviewReady.MaxConcurrent = 1
 	st := &fakeStatus{}
 	disp := time.Now().Add(-2 * time.Minute)
-	live := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#42", "cafe1234567", time.Now().Add(-5*time.Minute), &disp)
+	// The claim's head MUST match the fixture's served head (deadbeef123):
+	// the standing-verdict scan made the conversation readable, so a stale
+	// head now correctly supersedes and frees the slot — masking that as a
+	// 404-wait was the fixture's old crutch.
+	live := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#42", "deadbeef123", time.Now().Add(-5*time.Minute), &disp)
 	logf, buf := captureLog()
 	deps, ctx := gateEnv(t, wf, st, live, liveJobFor(t, wf, live))
 	deps.Log = logf
@@ -2704,5 +2718,424 @@ func TestNilArmClockClaimConvergesWithoutChurn(t *testing.T) {
 	}
 	if len(out) != 1 || out[0].Attempt != claim.Name {
 		t.Fatalf("a nil-clock claim with green CI must converge via re-dispatch, got %d envelopes", len(out))
+	}
+}
+
+// ── r38 F2 mutation kills: the memo × granular-wake combination is where
+// the one-read discipline and the unknown-direction fallback live. ──
+
+// memoRefusingHost returns a host whose PR fetch succeeds with the review
+// label for the first `okFetches` calls and 500s afterwards; the
+// conversation carries a REQUEST_CHANGES trailer at deadbeef123 so any
+// full Evaluate refuses and memoises.
+func memoRefusingHost(okFetches int32) *httptest.Server {
+	var prFetches int32
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(req.URL.Path, "/pulls/"):
+			if atomic.AddInt32(&prFetches, 1) <= okFetches {
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"state": "open", "head": map[string]string{"sha": "deadbeef123"},
+					"base":   map[string]string{"ref": "main"},
+					"labels": []map[string]string{{"name": "needs-review"}},
+				})
+				return
+			}
+			http.Error(w, `{"message":"transient"}`, http.StatusInternalServerError)
+		case strings.Contains(req.URL.Path, "/comments"):
+			// Emulate the host's since-filter (the in-flight verdict-window
+			// scan passes since=dispatchedAt): the trailer's updated_at is
+			// BEFORE any test claim's dispatch, so window-scoped scans see
+			// nothing (the verdict predates the flight — no consume) while
+			// the memo's UNFILTERED ListCommentsAll still sees it — the
+			// memo × live-claim coexistence the breaker test needs.
+			if since := req.URL.Query().Get("since"); since != "" {
+				if ts, err := time.Parse(time.RFC3339, since); err == nil &&
+					ts.After(time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC)) {
+					_ = json.NewEncoder(w).Encode([]any{})
+					return
+				}
+			}
+			_ = json.NewEncoder(w).Encode([]any{
+				map[string]string{"body": "verdict\n\n<!-- pr-review: REQUEST_CHANGES @ deadbeef123 -->",
+					"updated_at": "2026-09-21T00:00:00Z"},
+			})
+		case strings.HasSuffix(req.URL.Path, "/statuses"):
+			_ = json.NewEncoder(w).Encode([]map[string]string{
+				{"context": "ci / build-test (push)", "status": "success"},
+			})
+		case strings.Contains(req.URL.Path, "/branch_protections/"):
+			_ = json.NewEncoder(w).Encode(map[string]any{"status_check_contexts": []string{}})
+		default:
+			http.NotFound(w, req)
+		}
+	}))
+}
+
+// Kills mutant A (r38 F2): dropping `cand.humanUnknown ||` in the memo
+// block sends an UNRESOLVABLE granular direction back to the silent memo
+// skip — "could not verify" presented as "no human asked" (#423). A
+// label_updated wake at a memoised head whose PR fetch has started
+// failing: the candidate must fall into Evaluate (waiting on the failed
+// fetch), and the memo headline must NOT be the status answer.
+func TestSweepMemoUnknownGranularDirectionFallsIntoEvaluate(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := memoRefusingHost(1) // sweep 1's Evaluate fetch; everything later 500s
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	st := &fakeStatus{}
+	deps, ctx := gateEnvW(t, wf, st, "git.rezus.cloud/tibrez/rhesadox#99", "label_updated", "deadbeef123")
+
+	// Sweep 1: the wake evaluates, refuses (verdict standing), memoises.
+	if _, err := RunReviewGateWake(ctx, deps, wf); err != nil {
+		t.Fatalf("sweep 1: %v", err)
+	}
+	if st.last.ReviewReady == nil || len(st.last.ReviewReady.Refusals) != 1 {
+		t.Fatalf("sweep 1 must memoise the standing refusal, got %+v", st.last.ReviewReady)
+	}
+
+	// Sweep 2: memo hit, but the direction fetch now fails — unknown must
+	// fall into Evaluate (waiting), never a blind memo skip.
+	if _, err := RunReviewGateWake(ctx, deps, wf); err != nil {
+		t.Fatalf("sweep 2: %v", err)
+	}
+	rr := st.last.ReviewReady
+	if strings.Contains(rr.LastReason, "memo (#567)") {
+		t.Fatalf("an unresolvable direction must not be answered with the memo headline: %q", rr.LastReason)
+	}
+	if rr.LastDecision != string(review.DecisionWaiting) {
+		t.Fatalf("unknown direction must fall into Evaluate and wait on the failed fetch, got %s (%s)", rr.LastDecision, rr.LastReason)
+	}
+}
+
+// Kills mutant B (r38 F2): deleting the carry-aware early return in
+// humanOverride lets the breaker's supersede decision RE-FETCH and
+// potentially disagree with the resolution the memo block already carried
+// (r2 P1: two reads at two times must not decide one wake). One granular
+// wake hitting BOTH the memo and the dead-dispatch breaker, on a host
+// that fails every fetch after the second: the memo resolves present
+// (fetch #2), the breaker must ride the CARRIED fact and supersede the
+// dead-dispatched claim. With the early return gone, the breaker's
+// refetch 500s → unknown → no supersede → the dispatched claim survives
+// with its counter — the discriminating observable.
+func TestSweepMemoAndBreakerShareOneDirectionRead(t *testing.T) {
+	clearTriggerEnv(t)
+	// Fetch accounting: #1 = sweep 1's Evaluate; #2 = sweep 2 section A's
+	// in-flight re-evaluation of the dispatched claim; #3 = the memo block's
+	// direction resolution (carried into the breaker); #4+ must fail — the
+	// post-supersede Evaluate arms waiting, and a MUTANT breaker refetch
+	// would also fail (unknown → no supersede), which is the discriminator.
+	srv := memoRefusingHost(3)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	st := &fakeStatus{}
+	deps, ctx := gateEnvW(t, wf, st, "git.rezus.cloud/tibrez/rhesadox#99", "label_updated", "deadbeef123")
+
+	// Sweep 1 memoises the standing refusal (Evaluate path, fetch #1).
+	if _, err := RunReviewGateWake(ctx, deps, wf); err != nil {
+		t.Fatalf("sweep 1: %v", err)
+	}
+	// A live DISPATCHED claim with two recorded dead dispatches — the
+	// breaker's exact shape (same harness as the carried-resolution tests).
+	for i := 0; i < 2; i++ {
+		at, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf,
+			"git.rezus.cloud/tibrez/rhesadox#99", "deadbeef123", "needs-review", false)
+		if err != nil {
+			t.Fatalf("arm %d: %v", i+1, err)
+		}
+		_ = attempt.MarkClaimDispatched(ctx, deps.Client, wf.Namespace, at.Name)
+		_, _, _ = attempt.ReleaseClaimDead(ctx, deps.Client, wf.Namespace, at.Name, "dispatch-lost")
+	}
+	at, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf,
+		"git.rezus.cloud/tibrez/rhesadox#99", "deadbeef123", "needs-review", false)
+	if err != nil {
+		t.Fatalf("live arm: %v", err)
+	}
+	_ = attempt.MarkClaimDispatched(ctx, deps.Client, wf.Namespace, at.Name)
+
+	// Sweep 2: memo hit → direction resolved present (fetch #2, carried) →
+	// breaker supersede on the carried fact (no refetch) → re-arm; the
+	// post-supersede Evaluate then fails its fetch → armed-waiting.
+	if _, err := RunReviewGateWake(ctx, deps, wf); err != nil {
+		t.Fatalf("sweep 2: %v", err)
+	}
+	claims, err := attempt.LiveReviewClaims(ctx, deps.Client, wf)
+	if err != nil || len(claims) != 1 {
+		t.Fatalf("exactly one live claim after the carried-resolution supersede, got %d (%v)", len(claims), err)
+	}
+	if claims[0].Status.Review.DeadDispatches != 0 {
+		t.Fatalf("the carried resolution must supersede the dead-dispatched claim (counter resets), got %d", claims[0].Status.Review.DeadDispatches)
+	}
+	if claims[0].Status.Review.DispatchedAt != nil {
+		t.Fatal("the revived claim is armed-waiting (Evaluate's fetch fails on the degraded host), not dispatched")
+	}
+}
+
+// ── r38 F-B: the memo-skip standdown must land ONCE per refusal, per
+// candidate — a workflow-level mute suppressed OTHER candidates' terminal
+// standdowns and oscillated with multi-PR sweeps. These tests need a
+// timeline writer that RECORDS, so the events themselves are assertable. ──
+
+type recordedEvent struct {
+	kind    string
+	payload map[string]any
+}
+
+type recordingTL struct {
+	mu     sync.Mutex
+	events []recordedEvent
+}
+
+func (r *recordingTL) Emit(_ context.Context, kind, node string, payload any) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	m, _ := payload.(map[string]any)
+	r.events = append(r.events, recordedEvent{kind: kind, payload: m})
+	return nil
+}
+
+func (r *recordingTL) standdowns() []recordedEvent {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]recordedEvent, 0, len(r.events))
+	for _, e := range r.events {
+		if e.kind == "gate.standdown" {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// twoRefusedPRsHost = refusedPRServer's world with TWO labeled PRs (99 and
+// 100), both carrying a standing verdict trailer at their own heads.
+func twoRefusedPRsHost(t *testing.T) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	trailer := func(sha string) map[string]any {
+		return map[string]any{
+			"body":       "verdict\n\n<!-- pr-review: REQUEST_CHANGES @ " + sha + " -->",
+			"updated_at": "2026-09-21T00:00:00Z",
+		}
+	}
+	mux.HandleFunc("/", func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(req.URL.Path, "/pulls"):
+			_ = json.NewEncoder(w).Encode([]any{
+				map[string]any{"number": 99, "updated_at": "2026-09-21T00:00:00Z",
+					"head":   map[string]string{"sha": "deadbeef123"},
+					"labels": []map[string]string{{"name": "needs-review"}}},
+				map[string]any{"number": 100, "updated_at": "2026-09-21T00:00:00Z",
+					"head":   map[string]string{"sha": "cafe56789"},
+					"labels": []map[string]string{{"name": "needs-review"}}},
+			})
+		case strings.Contains(req.URL.Path, "/pulls/99"):
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"state": "open", "head": map[string]string{"sha": "deadbeef123"},
+				"base":   map[string]string{"ref": "main"},
+				"labels": []map[string]string{{"name": "needs-review"}},
+			})
+		case strings.Contains(req.URL.Path, "/pulls/100"):
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"state": "open", "head": map[string]string{"sha": "cafe56789"},
+				"base":   map[string]string{"ref": "main"},
+				"labels": []map[string]string{{"name": "needs-review"}},
+			})
+		case strings.Contains(req.URL.Path, "/comments"):
+			// Both conversations carry their own head's trailer; the
+			// since-filter emulation keeps window-scoped scans empty.
+			if since := req.URL.Query().Get("since"); since != "" {
+				if ts, err := time.Parse(time.RFC3339, since); err == nil &&
+					ts.After(time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC)) {
+					_ = json.NewEncoder(w).Encode([]any{})
+					return
+				}
+			}
+			_ = json.NewEncoder(w).Encode([]any{trailer("deadbeef123"), trailer("cafe56789")})
+		case strings.Contains(req.URL.Path, "/branch_protections/"):
+			_ = json.NewEncoder(w).Encode(map[string]any{"status_check_contexts": []string{}})
+		default:
+			http.NotFound(w, req)
+		}
+	})
+	return httptest.NewServer(mux)
+}
+
+// Pin 1+2: the FIRST refusal emits exactly one gate-standdown; repeat
+// sweeps at the same head emit NO further standdown (the refusal record's
+// Emitted marker is the per-candidate dedupe).
+func TestMemoSkipEmitsStanddownOncePerRefusal(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := refusedPRServer(t)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv.Server, true)
+	wf := gateWorkflow()
+	st := &fakeStatus{}
+	deps, ctx := gateEnv(t, wf, st)
+	rec := &recordingTL{}
+	deps.TL = rec
+
+	// Sweep 1: the refusal is created and memoised — exactly ONE standdown.
+	if _, err := RunReviewGateSweep(ctx, deps, wf); err != nil {
+		t.Fatalf("sweep 1: %v", err)
+	}
+	if got := len(rec.standdowns()); got != 1 {
+		t.Fatalf("the first refusal must emit exactly one standdown, got %d (%+v)", got, rec.events)
+	}
+	if ev := rec.standdowns()[0]; ev.payload["pr"] != 99 || ev.payload["repo"] != "git.rezus.cloud/tibrez/rhesadox" {
+		t.Fatalf("the standdown must name its candidate, got %+v", ev.payload)
+	}
+
+	// Sweeps 2-3: the memo skip must not re-emit.
+	for i := 2; i <= 3; i++ {
+		if _, err := RunReviewGateSweep(ctx, deps, wf); err != nil {
+			t.Fatalf("sweep %d: %v", i, err)
+		}
+	}
+	if got := len(rec.standdowns()); got != 1 {
+		t.Fatalf("repeat sweeps at the same head must not re-emit (Emitted marker), got %d standdowns", got)
+	}
+	// The marker must be persisted on the workflow status.
+	if len(st.last.ReviewReady.Refusals) != 1 || !st.last.ReviewReady.Refusals[0].Emitted {
+		t.Fatalf("the Emitted marker must persist on the refusal record, got %+v", st.last.ReviewReady.Refusals)
+	}
+}
+
+// Pin 3: a DIFFERENT PR's standdown in the same window still lands — the
+// workflow-level mute this replaces suppressed it (r38 F-B).
+func TestDistinctPRsStanddownsBothLand(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := twoRefusedPRsHost(t)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	st := &fakeStatus{}
+	deps, ctx := gateEnv(t, wf, st)
+	rec := &recordingTL{}
+	deps.TL = rec
+
+	if _, err := RunReviewGateSweep(ctx, deps, wf); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	sds := rec.standdowns()
+	prs := map[any]bool{}
+	for _, e := range sds {
+		prs[e.payload["pr"]] = true
+	}
+	if len(sds) != 2 || !prs[99] || !prs[100] {
+		t.Fatalf("each refused PR must get its own standdown event, got %d events covering %v", len(sds), prs)
+	}
+}
+
+// The fallback leg of the memo-skip emit: a refusal recorded WITHOUT the
+// Emitted marker (a pre-r38 status, or any producer that skipped the
+// timeline) must still speak on its first memo skip — and the marker must
+// then persist, so exactly one event lands for that refusal.
+func TestMemoSkipEmitsForLegacyUnemittedRefusal(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := refusedPRServer(t)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv.Server, true)
+	wf := gateWorkflow()
+	st := &fakeStatus{}
+	// Seed a PRE-r38 refusal: no Emitted marker.
+	st.last.ReviewReady = &v1alpha1.ReviewReadyStatus{
+		Refusals: []v1alpha1.ReviewRefusal{{
+			Repo: "git.rezus.cloud/tibrez/rhesadox", PR: 99, HeadSHA: "deadbeef123",
+			Reason: "verdict standing at deadbeef123 (legacy record)",
+		}},
+	}
+	deps, ctx := gateEnv(t, wf, st)
+	rec := &recordingTL{}
+	deps.TL = rec
+
+	if _, err := RunReviewGateSweep(ctx, deps, wf); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if got := len(rec.standdowns()); got != 1 {
+		t.Fatalf("a legacy unemitted refusal must speak on its first memo skip, got %d standdowns", got)
+	}
+	if len(st.last.ReviewReady.Refusals) != 1 || !st.last.ReviewReady.Refusals[0].Emitted {
+		t.Fatalf("the marker must persist after the fallback emit, got %+v", st.last.ReviewReady.Refusals)
+	}
+
+	// The next sweep stays silent (the marker now guards it).
+	if _, err := RunReviewGateSweep(ctx, deps, wf); err != nil {
+		t.Fatalf("sweep 2: %v", err)
+	}
+	if got := len(rec.standdowns()); got != 1 {
+		t.Fatalf("the marker must hold: still exactly one standdown, got %d", got)
+	}
+}
+
+// Kills the restored-mute mutant (r38 F-B, round 5): the deleted
+// workflow-level standdown mute compared the PREVIOUS sweep's headline
+// against this event's reason, and two closed labeled PRs produce the
+// IDENTICAL prose ("pull request closed" — no PR in it). With the mute
+// restored and the headline seeded, BOTH closures are suppressed and the
+// timeline silently loses two terminal events. The per-candidate world
+// must land both.
+func TestClosedPRsStanddownsBothLandDespiteHeadlineMatch(t *testing.T) {
+	clearTriggerEnv(t)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(req.URL.Path, "/pulls"):
+			_ = json.NewEncoder(w).Encode([]any{
+				map[string]any{"number": 99, "updated_at": "2026-09-21T00:00:00Z",
+					"labels": []map[string]string{{"name": "needs-review"}}},
+				map[string]any{"number": 100, "updated_at": "2026-09-21T00:00:00Z",
+					"labels": []map[string]string{{"name": "needs-review"}}},
+			})
+		case strings.Contains(req.URL.Path, "/pulls/99"):
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"state": "closed", "head": map[string]string{"sha": "deadbeef123"},
+				"base":   map[string]string{"ref": "main"},
+				"labels": []map[string]string{{"name": "needs-review"}},
+			})
+		case strings.Contains(req.URL.Path, "/pulls/100"):
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"state": "closed", "head": map[string]string{"sha": "cafe56789"},
+				"base":   map[string]string{"ref": "main"},
+				"labels": []map[string]string{{"name": "needs-review"}},
+			})
+		case strings.Contains(req.URL.Path, "/comments"):
+			_ = json.NewEncoder(w).Encode([]any{})
+		case strings.Contains(req.URL.Path, "/branch_protections/"):
+			_ = json.NewEncoder(w).Encode(map[string]any{"status_check_contexts": []string{}})
+		default:
+			http.NotFound(w, req)
+		}
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	st := &fakeStatus{}
+	// The poisoned headline: LAST sweep's standdown reason is the exact
+	// prose both candidates will produce this sweep. The restored mute
+	// suppresses BOTH events; the per-candidate world lands both.
+	st.last.ReviewReady = &v1alpha1.ReviewReadyStatus{
+		LastDecision: "standdown",
+		LastReason:   "pull request closed",
+	}
+	deps, ctx := gateEnv(t, wf, st)
+	rec := &recordingTL{}
+	deps.TL = rec
+
+	if _, err := RunReviewGateSweep(ctx, deps, wf); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	sds := rec.standdowns()
+	prs := map[any]bool{}
+	for _, e := range sds {
+		prs[e.payload["pr"]] = true
+	}
+	if len(sds) != 2 || !prs[99] || !prs[100] {
+		t.Fatalf("identical-reason standdowns are per-candidate information — both must land, got %d events covering %v", len(sds), prs)
 	}
 }

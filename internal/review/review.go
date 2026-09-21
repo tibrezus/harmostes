@@ -88,6 +88,13 @@ const (
 	CodeHeadMoved    ReleaseCode = "head-moved"    // PR advanced past the dispatched head (#410) — verdict void (cancel)
 	CodeDispatchDead ReleaseCode = "dispatch-dead" // dispatched, no verdict within the dispatch timeout (cancel; no live Job left)
 	CodeStanddown    ReleaseCode = "standdown"     // anything else the gate stops asking for — never cancels
+	// CodeVerdictStanding (#567): a verdict trailer already stands at the
+	// head being armed — this exact diff was reviewed and got its verdict.
+	// Re-dispatching would deterministically re-run a finished review (the
+	// rhesadox#2359 class: six identical reviews of one head because re-arm
+	// had become a retry button against a non-deterministic verdict). A head
+	// is reviewed exactly once; a new review requires a new head (a push).
+	CodeVerdictStanding ReleaseCode = "verdict-standing"
 )
 
 // API is the per-host API surface the gate reads. It exists so tests can
@@ -98,6 +105,14 @@ type API interface {
 	RequiredContexts(ctx context.Context, repo, branch string) ([]string, error)
 	ContextStates(ctx context.Context, repo, sha string) (map[string]string, error)
 	ListComments(ctx context.Context, repo string, number int, since time.Time) ([]IssueComment, error)
+	// ListCommentsAll walks the conversation WITHOUT a since filter — the
+	// standing-verdict scan's primitive (#567). It reports truncated: the
+	// page cap on an UNFILTERED walk keeps the OLDEST pages, and the verdict
+	// is the newest thing in the conversation, so silent truncation would
+	// fail OPEN (proceed on an unscannable history — the #2359 churn, back
+	// on exactly the longest-running PRs). Callers treat truncated as
+	// inconclusive and wait (#242 page-1-hides-the-verdict, #308 dialect).
+	ListCommentsAll(ctx context.Context, repo string, number int) (comments []IssueComment, truncated bool, err error)
 }
 
 // PullRequest is the normalized PR view the gate needs.
@@ -343,6 +358,37 @@ func (a *RESTAPI) ListComments(ctx context.Context, repo string, number int, sin
 		}
 	}
 	return out, nil
+}
+
+// ListCommentsAll walks the FULL conversation with no since filter. The
+// truncated flag is the load-bearing part (#567 r36): an ascending page
+// walk capped at maxCommentPages keeps the oldest pages, so a conversation
+// longer than the cap hides its newest verdict from this scan — reported,
+// never swallowed.
+func (a *RESTAPI) ListCommentsAll(ctx context.Context, repo string, number int) ([]IssueComment, bool, error) {
+	host, err := ResolveHost(repo)
+	if err != nil {
+		return nil, false, err
+	}
+	pageSize := "limit=100"
+	if host.Kind == HostGitHub {
+		pageSize = "per_page=100"
+	}
+	base := fmt.Sprintf("/repos/%s/issues/%d/comments?%s", host.RepoPath, number, pageSize)
+	var out []IssueComment
+	truncated := false
+	for page := 1; page <= maxCommentPages; page++ {
+		var batch []IssueComment
+		if err := a.get(ctx, host, fmt.Sprintf("%s&page=%d", base, page), "application/json", &batch); err != nil {
+			return nil, false, err
+		}
+		out = append(out, batch...)
+		if len(batch) < 100 {
+			return out, false, nil
+		}
+	}
+	truncated = true
+	return out, truncated, nil
 }
 
 // RequiredContexts reads the repo's merge rules and returns the contexts
@@ -847,6 +893,37 @@ func Evaluate(ctx context.Context, api API, p Params) Result {
 		return withPresence(waiting("review in flight — dispatched, verdict pending"), pr.HeadSHA, armedAt)
 	}
 
+	// A head is reviewed exactly once (#567): a verdict standing at the
+	// CURRENT head means this diff already got its verdict — proceeding
+	// would re-run a finished review. Checked AFTER the in-flight block (a
+	// running review is left alone to land) and BEFORE anything else can
+	// proceed: the refusal dominates CI state, horizon, and merge-rule
+	// fetches, because none of those can change the answer for an unchanged
+	// diff. Full history (zero since): the standing verdict may be hours old
+	// — predating this arm. The gate is read-only, so the refusal is memoised
+	// by the caller (ReviewReadyStatus.Refusals); without the memo the
+	// labeled scan would re-arm the refused PR every sweep, because the
+	// label it cannot remove is still on the host.
+	comments, truncated, err := api.ListCommentsAll(ctx, p.Repo, p.PR)
+	if err != nil {
+		return withPresence(waiting("verdict-standing check failed: "+err.Error()), pr.HeadSHA, armedAt)
+	}
+	if truncated {
+		// The scan could not see the whole conversation — inconclusive, and
+		// inconclusive must NOT proceed (fail closed, r36): the verdict sits
+		// at the newest end of exactly the history we could not read.
+		return withPresence(waiting("verdict-standing scan inconclusive (conversation exceeds the scan cap) — staying armed"), pr.HeadSHA, armedAt)
+	}
+	if verdict, ok := standingVerdictAt(comments, pr.HeadSHA); ok {
+		ev := standdown(CodeVerdictStanding, fmt.Sprintf(
+			"verdict already stands at head %s (%s) — the gate reviews each head exactly once: push a fix commit (new head), reply on the finding threads (fj review reply <pr> <comment-id>), resolve them (fj review resolve), then re-arm",
+			pr.HeadSHA, verdict))
+		// The refusal carries its head so the caller can memoise it; the
+		// other envelope fields stay empty — nothing was dispatched.
+		ev.Envelope = &Envelope{Repo: p.Repo, PR: p.PR, HeadSHA: pr.HeadSHA, Label: p.Label}
+		return withPresence(ev, pr.HeadSHA, armedAt)
+	}
+
 	required, err := api.RequiredContexts(ctx, p.Repo, pr.Base)
 	if err != nil {
 		return withPresence(waiting("merge-rules fetch failed: "+err.Error()), pr.HeadSHA, armedAt)
@@ -920,11 +997,34 @@ func standdown(code ReleaseCode, reason string) Evaluation {
 }
 
 // verdictTrailer anchors hasVerdict to the FULL trailer shape the pr-review
-// skill emits — decision, space-@-space, lowercase hex sha, terminal `-->`.
-// Matching the bare `<!-- pr-review: ` prefix read any comment QUOTING the
-// contract (docs, review instructions) as a consumed verdict, disarming a
-// still-pending request (#242).
-var verdictTrailer = regexp.MustCompile(`<!-- pr-review: (APPROVE|REQUEST_CHANGES|COMMENT) @ [0-9a-f]{7,40} -->`)
+// skill emits — decision, space-@-space, lowercase hex sha (7-40 chars),
+// terminal `-->`. Matching the bare `<!-- pr-review: ` prefix
+// read any comment QUOTING the contract (docs, review instructions) as a
+// consumed verdict, disarming a still-pending request (#242). Capture
+// groups expose the decision and the reviewed sha for the standing-verdict
+// refusal (#567).
+var verdictTrailer = regexp.MustCompile(`<!-- pr-review: (APPROVE|REQUEST_CHANGES|COMMENT) @ ([0-9a-f]{7,40}) -->`)
+
+// standingVerdictAt reports whether a verdict trailer stands at exactly
+// headSHA (#567), returning its decision. Trailer shas abbreviate the head
+// (the skill's contract allows 7-40 hex; hosts always report the full
+// head), so a trailer matches as a case-insensitive prefix of the head —
+// never the reverse: a head shorter than a trailer is a fake-world shape,
+// not a real abbreviation. Verdicts at any OTHER sha do not block — a push
+// (new head) is what re-opens review.
+func standingVerdictAt(comments []IssueComment, headSHA string) (decision string, found bool) {
+	head := strings.ToLower(headSHA)
+	for _, c := range comments {
+		m := verdictTrailer.FindStringSubmatch(c.Body)
+		if m == nil {
+			continue
+		}
+		if strings.HasPrefix(head, strings.ToLower(m[2])) {
+			return m[1], true
+		}
+	}
+	return "", false
+}
 
 // hasVerdict reports whether any conversation comment carries a pr-review
 // verdict trailer (the skill's output contract — the merge currency). A

@@ -339,6 +339,19 @@ spec:
                     lastReason:   { type: string }
                     lastSweepAbortAt: { type: string, format: date-time, description: "When a sweep last died before completing arm-to-dispatch (#379) — claims stranded by an abort release as sweep-aborted, not dispatch-lost (no churn strike)" }
                     lastWake:       { type: string, description: "The trigger event the last sweep ran on (#556) — 'repo#N (labeled)' or 'repo@shorthash (ci_completed)'; a no-op poll keeps the previous wake visible" }
+                    refusals:
+                      type: array
+                      x-kubernetes-list-type: atomic
+                      description: "Heads the gate refused to re-review (#567): a pr-review verdict trailer already stands at that SHA, so re-arming would re-run a finished review. The gate is read-only (it cannot remove the label), so refused heads are memoised here and skipped before any host call; a push (new SHA) misses the memo and flows normally. Bounded to the 16 most recent."
+                      items:
+                        type: object
+                        properties:
+                          repo:    { type: string, description: "host/owner/name the refusal belongs to" }
+                          pr:      { type: integer, description: "pull-request number" }
+                          headSha: { type: string, description: "the reviewed head (a verdict trailer stands at this SHA)" }
+                          reason:  { type: string, description: "the refusal directive — the dev-facing close-out contract" }
+                          at:      { type: string, format: date-time }
+                          emitted: { type: boolean, description: "the gate-standdown timeline event for THIS refusal has landed — per-candidate dedupe so repeat memo skips do not re-emit while other candidates' standdowns still land" }
                 lastRunAt: { type: string }
                 message: { type: string }
                 conditions:

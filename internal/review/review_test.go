@@ -37,6 +37,17 @@ func (f *fakeAPI) GetPullRequest(ctx context.Context, repo string, n int) (*Pull
 	return f.pr, f.prErr
 }
 
+func (f *fakeAPI) ListCommentsAll(_ context.Context, _ string, _ int) ([]IssueComment, bool, error) {
+	if f.commentsErr != nil {
+		return nil, false, f.commentsErr
+	}
+	out := make([]IssueComment, 0, len(f.comments))
+	for _, c := range f.comments {
+		out = append(out, c.IssueComment)
+	}
+	return out, false, nil
+}
+
 func (f *fakeAPI) ListLabeledOpenPulls(_ context.Context, _, _ string) ([]PullRequest, error) {
 	return f.labeledPulls, nil
 }

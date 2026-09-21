@@ -105,6 +105,14 @@ type API interface {
 	RequiredContexts(ctx context.Context, repo, branch string) ([]string, error)
 	ContextStates(ctx context.Context, repo, sha string) (map[string]string, error)
 	ListComments(ctx context.Context, repo string, number int, since time.Time) ([]IssueComment, error)
+	// ListCommentsAll walks the conversation WITHOUT a since filter — the
+	// standing-verdict scan's primitive (#567). It reports truncated: the
+	// page cap on an UNFILTERED walk keeps the OLDEST pages, and the verdict
+	// is the newest thing in the conversation, so silent truncation would
+	// fail OPEN (proceed on an unscannable history — the #2359 churn, back
+	// on exactly the longest-running PRs). Callers treat truncated as
+	// inconclusive and wait (#242 page-1-hides-the-verdict, #308 dialect).
+	ListCommentsAll(ctx context.Context, repo string, number int) (comments []IssueComment, truncated bool, err error)
 }
 
 // PullRequest is the normalized PR view the gate needs.
@@ -350,6 +358,37 @@ func (a *RESTAPI) ListComments(ctx context.Context, repo string, number int, sin
 		}
 	}
 	return out, nil
+}
+
+// ListCommentsAll walks the FULL conversation with no since filter. The
+// truncated flag is the load-bearing part (#567 r36): an ascending page
+// walk capped at maxCommentPages keeps the oldest pages, so a conversation
+// longer than the cap hides its newest verdict from this scan — reported,
+// never swallowed.
+func (a *RESTAPI) ListCommentsAll(ctx context.Context, repo string, number int) ([]IssueComment, bool, error) {
+	host, err := ResolveHost(repo)
+	if err != nil {
+		return nil, false, err
+	}
+	pageSize := "limit=100"
+	if host.Kind == HostGitHub {
+		pageSize = "per_page=100"
+	}
+	base := fmt.Sprintf("/repos/%s/issues/%d/comments?%s", host.RepoPath, number, pageSize)
+	var out []IssueComment
+	truncated := false
+	for page := 1; page <= maxCommentPages; page++ {
+		var batch []IssueComment
+		if err := a.get(ctx, host, fmt.Sprintf("%s&page=%d", base, page), "application/json", &batch); err != nil {
+			return nil, false, err
+		}
+		out = append(out, batch...)
+		if len(batch) < 100 {
+			return out, false, nil
+		}
+	}
+	truncated = true
+	return out, truncated, nil
 }
 
 // RequiredContexts reads the repo's merge rules and returns the contexts
@@ -865,9 +904,15 @@ func Evaluate(ctx context.Context, api API, p Params) Result {
 	// by the caller (ReviewReadyStatus.Refusals); without the memo the
 	// labeled scan would re-arm the refused PR every sweep, because the
 	// label it cannot remove is still on the host.
-	comments, err := api.ListComments(ctx, p.Repo, p.PR, time.Time{})
+	comments, truncated, err := api.ListCommentsAll(ctx, p.Repo, p.PR)
 	if err != nil {
 		return withPresence(waiting("verdict-standing check failed: "+err.Error()), pr.HeadSHA, armedAt)
+	}
+	if truncated {
+		// The scan could not see the whole conversation — inconclusive, and
+		// inconclusive must NOT proceed (fail closed, r36): the verdict sits
+		// at the newest end of exactly the history we could not read.
+		return withPresence(waiting("verdict-standing scan inconclusive (conversation exceeds the scan cap) — staying armed"), pr.HeadSHA, armedAt)
 	}
 	if verdict, ok := standingVerdictAt(comments, pr.HeadSHA); ok {
 		ev := standdown(CodeVerdictStanding, fmt.Sprintf(

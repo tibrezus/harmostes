@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,9 +23,21 @@ import (
 
 // refusedPRServer: a labeled, green PR whose conversation carries a
 // REQUEST_CHANGES verdict at its head (the "already reviewed" world).
-func refusedPRServer(t *testing.T) *httptest.Server {
+// Counters make the memo's cost contract assertable: a memo hit must walk
+// ZERO comment pages (the expensive full-history scan) — the single-PR
+// head fetch is the one permitted call for scan candidates (sha-matching
+// needs it); /comments must never be hit for a skipped candidate.
+type countingServer struct {
+	*httptest.Server
+	commentWalks *int32
+	singlePulls  *int32
+}
+
+func refusedPRServer(t *testing.T) countingServer {
 	t.Helper()
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+	var commentWalks, singlePulls int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case strings.HasSuffix(req.URL.Path, "/pulls"):
@@ -34,12 +47,14 @@ func refusedPRServer(t *testing.T) *httptest.Server {
 					"labels": []map[string]string{{"name": "needs-review"}}},
 			})
 		case strings.Contains(req.URL.Path, "/pulls/"):
+			atomic.AddInt32(&singlePulls, 1)
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"state": "open", "head": map[string]string{"sha": "deadbeef123"},
 				"base":   map[string]string{"ref": "main"},
 				"labels": []map[string]string{{"name": "needs-review"}},
 			})
 		case strings.Contains(req.URL.Path, "/comments"):
+			atomic.AddInt32(&commentWalks, 1)
 			_ = json.NewEncoder(w).Encode([]any{
 				map[string]string{"body": "verdict\n\n<!-- pr-review: REQUEST_CHANGES @ deadbeef123 -->"},
 			})
@@ -48,14 +63,15 @@ func refusedPRServer(t *testing.T) *httptest.Server {
 		default:
 			http.NotFound(w, req)
 		}
-	}))
+	})
+	return countingServer{httptest.NewServer(mux), &commentWalks, &singlePulls}
 }
 
 func TestRefusalMemoisesAndSkipsLabeledScan(t *testing.T) {
 	clearTriggerEnv(t)
 	srv := refusedPRServer(t)
 	t.Cleanup(srv.Close)
-	pinReviewAPI(t, srv, true)
+	pinReviewAPI(t, srv.Server, true)
 	wf := gateWorkflow()
 	st := &fakeStatus{}
 	deps, ctx := gateEnv(t, wf, st)
@@ -80,10 +96,14 @@ func TestRefusalMemoisesAndSkipsLabeledScan(t *testing.T) {
 	if !strings.Contains(ref.Reason, "exactly once") {
 		t.Fatalf("memo must carry the dev-facing directive, got %q", ref.Reason)
 	}
+	walks1, pulls1 := *srv.commentWalks, *srv.singlePulls
 
 	// Sweep 2: the labeled scan re-discovers the still-labeled PR (the gate
-	// cannot remove the label) — the memo must skip it BEFORE any host
-	// evaluation: no dispatch, and no NEW refusal entries (no churn).
+	// cannot remove the label) — the memo must skip it with ZERO comment
+	// walks (the full-history scan is the expensive call this exists to
+	// avoid; neuter the Matches check and this assertion is what goes red —
+	// mutation-verified) and exactly ONE single-PR head fetch (the sha
+	// match for a scan candidate needs it). No dispatch, no new entries.
 	out2, err := RunReviewGateSweep(ctx, deps, wf)
 	if err != nil {
 		t.Fatalf("sweep 2: %v", err)
@@ -91,8 +111,17 @@ func TestRefusalMemoisesAndSkipsLabeledScan(t *testing.T) {
 	if len(out2) != 0 {
 		t.Fatalf("memo hit must not dispatch, got %d dispatches", len(out2))
 	}
+	if *srv.commentWalks != walks1 {
+		t.Fatalf("memo hit must not walk the conversation: %d → %d comment walks", walks1, *srv.commentWalks)
+	}
+	if *srv.singlePulls != pulls1+1 {
+		t.Fatalf("memo hit on a sha-less scan candidate pays exactly one head fetch: %d → %d", pulls1, *srv.singlePulls)
+	}
 	if len(st.last.ReviewReady.Refusals) != 1 {
 		t.Fatalf("repeat sweeps must not grow the memo, got %d entries", len(st.last.ReviewReady.Refusals))
+	}
+	if !strings.Contains(st.last.ReviewReady.LastReason, "verdict standing") {
+		t.Fatalf("the skip must speak in status, got %q", st.last.ReviewReady.LastReason)
 	}
 }
 
@@ -102,7 +131,7 @@ func TestRefusalMemoMissFlowsOnPush(t *testing.T) {
 	clearTriggerEnv(t)
 	srv := refusedPRServer(t)
 	t.Cleanup(srv.Close)
-	pinReviewAPI(t, srv, true)
+	pinReviewAPI(t, srv.Server, true)
 	wf := gateWorkflow()
 	st := &fakeStatus{}
 	// Seed the memo through the status the sweep reads (liveAgg): a refusal
@@ -128,5 +157,49 @@ func TestRefusalMemoMissFlowsOnPush(t *testing.T) {
 	rr := st.last.ReviewReady
 	if len(rr.Refusals) != 2 {
 		t.Fatalf("a non-matching memo entry must survive and the fresh refusal join it, got %+v", rr.Refusals)
+	}
+}
+
+// A human-shaped re-request at a refused head is NOT silently skipped
+// (#328 precedence, r36): it falls into Evaluate, whose verdict-standing
+// refusal re-emits the directive VISIBLY (status + timeline) and refreshes
+// the memo — refused-with-a-directive, never an invisible continue. On
+// Forgejo every label add is a granular label_updated; "human-shaped" is
+// the label being PRESENT at the resolved head (a removal answers nothing).
+func TestRefusalHumanReRequestAnswersVisibly(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := refusedPRServer(t)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv.Server, true)
+	wf := gateWorkflow()
+	st := &fakeStatus{}
+	// Pre-seed the memo: the head was refused in an earlier sweep.
+	st.last.ReviewReady = &v1alpha1.ReviewReadyStatus{Refusals: []v1alpha1.ReviewRefusal{{
+		Repo: "git.rezus.cloud/tibrez/rhesadox", PR: 99,
+		HeadSHA: "deadbeef123",
+		At:      &metav1.Time{Time: time.Now()},
+	}}}
+	deps, ctx := gateEnv(t, wf, st)
+	deps.Wake = GateWake{
+		Repo: "git.rezus.cloud/tibrez/rhesadox", Action: "label_updated", // Forgejo granular: add/remove indistinguishable in the payload
+		PR: "git.rezus.cloud/tibrez/rhesadox#99", Revision: "deadbeef123",
+	}
+
+	out, err := RunReviewGateWake(ctx, deps, wf)
+	if err != nil {
+		t.Fatalf("wake: %v", err)
+	}
+	if len(out) != 0 {
+		t.Fatalf("a refused head must not dispatch even for a human re-request, got %d", len(out))
+	}
+	rr := st.last.ReviewReady
+	if rr == nil {
+		t.Fatal("no aggregates written")
+	}
+	if !strings.Contains(rr.LastReason, "verdict already stands at head deadbeef123") {
+		t.Fatalf("the human re-request must be ANSWERED with the standing-verdict directive in status, got %q", rr.LastReason)
+	}
+	if len(rr.Refusals) != 1 {
+		t.Fatalf("re-memoise must upsert, not grow, got %d", len(rr.Refusals))
 	}
 }

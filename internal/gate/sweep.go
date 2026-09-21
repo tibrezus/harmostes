@@ -761,12 +761,31 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 		// candidate flows into Evaluate normally.
 		if ref := v1alpha1.ReviewRefusalFor(refusals, cand.repo, cand.pr); ref != nil {
 			head := candSha(cand)
-			if head == "" {
-				if prr, err := api.GetPullRequest(ctx, cand.repo, cand.pr); err == nil && prr != nil {
-					head = prr.HeadSHA
+			var prr *review.PullRequest
+			if head == "" || cand.granularLabel {
+				// The deferred head fetch (scan candidates carry no sha) and
+				// the granular direction pre-read share one call — this is
+				// the ONLY host call a memo-hit scan candidate pays.
+				if p, err := api.GetPullRequest(ctx, cand.repo, cand.pr); err == nil && p != nil {
+					prr = p
+					if head == "" {
+						head = p.HeadSHA
+					}
 				}
 			}
-			if ref.Matches(head) {
+			// #328 precedence (r36): an explicitly human-shaped re-request
+			// outranks the memo — it falls into Evaluate, whose
+			// verdict-standing refusal IS the visible directive (status +
+			// timeline, refreshed each time). Granular wakes (Forgejo's
+			// ambiguous label_updated) resolve direction off the PR's
+			// current labels: present = a re-request to answer; absent = a
+			// removal, nothing to answer. The SILENT skip is for candidates
+			// with no human face: the labeled scan's rediscovery every
+			// sweep (the gate cannot remove the label — this skip is the
+			// loop-prevention case) and poll re-checks.
+			humanRequest := cand.labeled || (cand.granularLabel && prr != nil && prr.HasLabel(label))
+			if !humanRequest && ref.Matches(head) {
+				lastDecision, lastReason = "standdown", fmt.Sprintf("verdict standing at %s — memo (#567): push a fix commit to re-review", ref.HeadSHA)
 				log("review-ready: candidate %s skipped: verdict standing at %s (#567 memo) — push a fix commit to re-review", cand.pointer, ref.HeadSHA)
 				continue
 			}

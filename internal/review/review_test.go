@@ -171,6 +171,46 @@ func TestWaitingMissingContext(t *testing.T) {
 	}
 }
 
+func TestWaitingReasonNamesHeadAndClass(t *testing.T) {
+	// #588 (from the forgejo#132 incident): the waiting reason must name
+	// the evaluated head — an operator reading another sha's green records
+	// sees the mismatch at a glance — and a required context with no
+	// records at the head is named separately from a running one.
+	api := &fakeAPI{
+		pr: &PullRequest{State: "open", HeadSHA: "8c50e2c5f0d1a2b3c4", Base: "main",
+			Labels: []string{"needs-review"}},
+		required: []string{"running-ctx", "missing-ctx"},
+		states:   map[string]string{"running-ctx": "pending"},
+	}
+	r := Evaluate(context.Background(), api, base)
+	if r.Decision != DecisionWaiting {
+		t.Fatalf("want waiting, got %s (%s)", r.Decision, r.Reason)
+	}
+	for _, want := range []string{
+		"ci pending at head 8c50e2c",
+		"running: running-ctx",
+		"no records at head: missing-ctx",
+	} {
+		if !strings.Contains(r.Reason, want) {
+			t.Errorf("reason missing %q: %s", want, r.Reason)
+		}
+	}
+	if r.NewArmedSha != "8c50e2c5f0d1a2b3c4" {
+		t.Fatalf("structured field keeps the FULL sha, got %q", r.NewArmedSha)
+	}
+
+	red := &fakeAPI{
+		pr: &PullRequest{State: "open", HeadSHA: "8c50e2c5f0d1a2b3c4", Base: "main",
+			Labels: []string{"needs-review"}},
+		required: []string{"dead-ctx"},
+		states:   map[string]string{"dead-ctx": "failure"},
+	}
+	r = Evaluate(context.Background(), red, base)
+	if r.Decision != DecisionWaiting || !strings.Contains(r.Reason, "ci red at head 8c50e2c (dead-ctx)") {
+		t.Fatalf("red reason must name the head, got %s (%s)", r.Decision, r.Reason)
+	}
+}
+
 func TestStanddownLabelAbsent(t *testing.T) {
 	// The consumed case: the deploy plugin removed the label AFTER posting
 	// the verdict — the trailer is the durable consume signal.
@@ -231,7 +271,7 @@ func TestLabelAbsentHoldNoteDiscriminatesCI(t *testing.T) {
 
 	redC := &fakeAPI{pr: openPR("full-pipeline"), required: []string{"a", "b"}, states: map[string]string{"a": "success", "b": "failure"}}
 	r = Evaluate(context.Background(), redC, base)
-	if r.Decision != DecisionWaiting || !strings.Contains(r.Reason, "ci red at head (b)") || !strings.Contains(r.Reason, "dispatch on green") {
+	if r.Decision != DecisionWaiting || !strings.Contains(r.Reason, "ci red at head") || !strings.Contains(r.Reason, "(b)") || !strings.Contains(r.Reason, "dispatch on green") {
 		t.Fatalf("red CI must be named with dispatch-on-green, got %q", r.Reason)
 	}
 	if strings.Contains(r.Reason, "ingress may be lost") {
@@ -240,7 +280,7 @@ func TestLabelAbsentHoldNoteDiscriminatesCI(t *testing.T) {
 
 	pend := &fakeAPI{pr: openPR("full-pipeline"), required: []string{"a", "b"}, states: map[string]string{"a": "success", "b": "pending"}}
 	r = Evaluate(context.Background(), pend, base)
-	if r.Decision != DecisionWaiting || !strings.Contains(r.Reason, "ci pending (b)") || !strings.Contains(r.Reason, "dispatch on green") {
+	if r.Decision != DecisionWaiting || !strings.Contains(r.Reason, "ci pending at head") || !strings.Contains(r.Reason, "running: b") || !strings.Contains(r.Reason, "dispatch on green") {
 		t.Fatalf("pending CI must be named with dispatch-on-green, got %q", r.Reason)
 	}
 }

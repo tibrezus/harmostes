@@ -502,21 +502,24 @@ func (a *RESTAPI) RequiredContexts(ctx context.Context, repo, branch string) ([]
 
 // classifyRequiredContexts buckets the required contexts by state — the
 // ONE classification home, shared by the label-present proceed path and
-// labelAbsentHoldNote (#512): red beats pending beats green, and a context
-// with no result yet (run not started, or the surface holds no entry) is
-// pending, not green.
-func classifyRequiredContexts(required []string, states map[string]string) (red, pending, green []string) {
+// labelAbsentHoldNote (#512): red beats pending beats green. A context
+// with no records at the head (run not started, or the surface holds no
+// entry) is missing, named separately from a running one (#588) — both
+// wait, but they read differently to an operator.
+func classifyRequiredContexts(required []string, states map[string]string) (red, running, missing, green []string) {
 	for _, ctx := range required {
 		switch states[ctx] {
 		case "success":
 			green = append(green, ctx)
 		case "failure":
 			red = append(red, ctx)
-		default: // pending or missing entirely (run not started)
-			pending = append(pending, ctx)
+		case "pending":
+			running = append(running, ctx)
+		default: // absent from the states map — no records at this head
+			missing = append(missing, ctx)
 		}
 	}
-	return red, pending, green
+	return red, running, missing, green
 }
 
 // labelAbsentHoldNote names WHY an armed, label-absent, verdict-less claim
@@ -538,12 +541,12 @@ func labelAbsentHoldNote(ctx context.Context, api API, p Params, pr *PullRequest
 	if err != nil {
 		return "ingress may be lost"
 	}
-	red, pending, _ := classifyRequiredContexts(required, states)
+	red, running, missing, _ := classifyRequiredContexts(required, states)
 	switch {
 	case len(red) > 0:
-		return "ci red at head (" + strings.Join(red, ", ") + ") — dispatch on green"
-	case len(pending) > 0:
-		return "ci pending (" + strings.Join(pending, ", ") + ") — dispatch on green"
+		return "ci red at head " + shortSha(pr.HeadSHA) + " (" + strings.Join(red, ", ") + ") — dispatch on green"
+	case len(running) > 0 || len(missing) > 0:
+		return ciPendingAtHead(pr.HeadSHA, running, missing) + " — dispatch on green"
 	default:
 		return "ci green at head, dispatch imminent; if this persists, ingress may be lost"
 	}
@@ -1009,19 +1012,46 @@ func Evaluate(ctx context.Context, api API, p Params) Result {
 		return withPresence(waiting("contexts fetch failed: "+err.Error()), pr.HeadSHA, armedAt)
 	}
 
-	red, pending, green := classifyRequiredContexts(required, states)
+	red, running, missing, green := classifyRequiredContexts(required, states)
 
 	switch {
 	case len(red) > 0:
 		// Red CI is a silent non-event: the dev already sees red CI; a
 		// REQUEST_CHANGES verdict would be noise. Stay armed — the next
 		// push (synchronize) re-arms at the new head.
-		return withPresence(waiting("ci red at head ("+strings.Join(red, ", ")+") — staying armed"), pr.HeadSHA, armedAt)
-	case len(pending) > 0:
-		return withPresence(waiting("ci pending ("+strings.Join(pending, ", ")+")"), pr.HeadSHA, armedAt)
+		return withPresence(waiting("ci red at head "+shortSha(pr.HeadSHA)+" ("+strings.Join(red, ", ")+") — staying armed"), pr.HeadSHA, armedAt)
+	case len(running) > 0 || len(missing) > 0:
+		return withPresence(waiting(ciPendingAtHead(pr.HeadSHA, running, missing)), pr.HeadSHA, armedAt)
 	default:
 		return proceed(p, pr, required, green)
 	}
+}
+
+// shortSha abbreviates a head SHA for reason text. The full SHA belongs
+// in the structured fields (NewArmedSha); the reason needs just enough to
+// spot a stale-head mismatch at a glance (#588 — the forgejo#132 incident
+// held an armed review for hours while the operator read another head's
+// green records).
+func shortSha(sha string) string {
+	if len(sha) > 7 {
+		return sha[:7]
+	}
+	return sha
+}
+
+// ciPendingAtHead renders the pending-class waiting reason. The head is
+// named so an operator comparing against another sha's records sees the
+// mismatch immediately, and a context with no records at the head (run
+// not started) is named separately from one that is running (#588).
+func ciPendingAtHead(sha string, running, missing []string) string {
+	var parts []string
+	if len(running) > 0 {
+		parts = append(parts, "running: "+strings.Join(running, ", "))
+	}
+	if len(missing) > 0 {
+		parts = append(parts, "no records at head: "+strings.Join(missing, ", "))
+	}
+	return "ci pending at head " + shortSha(sha) + " (" + strings.Join(parts, "; ") + ")"
 }
 
 func proceed(p Params, pr *PullRequest, required, green []string) Result {

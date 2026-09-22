@@ -37,6 +37,12 @@ export default defineConfig({
     url: `${BASE}/healthz`,
     reuseExistingServer: !process.env.CI,
     cwd: new URL('..', import.meta.url).pathname,
-    timeout: 60_000,
+    // 60s was enough when CI's module cache was always warm; a cold
+    // GOMODCACHE (new dependency on a fresh branch — observed 2026-09-22
+    // after robfig/cron landed) downloads + compiles the UI server inside
+    // this budget and blows it. 180s covers the cold path; the warm path
+    // is unaffected (the CI job pre-builds the server outside this
+    // timeout anyway).
+    timeout: 180_000,
   },
 });

@@ -298,6 +298,15 @@ jobs:
           sudo rm -f /etc/apt/sources.list.d/google-chrome*.list /etc/apt/sources.list.d/google*.list
           cd e2e && npx playwright install --with-deps chromium
 
+      # Pre-build the fixture UI server OUTSIDE Playwright's webServer
+      # timeout: on a cold GOMODCACHE (fresh branch + a new dependency —
+      # observed 2026-09-22 when robfig/cron landed, #590) the go run in
+      # the webServer hook downloads + compiles from scratch and blew the
+      # 60s budget. go run reuses this step's build cache, so the hook
+      # boots in seconds afterwards.
+      - name: Pre-build fixture UI server
+        run: go build ./cmd/harmostes-ui
+
       # The webServer hook in playwright.config.ts boots the fixture UI
       # itself (go run) and waits for /healthz — one command runs the tier.
       - name: Playwright tests

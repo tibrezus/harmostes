@@ -7,6 +7,7 @@ require (
 	github.com/cloudevents/sdk-go/v2 v2.16.2
 	github.com/go-logr/logr v1.4.3
 	github.com/prometheus/client_golang v1.19.1
+	github.com/robfig/cron/v3 v3.0.1
 	go.opentelemetry.io/otel v1.44.0
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc v1.44.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.27.0

@@ -11,6 +11,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/robfig/cron/v3"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
@@ -198,6 +199,33 @@ func (r *WorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 // delayed by this much is re-evaluated by the armed poll anyway (#343).
 const webhookMinTriggerInterval = 10 * time.Second
 
+// invalidScheduleRetry is how long a workflow whose cron cannot be parsed
+// waits between re-evaluations (#574). Fail-closed: a mistyped cron must
+// never fall open to fire-every-poll — that class starved the worker pool's
+// rate limiter for 40 minutes on 2026-09-21 while weekly instances
+// dispatched every PollInterval. The parse error is logged each evaluation
+// so the breakage is loud until fixed.
+const invalidScheduleRetry = 5 * time.Minute
+
+// minScheduleRequeue clamps the cron look-ahead requeue: a sub-minute cron
+// (or a desk-clock near the activation instant) must not turn into a
+// reconcile storm — the floor trades a little fire-time precision for a
+// bounded cadence.
+const minScheduleRequeue = time.Minute
+
+// nextCronActivation parses spec as a standard 5-field cron (with optional
+// seconds prefix and @descriptors) and returns its first activation strictly
+// after last. A zero last (never run) anchors at the zero time, whose next
+// activation is always in the past — so a never-run workflow fires once
+// immediately and the LastRunAt watermark takes over from there (#574).
+func nextCronActivation(spec string, last time.Time) (time.Time, error) {
+	sched, err := cron.ParseStandard(spec)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return sched.Next(last), nil
+}
+
 // errTriggerCooldown: the slot was claimed within the cooldown — the caller
 // must NOT claim the publish (another reconcile already did, or the poll
 // just ran — a false return with a nil error is the normal losing path, not
@@ -292,6 +320,28 @@ func (r *WorkflowReconciler) isDue(wf *v1alpha1.Workflow) (bool, time.Duration) 
 	// path and fires every PollInterval, defeating the event-driven model.
 	if wf.Spec.Source.Kind == "webhook" {
 		return false, r.PollInterval
+	}
+
+	// Cron-watermark schedule sources (#574): due only when the cron's next
+	// activation after the last run has arrived — NOT every PollInterval.
+	// Before this, spec.source.schedule was decorative: "0 4 * * 0" fired
+	// once per poll (weekly instances dispatched every ~30m, each burning a
+	// Job + clone and rate-limiter budget). Parse errors fail closed at
+	// invalidScheduleRetry so a bad cron degrades to silence + a loud log,
+	// never to fire-every-poll.
+	if sched := strings.TrimSpace(wf.Spec.Source.Schedule); sched != "" {
+		next, err := nextCronActivation(sched, wf.Status.LastRunAt.Time)
+		if err != nil {
+			if log.Log.GetSink() != nil {
+				log.Log.Error(err, "invalid schedule — failing closed, no runs until fixed (#574)",
+					"workflow", wf.Name, "schedule", sched)
+			}
+			return false, invalidScheduleRetry
+		}
+		if requeue := time.Until(next); requeue > 0 {
+			return false, max(requeue, minScheduleRequeue)
+		}
+		return true, r.PollInterval
 	}
 
 	// Schedule elapsed

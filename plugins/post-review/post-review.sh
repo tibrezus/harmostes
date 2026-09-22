@@ -201,12 +201,37 @@ dec="APPROVE"
 # (the exact lost-round signature this plugin exists to prevent). Anything
 # whose dialect/identity we cannot read is counted as CLOSED-BY-DEFAULT
 # here: a false APPROVE re-reviews next round, a crash wedges the head.
+# Round identity = commit_id; roots = non-reply comments at a prior head.
+# The r12 invariant, made mechanical (#579 — the rhesadox#2360 burn): the
+# downgrade counts unresolved threads on the NEWEST PRIOR ROUND only —
+# selected over ALL prior-round roots (a fully-resolved newest round must
+# yield zero, not fall back to counting stale older rounds). Older
+# rounds' leftovers are bookkeeping: the reviewer re-reviews the whole
+# diff each round, so a still-live finding reappears at the current head
+# (commit_id == sha, excluded) or on the immediately-prior round. Naive
+# all-round counting let duplicates accumulate monotonically (the
+# reviewer re-posts canonical findings as NEW threads each round; the
+# author resolves only the newest review's — 3×5=15 stale threads
+# downgraded verdicts over a fixed diff on #2360, the exact "trusts UI
+# state" failure r12 forbade). Both hosts emit Z-suffixed RFC3339 (the
+# non-Z caveat is the marker rule's); unlike closure, ordering merely
+# picks WHICH round gets counted — a non-Z round can shift the count to
+# another real round, never to zero.
+def reply_parent(c):
+    return c.get("in_reply_to_id") or c.get("in_reply_to")
+_roots=[c for c in cs
+    if isinstance(c, dict) and not reply_parent(c)
+    and c.get("commit_id") not in (None, "")
+    and str(c.get("commit_id"))!=sha]
+_rounds={}
+for _c in _roots:
+    _rounds.setdefault(str(_c.get("commit_id")), []).append(_c)
+_newest=max(_rounds, key=lambda _cid: max(str(_c.get("created_at") or "") for _c in _rounds[_cid])) if _rounds else None
 if cs and isinstance(cs[0], dict) and "resolvable" in cs[0]:
     # GitLab dialect: native resolve is authoritative.
-    open_threads=[c for c in cs
+    open_threads=[c for c in (_rounds.get(_newest, []) if _newest else [])
         if isinstance(c, dict)
-        and c.get("resolvable") and not c.get("resolved")
-        and str(c.get("commit_id") or "")!=sha]
+        and c.get("resolvable") and not c.get("resolved")]
 else:
     # GitHub/Forgejo dialect: a thread is CLOSED by real resolve state
     # (C1 — a GraphQL-side resolve leaves no reply) or by a reply.
@@ -214,8 +239,6 @@ else:
     # in_reply_to_id, Forgejo in_reply_to — read both (the live review
     # loop of #467 tripped this: replies never closed threads on GitHub,
     # so every APPROVE downgraded on phantom open threads).
-    def reply_parent(c):
-        return c.get("in_reply_to_id") or c.get("in_reply_to")
     replied={reply_parent(c) for c in cs if isinstance(c, dict) and reply_parent(c)}
     # Fork-gap addressal marker (#572): on Forgejo the REST create-review
     # API cannot SET in_reply_to (a rezuscloud/forgejo follow-up) and the
@@ -298,16 +321,13 @@ else:
                 and str(t.get("created_at") or "").endswith("Z")
                 and str(r.get("created_at"))>str(t.get("created_at"))):
                 addressed.add(t.get("id")); marker_ids.add(r.get("id"))
-    open_threads=[c for c in cs
+    open_threads=[c for c in (_rounds.get(_newest, []) if _newest else [])
         if isinstance(c, dict)
         and not reply_parent(c)
         and c.get("id") not in replied
         and c.get("id") not in addressed
         and c.get("id") not in marker_ids
-        and not c.get("resolved")
-        # No commit_id → round unattributable: never downgrade on it (C4).
-        and c.get("commit_id") not in (None, "")
-        and str(c.get("commit_id"))!=sha]
+        and not c.get("resolved")]
 open_n=len(open_threads)
 if open_threads:
     dec="REQUEST_CHANGES"
@@ -379,7 +399,7 @@ if os.environ.get("DOWNGRADED"):
     # must stay self-describing: the downgrade fires on PRIOR-round threads,
     # so "N blocking findings" would be false here.
     line=(f"{dec} at {sha} — downgraded: {os.environ.get('OPEN_THREADS','0')} unresolved "
-          "prior-round thread(s); reply with the fix SHA, resolve, then re-arm.")
+          "prior-round thread(s); reply with the fix SHA, resolve, then push (any commit) and re-arm — a same-head re-arm is refused (#567, #579).")
 elif dec=="APPROVE":
     line=f"APPROVE at {sha} — all pillars clean, no blocking findings. Label consumed; re-arm with the label to review again."
     todos=review.get("todos",[]) or []

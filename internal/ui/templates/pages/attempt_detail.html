@@ -277,6 +277,7 @@
 		if (d.ranWith) row('Ran with', d.ranWith);
 		if (d.summary) row('Summary', d.summary);
 		if (d.duration) row('Duration', d.duration);
+		if (d.attempts > 1) row('Attempts', d.attempts + ' (transient retries)');
 		if (d.runID) row('Run', d.runID);
 		if (d.producedAt) row('Finished', d.producedAt);
 		if (d.claims) row('Claims', d.claims);

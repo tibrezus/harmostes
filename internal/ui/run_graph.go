@@ -97,6 +97,7 @@ type nodeData struct {
 	RunID       string   `json:"runID,omitempty"`
 	ProducedAt  string   `json:"producedAt,omitempty"`
 	Duration    string   `json:"duration,omitempty"` // humanized node execution time
+	Attempts    int      `json:"attempts,omitempty"` // >1: kernel retried a transient failure (ADR-0012 §9)
 	Claims      int      `json:"claims,omitempty"`
 	Refs        int      `json:"refs,omitempty"`
 	TriggeredBy string   `json:"triggeredBy,omitempty"`
@@ -199,6 +200,7 @@ func (s *Server) buildRunGraph(ctx context.Context, att *v1alpha1.Attempt) runGr
 			data.RunID = env.RunID
 			data.ProducedAt = env.ProducedAt.Format("2006-01-02 15:04:05 MST") // matches the run rows above
 			data.Duration = formatDuration(time.Duration(env.DurationMs) * time.Millisecond)
+			data.Attempts = env.Attempt
 			data.Claims = len(env.Claims)
 			data.Refs = len(env.References)
 			data.TriggeredBy = env.Provenance.TriggeredBy
@@ -236,6 +238,7 @@ func buildTimingStrip(nodes []graphNodeView, latest map[string]v1alpha1.NodeResu
 	type lane struct {
 		label, status string
 		start, end    time.Time
+		retries       int // envelope attempt count (>1: retried transient failure)
 	}
 	var lanes []lane
 
@@ -255,10 +258,11 @@ func buildTimingStrip(nodes []graphNodeView, latest map[string]v1alpha1.NodeResu
 	for _, n := range ordered {
 		env := latest[n.ID]
 		lanes = append(lanes, lane{
-			label:  n.Label,
-			status: n.Status,
-			start:  env.ProducedAt.Add(-time.Duration(env.DurationMs) * time.Millisecond),
-			end:    env.ProducedAt.Time,
+			label:   n.Label,
+			status:  n.Status,
+			start:   env.ProducedAt.Add(-time.Duration(env.DurationMs) * time.Millisecond),
+			end:     env.ProducedAt.Time,
+			retries: env.Attempt,
 		})
 	}
 
@@ -274,6 +278,17 @@ func buildTimingStrip(nodes []graphNodeView, latest map[string]v1alpha1.NodeResu
 	total := spanEnd.Sub(spanStart)
 	if total <= 0 {
 		return nil
+	}
+
+	// segmentTitle is a waterfall bar's hover text: the humanized duration,
+	// plus the retry count when the kernel had to retry a transient failure
+	// (ADR-0012 §9) — the title is where a scanner looks first.
+	segmentTitle := func(l lane) string {
+		title := formatDuration(l.end.Sub(l.start))
+		if l.retries > 1 {
+			title += fmt.Sprintf(" · retry ×%d", l.retries)
+		}
+		return title
 	}
 
 	const barX, labelW = 110, 520
@@ -301,7 +316,7 @@ func buildTimingStrip(nodes []graphNodeView, latest map[string]v1alpha1.NodeResu
 			Status: l.status,
 			X:      barX + x,
 			Width:  w,
-			Title:  formatDuration(l.end.Sub(l.start)),
+			Title:  segmentTitle(l),
 		})
 	}
 	// Short bars label to the right of the bar; long bars inside.

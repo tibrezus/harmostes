@@ -72,6 +72,36 @@ type NodeSpec struct {
 	// capability. Binding presence != blanket access.
 	//+optional
 	Requires []CapabilityRequirement `json:"requires,omitempty"`
+
+	// Retry is the transient-fault retry policy for this node (ADR-0012 §9).
+	// A failed node is retried ONLY when its executor classified the failure
+	// transient — for plugin nodes, exit code 75 (EX_TEMPFAIL) or 69
+	// (EX_UNAVAILABLE). Node timeouts and executor errors are terminal, as
+	// are all non-transient failures. Empty means no retry: the failure goes
+	// straight into the graph's when:failed routing.
+	//+optional
+	Retry *RetryPolicy `json:"retry,omitempty"`
+}
+
+// RetryPolicy bounds the in-run retry of a transient node failure.
+// Backoff doubles from InitialDelay up to MaxDelay. Budgets are
+// seconds-capped on purpose: long waits belong to the cross-run re-arm
+// (claims, schedules), not to a sleeping pod holding its claim slot.
+type RetryPolicy struct {
+	// MaxAttempts is the TOTAL number of execution attempts, including the
+	// first. 1 (the default when absent) means no retry. Hard-capped at 5.
+	//+kubebuilder:validation:Minimum=1
+	//+kubebuilder:validation:Maximum=5
+	MaxAttempts int `json:"maxAttempts,omitempty"`
+
+	// InitialDelay is the backoff before the first retry. Go duration
+	// string ("2s", "500ms"); default "5s".
+	//+optional
+	InitialDelay string `json:"initialDelay,omitempty"`
+
+	// MaxDelay caps backoff growth. Go duration string; default "1m".
+	//+optional
+	MaxDelay string `json:"maxDelay,omitempty"`
 }
 
 // EdgeSpec defines a directed edge between two nodes.

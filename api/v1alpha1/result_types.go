@@ -52,6 +52,12 @@ type NodeResultEnvelope struct {
 	// Status is the execution outcome: ok | skipped | failed.
 	Status string `json:"status"`
 
+	// Attempt is the 1-based execution attempt for this node within its
+	// run. Absent (or 1) = first attempt; >1 means the kernel retried a
+	// transient failure under the node's retry policy (ADR-0012 §9).
+	//+optional
+	Attempt int `json:"attempt,omitempty"`
+
 	// Summary is a short human-readable description.
 	// +optional
 	Summary string `json:"summary,omitempty"`

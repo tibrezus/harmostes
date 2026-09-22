@@ -46,6 +46,7 @@ const (
 	KindRunCompleted  = "run.completed"
 	KindNodeStarted   = "node.started"
 	KindNodeCompleted = "node.completed"
+	KindNodeRetry     = "node.retry" // transient-fault retry backoff (ADR-0012 §9)
 	KindPluginTail    = "plugin.tail"
 	KindGateArmed     = "gate.armed"
 	KindGateWaiting   = "gate.waiting" // transitions only — not every re-evaluation

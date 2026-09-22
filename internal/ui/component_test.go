@@ -11,6 +11,7 @@
 package ui_test
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -663,5 +664,49 @@ func TestComponent_WorkflowsGroupsSpeakTemplates(t *testing.T) {
 	}
 	if doc.Find(".page-tab").Length() != 0 {
 		t.Error("the in-page tab pair is gone (the nav owns Workflows|Templates)")
+	}
+}
+
+// The gate envelope of the terminal demo attempt carries attempt=2 — the
+// fixture's transient-retry surfacing (ADR-0012 §9): the panel JSON must
+// carry the Attempts field and the waterfall title must name the retry.
+func TestComponent_RunDetail_TransientRetrySurfacing(t *testing.T) {
+	ts := newFixtureServer(t)
+	doc := getAsFixtureUser(t, ts, "/runs/attempt-pr-review-demo-42a1")
+
+	// The panel data ships as JSON in #run-graph-data-initial (the inline
+	// script the hover/click handlers read).
+	data := doc.Find("#run-graph-data-initial")
+	if data.Length() != 1 {
+		t.Fatal("run graph initial data must exist")
+	}
+	// NodeDataJSON marshals the NodeData map directly (no wrapper key).
+	var nodes map[string]struct {
+		Attempts int    `json:"attempts"`
+		Duration string `json:"duration"`
+	}
+	if err := json.Unmarshal([]byte(data.Text()), &nodes); err != nil {
+		t.Fatalf("decode run graph data: %v", err)
+	}
+	gate, ok := nodes["gate"]
+	if !ok {
+		t.Fatal("gate node missing from panel data")
+	}
+	if gate.Attempts != 2 {
+		t.Errorf("gate attempts = %d, want 2 (fixture's retried envelope)", gate.Attempts)
+	}
+
+	// The waterfall title names the retry — scanner-first placement. The
+	// title renders as an SVG <title> child of the bar rect (hover text).
+	var retryTitle string
+	doc.Find(`[data-testid="timing-lane"] rect > title`).Each(func(_ int, s *goquery.Selection) {
+		if txt := s.Text(); strings.Contains(txt, "retry ×2") {
+			retryTitle = txt
+		}
+	})
+	if retryTitle == "" {
+		t.Error("waterfall must carry a 'retry ×2' title for the retried gate segment")
+	} else if !strings.Contains(retryTitle, "40.0s") {
+		t.Errorf("retry title = %q, want it to keep the duration", retryTitle)
 	}
 }

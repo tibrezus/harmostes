@@ -352,12 +352,23 @@ type ReviewRefusal struct {
 	HeadSHA string       `json:"headSha"`
 	Reason  string       `json:"reason,omitempty"`
 	At      *metav1.Time `json:"at,omitempty"`
+	// VerdictURL: deep link to the verdict comment that stands at HeadSHA
+	// (#577) — captured at creation so the host-facing notice can link the
+	// author to the review they missed without re-walking the conversation.
+	VerdictURL string `json:"verdictUrl,omitempty"`
 	// Emitted: the gate-standdown timeline event for THIS refusal has
 	// landed. Per-candidate dedupe (r38 F-B): a workflow-level headline
 	// mute suppressed a DIFFERENT candidate's terminal standdown and
 	// oscillated with multi-PR sweeps — repetition state must live on the
 	// refusal, not on the sweep's single lastReason.
 	Emitted bool `json:"emitted,omitempty"`
+	// HostNotified: the one-line PR comment pointing at this refusal has
+	// been posted (#577). The refusal was invisible on the PR surface —
+	// the only one the author watches — and a same-head re-arm storm read
+	// as a stalled queue (rhesadox#2340: four arms over four hours against
+	// a verdict that landed before the first). Dedupe per refusal; a
+	// failed post leaves this false and the next sweep retries.
+	HostNotified bool `json:"hostNotified,omitempty"`
 }
 
 // RecordRefusal upserts a refusal (newest first) and prunes to the cap.

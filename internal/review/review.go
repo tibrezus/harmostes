@@ -27,6 +27,7 @@
 package review
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -59,6 +60,10 @@ type Envelope struct {
 	Label            string   `json:"label"`            // the review-request label
 	RequiredContexts []string `json:"requiredContexts"` // merge-rule required contexts
 	GreenContexts    []string `json:"greenContexts"`    // contexts observed green at head
+	// VerdictURL: the anchor of the verdict comment that stands at HeadSHA
+	// (#577) — set only on verdict-standing refusals so the host-facing
+	// one-liner deep-links the author to the review they missed.
+	VerdictURL string `json:"verdictUrl,omitempty"`
 }
 
 // Evaluation is one gate decision plus its reason.
@@ -113,6 +118,12 @@ type API interface {
 	// on exactly the longest-running PRs). Callers treat truncated as
 	// inconclusive and wait (#242 page-1-hides-the-verdict, #308 dialect).
 	ListCommentsAll(ctx context.Context, repo string, number int) (comments []IssueComment, truncated bool, err error)
+	// PostComment writes one conversation comment (#577): the standing-
+	// verdict refusal is invisible on the PR surface (status + timeline are
+	// controller-side bookkeeping the author never sees), so the first
+	// refusal of a head posts a one-line pointer to the missed verdict. The
+	// sweep runs worker-side (token-bearing); the controller never posts.
+	PostComment(ctx context.Context, repo string, number int, body string) error
 }
 
 // PullRequest is the normalized PR view the gate needs.
@@ -262,6 +273,57 @@ func (a *RESTAPI) get(ctx context.Context, host Host, path, accept string, out a
 
 var errNotFound = fmt.Errorf("review: not found")
 
+// post writes one JSON payload to the host with the same token/transport
+// conventions as get. The gate is read-only everywhere EXCEPT the refusal
+// notice (#577): the sweep runs worker-side where the host tokens live, so
+// the one-line pointer to a missed verdict posts from here.
+func (a *RESTAPI) post(ctx context.Context, host Host, path string, payload any) error {
+	if a.Client == nil {
+		a.Client = http.DefaultClient
+	}
+	p, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.baseURL(host)+path, bytes.NewReader(p))
+	if err != nil {
+		return err
+	}
+	token := ""
+	if a.TokenLookup != nil {
+		for _, env := range host.TokenEnvNames() {
+			if v := a.TokenLookup(env); v != "" {
+				token = v
+				break
+			}
+		}
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "token "+token)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := a.Client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return &httpError{Status: resp.StatusCode, Body: string(body)}
+	}
+	return nil
+}
+
+// PostComment writes one conversation comment (#577). Both host kinds
+// expose issue comments at the same path shape with the same {body} payload.
+func (a *RESTAPI) PostComment(ctx context.Context, repo string, number int, body string) error {
+	host, err := ResolveHost(repo)
+	if err != nil {
+		return err
+	}
+	return a.post(ctx, host, fmt.Sprintf("/repos/%s/issues/%d/comments", host.RepoPath, number), map[string]string{"body": body})
+}
+
 // httpError carries a non-2xx status from get().
 type httpError struct {
 	Status int
@@ -307,9 +369,14 @@ func (a *RESTAPI) GetPullRequest(ctx context.Context, repo string, number int) (
 }
 
 // IssueComment is the minimal issue/PR comment view the gate needs: the
-// body, scanned for the verdict trailer.
+// body, scanned for the verdict trailer, plus the anchor fields the
+// refusal notice links through (#577): ID and HTMLURL identify the exact
+// verdict comment so the host-facing one-liner can deep-link the author to
+// the review they missed.
 type IssueComment struct {
-	Body string `json:"body"`
+	ID      int64  `json:"id"`
+	Body    string `json:"body"`
+	HTMLURL string `json:"html_url"`
 }
 
 // maxCommentPages bounds the page walk in ListComments: 10 pages of 100
@@ -914,13 +981,15 @@ func Evaluate(ctx context.Context, api API, p Params) Result {
 		// at the newest end of exactly the history we could not read.
 		return withPresence(waiting("verdict-standing scan inconclusive (conversation exceeds the scan cap) — staying armed"), pr.HeadSHA, armedAt)
 	}
-	if verdict, ok := standingVerdictAt(comments, pr.HeadSHA); ok {
+	if verdict, src, ok := standingVerdictAt(comments, pr.HeadSHA); ok {
 		ev := standdown(CodeVerdictStanding, fmt.Sprintf(
 			"verdict already stands at head %s (%s) — the gate reviews each head exactly once: push a fix commit (new head), reply on the finding threads (fj review reply <pr> <comment-id>), resolve them (fj review resolve), then re-arm",
 			pr.HeadSHA, verdict))
-		// The refusal carries its head so the caller can memoise it; the
-		// other envelope fields stay empty — nothing was dispatched.
-		ev.Envelope = &Envelope{Repo: p.Repo, PR: p.PR, HeadSHA: pr.HeadSHA, Label: p.Label}
+		// The refusal carries its head + the verdict's anchor (#577: the
+		// host-facing one-liner deep-links the author to the review they
+		// missed) so the caller can memoise it; the other envelope fields
+		// stay empty — nothing was dispatched.
+		ev.Envelope = &Envelope{Repo: p.Repo, PR: p.PR, HeadSHA: pr.HeadSHA, Label: p.Label, VerdictURL: src.HTMLURL}
 		return withPresence(ev, pr.HeadSHA, armedAt)
 	}
 
@@ -1012,7 +1081,7 @@ var verdictTrailer = regexp.MustCompile(`<!-- pr-review: (APPROVE|REQUEST_CHANGE
 // never the reverse: a head shorter than a trailer is a fake-world shape,
 // not a real abbreviation. Verdicts at any OTHER sha do not block — a push
 // (new head) is what re-opens review.
-func standingVerdictAt(comments []IssueComment, headSHA string) (decision string, found bool) {
+func standingVerdictAt(comments []IssueComment, headSHA string) (decision string, source IssueComment, found bool) {
 	head := strings.ToLower(headSHA)
 	for _, c := range comments {
 		m := verdictTrailer.FindStringSubmatch(c.Body)
@@ -1020,10 +1089,10 @@ func standingVerdictAt(comments []IssueComment, headSHA string) (decision string
 			continue
 		}
 		if strings.HasPrefix(head, strings.ToLower(m[2])) {
-			return m[1], true
+			return m[1], c, true
 		}
 	}
-	return "", false
+	return "", IssueComment{}, false
 }
 
 // hasVerdict reports whether any conversation comment carries a pr-review

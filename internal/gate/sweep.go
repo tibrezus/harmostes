@@ -822,6 +822,12 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 					}, cand.repo, cand.pr)
 					ref.Emitted = true // ref points into refusals — carried by the final patch
 				}
+				// #577: the refusal must also land ON THE PR — the one
+				// surface the author watches. Status + timeline alone read
+				// as "no response" (rhesadox#2340: four re-arms over four
+				// hours against a verdict that landed before the first
+				// re-arm). Deduped per refusal; failed posts retry.
+				notifyRefusalHost(ctx, api, ref, log)
 				continue
 			}
 		}
@@ -954,14 +960,21 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 				// second one for the same logical refusal (F-B: exactly one
 				// event per refusal, per candidate).
 				refusals = v1alpha1.RecordReviewRefusal(refusals, v1alpha1.ReviewRefusal{
-					Repo:    cand.repo,
-					PR:      cand.pr,
-					HeadSHA: res.Envelope.HeadSHA,
-					Reason:  res.Reason,
-					At:      &metav1.Time{Time: now},
-					Emitted: true,
+					Repo:       cand.repo,
+					PR:         cand.pr,
+					HeadSHA:    res.Envelope.HeadSHA,
+					Reason:     res.Reason,
+					At:         &metav1.Time{Time: now},
+					Emitted:    true,
+					VerdictURL: res.Envelope.VerdictURL,
 				})
 				log("review-ready: refused %s at %s — verdict standing (#567); memoised so the labeled scan will not re-arm it", cand.pointer, res.Envelope.HeadSHA)
+				// #577: the FIRST refusal posts the host-facing notice too —
+				// the verdict itself is easy to miss in a busy conversation,
+				// and every later re-arm is memo-refused silently.
+				if fresh := v1alpha1.ReviewRefusalFor(refusals, cand.repo, cand.pr); fresh != nil {
+					notifyRefusalHost(ctx, api, fresh, log)
+				}
 			}
 			lastDecision, lastReason = string(res.Decision), res.Reason
 			emitGate(ctx, deps.TL, liveAgg, res, cand.repo, cand.pr)
@@ -1300,6 +1313,32 @@ func releaseDeadClaim(ctx context.Context, deps GateDeps, at v1alpha1.Attempt, r
 // sweep deadline — the write is best-effort telemetry, the handoff
 // (arm→dispatch) is the product.
 var tlWriteTimeout = 5 * time.Second // mutated only by TestSweepTLWriteBoundedNonFatal — tests in this file are SERIAL; a t.Parallel() would race on this package global (pass it via GateDeps instead if parallelism ever lands)
+
+// notifyRefusalHost posts the one-line PR comment that surfaces a
+// standing-verdict refusal ON THE PR — the surface the author watches
+// (#577). Status + timeline alone read as "no response": rhesadox#2340
+// took four re-arms over four hours against a verdict that had landed
+// before the first re-arm. Deduped by the refusal record (HostNotified):
+// exactly one comment per (pr, head); a failed post leaves the marker
+// false and the next sweep retries — the sweep is idempotent, the host
+// comment is the thing that must not spam.
+func notifyRefusalHost(ctx context.Context, api review.API, ref *v1alpha1.ReviewRefusal, log func(string, ...any)) {
+	if ref.HostNotified {
+		return
+	}
+	link := ""
+	if ref.VerdictURL != "" {
+		link = " The verdict: " + ref.VerdictURL
+	}
+	body := fmt.Sprintf("Review gate (#567): this head (`%s`) was already reviewed — no new review runs at the same SHA.%s %s",
+		ref.HeadSHA, link, ref.Reason)
+	if err := api.PostComment(ctx, ref.Repo, ref.PR, body); err != nil {
+		log("review-ready: refusal notice post failed for %s#%d — retried next sweep: %v", ref.Repo, ref.PR, err)
+		return
+	}
+	ref.HostNotified = true
+	log("review-ready: refusal notice posted for %s#%d at %s (#577)", ref.Repo, ref.PR, ref.HeadSHA)
+}
 
 func emitGate(ctx context.Context, tl timeline.Writer, agg *v1alpha1.ReviewReadyStatus, result review.Result, repo string, pr int) {
 	if tl == nil {

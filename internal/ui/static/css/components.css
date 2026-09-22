@@ -22,7 +22,10 @@
 
 .ds-page-content {
 	padding: var(--sp-4) var(--sp-5) var(--sp-6);
-	max-width: 1400px;
+	/* Full bleed — the console is a density instrument (PRODUCT.md):
+	   every lateral pixel on a wide monitor carries tables, graphs, or
+	   timelines. Nothing here benefits from dead margins. */
+	max-width: none;
 	width: 100%;
 }
 

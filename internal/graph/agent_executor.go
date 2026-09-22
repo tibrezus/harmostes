@@ -199,7 +199,37 @@ func (e *AgentExecutor) Execute(ctx context.Context, node v1alpha1.NodeSpec, env
 			"turns": len(result.Session.Turns),
 		},
 		Feedback: fmt.Sprintf("agent %s after %d attempt(s), %s", status, result.Attempts, result.Usage.String()),
+		// Structured per-attempt usage rides the envelope payload (ADR-0004):
+		// the Attempt CR becomes the per-PR token source of record — the
+		// workflow-level `usage:last` cache stays a legacy fallback only.
+		// Previous behavior put usage ONLY on the lifecycle event bus and a
+		// per-workflow state key, so every subject row showed the same
+		// workflow-wide numbers.
+		Envelope: &v1alpha1.NodeResultEnvelope{
+			Payload: mustJSONPayload(map[string]any{
+				"usage": map[string]any{
+					"input":      result.Usage.Input,
+					"output":     result.Usage.Output,
+					"cacheRead":  result.Usage.CacheRead,
+					"cacheWrite": result.Usage.CacheWrite,
+					"cost":       result.Usage.Cost,
+				},
+				"model": cfg.Model,
+				"turns": len(result.Session.Turns),
+			}),
+		},
 	}, nil
+}
+
+// mustJSONPayload marshals a payload map to the envelope's RawMessage.
+// Never fails on these shapes (numbers and strings only); on the impossible
+// error it degrades to null rather than aborting a live run.
+func mustJSONPayload(v map[string]any) json.RawMessage {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return json.RawMessage("null")
+	}
+	return b
 }
 
 // looksLikeRef returns true if the task string looks like a reference path

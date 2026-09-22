@@ -58,6 +58,7 @@ type graphNodeView struct {
 	// Identity card (#541): what this node IS, on the canvas.
 	Chip       string `json:"chip"`
 	Title      string `json:"title"`
+	Title2     string `json:"title2,omitempty"` // second headline line (wrapped model ids)
 	Fact1      string `json:"fact1,omitempty"`
 	Fact2      string `json:"fact2,omitempty"`
 	StatusText string `json:"statusText"` // glyph + word (grayscale-safe)
@@ -207,7 +208,34 @@ func (s *Server) buildRunGraph(ctx context.Context, att *v1alpha1.Attempt) runGr
 		}
 		view.NodeData[n.ID] = data
 	}
-	view.Timing = buildTimingStrip(view.Nodes, latest)
+	// Live wall clock: while the attempt runs, the executing node's lane
+	// grows to now. Start = the running run's StartedAt (the Job's real
+	// begin); without one, the newest envelope's instant. Nil when terminal
+	// — history stays exactly as recorded.
+	var live *liveLane
+	if inFlight {
+		start := time.Time{}
+		for _, run := range att.Status.Runs {
+			if run.Phase == "running" && run.StartedAt.After(start) {
+				start = run.StartedAt.Time
+			}
+		}
+		for _, env := range latest {
+			if env.ProducedAt.After(start) {
+				start = env.ProducedAt.Time
+			}
+		}
+		if !start.IsZero() {
+			// The live node is the one layoutGraph painted as running.
+			for _, n := range view.Nodes {
+				if n.Status == graphStateRunning {
+					live = &liveLane{nodeID: n.ID, start: start}
+					break
+				}
+			}
+		}
+	}
+	view.Timing = buildTimingStrip(view.Nodes, latest, live)
 	view.TimingH = len(view.Timing) * 22 // lane height lives here; templates stay arithmetic-free
 	view.TimingW = timingViewW
 	return view
@@ -217,7 +245,8 @@ func (s *Server) buildRunGraph(ctx context.Context, att *v1alpha1.Attempt) runGr
 // (start = producedAt - duration, end = producedAt).
 type timingSegment struct {
 	Label  string `json:"label"`
-	Status string `json:"status"` // segment color class (rg-state-*)
+	Status string `json:"status"`         // segment color class (rg-state-*)
+	Live   bool   `json:"live,omitempty"` // in-flight lane: pulsing bar
 	X      int    `json:"x"`
 	Y      int    `json:"y"` // lane offset (index * laneHeight), precomputed
 	Width  int    `json:"width"`
@@ -244,24 +273,40 @@ type timingSegment struct {
 // (bar math and the right-edge label flip) — keep it singular.
 const timingViewW = 640
 
-func buildTimingStrip(nodes []graphNodeView, latest map[string]v1alpha1.NodeResultEnvelope) []timingSegment {
+// liveLane describes the executing node while an attempt is in flight:
+// the waterfall is a watch, not a post-mortem — the live lane's bar grows
+// with wall clock (start = the running run's StartedAt, end = now) and
+// pulses between the SSE ticker's 15s re-renders.
+type liveLane struct {
+	nodeID string
+	start  time.Time
+}
+
+func buildTimingStrip(nodes []graphNodeView, latest map[string]v1alpha1.NodeResultEnvelope, live *liveLane) []timingSegment {
 	type lane struct {
 		label, status string
 		start, end    time.Time
 		retries       int // envelope attempt count (>1: retried transient failure)
+		isLive        bool
 	}
 	var lanes []lane
 
-	// Filter to nodes with known timing, preserving graph order.
+	// Envelope-timed nodes, preserving graph order. The live node has NO
+	// envelope yet — it joins after this loop so the strip keeps graph order.
 	ordered := make([]graphNodeView, 0, len(nodes))
+	liveNode := graphNodeView{}
 	for _, n := range nodes {
+		if live != nil && n.ID == live.nodeID {
+			liveNode = n
+			continue
+		}
 		env, ok := latest[n.ID]
 		if !ok || env.ProducedAt.IsZero() || n.Status == "external" {
 			continue
 		}
 		ordered = append(ordered, n)
 	}
-	if len(ordered) == 0 {
+	if len(ordered) == 0 && liveNode.ID == "" {
 		return nil
 	}
 	// Node lanes in graph order.
@@ -273,6 +318,15 @@ func buildTimingStrip(nodes []graphNodeView, latest map[string]v1alpha1.NodeResu
 			start:   env.ProducedAt.Add(-time.Duration(env.DurationMs) * time.Millisecond),
 			end:     env.ProducedAt.Time,
 			retries: env.Attempt,
+		})
+	}
+	if liveNode.ID != "" && live != nil {
+		lanes = append(lanes, lane{
+			label:  liveNode.Label,
+			status: "running",
+			start:  live.start,
+			end:    time.Now(),
+			isLive: true,
 		})
 	}
 
@@ -294,6 +348,9 @@ func buildTimingStrip(nodes []graphNodeView, latest map[string]v1alpha1.NodeResu
 	// plus the retry count when the kernel had to retry a transient failure
 	// (ADR-0012 §9) — the title is where a scanner looks first.
 	segmentTitle := func(l lane) string {
+		if l.isLive {
+			return "↻ " + formatDuration(l.end.Sub(l.start)) + " · in flight"
+		}
 		title := formatDuration(l.end.Sub(l.start))
 		if l.retries > 1 {
 			title += fmt.Sprintf(" · retry ×%d", l.retries)
@@ -324,6 +381,7 @@ func buildTimingStrip(nodes []graphNodeView, latest map[string]v1alpha1.NodeResu
 		segs = append(segs, timingSegment{
 			Label:  truncateRunes(l.label, 12), // fits the 110px gutter
 			Status: l.status,
+			Live:   l.isLive,
 			X:      barX + x,
 			Width:  w,
 			Title:  segmentTitle(l),
@@ -427,6 +485,7 @@ func layoutGraph(gs v1alpha1.GraphSpec, spec *v1alpha1.WorkflowSpec, latest map[
 			Y:      y,
 			Chip:   card.Chip,
 			Title:  card.Title,
+			Title2: card.Title2,
 			StatusText: map[string]string{
 				graphStatePending:  "· pending",
 				graphStateRunning:  "↻ running",
@@ -435,7 +494,7 @@ func layoutGraph(gs v1alpha1.GraphSpec, spec *v1alpha1.WorkflowSpec, latest map[
 				graphStateSkipped:  "− skipped",
 				graphStateExternal: "◇ external",
 			}[status],
-			cardAnchors: cardAnchorsAt(x, y),
+			cardAnchors: cardAnchorsAt(x, y, card.Title2 != ""),
 		}
 		if len(card.Facts) > 0 {
 			view.Fact1 = card.Facts[0]

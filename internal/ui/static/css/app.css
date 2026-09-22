@@ -2251,6 +2251,10 @@ code, pre {
 .rg-timing-bar.rg-state-failed { fill: var(--ds-negative); opacity: 0.9; }
 .rg-timing-bar.rg-state-skipped { fill: var(--ink-soft); opacity: 0.5; }
 .rg-timing-bar.rg-state-running { fill: var(--running); opacity: 0.85; }
+/* Live waterfall: the in-flight lane's bar grows with wall clock (the
+   graph SSE re-renders every 15s while the attempt runs); the pulse says
+   "this number is moving" between wakes. */
+.rg-timing-bar.rg-state-running.rg-timing-live { animation: rg-pulse 1.6s ease-in-out infinite; }
 
 /* ---- Topology projection (#417, ADR-0012 §3) ----
    Same visual language as the run graph (shared geometry engine), painted

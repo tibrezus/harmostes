@@ -26,6 +26,7 @@
 		<rect class="tp-box" x="{{.X}}" y="{{.Y}}" width="224" height="92" rx="8"></rect>
 		<text class="rg-chip rg-chip--{{.Chip}}" x="{{.ChipX}}" y="{{.ChipY}}">{{.Chip}}</text>
 		<text class="rg-title" x="{{.TitleX}}" y="{{.TitleY}}">{{.Title}}</text>
+		{{- if .Title2}}<text class="rg-title" x="{{.Title2X}}" y="{{.Title2Y}}">{{.Title2}}</text>{{end}}
 		{{- if .Fact1}}<text class="rg-fact" x="{{.Fact1X}}" y="{{.Fact1Y}}">{{.Fact1}}</text>{{end}}
 		{{- if .Fact2}}<text class="rg-fact" x="{{.Fact2X}}" y="{{.Fact2Y}}">{{.Fact2}}</text>{{end}}
 		{{- if $link}}</a>{{- end}}

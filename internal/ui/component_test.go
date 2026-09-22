@@ -295,17 +295,21 @@ func TestComponent_RunDetail_LivePositionOnRunningAttempt(t *testing.T) {
 	if doc.Find(".rg-pulse").Length() != 1 {
 		t.Errorf("rg-pulse elements = %d, want 1 (the in-flight node)", doc.Find(".rg-pulse").Length())
 	}
-	// A mid-flight attempt's waterfall shows EXACTLY the settled work: one
-	// lane per envelope, nothing else. The fixture (attempt-...-43c2) has
-	// one envelope (prepare/ok); agent/gate/deploy have none and must not
-	// appear — positive pins, because a pass-on-nothing loop cannot catch a
+	// A mid-flight attempt's waterfall shows the settled work PLUS the
+	// growing live lane: the fixture (attempt-...-43c2) has one envelope
+	// (prepare/ok) and agent is in flight — the agent lane renders with
+	// Live pulsing and grows to now. agent/gate/deploy envelopes must not
+	// appear (positive pins, because a pass-on-nothing loop cannot catch a
 	// lane regrowing (r34 round 2, finding 2).
 	lanes := testIDSelection(t, doc, "timing-lane")
-	if lanes.Length() != 1 {
-		t.Errorf("timing lanes = %d, want 1 (prepare only — one envelope in the fixture)", lanes.Length())
+	if lanes.Length() != 2 {
+		t.Errorf("timing lanes = %d, want 2 (prepare envelope + the in-flight agent lane)", lanes.Length())
 	}
 	if lanes.AttrOr("data-label", "") != "prepare" {
 		t.Errorf("timing lane label = %q, want prepare", lanes.AttrOr("data-label", ""))
+	}
+	if doc.Find(".rg-timing-live").Length() != 1 {
+		t.Errorf("live timing bars = %d, want 1 (the in-flight lane pulses)", doc.Find(".rg-timing-live").Length())
 	}
 }
 

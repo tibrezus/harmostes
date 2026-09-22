@@ -35,6 +35,7 @@
 		<text class="rg-chip" x="{{.ChipX}}" y="{{.ChipY}}">{{.Chip}}</text>
 		<text class="rg-statext rg-statext--{{.Status}}" x="{{.StatX}}" y="{{.StatY}}">{{.StatusText}}</text>
 		<text class="rg-title" x="{{.TitleX}}" y="{{.TitleY}}">{{.Title}}</text>
+		{{- if .Title2}}<text class="rg-title" x="{{.Title2X}}" y="{{.Title2Y}}">{{.Title2}}</text>{{end}}
 		{{- if .Fact1}}<text class="rg-fact" x="{{.Fact1X}}" y="{{.Fact1Y}}">{{.Fact1}}</text>{{end}}
 		{{- if .Fact2}}<text class="rg-fact" x="{{.Fact2X}}" y="{{.Fact2Y}}">{{.Fact2}}</text>{{end}}
 		{{if eq .Status "running"}}<circle class="rg-pulse" cx="{{.PulseX}}" cy="{{.PulseY}}" r="5"></circle>{{end}}
@@ -48,7 +49,7 @@
 	{{- range $s := .}}
 	<g class="rg-timing-lane" data-testid="timing-lane" data-label="{{$s.Label}}" transform="translate(0, {{$s.Y}})">
 		<text class="rg-timing-label" x="8" y="15">{{$s.Label}}</text>
-		<rect class="rg-timing-bar rg-state-{{$s.Status}}" x="{{$s.X}}" y="4" width="{{$s.Width}}" height="14" rx="3"><title>{{$s.Title}}</title></rect>
+		<rect class="rg-timing-bar rg-state-{{$s.Status}}{{if $s.Live}} rg-timing-live{{end}}" x="{{$s.X}}" y="4" width="{{$s.Width}}" height="14" rx="3"><title>{{$s.Title}}</title></rect>
 		{{- if $s.Right}}
 		<text class="rg-timing-dur"{{if $s.Anchor}} text-anchor="{{$s.Anchor}}"{{end}} x="{{$s.TextX}}" y="15">{{$s.Title}}</text>
 		{{- else}}

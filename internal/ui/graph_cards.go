@@ -37,9 +37,31 @@ const triggerNodeID = "trigger"
 
 // nodeCard is the identity payload rendered on the card.
 type nodeCard struct {
-	Chip  string   // type chip: source|prepare|agent|deploy|…
-	Title string   // the headline (plugin name, model, trigger kind)
-	Facts []string // 0–2 identity lines
+	Chip   string   // type chip: source|prepare|agent|deploy|…
+	Title  string   // the headline (plugin name, model, trigger kind)
+	Title2 string   // optional second headline line (long model ids wrap)
+	Facts  []string // 0–2 identity lines
+}
+
+// wrapTitle splits an over-long headline at its last path separator so the
+// FULL id renders — real model ids (litellm/ali/anthropic/qwen3.8-flash)
+// must not be abbreviated into look-alikes (#502 lesson: model ids are
+// verified and displayed exactly; truncation created qwe…-class ghosts).
+// Returns s, "" when it fits on one line.
+func wrapTitle(s string) (string, string) {
+	if len(s) <= cardTitleLimit {
+		return s, ""
+	}
+	cut := -1
+	for i := 0; i <= len(s) && i <= cardTitleLimit+2; i++ {
+		if i < len(s) && s[i] == '/' {
+			cut = i
+		}
+	}
+	if cut < 0 {
+		return truncateRunes(s, cardTitleLimit), ""
+	}
+	return s[:cut+1], s[cut+1:]
 }
 
 // defRow is one label→value pair for the panel's definition block — the
@@ -119,7 +141,7 @@ func cardFacts(n v1alpha1.NodeSpec, spec *v1alpha1.WorkflowSpec) nodeCard {
 	case n.Type == "agent":
 		card := agentCard(n)
 		if spec != nil && card.Title == "agent" && spec.Agent.Model != "" {
-			card.Title = truncateRunes(spec.Agent.Model, cardTitleLimit)
+			card.Title, card.Title2 = wrapTitle(spec.Agent.Model)
 			card = agentSpecFacts(card, spec)
 		}
 		return card
@@ -240,7 +262,8 @@ func agentCard(n v1alpha1.NodeSpec) nodeCard {
 	if title == "" {
 		title = "agent"
 	}
-	card := nodeCard{Chip: "agent", Title: truncateRunes(title, cardTitleLimit)}
+	t1, t2 := wrapTitle(title)
+	card := nodeCard{Chip: "agent", Title: t1, Title2: t2}
 	if cfg.Skill != "" {
 		card.Facts = append(card.Facts, truncateRunes("skill "+path.Base(cfg.Skill), cardFactLimit))
 	}
@@ -325,29 +348,39 @@ type cardAnchors struct {
 	BarX, BarY, BarH int // status accent bar (left edge, full height)
 	ChipX, ChipY     int
 	TitleX, TitleY   int
+	Title2X, Title2Y int // second headline line (wrapped model ids)
 	Fact1X, Fact1Y   int
 	Fact2X, Fact2Y   int
 	StatX, StatY     int // runtime status chip (run graph only)
 	PulseX, PulseY   int
 }
 
-func cardAnchorsAt(x, y int) cardAnchors {
+// cardAnchorsAt computes the card's text anchors. wrapped=True when the
+// headline takes two lines: the headline moves up and both facts shift
+// down one line-height — the 92px box absorbs it, nothing leaves.
+func cardAnchorsAt(x, y int, wrapped bool) cardAnchors {
+	titleY, t2Y, f1Y, f2Y := y+45, 0, y+64, y+81
+	if wrapped {
+		titleY, t2Y, f1Y, f2Y = y+37, y+52, y+69, y+85
+	}
 	return cardAnchors{
-		BarX:   x,
-		BarY:   y + 4,
-		BarH:   graphNodeH - 8,
-		ChipX:  x + 14,
-		ChipY:  y + 21,
-		TitleX: x + 14,
-		TitleY: y + 45,
-		Fact1X: x + 14,
-		Fact1Y: y + 64,
-		Fact2X: x + 14,
-		Fact2Y: y + 81,
-		StatX:  x + graphNodeW - 12,
-		StatY:  y + 21,
-		PulseX: x + graphNodeW - 16,
-		PulseY: y + graphNodeH - 14,
+		BarX:    x,
+		BarY:    y + 4,
+		BarH:    graphNodeH - 8,
+		ChipX:   x + 14,
+		ChipY:   y + 21,
+		TitleX:  x + 14,
+		TitleY:  titleY,
+		Title2X: x + 14,
+		Title2Y: t2Y,
+		Fact1X:  x + 14,
+		Fact1Y:  f1Y,
+		Fact2X:  x + 14,
+		Fact2Y:  f2Y,
+		StatX:   x + graphNodeW - 12,
+		StatY:   y + 21,
+		PulseX:  x + graphNodeW - 16,
+		PulseY:  y + graphNodeH - 14,
 	}
 }
 

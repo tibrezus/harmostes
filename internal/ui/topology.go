@@ -62,10 +62,11 @@ type topologyNodeView struct {
 	Ghost     bool
 	// Identity card (#541): same facts path as the run graph — the two
 	// projections can never disagree about what a node IS.
-	Chip  string
-	Title string
-	Fact1 string
-	Fact2 string
+	Chip   string
+	Title  string
+	Title2 string // second headline line (wrapped model ids)
+	Fact1  string
+	Fact2  string
 	cardAnchors
 }
 
@@ -228,7 +229,8 @@ func buildTopology(gs v1alpha1.GraphSpec, spec *v1alpha1.WorkflowSpec, palette m
 			TypeY:       y + 25,
 			Chip:        card.Chip,
 			Title:       card.Title,
-			cardAnchors: cardAnchorsAt(x, y),
+			Title2:      card.Title2,
+			cardAnchors: cardAnchorsAt(x, y, card.Title2 != ""),
 		}
 		if len(card.Facts) > 0 {
 			view.Fact1 = card.Facts[0]
@@ -331,8 +333,8 @@ func buildTopologyDiff(a, b v1alpha1.GraphSpec, palette map[string]bool) (older,
 				ID: id, Label: truncateRunes(label, graphLabelLimit), Type: n.Type,
 				Known: palette[n.Type],
 				X:     x, Y: y, LabelX: x + 14, LabelY: y + 45, TypeX: x + graphNodeW - 8, TypeY: y + 25,
-				Chip: card.Chip, Title: card.Title,
-				cardAnchors: cardAnchorsAt(x, y),
+				Chip: card.Chip, Title: card.Title, Title2: card.Title2,
+				cardAnchors: cardAnchorsAt(x, y, card.Title2 != ""),
 			}
 			if len(card.Facts) > 0 {
 				v.Fact1 = card.Facts[0]

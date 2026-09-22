@@ -550,9 +550,33 @@ func TestRunDetailTimingWaterfallZeroDurations(t *testing.T) {
 		graphEnvelope("prepare", "ok", metav1.NewTime(base.Add(10*time.Second))),
 		graphEnvelope("agent", "ok", metav1.NewTime(base.Add(20*time.Second))),
 	}
+	// Terminal premise made explicit: wallReviewAttempt ships a running
+	// RunRecord for live-position fixtures; strip away so nothing is in
+	// flight and the strip's honesty contract is tested in isolation.
+	att.Status.Runs = nil
 	s := newAttemptTestServer(t, graphSeedWorkflow("pr-review-x"), att)
 	view := s.buildRunGraph(context.Background(), att)
 	if view.Timing != nil || view.TimingH != 0 {
-		t.Errorf("zero-duration envelopes should yield an empty strip, got %d lanes h=%d", len(view.Timing), view.TimingH)
+		t.Errorf("terminal zero-duration envelopes should yield an empty strip, got %d lanes h=%d", len(view.Timing), view.TimingH)
+	}
+
+	// Live attempt: the in-flight lane carries real wall clock (now-start),
+	// so the strip renders even when completed envelopes have zero
+	// durations — the growing bar is honest signal, the 3px floors are shape.
+	att.Status.Runs = []v1alpha1.RunRecord{{
+		Name: "pr-review-x-agent", StartedAt: metav1.NewTime(base.Add(20 * time.Second)), Phase: "running",
+	}}
+	view = s.buildRunGraph(context.Background(), att)
+	if len(view.Timing) == 0 {
+		t.Fatal("live attempt must render a strip even with zero-duration envelopes")
+	}
+	var liveLane *timingSegment
+	for i := range view.Timing {
+		if view.Timing[i].Live {
+			liveLane = &view.Timing[i]
+		}
+	}
+	if liveLane == nil {
+		t.Error("exactly the in-flight lane must carry Live=true")
 	}
 }

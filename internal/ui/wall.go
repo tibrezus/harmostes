@@ -3,6 +3,7 @@ package ui
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"sort"
@@ -94,6 +95,52 @@ type wallWorkflow struct {
 type wallSection struct {
 	Name      string
 	Workflows []wallWorkflow
+}
+
+// usageFromAttempt extracts the agent node's structured usage from an
+// attempt's envelope payloads (agent_executor stamps usage/model/turns into
+// the payload). Nil when the attempt is unknown or predates payloads —
+// callers fall back to the workflow-level cache.
+func usageFromAttempt(att *v1alpha1.Attempt) *wallUsage {
+	if att == nil {
+		return nil
+	}
+	// Newest agent envelope wins (retries/multi-node runs: the last agent
+	// execution carried the session to its end).
+	var latest *v1alpha1.NodeResultEnvelope
+	for i := range att.Status.NodeResults {
+		env := &att.Status.NodeResults[i]
+		if env.Payload == nil {
+			continue
+		}
+		var p struct {
+			Usage *struct {
+				Input  int `json:"input"`
+				Output int `json:"output"`
+			} `json:"usage"`
+		}
+		if err := json.Unmarshal(env.Payload, &p); err != nil || p.Usage == nil {
+			continue
+		}
+		if latest == nil || env.ProducedAt.After(latest.ProducedAt.Time) {
+			latest = env
+		}
+	}
+	if latest == nil {
+		return nil
+	}
+	var p struct {
+		Usage struct {
+			Input  int `json:"input"`
+			Output int `json:"output"`
+		} `json:"usage"`
+		Model string `json:"model"`
+		Turns int    `json:"turns"`
+	}
+	if err := json.Unmarshal(latest.Payload, &p); err != nil {
+		return nil
+	}
+	return &wallUsage{Model: p.Model, InputTokens: p.Usage.Input, OutputTokens: p.Usage.Output, Turns: p.Turns}
 }
 
 // noteWallEvent updates the per-workflow agent metadata cache from a
@@ -196,8 +243,15 @@ func (s *Server) wallSections(r *http.Request, owner string, hydrate bool) ([]wa
 
 	// Newest full attempt per workflow: the strip's envelope source.
 	newest := map[string]*v1alpha1.Attempt{}
+	// Attempt index by CR name: per-subject usage reads the SUBJECT's own
+	// latest attempt — the workflow-level usage cache (usage:last) aggregates
+	// across subjects and sessions, which read as identical numbers on every
+	// row (user-reported). The attempt's agent envelope payload is the
+	// per-PR source of record.
+	byName := map[string]*v1alpha1.Attempt{}
 	for i := range attempts {
 		a := &attempts[i]
+		byName[a.Name] = a
 		name := workflowCRName(a.Spec.WorkflowRef)
 		if cur, ok := newest[name]; !ok || attemptActivity(a).After(attemptActivity(cur)) {
 			newest[name] = a
@@ -239,8 +293,13 @@ func (s *Server) wallSections(r *http.Request, owner string, hydrate bool) ([]wa
 		if g.LatestAttempt != "" {
 			wg.LastRunURL = "/runs/" + g.LatestAttempt
 		}
-		// The usage cache and the durable record key on the bare CR name.
-		wg.Usage = s.usageFor(r, name, hydrate)
+		// Per-subject usage first (the subject's own latest attempt's agent
+		// envelope); the workflow-level cache is the fallback for attempts
+		// that predate envelope payloads.
+		wg.Usage = usageFromAttempt(byName[g.LatestAttempt])
+		if wg.Usage == nil {
+			wg.Usage = s.usageFor(r, name, hydrate)
+		}
 		if _, seen := wfGroups[name]; !seen {
 			wfOrder = append(wfOrder, name)
 		}

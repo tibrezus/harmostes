@@ -44,13 +44,19 @@ func DeriveObjective(wf *v1alpha1.Workflow, trigger TriggerContext) v1alpha1.Obj
 }
 
 // DeriveKind maps a Workflow to its Objective Kind. A fork source forces
-// fork-sync; otherwise the gate plugin name determines the kind via the
-// single-source-of-truth map (v1alpha1.GateObjectiveKinds). The gate IS the
-// workflow archetype, but the kind derivation is now data-driven — no
-// switch-on-name string matching.
+// fork-sync; a configured Review-Ready Gate forces pr-review (the gate IS the
+// workflow archetype, ADR-0006 — and the GitOps review instances carry
+// gate.plugin.name: ”, so the gate-map fallback below mislabeled every
+// attempt they minted as documentation-sync: 352 statusless debris objects
+// on the pr-review workflows alone, #584); otherwise the gate plugin name
+// determines the kind via the single-source-of-truth map
+// (v1alpha1.GateObjectiveKinds). Data-driven — no switch-on-name matching.
 func DeriveKind(wf *v1alpha1.Workflow) string {
 	if wf.Spec.Source.Fork != nil && wf.Spec.Source.Fork.URL != "" {
 		return v1alpha1.ObjectiveKindForkSync
+	}
+	if wf.Spec.ReviewReady != nil {
+		return v1alpha1.ObjectiveKindPRReview
 	}
 	return v1alpha1.ObjectiveKindForGate(wf.Spec.Agent.Gate.Plugin.Name)
 }

@@ -109,6 +109,23 @@ func TestDeriveKind(t *testing.T) {
 			wf.Spec.Agent.Gate.Plugin.Name = "mystery-gate"
 			return wf
 		}(), v1alpha1.ObjectiveKindDocumentationSync},
+		{"review-ready configured with EMPTY gate name → pr-review (#584: the GitOps instances carry name:'')", func() *v1alpha1.Workflow {
+			wf := prReviewWorkflow()
+			wf.Spec.Agent.Gate.Plugin.Name = ""
+			wf.Spec.ReviewReady = &v1alpha1.ReviewReadySpec{}
+			return wf
+		}(), v1alpha1.ObjectiveKindPRReview},
+		{"fork source still forces fork-sync even with review-ready configured", func() *v1alpha1.Workflow {
+			wf := prReviewWorkflow()
+			wf.Spec.Source.Fork = &v1alpha1.ForkSource{URL: "git@x:y/z.git"}
+			wf.Spec.ReviewReady = &v1alpha1.ReviewReadySpec{}
+			return wf
+		}(), v1alpha1.ObjectiveKindForkSync},
+		{"review-ready nil + empty gate name → documentation-sync fallback (non-review workflows unchanged)", func() *v1alpha1.Workflow {
+			wf := wikiWorkflow()
+			wf.Spec.Agent.Gate.Plugin.Name = ""
+			return wf
+		}(), v1alpha1.ObjectiveKindDocumentationSync},
 	}
 	for _, c := range cases {
 		if got := DeriveKind(c.wf); got != c.want {

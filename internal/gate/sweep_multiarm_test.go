@@ -1761,7 +1761,7 @@ func TestSweepHeldReasonSurvivesLaterRefusal(t *testing.T) {
 			// share one), and equal to it so the dispatched branch reaches the
 			// timer hold instead of the moved-head supersede (#410).
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"state": "open", "head": map[string]string{"sha": "cafe9999"},
+				"state": "open", "head": map[string]string{"sha": "beef7777"},
 				"base":   map[string]string{"ref": "main"},
 				"labels": []map[string]string{{"name": "needs-review"}},
 			})
@@ -1787,10 +1787,26 @@ func TestSweepHeldReasonSurvivesLaterRefusal(t *testing.T) {
 	disp := now.Add(-46 * time.Minute) // past DispatchTimeout (45m)
 
 	// Claim A: dispatched, past the timeout, Job observably ALIVE → held.
-	// Name-derived order (cafe9999 < deadbeef123) makes this claim process
-	// before the refused one — the durability promise under test is "a hold
-	// recorded first survives a later refusal".
-	held := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#101", "cafe9999", now.Add(-46*time.Minute), &disp)
+	// Name-derived order (attempt-w-1667e5bb4a68 < attempt-w-9ebc72a703b9)
+	// makes this claim process before the refused one — the durability
+	// promise under test is "a hold recorded first survives a later
+	// refusal". The shas are chosen so the derived objective-identity names
+	// sort held-first UNDER THE CURRENT IDENTITY (#584 flipped the review
+	// kind documentation-sync→pr-review, which rehashes every attempt
+	// name); the assertion below fails loudly if that assumption drifts.
+	held := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#101", "beef7777", now.Add(-46*time.Minute), &disp)
+	heldObj := attempt.DeriveObjective(wf, attempt.TriggerContext{Revision: "beef7777", Source: "webhook"})
+	refusedObj := attempt.DeriveObjective(wf, attempt.TriggerContext{Revision: "deadbeef123", Source: "webhook"})
+	if got := attempt.AttemptName(wf.Name, attempt.Identity(heldObj)); got != held.Name {
+		t.Fatalf("fixture drift: held name %s, derived %s", held.Name, got)
+	}
+	refused := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#106", "deadbeef123", now.Add(-time.Hour), nil) // Claim B: churned out — its automatic arm must be refused in the drain.
+	if got := attempt.AttemptName(wf.Name, attempt.Identity(refusedObj)); got != refused.Name {
+		t.Fatalf("fixture drift: refused name %s, derived %s", refused.Name, got)
+	}
+	if held.Name >= refused.Name {
+		t.Fatalf("order assumption broken: held %s must sort before refused %s", held.Name, refused.Name)
+	}
 	held.Status.Phase = v1alpha1.AttemptPhaseReconciling
 	liveJob := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
@@ -1803,8 +1819,6 @@ func TestSweepHeldReasonSurvivesLaterRefusal(t *testing.T) {
 		},
 	}
 
-	// Claim B: churned out — its automatic arm must be refused in the drain.
-	refused := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#106", "deadbeef123", now.Add(-time.Hour), nil)
 	refused.Status.Review.DispatchLostReleases = v1alpha1.MaxDispatchLostReleases
 
 	_, collect := withManualMeter(t)

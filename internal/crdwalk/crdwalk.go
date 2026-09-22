@@ -429,11 +429,32 @@ func scalarValue(t reflect.Type, schema map[string]interface{}, path string) ref
 	case reflect.Bool:
 		v.SetBool(true)
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		v.SetInt(7)
+		v.SetInt(clampInt(7, schema))
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		v.SetUint(7)
+		v.SetUint(uint64(clampInt(7, schema)))
 	case reflect.Float32, reflect.Float64:
-		v.SetFloat(7.5)
+		f := 7.5
+		if mn, ok := schema["minimum"].(float64); ok && f < mn {
+			f = mn
+		}
+		if mx, ok := schema["maximum"].(float64); ok && f > mx {
+			f = mx
+		}
+		v.SetFloat(f)
 	}
 	return v
+}
+
+// clampInt fits the generic integer probe (7) inside the schema's
+// minimum/maximum bounds — the acceptance matrix must only write LEGAL
+// values (#556: retry.maxAttempts carries maximum: 5, and the 7-probe
+// was rejected by the real apiserver).
+func clampInt(def int64, schema map[string]interface{}) int64 {
+	if mn, ok := schema["minimum"].(float64); ok && def < int64(mn) {
+		def = int64(mn)
+	}
+	if mx, ok := schema["maximum"].(float64); ok && def > int64(mx) {
+		def = int64(mx)
+	}
+	return def
 }

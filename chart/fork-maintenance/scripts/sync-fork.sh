@@ -220,10 +220,31 @@ phase_merge() {
     git checkout "$FORK_DEFAULT_BRANCH" 2>/dev/null || git checkout -b "$FORK_DEFAULT_BRANCH" "origin/$FORK_DEFAULT_BRANCH"
   fi
 
+  # Shallow-history soundness (#566): the clone and the upstream fetch are
+  # --depth 100, and a shallow graph can lack the common ancestor — a
+  # merge-base that fails (or silently mis-resolves) here turns the
+  # up-to-date decision into a coin flip. The false "up to date" is the
+  # worst outcome: the sync silently no-ops forever, defeating the
+  # dead-man's switch it feeds. So:
+  #   1. the up-to-date test is `merge-base --is-ancestor` (exit-status
+  #      semantics — upstream head fully contained in the fork), never a
+  #      string compare that an empty MERGE_BASE can corrupt;
+  #   2. a missing common ancestor triggers an unshallow retry before the
+  #      merge — a real 300+-commit range cannot merge from 100-deep
+  #      history at all;
+  #   3. if the ancestor is STILL unresolvable, we proceed to the merge,
+  #      which fails LOUDLY (unrelated histories) instead of skipping.
   MERGE_BASE=$(git merge-base "HEAD" "upstream/$UPSTREAM_BRANCH" 2>/dev/null || echo "")
+  if [ -z "$MERGE_BASE" ]; then
+    echo "=== shallow history has no common ancestor — unshallowing upstream ==="
+    git fetch --unshallow upstream "$UPSTREAM_BRANCH" 2>/dev/null \
+      || git fetch --deepen=2000 upstream "$UPSTREAM_BRANCH" 2>/dev/null \
+      || true
+    MERGE_BASE=$(git merge-base "HEAD" "upstream/$UPSTREAM_BRANCH" 2>/dev/null || echo "")
+  fi
   UPSTREAM_HEAD=$(git rev-parse "upstream/$UPSTREAM_BRANCH")
 
-  if [ "$MERGE_BASE" = "$UPSTREAM_HEAD" ]; then
+  if git merge-base --is-ancestor "upstream/$UPSTREAM_BRANCH" "HEAD" 2>/dev/null; then
     echo ""
     echo "=== Already up to date — mirror has no new commits ==="
     if [ "$PHASED" = "1" ]; then

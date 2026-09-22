@@ -498,22 +498,69 @@ func (e *GraphExecutor) Execute(ctx context.Context, graph v1alpha1.GraphSpec, p
 				e.log("warn: timeline emit node.started %s: %v", nodeID, err)
 			}
 		}
-		nodeResult, execErr := exec.Execute(execCtx, node, env)
-		durationMs := time.Since(startTime).Milliseconds()
-		if execErr != nil {
-			nodeResult.Status = StatusFailed
-			if nodeResult.Feedback == "" {
-				// Check if the error was a timeout (G8 circuit breaker).
-				if timeoutStr != "" && (execErr == context.DeadlineExceeded || strings.Contains(execErr.Error(), "deadline exceeded")) {
-					nodeResult.Feedback = fmt.Sprintf("timed out after %s", timeoutStr)
-				} else {
-					nodeResult.Feedback = execErr.Error()
+
+		// Transient-fault retry (ADR-0012 §9): mechanical application of the
+		// node's declarative policy. Only executor-classified transient
+		// failures retry (plugin exit 75/69); budgets, backoff, and the fold
+		// into normal failure routing are all policy data, never judgment.
+		policy := retryPolicyOf(node.Retry)
+		var nodeResult NodeResult
+		var execErr error
+		attempt := 0
+	retryLoop:
+		for {
+			attempt++
+			nodeResult, execErr = exec.Execute(execCtx, node, env)
+			if execErr != nil {
+				nodeResult.Status = StatusFailed
+				if nodeResult.Feedback == "" {
+					// Check if the error was a timeout (G8 circuit breaker).
+					if timeoutStr != "" && (execErr == context.DeadlineExceeded || strings.Contains(execErr.Error(), "deadline exceeded")) {
+						nodeResult.Feedback = fmt.Sprintf("timed out after %s", timeoutStr)
+					} else {
+						nodeResult.Feedback = execErr.Error()
+					}
 				}
 			}
+			if nodeResult.Status == "" {
+				nodeResult.Status = StatusGreen
+			}
+			if !nodeResult.Transient || attempt >= policy.maxAttempts || execCtx.Err() != nil {
+				nodeResult.Attempt = attempt
+				break
+			}
+			delay := policy.delayFor(attempt)
+			e.log("node %s: transient failure (attempt %d/%d) — retrying in %s", nodeID, attempt, policy.maxAttempts, delay)
+			e.publishLifecycle(ctx, LifecycleEvent{
+				Event:      "node.retry",
+				Pipeline:   pipelineName,
+				Node:       nodeID,
+				NodeType:   node.Type,
+				Status:     string(StatusFailed),
+				Feedback:   nodeResult.Feedback,
+				DurationMs: time.Since(startTime).Milliseconds(),
+			})
+			if e.timeline != nil {
+				if err := e.timeline.Emit(ctx, timeline.KindNodeRetry, nodeID, map[string]any{
+					"type":     node.Type,
+					"attempt":  attempt,
+					"of":       policy.maxAttempts,
+					"delayMs":  delay.Milliseconds(),
+					"feedback": truncateForTimeline(worker.Redact(nodeResult.Feedback), 200),
+				}); err != nil {
+					e.log("warn: timeline emit node.retry %s: %v", nodeID, err)
+				}
+			}
+			select {
+			case <-execCtx.Done():
+				// The run's wall (or the node timeout) expired during
+				// backoff: keep the failed result — no further attempt.
+				nodeResult.Attempt = attempt
+				break retryLoop
+			case <-time.After(delay):
+			}
 		}
-		if nodeResult.Status == "" {
-			nodeResult.Status = StatusGreen
-		}
+		durationMs := time.Since(startTime).Milliseconds()
 
 		result.NodeResults[nodeID] = nodeResult
 		if e.timeline != nil {
@@ -789,6 +836,7 @@ func (e *GraphExecutor) synthesizeEnvelope(nodeID, nodeType string, nr NodeResul
 		RunID:      e.runID,
 		Status:     envelopeStatus(nr.Status),
 		DurationMs: durationMs,
+		Attempt:    nr.Attempt,
 		Provenance: v1alpha1.Provenance{
 			TriggeredBy:   e.triggeredBy,
 			TriggerSource: e.triggerSource,
@@ -808,6 +856,60 @@ func (e *GraphExecutor) synthesizeEnvelope(nodeID, nodeType string, nr NodeResul
 		env.Summary = nr.Feedback
 	}
 	return env
+}
+
+// retryPolicy is the in-run transient-fault retry budget for one node,
+// parsed from its declarative spec (ADR-0012 §9). Zero-value = no retry.
+type retryPolicy struct {
+	maxAttempts  int
+	initialDelay time.Duration
+	maxDelay     time.Duration
+}
+
+const (
+	defaultRetryInitialDelay = 5 * time.Second
+	defaultRetryMaxDelay     = time.Minute
+	maxRetryAttemptsCap      = 5
+)
+
+// retryPolicyOf parses the spec; nil or MaxAttempts<=1 degenerates to
+// "no retry" (maxAttempts 1).
+func retryPolicyOf(spec *v1alpha1.RetryPolicy) retryPolicy {
+	if spec == nil || spec.MaxAttempts <= 1 {
+		return retryPolicy{maxAttempts: 1}
+	}
+	p := retryPolicy{
+		maxAttempts:  spec.MaxAttempts,
+		initialDelay: defaultRetryInitialDelay,
+		maxDelay:     defaultRetryMaxDelay,
+	}
+	if p.maxAttempts > maxRetryAttemptsCap {
+		p.maxAttempts = maxRetryAttemptsCap
+	}
+	if d, err := time.ParseDuration(spec.InitialDelay); err == nil && d > 0 {
+		p.initialDelay = d
+	}
+	if d, err := time.ParseDuration(spec.MaxDelay); err == nil && d > 0 {
+		p.maxDelay = d
+	}
+	if p.maxDelay < p.initialDelay {
+		p.maxDelay = p.initialDelay
+	}
+	return p
+}
+
+// delayFor returns the exponential backoff before the next attempt.
+// attempt is the 1-based attempt that just failed: retry 1 waits
+// initialDelay, retry 2 waits 2×initialDelay, capped at maxDelay.
+func (p retryPolicy) delayFor(attempt int) time.Duration {
+	d := p.initialDelay
+	for i := 1; i < attempt && d < p.maxDelay; i++ {
+		d *= 2
+	}
+	if d > p.maxDelay {
+		d = p.maxDelay
+	}
+	return d
 }
 
 // applyPromotions runs ADR-0004 claim promotion for a deterministic node that

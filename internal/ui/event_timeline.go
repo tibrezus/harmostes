@@ -267,6 +267,18 @@ func storeSummary(kind string, p map[string]any) string {
 			line += ": " + fb
 		}
 		return line + ")"
+	case timeline.KindNodeRetry:
+		attempt := payloadString(p, "attempt")
+		of := payloadString(p, "of")
+		delay := payloadString(p, "delayMs")
+		line := "transient failure (attempt " + attempt + "/" + of + ")"
+		if ms, err := strconv.Atoi(delay); err == nil {
+			line += " — retrying in " + formatDuration(time.Duration(ms)*time.Millisecond)
+		}
+		if fb := payloadString(p, "feedback"); fb != "" {
+			line += ": " + fb
+		}
+		return line
 	case timeline.KindPluginTail:
 		return "plugin output" + lineSuffix(payloadString(p, "line"))
 	case timeline.KindAgentTurn:

@@ -176,6 +176,10 @@ spec:
                       runID:      { type: string }
                       status:     { type: string }
                       summary:    { type: string }
+                      attempt:                                                    # ADR-0012 §9
+                        type: integer
+                        minimum: 1
+                        description: 1-based execution attempt for this node within its run; >1 = the kernel retried a transient failure under the node's retry policy.
                       payload:                                    # node-type-specific Node Payload (opaque to the kernel)
                         type: object
                         x-kubernetes-preserve-unknown-fields: true

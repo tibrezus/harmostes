@@ -161,6 +161,11 @@ func Attempts(namespace string) ([]ctrlclient.Object, error) {
 	terminal := prReviewAttempt(namespace, "attempt-pr-review-demo-42a1", "demo-rezuscloud/harmostes#42", t(0, 0))
 	terminal.Status.Phase = v1alpha1.AttemptPhaseValidated
 	gateEnv := envelope("gate", "ok", t(14, 10), 40)
+	// The gate retried once (ADR-0012 §9): the gate tooling hit a transient
+	// registry blip (exit 75) and the kernel's retry policy recovered it —
+	// this is the fixture's attempt-surfacing fixture (panel Attempts row,
+	// waterfall retry title).
+	gateEnv.Attempt = 2
 	// A prod-realistic long gate summary (unbreakable words included): the
 	// node panel must WRAP this, never widen (#551 — the deploy panel once
 	// blew from 300px to 787px on exactly this shape of value).

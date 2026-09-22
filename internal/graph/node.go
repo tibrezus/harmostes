@@ -91,6 +91,15 @@ type NodeResult struct {
 	// these fields are merged on top of the kernel-stamped authoritative fields
 	// (NodeID, RunID, Status, Provenance, ProducedAt).
 	Envelope *v1alpha1.NodeResultEnvelope
+
+	// Transient marks a failure the executor classified retryable (plugin
+	// exit 75 EX_TEMPFAIL / 69 EX_UNAVAILABLE). The graph executor consults
+	// it against the node's retry policy; the flag itself never persists —
+	// the envelope's Attempt count is the durable trace.
+	Transient bool
+
+	// Attempt is the 1-based attempt this result came from (>1 on retries).
+	Attempt int
 }
 
 // NodeExecutor executes a single node in the pipeline graph. Each node type

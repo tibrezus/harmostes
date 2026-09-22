@@ -311,6 +311,21 @@ spec:
                               properties:
                                 binding:    { type: string }      # ExternalSystemBinding.Name
                                 capability: { type: string }      # repository.read | issue-tracker.comment.write | ...
+                          retry:                                     # ADR-0012 §9: transient-fault retry policy
+                            type: object
+                            description: Retries a failed node ONLY when its executor classified the failure transient (plugin exit 75 EX_TEMPFAIL / 69 EX_UNAVAILABLE). Timeouts and executor errors are terminal. Empty = no retry; failure goes straight into when:failed routing.
+                            properties:
+                              maxAttempts:
+                                type: integer
+                                minimum: 1
+                                maximum: 5
+                                description: Total execution attempts including the first. 1/absent = no retry.
+                              initialDelay:
+                                type: string
+                                description: Backoff before the first retry (Go duration, e.g. 2s); default 5s.
+                              maxDelay:
+                                type: string
+                                description: Backoff cap (Go duration); default 1m.
                     edges:
                       type: array
                       items:
@@ -320,7 +335,6 @@ spec:
                           to: { type: string }
                           when: { type: string }
                           maxRetries: { type: integer }
-
             status:
               type: object
               properties:

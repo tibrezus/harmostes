@@ -2,7 +2,9 @@ package graph
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+	"os/exec"
 	"strings"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -13,6 +15,21 @@ import (
 	"github.com/tibrezus/harmostes/internal/timeline"
 	"github.com/tibrezus/harmostes/internal/worker"
 )
+
+// Transient plugin exit codes (the ADR-0012 §9 classification contract):
+// the SCRIPT declares "retrying me may help" via a conventional exit —
+// 75 EX_TEMPFAIL (temporary failure, try again) or 69 EX_UNAVAILABLE
+// (service unavailable, e.g. the remote refused). Everything else,
+// including node timeouts and executor errors, is terminal. The kernel
+// maps exit codes to the flag mechanically; it never parses stderr text.
+const (
+	transientExitTempfail    = 75
+	transientExitUnavailable = 69
+)
+
+func transientExitCode(code int) bool {
+	return code == transientExitTempfail || code == transientExitUnavailable
+}
 
 // PluginExecutor runs a "plugin" node — a deterministic shell-script block.
 // It wraps the existing worker.RunPlugin + worker.PluginResolver infrastructure.
@@ -75,6 +92,12 @@ func (e *PluginExecutor) Execute(ctx context.Context, node v1alpha1.NodeSpec, en
 
 	if runErr != nil {
 		span.SetStatus(codes.Error, "plugin exited non-zero")
+		// Transient classification (ADR-0012 §9): exit-code contract only.
+		var exitErr *exec.ExitError
+		transient := errors.As(runErr, &exitErr) && transientExitCode(exitErr.ExitCode())
+		if transient {
+			span.SetAttributes(attribute.Bool("harmostes.plugin.transient", true))
+		}
 		// An exec that never started (missing script, permission denied)
 		// produces no output at all — the run error IS the only signal, so
 		// it becomes the feedback instead of an empty string (#311: prepare
@@ -90,8 +113,9 @@ func (e *PluginExecutor) Execute(ctx context.Context, node v1alpha1.NodeSpec, en
 			}
 		}
 		return NodeResult{
-			Status:   StatusFailed,
-			Feedback: out,
+			Status:    StatusFailed,
+			Feedback:  out,
+			Transient: transient,
 		}, nil // non-zero exit is a node failure, not a system error
 	}
 

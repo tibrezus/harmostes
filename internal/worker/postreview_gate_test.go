@@ -97,8 +97,18 @@ const (
 	// Marker EARLIER than the thread (created_at before) — a thread cannot
 	// be addressed by something written before it existed.
 	fjMarkerEarlier = `[{"id":40268,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T04:17:30Z"},{"id":40308,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T01:39:33Z","body":"w.yml:433 (comment 40268) — resolved"}]`
-	gitlabOpen      = `[{"id":12,"path":"z.go","line":6,"commit_id":"OLD","resolvable":true,"resolved":false}]`
-	gitlabResolved  = `[{"id":11,"path":"y.go","line":5,"commit_id":"OLD","resolvable":true,"resolved":true}]`
+	// #579 (the rhesadox#2360 burn): stale leftovers from OLDER rounds must
+	// not poison the gate — the reviewer re-posts canonical findings as new
+	// threads each round, the author resolves only the newest review's, and
+	// counting ALL rounds downgraded verdicts over a fixed diff (3×5=15).
+	// Only the NEWEST PRIOR round counts: OLD1's stale thread ignored, OLD2
+	// (newest prior, by created_at) fully resolved → APPROVE, 0.
+	fjStaleOlderRounds = `[{"id":1,"path":"a.yml","line":null,"position":10,"commit_id":"OLD1","in_reply_to":0,"created_at":"2026-09-20T01:00:00Z"},{"id":2,"path":"b.yml","line":null,"position":20,"commit_id":"OLD2","in_reply_to":0,"created_at":"2026-09-22T07:55:00Z","resolved":true}]`
+	// The honest case preserved: the NEWEST prior round carries an open
+	// thread while an older stale one lingers — count 1, not 2.
+	fjNewestPriorOpen = `[{"id":1,"path":"a.yml","line":null,"position":10,"commit_id":"OLD1","in_reply_to":0,"created_at":"2026-09-20T01:00:00Z"},{"id":2,"path":"b.yml","line":null,"position":20,"commit_id":"OLD2","in_reply_to":0,"created_at":"2026-09-22T07:55:00Z"}]`
+	gitlabOpen        = `[{"id":12,"path":"z.go","line":6,"commit_id":"OLD","resolvable":true,"resolved":false}]`
+	gitlabResolved    = `[{"id":11,"path":"y.go","line":5,"commit_id":"OLD","resolvable":true,"resolved":true}]`
 )
 
 // wantOpen mirrors the classifier's stdout count line (printed BEFORE the
@@ -151,6 +161,8 @@ func TestPostReviewGateClassifier(t *testing.T) {
 		{"forgejo: non-Z offset timestamps never close via the marker — mid-body id variant (#573 review)", fjOffsetTimestamp2, "CUR", "REQUEST_CHANGES", "2"},
 		{"forgejo: marker predating the thread does not close — and itself stays an open comment (#572)", fjMarkerEarlier, "CUR", "REQUEST_CHANGES", "2"},
 		{"gitlab: unresolved prior discussion downgrades", gitlabOpen, "CUR", "REQUEST_CHANGES", "1"},
+		{"forgejo: stale older-round leftovers do not poison (#579/#2360)", fjStaleOlderRounds, "CUR", "APPROVE", "0"},
+		{"forgejo: newest prior round open downgrades; older stale ignored (#579)", fjNewestPriorOpen, "CUR", "REQUEST_CHANGES", "1"},
 		{"gitlab: resolved prior discussion passes", gitlabResolved, "CUR", "APPROVE", "0"},
 		{"github: resolved-but-unreplied thread is CLOSED (C1)", ghResolvedOnly, "CUR", "APPROVE", "0"},
 		{"github: marked-unresolved unreplied thread downgrades", ghUnresolvedMarked, "CUR", "REQUEST_CHANGES", "1"},

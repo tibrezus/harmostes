@@ -25,6 +25,8 @@ type fakeAPI struct {
 	comments     []fakeComment
 	commentsErr  error
 	truncated    bool
+	posted       []postedComment
+	commentErr   error
 }
 
 // fakeComment pairs an IssueComment with its host-side updated_at (the
@@ -47,6 +49,22 @@ func (f *fakeAPI) ListCommentsAll(_ context.Context, _ string, _ int) ([]IssueCo
 		out = append(out, c.IssueComment)
 	}
 	return out, f.truncated, nil
+}
+
+// PostComment records the call (#577): tests assert the refusal notice's
+// posting count and payload through postedComments.
+func (f *fakeAPI) PostComment(_ context.Context, repo string, number int, body string) error {
+	if f.commentErr != nil {
+		return f.commentErr
+	}
+	f.posted = append(f.posted, postedComment{Repo: repo, PR: number, Body: body})
+	return nil
+}
+
+type postedComment struct {
+	Repo string
+	PR   int
+	Body string
 }
 
 func (f *fakeAPI) ListLabeledOpenPulls(_ context.Context, _, _ string) ([]PullRequest, error) {

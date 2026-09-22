@@ -366,6 +366,8 @@ spec:
                           reason:  { type: string, description: "the refusal directive — the dev-facing close-out contract" }
                           at:      { type: string, format: date-time }
                           emitted: { type: boolean, description: "the gate-standdown timeline event for THIS refusal has landed — per-candidate dedupe so repeat memo skips do not re-emit while other candidates' standdowns still land" }
+                          verdictUrl: { type: string, description: "deep link to the verdict comment that stands at headSha (#577) — the host-facing notice links here" }
+                          hostNotified: { type: boolean, description: "the one-line PR comment pointing at this refusal has been posted (#577) — dedupe per refusal; a failed post retries on the next sweep" }
                 lastRunAt: { type: string }
                 message: { type: string }
                 conditions:

@@ -20,24 +20,24 @@ func TestStandingVerdictAt(t *testing.T) {
 		{Body: "REQUEST_CHANGES at head — 1 blocking finding\n\n<!-- pr-review: REQUEST_CHANGES @ deadbeefdeadbeef -->"},
 		{Body: "older round: <!-- pr-review: APPROVE @ caafeedcaafeedcaafeedcaafeedcaafeedcaafeed -->"},
 	}
-	if d, ok := standingVerdictAt(comments, head); !ok || d != "REQUEST_CHANGES" {
+	if d, _, ok := standingVerdictAt(comments, head); !ok || d != "REQUEST_CHANGES" {
 		t.Fatalf("abbreviated trailer (16 hex, a true prefix of the head) must match, got %q ok=%v", d, ok)
 	}
-	if _, ok := standingVerdictAt(comments, "beefcafe"); ok {
+	if _, _, ok := standingVerdictAt(comments, "beefcafe"); ok {
 		t.Fatalf("an unrelated head must not match any trailer")
 	}
-	if _, ok := standingVerdictAt(comments, strings.Repeat("12345678", 5)); ok {
+	if _, _, ok := standingVerdictAt(comments, strings.Repeat("12345678", 5)); ok {
 		t.Fatalf("an unrelated head must not match any trailer")
 	}
 	full := []IssueComment{{Body: "<!-- pr-review: APPROVE @ " + strings.Repeat("deadbeef", 5) + " -->"}}
-	if d, ok := standingVerdictAt(full, head); !ok || d != "APPROVE" {
+	if d, _, ok := standingVerdictAt(full, head); !ok || d != "APPROVE" {
 		t.Fatalf("full-length trailer must match the full head, got %q ok=%v", d, ok)
 	}
 	upper := []IssueComment{{Body: "<!-- pr-review: APPROVE @ " + strings.Repeat("DEADBEEF", 5) + " -->"}}
-	if _, ok := standingVerdictAt(upper, head); ok {
+	if _, _, ok := standingVerdictAt(upper, head); ok {
 		t.Fatalf("uppercase sha violates the lowercase-only trailer contract — must not match")
 	}
-	if _, ok := standingVerdictAt(nil, head); ok {
+	if _, _, ok := standingVerdictAt(nil, head); ok {
 		t.Fatalf("no comments → no standing verdict")
 	}
 }

@@ -216,12 +216,12 @@ func (s *Server) buildRunGraph(ctx context.Context, att *v1alpha1.Attempt) runGr
 	if inFlight {
 		start := time.Time{}
 		for _, run := range att.Status.Runs {
-			if run.Phase == "running" && run.StartedAt.Time.After(start) {
+			if run.Phase == "running" && run.StartedAt.After(start) {
 				start = run.StartedAt.Time
 			}
 		}
 		for _, env := range latest {
-			if env.ProducedAt.Time.After(start) {
+			if env.ProducedAt.After(start) {
 				start = env.ProducedAt.Time
 			}
 		}

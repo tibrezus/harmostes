@@ -565,7 +565,20 @@ phase_tag() {
       | awk -F/ '{print $NF}' | sort -V | tail -1)
     LAST_N=$(echo "${LAST_REZUS}" | sed -nE 's/.*-rezus\.([0-9]+).*/\1/p')
     [ -z "$LAST_N" ] && LAST_N=0
-    NEXT_N=$((LAST_N + 1))
+    # Base-10, not octal: a padded ordinal (08/09) would be invalid octal
+    # in arithmetic and crash the phase.
+    NEXT_N=$((10#$LAST_N + 1))
+    # Ordinal tag-shape contract (#595) — two rules:
+    # 1. Ordinals are UNPADDED. A digit-only prerelease identifier
+    #    (…-rezus.10) is ranked NUMERICALLY by semver — monotonic at every
+    #    boundary. A zero-padded one (…-rezus.01) is INVALID semver
+    #    (leading zeros) and invisible to any semver ImagePolicy.
+    # 2. Variant suffixes in IMAGE tags are DOT-joined to the ordinal
+    #    (v…-rezus.11.community), never dash-fused (…-rezus.11-community):
+    #    a fused identifier is alphanumeric, ranks lexically, and
+    #    "10-community" < "9-community" silently stalls the policy at
+    #    every 9→10 boundary (observed: rezuscloud/signoz — flux marker
+    #    stuck at v0.127.0-rezus.3-community since 2026-06-29).
     RELEASE_TAG="${UPSTREAM_VER}-rezus.${NEXT_N}"
 
     HEAD_TAG=$(git tag --points-at HEAD | grep -E "${UPSTREAM_VER}-rezus\." || true)

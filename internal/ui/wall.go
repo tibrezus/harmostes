@@ -136,7 +136,7 @@ func livePosition(resolved *v1alpha1.Workflow, att *v1alpha1.Attempt) (string, s
 	}
 	since := time.Time{}
 	for _, run := range att.Status.Runs {
-		if run.Phase == "running" && run.StartedAt.Time.After(since) {
+		if run.Phase == "running" && run.StartedAt.After(since) {
 			since = run.StartedAt.Time
 		}
 	}

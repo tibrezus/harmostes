@@ -2,7 +2,6 @@ package graph
 
 import (
 	"context"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,10 +14,6 @@ import (
 // scriptNode builds a plugin node whose script fails with the given exit
 // code on the first `failTimes` executions, then exits 0 printing valid
 // JSON. The invocation counter lives in a file so each exec (a fresh sh)
-func itoa(n int) string {
-	b, _ := json.Marshal(n)
-	return string(b)
-}
 
 // execCountFor reads how many times the script ran (same trick as the
 // script itself: the count file lives in the node's temp dir).

@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PuerkitoBio/goquery"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 
@@ -455,5 +457,108 @@ func TestWallStepsUntimedRendersShape(t *testing.T) {
 		if s.Width != want {
 			t.Errorf("untimed step %s width = %d, want %d", s.ID, s.Width, want)
 		}
+	}
+}
+
+// The wall is LIVE (live is not history): active work — in flight, queued,
+// failed — always shows; terminal verdicts linger only wallVerdictGrace;
+// superseded never shows. The live columns name the executing node and its
+// elapsed time for in-flight groups.
+func TestWallLiveOnlySelection(t *testing.T) {
+	now := time.Now()
+	mk := func(name, subject string, phase string, age time.Duration) *v1alpha1.Attempt {
+		a := wallReviewAttempt(name, "pr-review-x")
+		a.Spec.Objective.PrimarySubject.Object = subject
+		a.Status.Phase = phase
+		a.Status.LastRunAt = metav1.NewTime(now.Add(-age))
+		a.CreationTimestamp = metav1.NewTime(now.Add(-age))
+		// Distinct subjects: the review grouping keys on Status.Review.PR.
+		a.Status.Review = &v1alpha1.ReviewClaimStatus{PR: subject, HeadSHA: "abcdef1234567890"}
+		return a
+	}
+	inflight := mk("attempt-pr-review-x-1", "demo/x#1", "reconciling", 2*time.Hour)
+	disp := metav1.NewTime(now.Add(-30 * time.Minute))
+	inflight.Status.Review.DispatchedAt = &disp
+	// prepare done; agent executing — the live position.
+	inflight.Status.NodeResults = []v1alpha1.NodeResultEnvelope{{
+		NodeID: "prepare", Status: "ok", ProducedAt: metav1.NewTime(now.Add(-10 * time.Minute)),
+	}}
+	inflight.Status.Runs = []v1alpha1.RunRecord{
+		{Name: "pr-review-x-1-prepare", StartedAt: metav1.NewTime(now.Add(-11 * time.Minute)), EndedAt: metav1.NewTime(now.Add(-10 * time.Minute)), Phase: "succeeded"},
+		{Name: "pr-review-x-1-agent", StartedAt: metav1.NewTime(now.Add(-9 * time.Minute)), Phase: "running"},
+	}
+	freshVerdict := mk("attempt-pr-review-x-2", "demo/x#2", "validated", 5*time.Minute)
+	freshVerdict.Status.Review.Released = true
+	freshVerdict.Status.Review.ReleaseReason = "consumed"
+	oldVerdict := mk("attempt-pr-review-x-3", "demo/x#3", "validated", 2*time.Hour)
+	oldVerdict.Status.Review.Released = true
+	oldVerdict.Status.Review.ReleaseReason = "consumed"
+	failedOld := mk("attempt-pr-review-x-4", "demo/x#4", "failed", 2*time.Hour)
+	superseded := mk("attempt-pr-review-x-5", "demo/x#5", "superseded", 5*time.Minute)
+	superseded.Status.Review.Released = true
+	superseded.Status.Review.ReleaseReason = "superseded"
+
+	wf := graphSeedWorkflow("pr-review-x")
+	s := wallTestServer(t, wf, inflight, freshVerdict, oldVerdict, failedOld, superseded)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("X-Authentik-Username", "alice")
+	rec := httptest.NewRecorder()
+	s.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET / status = %d", rec.Code)
+	}
+	doc, err := goquery.NewDocumentFromReader(rec.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	doc.Find(`[data-testid="wall-card"]`).Each(func(_ int, sel *goquery.Selection) {
+		seen[sel.AttrOr("data-subject", "")] = true
+	})
+	if !seen["demo/x#1"] {
+		t.Error("in-flight subject must show (active work, however old)")
+	}
+	if !seen["demo/x#2"] {
+		t.Error("fresh verdict must show (within grace)")
+	}
+	if seen["demo/x#3"] {
+		t.Error("verdict past grace must age out to Runs")
+	}
+	if !seen["demo/x#4"] {
+		t.Error("failed must show however old (needs attention)")
+	}
+	if seen["demo/x#5"] {
+		t.Error("superseded must never show (pure history)")
+	}
+
+	// Live columns on the in-flight row: the executing node (first
+	// envelope-less executable node) and its elapsed time.
+	cur := doc.Find(`[data-testid="wall-current"]`).FilterFunction(func(_ int, sel *goquery.Selection) bool {
+		return strings.Contains(sel.Text(), "agent")
+	})
+	if cur.Length() != 1 {
+		t.Errorf("live Now cells naming the agent node = %d, want 1", cur.Length())
+	}
+}
+
+// livePosition: label of the first envelope-less executable node + the
+// running run's elapsed; graceful empty on unknown graphs.
+func TestLivePosition(t *testing.T) {
+	att := wallReviewAttempt("attempt-pr-review-x-1", "pr-review-x")
+	att.Status.NodeResults = []v1alpha1.NodeResultEnvelope{{
+		NodeID: "prepare", Status: "ok", ProducedAt: metav1.NewTime(time.Now().Add(-5 * time.Minute)),
+	}}
+	att.Status.Runs = []v1alpha1.RunRecord{
+		{Name: "pr-review-x-1-prepare", StartedAt: metav1.NewTime(time.Now().Add(-6 * time.Minute)), EndedAt: metav1.NewTime(time.Now().Add(-5 * time.Minute)), Phase: "succeeded"},
+		{Name: "pr-review-x-1-agent", StartedAt: metav1.NewTime(time.Now().Add(-4 * time.Minute)), Phase: "running"},
+	}
+	resolved := graphSeedWorkflow("pr-review-x")
+	node, elapsed := livePosition(resolved, att)
+	if node != "agent" {
+		t.Errorf("live node = %q, want agent", node)
+	}
+	if elapsed == "" {
+		t.Error("elapsed must be set when a run is executing")
 	}
 }

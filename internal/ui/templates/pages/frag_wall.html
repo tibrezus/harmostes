@@ -26,6 +26,7 @@
 					<th>Workflow</th>
 					<th>State</th>
 					<th>Subject</th>
+					<th>Now</th>
 					<th class="num">Runs</th>
 					<th class="num">Tokens</th>
 					<th class="time">Updated</th>
@@ -51,6 +52,7 @@
 							<a href="{{$g.LastRunURL}}" data-testid="wall-card-title">{{if $g.IsReview}}<strong>{{$g.Subject}}</strong>{{else}}<span class="ids">{{$g.Subject}}</span>{{end}}</a>
 							{{if $g.HeadSHA}} <span class="ids" style="color:var(--fg-muted)">{{$g.HeadSHA}}</span>{{end}}
 						</td>
+						<td data-testid="wall-current">{{if $g.CurrentNode}}<span class="ids">{{$g.CurrentNode}}</span> <span style="color:var(--fg-muted)">{{$g.Elapsed}}</span>{{else}}<span style="color:var(--fg-muted)">—</span>{{end}}</td>
 						<td class="num">{{$g.Count}}</td>
 						<td class="num">{{if $g.Usage}}<span {{if $g.Usage.Model}}title="{{$g.Usage.Model}}"{{end}}>↑{{$g.Usage.InputTokens}} ↓{{$g.Usage.OutputTokens}}</span>{{if $g.Usage.Model}} <span class="wall-usage-model ids" style="color:var(--ink-soft)">{{$g.Usage.Model}}</span>{{end}}{{end}}</td>
 						<td class="time">{{$g.LastActivity}}</td>

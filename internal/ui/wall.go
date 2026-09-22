@@ -29,6 +29,12 @@ const (
 	wallMaxGroups = 12                     // density cap: a wall is a glance, not a list
 	wallEventName = "wall"
 	wallStripW    = 140 // step-timing strip width, px
+
+	// wallVerdictGrace: how long a terminal verdict stays on the wall after
+	// its last activity. The wall is LIVE — in-flight, queued, and
+	// failed work always show; outcomes linger only briefly before Runs
+	// owns them (kestra/temporal law: live is not history).
+	wallVerdictGrace = time.Hour
 )
 
 // wallUngrouped is the section header for workflows without a templateRef
@@ -63,6 +69,10 @@ type wallGroup struct {
 	LastActivity string // relative ("3m ago")
 	LastRunURL   string
 	Usage        *wallUsage
+	// Live columns (in-flight groups only): what is executing right now
+	// and since when — the wall answers "where is it" without a click.
+	CurrentNode string
+	Elapsed     string
 }
 
 // wallStep is one segment of a workflow's step-timing strip: a compiled
@@ -95,6 +105,45 @@ type wallWorkflow struct {
 type wallSection struct {
 	Name      string
 	Workflows []wallWorkflow
+}
+
+// livePosition names the node currently executing on an in-flight attempt
+// (the layout engine's running state — the same live position the run graph
+// pulses) and when it started (the executing run's StartedAt), for the
+// wall's Now column.
+func livePosition(resolved *v1alpha1.Workflow, att *v1alpha1.Attempt) (string, string) {
+	var gs v1alpha1.GraphSpec
+	if resolved.Spec.Graph != nil {
+		gs = *resolved.Spec.Graph
+	} else {
+		gs = graph.CompileWorkflow(resolved)
+	}
+	if len(gs.Nodes) == 0 {
+		return "", ""
+	}
+	latest := map[string]v1alpha1.NodeResultEnvelope{}
+	for _, env := range att.Status.NodeResults {
+		if cur, ok := latest[env.NodeID]; !ok || env.ProducedAt.After(cur.ProducedAt.Time) {
+			latest[env.NodeID] = env
+		}
+	}
+	views, _, _, _ := layoutGraph(gs, &resolved.Spec, latest, true)
+	node := ""
+	for _, v := range views {
+		if v.Status == graphStateRunning {
+			node = v.Label
+		}
+	}
+	since := time.Time{}
+	for _, run := range att.Status.Runs {
+		if run.Phase == "running" && run.StartedAt.Time.After(since) {
+			since = run.StartedAt.Time
+		}
+	}
+	if node == "" || since.IsZero() {
+		return node, ""
+	}
+	return node, relTime(since.Format(time.RFC3339), time.Now())
 }
 
 // usageFromAttempt extracts the agent node's structured usage from an
@@ -272,10 +321,28 @@ func (s *Server) wallSections(r *http.Request, owner string, hydrate bool) ([]wa
 	}
 
 	// Fold subject groups under their workflow, honoring the row budget.
+	// LIVE selection: active work (in flight, queued, failed, dispatch
+	// lost) always shows; terminal verdicts linger only wallVerdictGrace
+	// past their last activity, then Runs owns them. Superseded never
+	// shows — a replaced targeted state is pure history.
 	wfOrder := []string{}
 	wfGroups := map[string][]wallGroup{}
+	resolvedCache := map[string]v1alpha1.Workflow{}
 	rows := 0
+	hidden := 0 // aged-out rows: history, not overflow
 	for _, g := range groups {
+		state := groupState(g)
+		if state == "superseded" {
+			hidden++
+			continue
+		}
+		if state == "verdict" || state == "validated" {
+			att := byName[g.LatestAttempt]
+			if att != nil && time.Since(attemptActivity(att)) > wallVerdictGrace {
+				hidden++
+				continue
+			}
+		}
 		if rows >= wallMaxGroups {
 			break
 		}
@@ -300,13 +367,26 @@ func (s *Server) wallSections(r *http.Request, owner string, hydrate bool) ([]wa
 		if wg.Usage == nil {
 			wg.Usage = s.usageFor(r, name, hydrate)
 		}
+		// Live columns: what is executing on this subject right now.
+		if state == "in flight" || state == "reconciling" {
+			if att := byName[g.LatestAttempt]; att != nil {
+				if wf, ok := wfByName[name]; ok {
+					res, cached := resolvedCache[name]
+					if !cached {
+						res = s.resolveWorkflow(r.Context(), &wf)
+						resolvedCache[name] = res
+					}
+					wg.CurrentNode, wg.Elapsed = livePosition(&res, att)
+				}
+			}
+		}
 		if _, seen := wfGroups[name]; !seen {
 			wfOrder = append(wfOrder, name)
 		}
 		wfGroups[name] = append(wfGroups[name], wg)
 		rows++
 	}
-	overflow := len(groups) - rows
+	overflow := len(groups) - rows - hidden
 
 	secOrder := []string{}
 	secs := map[string]*wallSection{}

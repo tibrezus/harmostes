@@ -50,7 +50,7 @@
 		<text class="rg-timing-label" x="8" y="15">{{$s.Label}}</text>
 		<rect class="rg-timing-bar rg-state-{{$s.Status}}" x="{{$s.X}}" y="4" width="{{$s.Width}}" height="14" rx="3"><title>{{$s.Title}}</title></rect>
 		{{- if $s.Right}}
-		<text class="rg-timing-dur" x="{{$s.TextX}}" y="15">{{$s.Title}}</text>
+		<text class="rg-timing-dur"{{if $s.Anchor}} text-anchor="{{$s.Anchor}}"{{end}} x="{{$s.TextX}}" y="15">{{$s.Title}}</text>
 		{{- else}}
 		<text class="rg-timing-dur rg-timing-dur-in" x="{{$s.TextX}}" y="15">{{$s.Title}}</text>
 		{{- end}}

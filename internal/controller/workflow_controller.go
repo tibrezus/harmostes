@@ -380,8 +380,9 @@ func triggerSourceOf(wf *v1alpha1.Workflow) string {
 // returns an empty name — scheduling proceeds without canonical history rather
 // than blocking the run.
 func (r *WorkflowReconciler) resolveAttempt(ctx context.Context, wf *v1alpha1.Workflow) string {
+	revision := wf.Annotations[v1alpha1.TriggerRevisionAnnotation]
 	obj := attempt.DeriveObjective(wf, attempt.TriggerContext{
-		Revision: wf.Annotations[v1alpha1.TriggerRevisionAnnotation],
+		Revision: revision,
 		Source:   triggerSourceOf(wf),
 	})
 	att, _, err := attempt.ResolveOrCreate(ctx, r.Client, obj, attempt.ResolveOptions{
@@ -393,6 +394,16 @@ func (r *WorkflowReconciler) resolveAttempt(ctx context.Context, wf *v1alpha1.Wo
 	if err != nil {
 		log.FromContext(ctx).Error(err, "resolve attempt (canonical history disabled for this run)")
 		return ""
+	}
+	// (#583) A concrete targeted state supersedes the prior heads of this
+	// objective — ADR-0005's superseded leg, never implemented until now.
+	// Webhook-only: the schedule tick targets "head" and supersedes nothing.
+	if revision != "" {
+		if n, err := attempt.SupersedePriorAttempts(ctx, r.Client, wf.Namespace, wf.Name, att); err != nil {
+			log.FromContext(ctx).Error(err, "supersede prior attempts (best-effort)", "workflow", wf.Name)
+		} else if n > 0 {
+			log.FromContext(ctx).Info("superseded prior attempts", "workflow", wf.Name, "count", n, "target", revision)
+		}
 	}
 	return att.Name
 }

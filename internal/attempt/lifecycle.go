@@ -537,3 +537,59 @@ func ReapStuckAttempts(ctx context.Context, c client.Client, namespace, workflow
 	}
 	return reaped, nil
 }
+
+// SupersedePriorAttempts implements the ADR-0005 completion rule's superseded
+// leg — which until #583 NO production path ever set: when an objective's
+// targeted state MOVES (a PR's new head), the attempt anchored at the prior
+// head is not stuck, it was superseded. Marks phase=superseded on every
+// reconciling attempt of the SAME workflow whose objective kind + primary
+// subject match `current` and whose targeted state is a DIFFERENT concrete
+// revision. Rolling identities ("head" — the schedule tick's standing target)
+// and statusless attempts (never reconciled) are out of scope, so a schedule
+// trigger can never supersede anything and per-SHA history never flaps.
+// Claim-bearing attempts with an UNRELEASED claim are skipped: the
+// arm/dispatch/timeout machinery owns those (r27/r30, #349/#351) — supersede
+// is the historian's verdict on FINISHED rounds, not a claim release path.
+//
+// Called from the workflow controller on WEBHOOK triggers only (concrete
+// revision present). Best-effort per attempt, same contract as reap/GC; the
+// List is label-scoped per workflow — the same bounded shape.
+func SupersedePriorAttempts(ctx context.Context, c client.Client, namespace, workflowName string, current *v1alpha1.Attempt) (int, error) {
+	if current == nil || current.Spec.Objective.TargetedState == "" ||
+		current.Spec.Objective.TargetedState == "head" {
+		return 0, nil
+	}
+	var list v1alpha1.AttemptList
+	if err := c.List(ctx, &list, client.InNamespace(namespace),
+		client.MatchingLabels{"harmostes.dev/workflow": workflowName}); err != nil {
+		return 0, fmt.Errorf("list attempts: %w", err)
+	}
+	superseded := 0
+	for i := range list.Items {
+		prior := &list.Items[i]
+		if prior.Name == current.Name ||
+			prior.Spec.Objective.Kind != current.Spec.Objective.Kind ||
+			prior.Spec.Objective.PrimarySubject != current.Spec.Objective.PrimarySubject {
+			continue
+		}
+		ts := prior.Spec.Objective.TargetedState
+		if ts == "" || ts == "head" || ts == current.Spec.Objective.TargetedState {
+			continue
+		}
+		if prior.Status.Phase != v1alpha1.AttemptPhaseReconciling {
+			continue // terminal or statusless — nothing to supersede
+		}
+		if r := prior.Status.Review; r != nil && !r.Released {
+			continue // claim-bearing: the gate machinery owns it
+		}
+		if err := patchAttemptStatus(ctx, c, namespace, prior.Name, func(s *v1alpha1.AttemptStatus) {
+			s.Phase = v1alpha1.AttemptPhaseSuperseded
+			s.Message = fmt.Sprintf("superseded by %s (targeted state moved to %s)",
+				current.Name, current.Spec.Objective.TargetedState)
+		}); err != nil {
+			continue // best-effort; the next trigger for this objective retries
+		}
+		superseded++
+	}
+	return superseded, nil
+}

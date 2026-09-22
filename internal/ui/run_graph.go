@@ -209,7 +209,7 @@ func (s *Server) buildRunGraph(ctx context.Context, att *v1alpha1.Attempt) runGr
 	}
 	view.Timing = buildTimingStrip(view.Nodes, latest)
 	view.TimingH = len(view.Timing) * 22 // lane height lives here; templates stay arithmetic-free
-	view.TimingW = 640
+	view.TimingW = timingViewW
 	return view
 }
 
@@ -222,9 +222,14 @@ type timingSegment struct {
 	Y      int    `json:"y"` // lane offset (index * laneHeight), precomputed
 	Width  int    `json:"width"`
 	// Precomputed text anchors (templates stay arithmetic-free).
-	TextX int    `json:"textX"`
-	Right bool   `json:"right"` // label sits right of the bar (short bars)
-	Title string `json:"title"` // humanized duration
+	TextX int  `json:"textX"`
+	Right bool `json:"right"` // label sits right of the bar (short bars)
+	// Anchor is the SVG text-anchor for the duration label: "end" when the
+	// label flipped to the LEFT of a short bar that ends at the viewBox
+	// edge (start-anchored text would clip past TimingW), empty for the
+	// default start anchor.
+	Anchor string `json:"anchor,omitempty"`
+	Title  string `json:"title"` // humanized duration
 }
 
 // buildTimingStrip computes the per-step waterfall: one lane per node in
@@ -234,6 +239,11 @@ type timingSegment struct {
 // driven triggers (#557) the run starts when the conditions are met — there
 // is no queue-wait phase to measure, and pre-#557 the lane's only real
 // content was the dispatch latency the wake path deleted.
+// timingViewW is the waterfall's fixed viewBox width in user units; the
+// template reads it back through Graph.TimingW. One number, two consumers
+// (bar math and the right-edge label flip) — keep it singular.
+const timingViewW = 640
+
 func buildTimingStrip(nodes []graphNodeView, latest map[string]v1alpha1.NodeResultEnvelope) []timingSegment {
 	type lane struct {
 		label, status string
@@ -319,7 +329,11 @@ func buildTimingStrip(nodes []graphNodeView, latest map[string]v1alpha1.NodeResu
 			Title:  segmentTitle(l),
 		})
 	}
-	// Short bars label to the right of the bar; long bars inside.
+	// Short bars label to the right of the bar; long bars inside. A short
+	// bar whose right-side label would run past the viewBox edge (the last
+	// node to finish — its text, not its bar, is what clipped) flips to the
+	// left of the bar, end-anchored: the lane left of a bar is always its
+	// own empty gutter, so the flip can never collide.
 	const laneH = 22
 	for i := range segs {
 		segs[i].Y = i * laneH // templates have no arithmetic: {{$i}}22 would concatenate
@@ -327,6 +341,13 @@ func buildTimingStrip(nodes []graphNodeView, latest map[string]v1alpha1.NodeResu
 		segs[i].Right = segs[i].Width < 60
 		if !segs[i].Right {
 			segs[i].TextX = segs[i].X + 5
+			continue
+		}
+		// ~6 viewBox units per glyph at the label's 10px monospace — a
+		// deliberate over-estimate keeps the longest retry title inside.
+		if segs[i].TextX+6*len(segs[i].Title) > timingViewW {
+			segs[i].TextX = segs[i].X - 6
+			segs[i].Anchor = "end"
 		}
 	}
 	return segs

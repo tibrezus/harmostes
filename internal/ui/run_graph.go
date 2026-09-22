@@ -245,7 +245,7 @@ func (s *Server) buildRunGraph(ctx context.Context, att *v1alpha1.Attempt) runGr
 // (start = producedAt - duration, end = producedAt).
 type timingSegment struct {
 	Label  string `json:"label"`
-	Status string `json:"status"` // segment color class (rg-state-*)
+	Status string `json:"status"`         // segment color class (rg-state-*)
 	Live   bool   `json:"live,omitempty"` // in-flight lane: pulsing bar
 	X      int    `json:"x"`
 	Y      int    `json:"y"` // lane offset (index * laneHeight), precomputed

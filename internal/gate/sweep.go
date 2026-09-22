@@ -1337,6 +1337,12 @@ func notifyRefusalHost(ctx context.Context, api review.API, ref *v1alpha1.Review
 		return
 	}
 	ref.HostNotified = true
+	if link == "" {
+		// Degraded (#577 review finding): the host gave no html_url for the
+		// verdict comment. Visibility still wins — post, but say so.
+		log("review-ready: refusal notice posted for %s#%d at %s WITHOUT a verdict link (host served no html_url)", ref.Repo, ref.PR, ref.HeadSHA)
+		return
+	}
 	log("review-ready: refusal notice posted for %s#%d at %s (#577)", ref.Repo, ref.PR, ref.HeadSHA)
 }
 

@@ -315,16 +315,30 @@ const MaxReviewRefusals = 16
 // cap. Package-level so the gate can maintain the memo on a sweep-local
 // slice (the sweep's liveAgg read may be nil on a fresh workflow); the
 // method below delegates. Upsert, not append: a repeated refusal of the
-// same head refreshes the timestamp instead of growing the list.
+// same head refreshes the timestamp instead of growing the list. On the
+// same-head re-refusal (a human re-arm lands here by design) the refusal
+// fields refresh, but the notification state CARRIES: the PR notice for
+// this (pr, head) already landed (#577 — exactly one notice per head);
+// a changed verdict link still re-notifies, pointing at the newer verdict.
 func RecordReviewRefusal(list []ReviewRefusal, r ReviewRefusal) []ReviewRefusal {
+	for i := range list {
+		if list[i].Repo == r.Repo && list[i].PR == r.PR && list[i].HeadSHA == r.HeadSHA {
+			if list[i].VerdictURL == r.VerdictURL {
+				r.HostNotified = list[i].HostNotified
+			}
+			out := make([]ReviewRefusal, 0, len(list))
+			out = append(out, r)
+			out = append(out, list[:i]...)
+			out = append(out, list[i+1:]...)
+			if len(out) > MaxReviewRefusals {
+				out = out[:MaxReviewRefusals]
+			}
+			return out
+		}
+	}
 	out := make([]ReviewRefusal, 0, len(list)+1)
 	out = append(out, r)
-	for _, existing := range list {
-		if existing.Repo == r.Repo && existing.PR == r.PR && existing.HeadSHA == r.HeadSHA {
-			continue // superseded by the fresh record
-		}
-		out = append(out, existing)
-	}
+	out = append(out, list...)
 	if len(out) > MaxReviewRefusals {
 		out = out[:MaxReviewRefusals]
 	}

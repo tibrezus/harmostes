@@ -10,6 +10,7 @@ package gate
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -207,6 +208,25 @@ func TestRefusalHumanReRequestAnswersVisibly(t *testing.T) {
 	if len(rr.Refusals) != 1 {
 		t.Fatalf("re-memoise must upsert, not grow, got %d", len(rr.Refusals))
 	}
+	// #577 dedupe across HUMAN re-arms (the finding on this PR): the first
+	// re-request posts the notice (the pre-seeded record predates #577 —
+	// HostNotified false); every further same-head re-request must reuse
+	// that notice — RecordReviewRefusal carries HostNotified across the
+	// upsert, else N re-arms spam N near-identical comments.
+	if got := atomic.LoadInt32(srv.commentPosts); got != 1 {
+		t.Fatalf("the first re-request posts exactly one notice, got %d", got)
+	}
+	for i := 2; i <= 3; i++ {
+		if _, err := RunReviewGateWake(ctx, deps, wf); err != nil {
+			t.Fatalf("wake %d: %v", i, err)
+		}
+	}
+	if got := atomic.LoadInt32(srv.commentPosts); got != 1 {
+		t.Fatalf("three same-head human re-arms must produce exactly ONE notice, got %d", got)
+	}
+	if !st.last.ReviewReady.Refusals[0].HostNotified {
+		t.Fatal("the carried HostNotified must persist across re-memo upserts")
+	}
 }
 
 // ── #577: the standing-verdict refusal posts a one-line PR comment —
@@ -248,6 +268,64 @@ func TestRefusalNoticePostsOnceWithVerdictLink(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(srv.commentPosts); got != 1 {
 		t.Fatalf("repeat sweeps must not re-post the notice, got %d posts", got)
+	}
+}
+
+// The degraded branch (non-blocking finding, fixed alongside): a host
+// payload with no html_url still gets a notice — visibility is the primary
+// good — but the body must not advertise a link it does not carry.
+func TestRefusalNoticePostsDegradedWithoutLink(t *testing.T) {
+	clearTriggerEnv(t)
+	var posts int32
+	var lastBody string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case req.Method == http.MethodPost && strings.Contains(req.URL.Path, "/comments"):
+			b, _ := io.ReadAll(req.Body)
+			lastBody = string(b)
+			atomic.AddInt32(&posts, 1)
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 1})
+		case strings.HasSuffix(req.URL.Path, "/pulls"):
+			_ = json.NewEncoder(w).Encode([]any{
+				map[string]any{"number": 99, "updated_at": "2026-09-21T00:00:00Z",
+					"labels": []map[string]string{{"name": "needs-review"}}},
+			})
+		case strings.Contains(req.URL.Path, "/pulls/"):
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"state": "open", "head": map[string]string{"sha": "deadbeef123"},
+				"base":   map[string]string{"ref": "main"},
+				"labels": []map[string]string{{"name": "needs-review"}},
+			})
+		case strings.Contains(req.URL.Path, "/comments"):
+			_ = json.NewEncoder(w).Encode([]any{
+				map[string]any{"body": "verdict\n\n<!-- pr-review: REQUEST_CHANGES @ deadbeef123 -->", "id": 41053},
+			})
+		case strings.Contains(req.URL.Path, "/branch_protections/"):
+			_ = json.NewEncoder(w).Encode(map[string]any{"status_check_contexts": []string{}})
+		default:
+			http.NotFound(w, req)
+		}
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	st := &fakeStatus{}
+	deps, ctx := gateEnv(t, wf, st)
+
+	if _, err := RunReviewGateSweep(ctx, deps, wf); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if got := atomic.LoadInt32(&posts); got != 1 {
+		t.Fatalf("the notice must post even without a host deep link, got %d", got)
+	}
+	if strings.Contains(lastBody, "The verdict:") {
+		t.Fatalf("the degraded notice must not advertise a link, got %q", lastBody)
+	}
+	if !st.last.ReviewReady.Refusals[0].HostNotified {
+		t.Fatal("the degraded notice still counts as notified")
 	}
 }
 

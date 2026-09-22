@@ -1596,6 +1596,54 @@ func TestMultiArmAgedQueuedClaimConvergesHorizon(t *testing.T) {
 	}
 }
 
+// TestPollSweepReDispatchesArmedClaimWhenCIGoesGreen pins the #568 live
+// failure (#570): a claim armed while CI was RED (synchronize wake beat the
+// green), the label re-added, and the CI re-run completed — with NO wake
+// reaching the gate (the #571 webhook gap: GitHub check_suite completions
+// never arrive). The next POLL sweep must re-evaluate the armed-queued
+// claim (r27), see green, and complete the dispatch against the EXISTING
+// attempt — not release it (the v1.2.0-244 immortality: the in-flight skip
+// fired before any re-evaluation), not re-arm a second claim, and not burn
+// the churn budget.
+func TestPollSweepReDispatchesArmedClaimWhenCIGoesGreen(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := labeledListServer(t, 103)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	// Armed 1 minute ago at the served head, NEVER dispatched (the #568
+	// round-2 arm: armedSince set, dispatchedAt empty, released empty).
+	claim := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#103", "deadbeef123",
+		time.Now().Add(-time.Minute), nil)
+	// gateEnv (no Wake.Repo): a POLL sweep — the schedule tick that ran
+	// while the check_suite webhook was silently missing (#571).
+	deps, ctx := gateEnv(t, wf, &fakeStatus{}, claim)
+
+	out, err := RunReviewGateSweep(ctx, deps, wf)
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("green poll sweep must complete the armed claim's dispatch, got %d dispatches", len(out))
+	}
+	if out[0].Attempt != claim.Name {
+		t.Fatalf("dispatch must complete the EXISTING attempt %s, got %s", claim.Name, out[0].Attempt)
+	}
+	if out[0].Envelope.HeadSHA != "deadbeef123" {
+		t.Fatalf("dispatch must review the claim's head, got %s", out[0].Envelope.HeadSHA)
+	}
+	var got v1alpha1.Attempt
+	if err := deps.Client.Get(ctx, client.ObjectKey{Namespace: wf.Namespace, Name: claim.Name}, &got); err != nil {
+		t.Fatalf("get claim: %v", err)
+	}
+	if got.Status.Review.Released {
+		t.Fatalf("a green queued claim must dispatch, not release (reason=%q)", got.Status.Review.ReleaseReason)
+	}
+	if got.Status.Review.DispatchLostReleases != 0 {
+		t.Fatalf("a successful re-dispatch must not burn the churn budget, got %d", got.Status.Review.DispatchLostReleases)
+	}
+}
+
 // ── r8: refusal ATTRIBUTION + budget reset, both driven through the gate. ──
 
 // TestSweepRefusalAttribution_ChurnRefusalReportsBudget drives the

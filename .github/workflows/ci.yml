@@ -73,6 +73,15 @@ jobs:
         with:
           version: v2.6.2
           args: --timeout 5m
+          # The analysis cache proved UNTRUSTWORTHY on 2026-09-22: warm-cache
+          # runs reported zero findings while cold-cache runs of the identical
+          # Go sources reported three SA5011 sites (all the standard
+          # nil-check→t.Fatal→deref idiom, hundreds of which lint clean on
+          # warm runs) — and flip-flopped across runs with no Go input
+          # changing. A zero-baseline gate must be deterministic, so always
+          # run the full analysis (the leg is ~1-2m; the cache bought
+          # dishonesty, not speed).
+          skip-cache: true
 
       - name: go build (all packages)
         run: go build ./...
@@ -297,6 +306,15 @@ jobs:
           # source; ubuntu's own repos carry everything --with-deps needs.
           sudo rm -f /etc/apt/sources.list.d/google-chrome*.list /etc/apt/sources.list.d/google*.list
           cd e2e && npx playwright install --with-deps chromium
+
+      # Pre-build the fixture UI server OUTSIDE Playwright's webServer
+      # timeout: on a cold GOMODCACHE (fresh branch + a new dependency —
+      # observed 2026-09-22 when robfig/cron landed, #590) the go run in
+      # the webServer hook downloads + compiles from scratch and blew the
+      # 60s budget. go run reuses this step's build cache, so the hook
+      # boots in seconds afterwards.
+      - name: Pre-build fixture UI server
+        run: go build ./cmd/harmostes-ui
 
       # The webServer hook in playwright.config.ts boots the fixture UI
       # itself (go run) and waits for /healthz — one command runs the tier.
@@ -560,6 +578,15 @@ jobs:
             echo "::error::golden render drift — run 'make golden-update' and commit the golden with your change"
             exit 1
           }
+          # #595 ordinal-contract guard: the engine payload must carry the
+          # base-10 ordinal parse (octal trap on padded cuts) and the
+          # tag-shape contract comment. The golden diff alone cannot catch
+          # their removal — regenerating the golden makes any payload drift
+          # green; this probe is the mechanical backstop.
+          grep -q '10#\$LAST_N' /tmp/golden-render.yaml \
+            || { echo "::error::render-guard: phase_tag base-10 ordinal guard missing from the engine payload (#595)"; exit 1; }
+          grep -q 'dash-fused' /tmp/golden-render.yaml \
+            || { echo "::error::render-guard: phase_tag tag-shape contract comment missing from the engine payload (#595)"; exit 1; }
           if helm template harmostes chart/ -f chart/ci/golden-values.yaml \
                --set forkMaintenance.defs=null > /dev/null 2>&1; then
             echo "::error::empty-defs render guard did not fail (forkMaintenance.defs=null + enabled=true must fail)"

@@ -83,8 +83,12 @@ func TestComponent_Wall_RendersAllFixtureSubjects(t *testing.T) {
 	doc := getAsFixtureUser(t, ts, "/")
 
 	cards := testIDSelection(t, doc, "wall-card")
-	if got := cards.Length(); got != 4 {
-		t.Errorf("wall cards = %d, want 4 (three review PRs + one deterministic subject)", got)
+	if got := cards.Length(); got != 3 {
+		// The wall is LIVE (live is not history): the superseded
+		// merge-sync subject never shows; validated verdicts linger only
+		// for wallVerdictGrace. Fixture: #42 (fresh verdict) + #43
+		// (in flight) + #44 (fresh verdict).
+		t.Errorf("wall cards = %d, want 3 (three review PRs — superseded dropped)", got)
 	}
 	cards.Each(func(_ int, s *goquery.Selection) {
 		if s.AttrOr("data-subject", "") == "" {
@@ -111,8 +115,8 @@ func TestComponent_Wall_RendersAllFixtureSubjects(t *testing.T) {
 		t.Errorf("pr-review section cards = %d, want 1 (the template-backed instance)", got)
 	}
 	otherSec := doc.Find(`[data-testid="wall-section"][data-template="other workflows"]`)
-	if got := otherSec.Find(`[data-testid="wall-card"]`).Length(); got != 3 {
-		t.Errorf("other-workflows section cards = %d, want 3 (two PRs on pr-review-demo + merge-sync)", got)
+	if got := otherSec.Find(`[data-testid="wall-card"]`).Length(); got != 2 {
+		t.Errorf("other-workflows section cards = %d, want 2 (two PRs on pr-review-demo — superseded merge-sync dropped)", got)
 	}
 	// The graph-native workflow tracks two subjects → its block cell
 	// spans both rows.
@@ -128,8 +132,8 @@ func TestComponent_Wall_RendersAllFixtureSubjects(t *testing.T) {
 	// Every workflow with envelopes carries a strip; the strips paint with
 	// the run-detail waterfall's own state classes.
 	strips := testIDSelection(t, doc, "wall-steps")
-	if got := strips.Length(); got != 3 {
-		t.Errorf("wall step strips = %d, want 3 (every live workflow has a latest attempt)", got)
+	if got := strips.Length(); got != 2 {
+		t.Errorf("wall step strips = %d, want 2 (every showing workflow has a latest attempt)", got)
 	}
 	if got := doc.Find(`.wall-steps .rg-timing-bar.rg-state-ok`).Length(); got == 0 {
 		t.Error("no ok-painted segments — strips must reuse the waterfall palette")
@@ -447,8 +451,8 @@ func TestComponent_DevIdentity_ZeroSetup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if got := doc.Find(`[data-testid="wall-card"]`).Length(); got != 4 {
-		t.Errorf("wall cards visible to the injected dev user = %d, want 4", got)
+	if got := doc.Find(`[data-testid="wall-card"]`).Length(); got != 3 {
+		t.Errorf("wall cards visible to the injected dev user = %d, want 3 (live selection)", got)
 	}
 }
 

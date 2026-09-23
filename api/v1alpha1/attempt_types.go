@@ -205,6 +205,38 @@ type AttemptStatus struct {
 	// release state live here, never on the Workflow's status slot.
 	// +optional
 	Review *ReviewClaimStatus `json:"review,omitempty"`
+
+	// Progress is the executing run's live per-turn progress — token usage
+	// and turn count, published by the agent harness as each turn lands.
+	// A window, not a ledger: each write replaces the previous, and the
+	// envelope payload (post-hoc, per node) supersedes it once the node
+	// ends. The wall reads it only for in-flight rows.
+	// +optional
+	Progress *RunProgress `json:"progress,omitempty"`
+}
+
+// RunProgress is one live-progress sample: the agent harness's running
+// totals as of a turn completion. Ephemeral evidence — never accumulated
+// into history (the envelopes carry the post-hoc truth).
+type RunProgress struct {
+	// Turn is the index of the turn that produced this sample (0-based).
+	// +optional
+	Turn int `json:"turn,omitempty"`
+
+	// Turns is how many turns the run has completed so far.
+	// +optional
+	Turns int `json:"turns,omitempty"`
+
+	// TokensIn/TokensOut are the run's cumulative token totals so far.
+	// +optional
+	TokensIn int `json:"tokensIn,omitempty"`
+	// +optional
+	TokensOut int `json:"tokensOut,omitempty"`
+
+	// UpdatedAt is when the harness published this sample. Readers refuse
+	// stale samples (a crashed run's last write lingers on the CR).
+	// +optional
+	UpdatedAt *metav1.Time `json:"updatedAt,omitempty"`
 }
 
 // ReviewClaimStatus is the gate's claim on this Attempt: one live claim

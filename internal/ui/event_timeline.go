@@ -290,6 +290,11 @@ func storeSummary(kind string, p map[string]any) string {
 		if tok := payloadString(p, "tokensIn"); tok != "" {
 			line += " (" + tok + "→" + payloadString(p, "tokensOut") + " tok)"
 		}
+		// Cumulative totals ride every sample (the immediate turn publisher
+		// stamps them) — the newest turn's row answers "how much so far".
+		if tot := payloadString(p, "totalIn"); tot != "" {
+			line += " · total " + tot + "→" + payloadString(p, "totalOut")
+		}
 		return line
 	case timeline.KindAgentTool:
 		return "agent tool: " + payloadString(p, "tool")

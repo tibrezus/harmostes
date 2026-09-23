@@ -210,7 +210,8 @@ func Attempts(namespace string) ([]ctrlclient.Object, error) {
 	// using a 1h grace.
 	now := metav1.Now()
 	running.Status.Progress = &v1alpha1.RunProgress{
-		Turn: 3, Turns: 4, TokensIn: 2140, TokensOut: 388, UpdatedAt: &now,
+		Turn: 3, Turns: 4, TokensIn: 2140, TokensOut: 388,
+		Model: "demo/llm/fixture-flash", UpdatedAt: &now,
 	}
 	// In-flight claim: armed + dispatched, NOT released — the live position.
 	armT2 := t(29, 0)

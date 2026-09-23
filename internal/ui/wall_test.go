@@ -587,7 +587,8 @@ func TestWallLiveTokens(t *testing.T) {
 	}
 	wf := graphSeedWorkflow("pr-review-x")
 	fresh := mk("attempt-pr-review-x-live", &v1alpha1.RunProgress{
-		Turn: 3, Turns: 4, TokensIn: 2140, TokensOut: 388, UpdatedAt: &metav1.Time{Time: now.Add(-2 * time.Minute)},
+		Turn: 3, Turns: 4, TokensIn: 2140, TokensOut: 388,
+		Model: "demo/llm/night-window", UpdatedAt: &metav1.Time{Time: now.Add(-2 * time.Minute)},
 	})
 	stale := mk("attempt-pr-review-x-stale", &v1alpha1.RunProgress{
 		Turn: 3, Turns: 4, TokensIn: 9999, TokensOut: 9999, UpdatedAt: &metav1.Time{Time: now.Add(-2 * time.Hour)},
@@ -616,6 +617,15 @@ func TestWallLiveTokens(t *testing.T) {
 		t.Fatalf("live tokens cell missing; cells=%v", live)
 	} else if !strings.Contains(got, "2140") || !strings.Contains(got, "388") || !strings.Contains(got, "↻") {
 		t.Errorf("live tokens cell = %q, want ↻ + 2140/388", got)
+	}
+	// The live row names the model the RUN pinned (#494) — never the cache.
+	model := doc.Find(`[data-testid="wall-live-tokens"]`).Parent().Find(".wall-usage-model").Text()
+	if model != "demo/llm/night-window" {
+		t.Errorf("live model = %q, want the run-pinned id", model)
+	}
+	title, _ := doc.Find(`[data-testid="wall-live-tokens"]`).Attr("title")
+	if !strings.Contains(title, "demo/llm/night-window") || !strings.Contains(title, "4 turns") {
+		t.Errorf("live title = %q, want model + turns", title)
 	}
 	if n := len(live); n != 1 {
 		t.Errorf("live tokens cells = %d (%v), want exactly 1 (stale/absent progress show the dash or envelope)",

@@ -131,6 +131,7 @@ spec:
                     turns:     { type: integer }
                     tokensIn:  { type: integer }
                     tokensOut: { type: integer }
+                    model:     { type: string }
                     updatedAt: { type: string }
                 review:                                             # the gate's per-PR claim (ADR-0007)
                   type: object

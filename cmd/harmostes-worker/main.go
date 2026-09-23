@@ -392,6 +392,7 @@ func runOneShot() {
 		}
 		if err := attempt.RecordProgress(pctx, cl, namespace, attemptName, v1alpha1.RunProgress{
 			Turn: p.Turn, Turns: p.Turns, TokensIn: p.TotalIn, TokensOut: p.TotalOut,
+			Model: sessionMeta.Model, // the run's pinned model (#494) — never a schedule guess
 		}); err != nil {
 			logf("warn: record progress: %v", err)
 		}

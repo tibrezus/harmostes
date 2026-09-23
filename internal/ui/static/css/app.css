@@ -1925,6 +1925,21 @@ code, pre {
 	font-size: 0.8rem;
 }
 
+/* Header state tally (kestra's execution-tab counts): one chip per live
+   state, over the whole live selection. Rendered inside the SSE fragment
+   so it stays fresh with the grid. */
+.wall-counts {
+	display: flex;
+	align-items: center;
+	gap: 0.45rem;
+	margin: -0.35rem 0 0.75rem;
+	font-size: 0.78rem;
+}
+.wall-live-tokens {
+	color: var(--running);
+	font-variant-numeric: tabular-nums;
+}
+
 /* Wall v2 (#554): template → workflow → subject. Sections carry the
    template name; each workflow block (a rowspan cell) owns its
    step-timing strip — the compiled shape with the latest attempt's

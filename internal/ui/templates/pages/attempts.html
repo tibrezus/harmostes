@@ -28,6 +28,7 @@
 					<th>Subject</th>
 					<th>Workflow</th>
 					<th class="num">Attempts</th>
+					<th class="num">Tokens</th>
 					<th class="time">Last activity</th>
 				</tr>
 			</thead>
@@ -42,13 +43,14 @@
 					</td>
 					<td><span class="ids">{{$g.WorkflowRef}}</span></td>
 					<td class="num">{{$g.Count}}</td>
+					<td class="num">{{if or $g.TokensIn $g.TokensOut}}<span {{if $g.Model}}title="{{$g.Model}}"{{end}}>↑{{$g.TokensIn}} ↓{{$g.TokensOut}}</span>{{else}}<span style="color:var(--fg-muted)">—</span>{{end}}</td>
 					<td class="time">{{$g.LastActivity}}</td>
 				</tr>
 				{{range $g.Attempts}}
 				<tr class="subrow" data-group="{{$gi}}">
 					<td></td>
 					<td>{{template "state-chip" (chipState .Phase)}}</td>
-					<td colspan="3">
+					<td colspan="4">
 						<a href="/runs/{{.Name}}" data-testid="run-link" data-phase="{{.Phase}}">{{shortName .Name}}</a>
 						<span style="color:var(--fg-muted)"> · {{.RunCount}} run{{if ne .RunCount 1}}s{{end}}{{if .LastRunAt}} · {{.LastRunAt}}{{end}}</span>
 					</td>

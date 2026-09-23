@@ -129,8 +129,15 @@ func ArmClaim(ctx context.Context, c client.Client, scheme *runtime.Scheme, wf *
 		// grow a 6h dismissal window — skip the leg instead.
 		if wf.Spec.ReviewReady != nil && r.DismissedAt != nil &&
 			time.Since(r.DismissedAt.Time) < wf.Spec.ReviewReady.HorizonDuration() {
-			return nil, fmt.Errorf("%w: %s — automatic re-arm refused; re-apply the label to request a fresh review",
-				ErrRecentlyDismissed, shortSHA(headSHA))
+			// The dismissal AGE is part of the message (#569): identity
+			// carries no PR number, so a head force-pushed back to an old
+			// value resolves the OLD attempt — with its OLD dismissal. The
+			// guard is correct (revival would restart the identical
+			// ambiguity) but "5037cf50" alone read as a stale record; the
+			// age tells the operator instantly whether the evidence is
+			// fresh or ancient.
+			return nil, fmt.Errorf("%w: %s (dismissed %s ago) — automatic re-arm refused; re-apply the label to request a fresh review",
+				ErrRecentlyDismissed, shortSHA(headSHA), time.Since(r.DismissedAt.Time).Round(time.Minute))
 		}
 		// The budget is a WINDOW, not a life sentence (#376 defect 2):
 		// three strikes within the horizon window refuse; strikes older
@@ -272,11 +279,15 @@ func ArmClaim(ctx context.Context, c client.Client, scheme *runtime.Scheme, wf *
 		}
 		r.Released = false
 		r.ReleaseReason = ""
-		// Re-arm honesty (#328): an attempt being re-armed after a failure
-		// is in flight again — reflect it, and drop the stale failure
-		// message (the death, if the breaker later opens, is re-recorded
-		// by ReleaseClaimDead).
-		if s.Phase == v1alpha1.AttemptPhaseFailed {
+		// Re-arm honesty (#328, extended by #569): an attempt being
+		// re-armed after ANY terminal phase is in flight again — the era
+		// restarts and the phase follows. (ReleaseClaim now stamps
+		// validated/superseded on consumed/superseded releases; a revival
+		// of such an era — e.g. a human re-requesting a review of the same
+		// head — must not read terminal while genuinely reconciling.)
+		if s.Phase == v1alpha1.AttemptPhaseFailed ||
+			s.Phase == v1alpha1.AttemptPhaseValidated ||
+			s.Phase == v1alpha1.AttemptPhaseSuperseded {
 			s.Phase = v1alpha1.AttemptPhaseReconciling
 			s.Message = ""
 		}
@@ -324,6 +335,22 @@ func ReleaseClaim(ctx context.Context, c client.Client, namespace, attemptName, 
 		if reason == v1alpha1.ReleaseReasonHorizon {
 			t := metav1.NewTime(time.Now())
 			s.Review.DismissedAt = &t
+		}
+		// Phase follows the release (#569): the release reason is the
+		// era's outcome — record it on the phase, or a consumed verdict
+		// leaves the attempt reading "reconciling" forever (the #2359
+		// zombie-column class). Only the reasons whose outcome maps onto
+		// an ADR-0005 phase are patched: consumed = the targeted state WAS
+		// deterministically reviewed (validated); superseded = the name
+		// says it. dispatch-lost stays reconciling (the era may revive);
+		// horizon stays janitor-owned; pointer-invalid stays untouched
+		// (the underlying review may be perfectly alive); dead dispatches
+		// are failed by ReleaseClaimDead, which owns that ledger.
+		switch reason {
+		case "consumed":
+			s.Phase = v1alpha1.AttemptPhaseValidated
+		case v1alpha1.ReleaseReasonSuperseded:
+			s.Phase = v1alpha1.AttemptPhaseSuperseded
 		}
 	}); err != nil {
 		return err

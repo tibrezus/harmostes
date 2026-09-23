@@ -361,20 +361,9 @@ func runOneShot() {
 		_ = runTL.Emit(ctx, timeline.KindRunStarted, "", map[string]any{"source": source})
 	}
 
-	seenTurns := 0
 	sessionWriter := func(sctx context.Context, session agent.SessionRecord) error {
 		if deps.Dapr == nil {
 			return nil
-		}
-		if runTL != nil {
-			for i := seenTurns; i < len(session.Turns); i++ {
-				t := session.Turns[i]
-				_ = runTL.Emit(sctx, timeline.KindAgentTurn, "agent", map[string]any{
-					"turn": i, "label": t.Label, "green": t.Gate != nil && t.Gate.Green,
-					"tokensIn": t.Usage.Input, "tokensOut": t.Usage.Output,
-				})
-			}
-			seenTurns = len(session.Turns)
 		}
 		key := fmt.Sprintf("%s:%s:session", workflow, runID)
 		b, err := json.Marshal(session)
@@ -382,6 +371,30 @@ func runOneShot() {
 			return err
 		}
 		return deps.Dapr.SaveState(sctx, deps.DaprStateStore, key, string(b))
+	}
+	// turnPublisher: each landed turn publishes IMMEDIATELY (the old path
+	// waited for the gate evaluation, so a turn's tokens appeared minutes
+	// late). Two consumers, one callback: the timeline event (evidence,
+	// TTL'd) and the Attempt's live Progress window (the wall's token
+	// column reads it for in-flight rows). Cumulative totals ride every
+	// sample so readers need only the newest event.
+	turnPublisher := func(pctx context.Context, p agent.TurnProgress) {
+		if runTL != nil {
+			_ = runTL.Emit(pctx, timeline.KindAgentTurn, "agent", map[string]any{
+				"turn": p.Turn, "label": p.Label,
+				"tokensIn": p.TokensIn, "tokensOut": p.TokensOut,
+				"totalIn": p.TotalIn, "totalOut": p.TotalOut, "turns": p.Turns,
+			})
+		}
+		attemptName := os.Getenv("HARMOSTES_ATTEMPT")
+		if attemptName == "" {
+			return
+		}
+		if err := attempt.RecordProgress(pctx, cl, namespace, attemptName, v1alpha1.RunProgress{
+			Turn: p.Turn, Turns: p.Turns, TokensIn: p.TotalIn, TokensOut: p.TotalOut,
+		}); err != nil {
+			logf("warn: record progress: %v", err)
+		}
 	}
 	toolPublisher := func(pctx context.Context, wfName, rid string, tool agent.ToolCall) {
 		if runTL != nil {
@@ -622,6 +635,7 @@ func runOneShot() {
 		KubeClient:     graph.NewKubeClient(cl),
 		SessionWriter:  sessionWriter,
 		ToolPublisher:  toolPublisher,
+		TurnPublisher:  turnPublisher,
 		SessionMeta:    sessionMeta,
 	}
 	graphDeps.Timeline = runTL

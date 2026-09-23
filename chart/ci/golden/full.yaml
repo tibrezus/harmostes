@@ -998,10 +998,31 @@ data:
         git checkout "$FORK_DEFAULT_BRANCH" 2>/dev/null || git checkout -b "$FORK_DEFAULT_BRANCH" "origin/$FORK_DEFAULT_BRANCH"
       fi
     
+      # Shallow-history soundness (#566): the clone and the upstream fetch are
+      # --depth 100, and a shallow graph can lack the common ancestor — a
+      # merge-base that fails (or silently mis-resolves) here turns the
+      # up-to-date decision into a coin flip. The false "up to date" is the
+      # worst outcome: the sync silently no-ops forever, defeating the
+      # dead-man's switch it feeds. So:
+      #   1. the up-to-date test is `merge-base --is-ancestor` (exit-status
+      #      semantics — upstream head fully contained in the fork), never a
+      #      string compare that an empty MERGE_BASE can corrupt;
+      #   2. a missing common ancestor triggers an unshallow retry before the
+      #      merge — a real 300+-commit range cannot merge from 100-deep
+      #      history at all;
+      #   3. if the ancestor is STILL unresolvable, we proceed to the merge,
+      #      which fails LOUDLY (unrelated histories) instead of skipping.
       MERGE_BASE=$(git merge-base "HEAD" "upstream/$UPSTREAM_BRANCH" 2>/dev/null || echo "")
+      if [ -z "$MERGE_BASE" ]; then
+        echo "=== shallow history has no common ancestor — unshallowing upstream ==="
+        git fetch --unshallow upstream "$UPSTREAM_BRANCH" 2>/dev/null \
+          || git fetch --deepen=2000 upstream "$UPSTREAM_BRANCH" 2>/dev/null \
+          || true
+        MERGE_BASE=$(git merge-base "HEAD" "upstream/$UPSTREAM_BRANCH" 2>/dev/null || echo "")
+      fi
       UPSTREAM_HEAD=$(git rev-parse "upstream/$UPSTREAM_BRANCH")
     
-      if [ "$MERGE_BASE" = "$UPSTREAM_HEAD" ]; then
+      if git merge-base --is-ancestor "upstream/$UPSTREAM_BRANCH" "HEAD" 2>/dev/null; then
         echo ""
         echo "=== Already up to date — mirror has no new commits ==="
         if [ "$PHASED" = "1" ]; then
@@ -5221,7 +5242,7 @@ spec:
         # (stale-pod-wins; #368-1). Checksums cover everything the pod mounts:
         # the fork-maintenance.yaml template output (scripts/checks/defs/
         # hooks/skill CMs) and the litellm extension payload.
-        checksum/fork-maintenance: 525e2e45ccdc54cfeb3a33e980077279ea29885dd3c440bfb9f9afff5028b7af
+        checksum/fork-maintenance: 458808bc2510e7018b9b199fc58554df4210e5060ed482f76b7563a015179dac
         checksum/litellm-extension: 883d76f7ef3dcce17099fbf3c7b7aea0e7d7d16003ca83cfb465a7422078b4e1
     spec:
       imagePullSecrets:

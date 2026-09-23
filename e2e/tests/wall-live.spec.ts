@@ -25,5 +25,9 @@ test('the wall streams live token counts on the in-flight row', async ({ page })
   await expect(live).toHaveCount(1);
   const card = page.locator('[data-testid="wall-card"][data-subject="demo-rezuscloud/harmostes#43"]');
   await expect(card.locator('[data-testid="wall-live-tokens"]')).toHaveText('↻ ↑2140 ↓388');
-  await expect(card.locator('[data-testid="wall-live-tokens"]')).toHaveAttribute('title', 'live · 4 turns');
+  // The live row names the model the RUN pinned (#494) — visible inline and
+  // in the hover title; never the workflow cache's last-run model.
+  await expect(card.getByText('demo/llm/fixture-flash')).toBeVisible();
+  await expect(card.locator('[data-testid="wall-live-tokens"]')).toHaveAttribute(
+    'title', 'live · demo/llm/fixture-flash · 4 turns');
 });

@@ -227,6 +227,12 @@ type RunProgress struct {
 	// +optional
 	Turns int `json:"turns,omitempty"`
 
+	// Model is the model id the run pinned at start (#494) — the harness
+	// reports what is ACTUALLY executing, so live surfaces never guess
+	// from a time-windowed schedule or a previous run's cache.
+	// +optional
+	Model string `json:"model,omitempty"`
+
 	// TokensIn/TokensOut are the run's cumulative token totals so far.
 	// +optional
 	TokensIn int `json:"tokensIn,omitempty"`

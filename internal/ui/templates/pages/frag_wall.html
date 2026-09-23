@@ -61,7 +61,7 @@
 						</td>
 						<td data-testid="wall-current">{{if $g.CurrentNode}}<span class="ids">{{$g.CurrentNode}}</span> <span style="color:var(--fg-muted)">{{$g.Elapsed}}</span>{{else}}<span style="color:var(--fg-muted)">—</span>{{end}}</td>
 						<td class="num">{{$g.Count}}</td>
-						<td class="num">{{if $g.Live}}<span class="wall-live-tokens" data-testid="wall-live-tokens" title="live · {{$g.Live.Turns}} turns">↻ ↑{{$g.Live.In}} ↓{{$g.Live.Out}}</span>{{else if $g.Usage}}<span {{if $g.Usage.Model}}title="{{$g.Usage.Model}}"{{end}}>↑{{$g.Usage.InputTokens}} ↓{{$g.Usage.OutputTokens}}</span>{{if $g.Usage.Model}} <span class="wall-usage-model ids" style="color:var(--ink-soft)">{{$g.Usage.Model}}</span>{{end}}{{end}}</td>
+						<td class="num">{{if $g.Live}}<span class="wall-live-tokens" data-testid="wall-live-tokens" title="live · {{$g.Live.Model}} · {{$g.Live.Turns}} turns">↻ ↑{{$g.Live.In}} ↓{{$g.Live.Out}}</span>{{if $g.Live.Model}} <span class="wall-usage-model ids" style="color:var(--ink-soft)">{{$g.Live.Model}}</span>{{end}}{{else if $g.Usage}}<span {{if $g.Usage.Model}}title="{{$g.Usage.Model}}"{{end}}>↑{{$g.Usage.InputTokens}} ↓{{$g.Usage.OutputTokens}}</span>{{if $g.Usage.Model}} <span class="wall-usage-model ids" style="color:var(--ink-soft)">{{$g.Usage.Model}}</span>{{end}}{{end}}</td>
 						<td class="time">{{$g.LastActivity}}</td>
 					</tr>
 				{{- end}}

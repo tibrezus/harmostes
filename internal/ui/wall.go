@@ -83,6 +83,7 @@ type wallLiveTokens struct {
 	In    int
 	Out   int
 	Turns int
+	Model string // the run's pinned model — the live row answers "which model", not the cache
 }
 
 // wallProgressFreshness bounds how long a Progress sample is trusted. A
@@ -420,7 +421,7 @@ func (s *Server) wallSections(r *http.Request, owner string, hydrate bool) ([]wa
 				if p := att.Status.Progress; p != nil && !p.UpdatedAt.IsZero() &&
 					time.Since(p.UpdatedAt.Time) <= wallProgressFreshness &&
 					p.TokensIn+p.TokensOut > 0 {
-					wg.Live = &wallLiveTokens{In: p.TokensIn, Out: p.TokensOut, Turns: p.Turns}
+					wg.Live = &wallLiveTokens{In: p.TokensIn, Out: p.TokensOut, Turns: p.Turns, Model: p.Model}
 				}
 			}
 		}

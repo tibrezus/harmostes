@@ -73,6 +73,32 @@ type wallGroup struct {
 	// and since when — the wall answers "where is it" without a click.
 	CurrentNode string
 	Elapsed     string
+	// LiveTokens is the executing run's in-flight usage (the attempt's
+	// Progress window), shown instead of the post-hoc envelope numbers.
+	Live *wallLiveTokens
+}
+
+// wallLiveTokens is one in-flight usage sample for the wall's token column.
+type wallLiveTokens struct {
+	In    int
+	Out   int
+	Turns int
+}
+
+// wallProgressFreshness bounds how long a Progress sample is trusted. A
+// crashed run's last write lingers on the CR; the wall shows a dash rather
+// than a lie. Generous: agent turns can run long (research, big reviews).
+const wallProgressFreshness = 15 * time.Minute
+
+// wallCounts is the wall header's state tally (kestra's execution tabs): a
+// count per live state over the whole live selection — pre-budget, so the
+// tally doesn't flicker when the row cap clips. Aged-out history is not
+// counted: the wall counts LIVE work only.
+type wallCounts struct {
+	InFlight int // claim in flight / reconciling
+	Queued   int
+	Failed   int // failed + dispatch lost
+	Verdict  int // verdict/validated within the grace window
 }
 
 // wallStep is one segment of a workflow's step-timing strip: a compiled
@@ -259,12 +285,12 @@ func (s *Server) handleWall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	owner := s.visibleOwner(identityFromContext(r.Context()))
-	sections, overflow, err := s.wallSections(r, owner, true)
+	sections, overflow, counts, err := s.wallSections(r, owner, true)
 	if err != nil {
 		s.renderError(w, r, "Failed to load wall: "+err.Error())
 		return
 	}
-	s.render(w, r, "pages/wall.html", map[string]any{"Sections": sections, "Overflow": overflow})
+	s.render(w, r, "pages/wall.html", map[string]any{"Sections": sections, "Overflow": overflow, "Counts": counts})
 }
 
 // attemptActivity is an attempt's ordering timestamp (last run, else creation).
@@ -280,10 +306,10 @@ func attemptActivity(a *v1alpha1.Attempt) time.Time {
 // rollups; they fold under their workflow, which carries the step-timing
 // strip of its newest attempt. Row budget: wallMaxGroups subject rows
 // across all sections — the overflow count feeds a single "+N more" line.
-func (s *Server) wallSections(r *http.Request, owner string, hydrate bool) ([]wallSection, int, error) {
+func (s *Server) wallSections(r *http.Request, owner string, hydrate bool) ([]wallSection, int, wallCounts, error) {
 	attempts, err := s.listAttempts(r, owner)
 	if err != nil {
-		return nil, 0, fmt.Errorf("list attempts: %w", err)
+		return nil, 0, wallCounts{}, fmt.Errorf("list attempts: %w", err)
 	}
 	groups := groupAttempts(attempts, time.Time{})
 	sort.Slice(groups, func(i, j int) bool {
@@ -311,7 +337,7 @@ func (s *Server) wallSections(r *http.Request, owner string, hydrate bool) ([]wa
 	// the attempts — a workflow the viewer cannot see contributes nothing.
 	wfs, err := s.listWorkflows(r, owner)
 	if err != nil {
-		return nil, 0, fmt.Errorf("list workflows: %w", err)
+		return nil, 0, wallCounts{}, fmt.Errorf("list workflows: %w", err)
 	}
 	tmplOf := map[string]string{}
 	wfByName := map[string]v1alpha1.Workflow{}
@@ -330,18 +356,31 @@ func (s *Server) wallSections(r *http.Request, owner string, hydrate bool) ([]wa
 	resolvedCache := map[string]v1alpha1.Workflow{}
 	rows := 0
 	hidden := 0 // aged-out rows: history, not overflow
+	counts := wallCounts{}
 	for _, g := range groups {
 		state := groupState(g)
-		if state == "superseded" {
+		switch state {
+		case "superseded":
 			hidden++
 			continue
-		}
-		if state == "verdict" || state == "validated" {
+		case "verdict", "validated":
 			att := byName[g.LatestAttempt]
 			if att != nil && time.Since(attemptActivity(att)) > wallVerdictGrace {
 				hidden++
 				continue
 			}
+		}
+		// The tally counts the whole live selection — pre-budget, so the
+		// header reads "what is live" even when the table clips.
+		switch state {
+		case "in flight", "reconciling":
+			counts.InFlight++
+		case "queued":
+			counts.Queued++
+		case "failed", "dispatch lost":
+			counts.Failed++
+		case "verdict", "validated":
+			counts.Verdict++
 		}
 		if rows >= wallMaxGroups {
 			break
@@ -378,6 +417,11 @@ func (s *Server) wallSections(r *http.Request, owner string, hydrate bool) ([]wa
 					}
 					wg.CurrentNode, wg.Elapsed = livePosition(&res, att)
 				}
+				if p := att.Status.Progress; p != nil && !p.UpdatedAt.IsZero() &&
+					time.Since(p.UpdatedAt.Time) <= wallProgressFreshness &&
+					p.TokensIn+p.TokensOut > 0 {
+					wg.Live = &wallLiveTokens{In: p.TokensIn, Out: p.TokensOut, Turns: p.Turns}
+				}
 			}
 		}
 		if _, seen := wfGroups[name]; !seen {
@@ -411,12 +455,12 @@ func (s *Server) wallSections(r *http.Request, owner string, hydrate bool) ([]wa
 	for _, name := range secOrder {
 		out = append(out, *secs[name])
 	}
-	return out, overflow, nil
+	return out, overflow, counts, nil
 }
 
 // renderWallFragment renders the wall grid to a string for SSE delivery.
 func (s *Server) renderWallFragment(r *http.Request, owner string) (string, error) {
-	sections, overflow, err := s.wallSections(r, owner, false)
+	sections, overflow, counts, err := s.wallSections(r, owner, false)
 	if err != nil {
 		return "", err
 	}
@@ -425,7 +469,7 @@ func (s *Server) renderWallFragment(r *http.Request, owner string) (string, erro
 		return "", fmt.Errorf("template not found: pages/frag_wall.html")
 	}
 	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, map[string]any{"Sections": sections, "Overflow": overflow}); err != nil {
+	if err := tmpl.Execute(&buf, map[string]any{"Sections": sections, "Overflow": overflow, "Counts": counts}); err != nil {
 		return "", fmt.Errorf("render wall fragment: %w", err)
 	}
 	return buf.String(), nil

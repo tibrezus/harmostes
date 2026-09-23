@@ -15,6 +15,13 @@
 	<a href="/runs?window=24h&status=failed">View in Runs →</a>
 </div>
 {{- end -}}
+<div class="wall-counts" data-testid="wall-counts">
+	{{- if .Counts.InFlight}}<span class="chip chip--run">in flight {{.Counts.InFlight}}</span>{{end}}
+	{{- if .Counts.Queued}}<span class="chip chip--warn">queued {{.Counts.Queued}}</span>{{end}}
+	{{- if .Counts.Failed}}<span class="chip chip--fail">failed {{.Counts.Failed}}</span>{{end}}
+	{{- if .Counts.Verdict}}<span class="chip chip--ok">verdict {{.Counts.Verdict}}</span>{{end}}
+	{{- if not .Counts.InFlight}}{{if not .Counts.Queued}}{{if not .Counts.Failed}}{{if not .Counts.Verdict}}<span style="color:var(--fg-muted)">nothing live</span>{{end}}{{end}}{{end}}{{end}}
+</div>
 {{- range $sec := .Sections}}
 <section class="wall-section" data-testid="wall-section" data-template="{{$sec.Name}}">
 	<h2 class="wall-section-h"><span class="ids">{{$sec.Name}}</span>
@@ -54,7 +61,7 @@
 						</td>
 						<td data-testid="wall-current">{{if $g.CurrentNode}}<span class="ids">{{$g.CurrentNode}}</span> <span style="color:var(--fg-muted)">{{$g.Elapsed}}</span>{{else}}<span style="color:var(--fg-muted)">—</span>{{end}}</td>
 						<td class="num">{{$g.Count}}</td>
-						<td class="num">{{if $g.Usage}}<span {{if $g.Usage.Model}}title="{{$g.Usage.Model}}"{{end}}>↑{{$g.Usage.InputTokens}} ↓{{$g.Usage.OutputTokens}}</span>{{if $g.Usage.Model}} <span class="wall-usage-model ids" style="color:var(--ink-soft)">{{$g.Usage.Model}}</span>{{end}}{{end}}</td>
+						<td class="num">{{if $g.Live}}<span class="wall-live-tokens" data-testid="wall-live-tokens" title="live · {{$g.Live.Turns}} turns">↻ ↑{{$g.Live.In}} ↓{{$g.Live.Out}}</span>{{else if $g.Usage}}<span {{if $g.Usage.Model}}title="{{$g.Usage.Model}}"{{end}}>↑{{$g.Usage.InputTokens}} ↓{{$g.Usage.OutputTokens}}</span>{{if $g.Usage.Model}} <span class="wall-usage-model ids" style="color:var(--ink-soft)">{{$g.Usage.Model}}</span>{{end}}{{end}}</td>
 						<td class="time">{{$g.LastActivity}}</td>
 					</tr>
 				{{- end}}

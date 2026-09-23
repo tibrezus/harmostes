@@ -115,13 +115,13 @@ func WithToolPublisher(p ToolPublisher) TaskOption {
 // completion — not gate-lagged — so live surfaces (the wall's token column,
 // the event timeline) stream while the agent still works.
 type TurnProgress struct {
-	Turn     int    // 0-based index of the turn that produced this sample
-	Label    string // "initial task", "feedback #N"
-	TokensIn int    // this turn's input tokens
-	TokensOut int   // this turn's output tokens
-	TotalIn  int    // session-cumulative input so far
-	TotalOut int    // session-cumulative output so far
-	Turns    int    // turns completed so far (≥ Turn+1)
+	Turn      int    // 0-based index of the turn that produced this sample
+	Label     string // "initial task", "feedback #N"
+	TokensIn  int    // this turn's input tokens
+	TokensOut int    // this turn's output tokens
+	TotalIn   int    // session-cumulative input so far
+	TotalOut  int    // session-cumulative output so far
+	Turns     int    // turns completed so far (≥ Turn+1)
 }
 
 // TurnPublisher observes each completed turn as it lands. Nil-safe; called

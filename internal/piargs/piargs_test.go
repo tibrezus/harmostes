@@ -69,6 +69,7 @@ func TestExtensionToolsCoversEveryLoadedExtension(t *testing.T) {
 	cases := map[string]string{
 		"/extensions/litellm-provider": "", // provider-only: registers no tool
 		"/extensions/rig-query":        "rig",
+		"/extensions/turn-budget":      "",           // veto-only: blocks over-budget tool_call events, registers none (#484)
 		"/extensions/sol-pi":           "obs_recall", // observation-pack's recall affordance (#425)
 	}
 	for _, ext := range Extensions {
@@ -202,24 +203,29 @@ func TestExtensionsSingleSource(t *testing.T) {
 func TestSolPiProfileSingleSource(t *testing.T) {
 	profile := string(mustRead(t, "../../extensions/sol-pi/sol-pi.json"))
 	var cfg struct {
-		Version                   int      `json:"version"`
-		ActionFusion              bool     `json:"actionFusion"`
-		ObservationPack           bool     `json:"observationPack"`
-		EvidencePreservingReducer bool     `json:"evidencePreservingReducer"`
-		OnlineContextCompact      bool     `json:"onlineContextCompact"`
-		CacheWriteReadRatio       *float64 `json:"cacheWriteReadRatio"`
+		Version                           int      `json:"version"`
+		ActionFusion                      bool     `json:"actionFusion"`
+		ObservationPack                   bool     `json:"observationPack"`
+		EvidencePreservingReducer         bool     `json:"evidencePreservingReducer"`
+		EvidencePreservingReducerProvider string   `json:"evidencePreservingReducerProvider"`
+		EvidencePreservingReducerModel    string   `json:"evidencePreservingReducerModel"`
+		OnlineContextCompact              bool     `json:"onlineContextCompact"`
+		CacheWriteReadRatio               *float64 `json:"cacheWriteReadRatio"`
 	}
 	if err := json.Unmarshal([]byte(profile), &cfg); err != nil {
 		t.Fatalf("shipped sol-pi.json does not parse: %v", err)
 	}
-	// The conservative profile is EFFECTIVE, not merely parseable: the two
-	// local, model-call-free mechanisms on; the reducer (ships repo logs to
-	// a reducer model) and the compact-and-continue flow OFF.
-	if !cfg.ActionFusion || !cfg.ObservationPack {
-		t.Errorf("conservative profile must enable actionFusion + observationPack, got %+v", cfg)
+	// The maximized profile is EFFECTIVE, not merely parseable: all four
+	// auto-research mechanisms on. The #426 egress deferral is REVERSED by
+	// construction: the reducer route is the SAME LiteLLM proxy the main
+	// model already receives repo logs through — identical trust boundary,
+	// cheaper model (the fleet's base flash model), verified receipts.
+	if !cfg.ActionFusion || !cfg.ObservationPack || !cfg.EvidencePreservingReducer || !cfg.OnlineContextCompact {
+		t.Errorf("profile must enable all four mechanisms, got %+v", cfg)
 	}
-	if cfg.EvidencePreservingReducer || cfg.OnlineContextCompact {
-		t.Errorf("conservative profile must keep reducer/compact OFF, got %+v", cfg)
+	if cfg.EvidencePreservingReducerProvider != "litellm" ||
+		cfg.EvidencePreservingReducerModel != "litellm/ali/anthropic/qwen3.8-flash" {
+		t.Errorf("reducer route = %q/%q, want the litellm cheap flash route", cfg.EvidencePreservingReducerProvider, cfg.EvidencePreservingReducerModel)
 	}
 	if cfg.CacheWriteReadRatio == nil || *cfg.CacheWriteReadRatio < 0 {
 		t.Errorf("cacheWriteReadRatio must be present and non-negative, got %+v", cfg.CacheWriteReadRatio)

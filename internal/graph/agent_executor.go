@@ -32,6 +32,7 @@ type AgentExecutor struct {
 	stateStore  string                // Dapr state store component name
 	sessionWr   agent.SessionWriter   // optional: persists session transcript
 	toolPub     agent.ToolPublisher   // optional: publishes per-tool pub/sub events
+	turnPub     agent.TurnPublisher   // optional: observes per-turn progress (live tokens)
 	sessionMeta agent.SessionMeta     // identity metadata for the session record
 }
 
@@ -86,16 +87,20 @@ func (e *AgentExecutor) Execute(ctx context.Context, node v1alpha1.NodeSpec, env
 		task = task + "\n\n" + cfg.Scope
 	}
 
-	// ADR-0010: a resumed lineage gets a delta note — the transcript above
-	// already holds this PR's orientation, findings, and reasoning; the
-	// agent must not redo that work, only verify what changed.
-	if os.Getenv("HARMOSTES_SESSION_RESUME") == "1" {
-		note := "Session note: this is a RESUMED session. Your prior orientation, findings, and verdict reasoning are already in the transcript above — do not redo that work. Verify only what changed since your last turn"
-		if sha := os.Getenv("HARMOSTES_TRIGGER_SHA"); sha != "" {
-			note += " (new head: " + sha + ")"
-		}
-		note += "."
+	// Resume context arrives as DATA (HARMOSTES_SESSION_NOTE, composed by
+	// the dispatch path that owns the lineage fact — C4). The kernel-side
+	// executor carries no pr-review vocabulary of its own: it renders
+	// envelope-provided notes verbatim, like cfg.Scope above.
+	if note := os.Getenv("HARMOSTES_SESSION_NOTE"); note != "" {
 		task = task + "\n\n" + note
+	}
+
+	// Research journal (#494): the workflow's recent run outcomes — compact
+	// and capped by the writer (the tail, never the archive). Evidence the
+	// agent can consult to avoid redoing known failures; it changes nothing
+	// about the gate or the tools.
+	if j := os.Getenv("HARMOSTES_RESEARCH_JOURNAL"); j != "" {
+		task = task + "\n\n" + "Prior runs of this workflow (newest first) — known outcomes; do not redo failed approaches:\n" + j
 	}
 
 	// Build the gate (optional).
@@ -132,6 +137,9 @@ func (e *AgentExecutor) Execute(ctx context.Context, node v1alpha1.NodeSpec, env
 	}
 	if e.toolPub != nil {
 		agentOpts = append(agentOpts, agent.WithToolPublisher(e.toolPub))
+	}
+	if e.turnPub != nil {
+		agentOpts = append(agentOpts, agent.WithTurnPublisher(e.turnPub))
 	}
 
 	result, err := e.runner.Run(ctx, task, gate, maxFixes, nil, agentOpts...)
@@ -195,7 +203,37 @@ func (e *AgentExecutor) Execute(ctx context.Context, node v1alpha1.NodeSpec, env
 			"turns": len(result.Session.Turns),
 		},
 		Feedback: fmt.Sprintf("agent %s after %d attempt(s), %s", status, result.Attempts, result.Usage.String()),
+		// Structured per-attempt usage rides the envelope payload (ADR-0004):
+		// the Attempt CR becomes the per-PR token source of record — the
+		// workflow-level `usage:last` cache stays a legacy fallback only.
+		// Previous behavior put usage ONLY on the lifecycle event bus and a
+		// per-workflow state key, so every subject row showed the same
+		// workflow-wide numbers.
+		Envelope: &v1alpha1.NodeResultEnvelope{
+			Payload: mustJSONPayload(map[string]any{
+				"usage": map[string]any{
+					"input":      result.Usage.Input,
+					"output":     result.Usage.Output,
+					"cacheRead":  result.Usage.CacheRead,
+					"cacheWrite": result.Usage.CacheWrite,
+					"cost":       result.Usage.Cost,
+				},
+				"model": cfg.Model,
+				"turns": len(result.Session.Turns),
+			}),
+		},
 	}, nil
+}
+
+// mustJSONPayload marshals a payload map to the envelope's RawMessage.
+// Never fails on these shapes (numbers and strings only); on the impossible
+// error it degrades to null rather than aborting a live run.
+func mustJSONPayload(v map[string]any) json.RawMessage {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return json.RawMessage("null")
+	}
+	return b
 }
 
 // looksLikeRef returns true if the task string looks like a reference path

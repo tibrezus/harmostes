@@ -26,7 +26,14 @@ func (f *fakeSession) Prompt(_ context.Context, message, _ string) (Event, int, 
 		usage = f.usages[f.idx]
 	}
 	f.idx++
-	return Event{Type: "agent_end"}, tools, usage, TurnCapture{}, nil
+	// Non-empty response + nonzero usage: the #504 guard must not fire on
+	// these gate-loop mechanics fakes (an empty zero-token turn is the
+	// silent-empty INCIDENT shape, pinned by TestTask_EmptyCompletionFailsLoudly).
+	capture := TurnCapture{Response: "ok (fake turn)"}
+	if usage.Input == 0 && usage.Output == 0 {
+		usage = Usage{Input: 1, Output: 1}
+	}
+	return Event{Type: "agent_end"}, tools, usage, capture, nil
 }
 
 func (f *fakeSession) Abort(_ context.Context) error { f.aborted = true; return nil }
@@ -189,5 +196,57 @@ func TestTurnRecordsCarryPerTurnUsage(t *testing.T) {
 	}
 	if res.Session.Turns[1].Usage.Input != 50 || res.Session.Turns[1].Usage.Output != 2 {
 		t.Errorf("turn 1 usage = %+v, want 50/2", res.Session.Turns[1].Usage)
+	}
+}
+
+// #480 r8 t15: the gate shell inherits the process env unless set explicitly
+// — the approval-capable bot credential must be scrubbed at this leaf too
+// (the graph legs are safe because they enumerate cmd.Env; CmdGate did not).
+func TestCmdGateScrubBotToken(t *testing.T) {
+	t.Setenv("HARMOSTES_FORGEJO_BOT_TOKEN", "bot-secret")
+	t.Setenv("HARMOSTES_FORGEJO_TOKEN", "primary-keep")
+
+	g := CmdGate{Command: `test "$HARMOSTES_FORGEJO_BOT_TOKEN" = "" && echo scrubbed`}
+	green, out, err := g.Run(context.Background())
+	if err != nil {
+		t.Fatalf("gate run: %v", err)
+	}
+	if !green {
+		t.Fatalf("gate expected green (token scrubbed), output: %s", out)
+	}
+	if !strings.Contains(out, "scrubbed") {
+		t.Errorf("expected the scrubbed-env branch, output: %s", out)
+	}
+}
+
+// The turn publisher fires per completed turn — IMMEDIATELY, not gate-lagged
+// (the old path emitted at gate-evaluation time, so a turn's tokens appeared
+// minutes late). Samples carry the turn's own usage and the running totals;
+// the wall and the event timeline read only the newest.
+func TestTurnPublisherStreamsPerTurn(t *testing.T) {
+	sess := &fakeSession{usages: []Usage{
+		{Input: 100, Output: 5},
+		{Input: 50, Output: 2},
+	}}
+	gate := &scriptedGate{greens: []bool{false, true}, outputs: []string{"fix it", "ok"}}
+	var samples []TurnProgress
+	res, err := Task(context.Background(), sess, gate, "task", 3, nil, WithTurnPublisher(
+		func(_ context.Context, p TurnProgress) { samples = append(samples, p) },
+	))
+	if err != nil || !res.Green {
+		t.Fatalf("green task: err=%v green=%v", err, res.Green)
+	}
+	if len(samples) != 2 {
+		t.Fatalf("turn samples = %d, want 2", len(samples))
+	}
+	if samples[0].Turn != 0 || samples[0].Label != "initial task" ||
+		samples[0].TokensIn != 100 || samples[0].TokensOut != 5 ||
+		samples[0].TotalIn != 100 || samples[0].TotalOut != 5 || samples[0].Turns != 1 {
+		t.Errorf("sample 0 = %+v", samples[0])
+	}
+	if samples[1].Turn != 1 || samples[1].Label != "feedback #1" ||
+		samples[1].TokensIn != 50 || samples[1].TokensOut != 2 ||
+		samples[1].TotalIn != 150 || samples[1].TotalOut != 7 || samples[1].Turns != 2 {
+		t.Errorf("sample 1 = %+v", samples[1])
 	}
 }

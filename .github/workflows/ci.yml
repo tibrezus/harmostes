@@ -6,7 +6,12 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # Every branch head, not just main (B3): push events fire regardless of
+    # PR mergeability, so a DIRTY (conflicting) branch still gets signal
+    # instead of the silent "no checks" state — GitHub skips pull_request
+    # runs when the merge ref cannot be created. Branch runs are diagnostic
+    # only; branch protection still requires the PR runs.
+    branches: ["**"]
   pull_request:
 
 # Cancel superseded runs on the same ref so stale pushes don't burn runner
@@ -68,12 +73,59 @@ jobs:
         with:
           version: v2.6.2
           args: --timeout 5m
+          # The analysis cache proved UNTRUSTWORTHY on 2026-09-22: warm-cache
+          # runs reported zero findings while cold-cache runs of the identical
+          # Go sources reported three SA5011 sites (all the standard
+          # nil-check→t.Fatal→deref idiom, hundreds of which lint clean on
+          # warm runs) — and flip-flopped across runs with no Go input
+          # changing. A zero-baseline gate must be deterministic, so always
+          # run the full analysis (the leg is ~1-2m; the cache bought
+          # dishonesty, not speed).
+          skip-cache: true
 
       - name: go build (all packages)
         run: go build ./...
 
       - name: go test (race + coverage)
         run: go test -race -cover ./...
+
+      - name: fork-maintenance go_test gate fixture (behavioral proof, #564)
+        # The gate that blocks syncs on failing feature tests must itself have
+        # executable proof — otherwise any future edit to the loop can turn it
+        # from blocking to decorative. Four assertions over the committed
+        # fixture (chart/fork-maintenance/checks/testdata/gotest-fixture):
+        #   1. absent validation block → exit 0 (no checks declared, no error)
+        #   2. broken behavior (mutation) → exit 1 — the gate BLOCKS
+        #   3. behavior restored → exit 0 — the gate passes on green
+        #   4. forgotten packages key → exit 1 — hard error, never silent ./...
+        run: |
+          set -euo pipefail
+          FIXTURE=chart/fork-maintenance/checks/testdata/gotest-fixture
+          TMP=$(mktemp -d)
+          # MUST mirror the deployed layout: <MAINT_DIR>/checks/validate-fork.sh
+          # — the script derives the fork-defs dir from ITS OWN location
+          # (dirname²), so a flat copy silently points MAINT_DIR at $TMP and
+          # every assertion below would pass vacuously on "def not found".
+          mkdir -p "$TMP/checks"
+          cp chart/fork-maintenance/checks/validate-fork.sh "$TMP/checks/"
+          cp -r "$FIXTURE/forks" "$FIXTURE/work" "$TMP/"
+          # 1: no checks declared → pass
+          bash "$TMP/checks/validate-fork.sh" empty "$TMP/work" >/dev/null 2>&1 \
+            || { echo "::error::empty validation block must exit 0"; exit 1; }
+          # 2: mutate the contract → gate must BLOCK
+          sed -i 's/return 2/return 3/' "$TMP/work/badpkg/bad.go"
+          if bash "$TMP/checks/validate-fork.sh" smoke "$TMP/work" >/dev/null 2>&1; then
+            echo "::error::go_test gate did NOT block broken behavior (mutation survived)"; exit 1
+          fi
+          # 3: restore the contract → gate must pass
+          sed -i 's/return 3/return 2/' "$TMP/work/badpkg/bad.go"
+          bash "$TMP/checks/validate-fork.sh" smoke "$TMP/work" >/dev/null 2>&1 \
+            || { echo "::error::go_test gate failed on green behavior"; exit 1; }
+          # 4: forgotten packages key → hard error, exit 1
+          if bash "$TMP/checks/validate-fork.sh" nopackages "$TMP/work" >/dev/null 2>&1; then
+            echo "::error::missing packages must be a hard error, not a silent ./..."; exit 1
+          fi
+          echo "go_test gate fixture: blocked broken behavior, passed green, errored on bad def ✓"
 
       - name: extensions (node --test · rig-query)
         # The lockfile pins typebox to pi's shipped version so tests validate the
@@ -254,6 +306,15 @@ jobs:
           # source; ubuntu's own repos carry everything --with-deps needs.
           sudo rm -f /etc/apt/sources.list.d/google-chrome*.list /etc/apt/sources.list.d/google*.list
           cd e2e && npx playwright install --with-deps chromium
+
+      # Pre-build the fixture UI server OUTSIDE Playwright's webServer
+      # timeout: on a cold GOMODCACHE (fresh branch + a new dependency —
+      # observed 2026-09-22 when robfig/cron landed, #590) the go run in
+      # the webServer hook downloads + compiles from scratch and blew the
+      # 60s budget. go run reuses this step's build cache, so the hook
+      # boots in seconds afterwards.
+      - name: Pre-build fixture UI server
+        run: go build ./cmd/harmostes-ui
 
       # The webServer hook in playwright.config.ts boots the fixture UI
       # itself (go run) and waits for /healthz — one command runs the tier.
@@ -517,6 +578,15 @@ jobs:
             echo "::error::golden render drift — run 'make golden-update' and commit the golden with your change"
             exit 1
           }
+          # #595 ordinal-contract guard: the engine payload must carry the
+          # base-10 ordinal parse (octal trap on padded cuts) and the
+          # tag-shape contract comment. The golden diff alone cannot catch
+          # their removal — regenerating the golden makes any payload drift
+          # green; this probe is the mechanical backstop.
+          grep -q '10#\$LAST_N' /tmp/golden-render.yaml \
+            || { echo "::error::render-guard: phase_tag base-10 ordinal guard missing from the engine payload (#595)"; exit 1; }
+          grep -q 'dash-fused' /tmp/golden-render.yaml \
+            || { echo "::error::render-guard: phase_tag tag-shape contract comment missing from the engine payload (#595)"; exit 1; }
           if helm template harmostes chart/ -f chart/ci/golden-values.yaml \
                --set forkMaintenance.defs=null > /dev/null 2>&1; then
             echo "::error::empty-defs render guard did not fail (forkMaintenance.defs=null + enabled=true must fail)"

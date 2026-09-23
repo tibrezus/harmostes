@@ -1,8 +1,6 @@
 package agentlineage
 
 import (
-	"io"
-
 	"bytes"
 	"encoding/json"
 	"net/http"
@@ -15,31 +13,51 @@ import (
 
 // fakeSidecar stands in for the Dapr sidecar: actor-scoped state keyed by
 // the URL's actor id — per-entity isolation is visible as distinct maps.
-// The store holds RAW bytes: the handler serves what was PUT verbatim, so
+// The store holds RAW bytes: the handler serves what was saved verbatim, so
 // a test can inject a corrupt blob — the exact shape the fail-closed publish
 // path (#316 sweep) and the lenient fetch path guard against.
+//
+// Saves arrive on the ACTOR STATE TRANSACTION endpoint (POST .../state,
+// batch body [{operation: upsert, request: {key, value}}]) — the per-key
+// PUT route no longer exists on this Dapr runtime (#497). Reads stay on
+// the per-key GET.
 func fakeSidecar(t *testing.T) (*httptest.Server, *map[string][]byte) {
 	t.Helper()
 	store := map[string][]byte{}
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// /v1.0/actors/PRLineage/{id}/state/session
-		if !strings.HasPrefix(r.URL.Path, "/v1.0/actors/PRLineage/") || !strings.HasSuffix(r.URL.Path, "/state/session") {
-			http.NotFound(w, r)
-			return
-		}
-		actorID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1.0/actors/PRLineage/"), "/state/session")
-		switch r.Method {
-		case http.MethodGet:
+		// reads: /v1.0/actors/PRLineage/{id}/state/session
+		if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1.0/actors/PRLineage/") && strings.HasSuffix(r.URL.Path, "/state/session") {
+			actorID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1.0/actors/PRLineage/"), "/state/session")
 			if b, ok := store[actorID]; ok {
 				_, _ = w.Write(b)
 				return
 			}
 			w.WriteHeader(http.StatusNoContent)
-		case http.MethodPut:
-			b, _ := io.ReadAll(r.Body)
-			store[actorID] = b
-			w.WriteHeader(http.StatusNoContent)
+			return
 		}
+		// saves: /v1.0/actors/PRLineage/{id}/state (transaction, batch body)
+		if r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/v1.0/actors/PRLineage/") && strings.HasSuffix(r.URL.Path, "/state") {
+			actorID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1.0/actors/PRLineage/"), "/state")
+			var ops []struct {
+				Operation string `json:"operation"`
+				Request   struct {
+					Key   string          `json:"key"`
+					Value json.RawMessage `json:"value"`
+				} `json:"request"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&ops); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			for _, op := range ops {
+				if op.Operation == "upsert" && op.Request.Key == "session" {
+					store[actorID] = op.Request.Value
+				}
+			}
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		http.NotFound(w, r)
 	}))
 	return ts, &store
 }

@@ -37,7 +37,19 @@ spec:
         - name: sync-skills
           image: {{ .Values.image.worker | quote }}
           imagePullPolicy: Always
-          command: ["sh", "-c", "git clone --depth 1 {{ .Values.skills.repo | default "https://github.com/tibrezus/agents.git" }} /tmp/agents && mkdir -p /skills && cp -r /tmp/agents/skills/. /skills/ && { echo \"[sync-skills] served skills revision: $(git -C /tmp/agents rev-parse HEAD)\"; (find /skills -name 'SKILL.md' | sort | xargs -r sha256sum > /skills/.manifest) || echo \"[sync-skills] manifest write failed (non-fatal)\"; true; }"]
+          # #407: the repo URL travels as env data and the script references it
+          # quoted as "$HARMOSTES_SKILLS_REPO" — POSIX shells never re-parse
+          # expansion results as operators, so a crafted values.skills.repo
+          # cannot execute shell in the pod. #408 item 9: values.skills.rev
+          # pins the served revision the same way ("$HARMOSTES_SKILLS_REV",
+          # fetch+checkout when non-empty). Byte-identical literal to
+          # internal/k8s.skillsSyncCommand (Go side, per-Attempt Jobs).
+          command: ["sh", "-c", "git clone --depth 1 \"$HARMOSTES_SKILLS_REPO\" /tmp/agents && { [ -z \"$HARMOSTES_SKILLS_REV\" ] || { git -C /tmp/agents fetch --depth 1 origin \"$HARMOSTES_SKILLS_REV\" && git -C /tmp/agents checkout --detach FETCH_HEAD; }; } && mkdir -p /skills && cp -r /tmp/agents/skills/. /skills/ && { echo \"[sync-skills] served skills revision: $(git -C /tmp/agents rev-parse HEAD)\"; (find /skills -name 'SKILL.md' | sort | xargs -r sha256sum > /skills/.manifest) || echo \"[sync-skills] manifest write failed (non-fatal)\"; true; }"]
+          env:
+            - name: HARMOSTES_SKILLS_REPO
+              value: {{ .Values.skills.repo | default "https://github.com/tibrezus/agents.git" | quote }}
+            - name: HARMOSTES_SKILLS_REV
+              value: {{ .Values.skills.rev | default "" | quote }}
           volumeMounts:
             - name: skills
               mountPath: /skills
@@ -64,6 +76,10 @@ spec:
               value: {{ .Values.worker.job.maxConcurrent | default 3 | quote }}
             - name: HARMOSTES_ATTEMPT_RETENTION
               value: {{ .Values.worker.job.attemptRetention | default "720h" | quote }}
+            # Leg-2 fast path: sweep cadence for ARMED-not-dispatched
+            # claims — CI-green dispatches within one tick. "0" = off.
+            - name: HARMOSTES_GATE_FASTPOLL
+              value: {{ .Values.worker.gateFastPoll | default "0" | quote }}
             - name: HARMOSTES_CANCEL_ON_SUPERSEDE
               {{- /* hasKey, not `| default true`: Helm treats false as empty,
                    so the default filter would render "true" for an explicit
@@ -142,6 +158,10 @@ spec:
             # (internal/k8s.DefaultSkillsRepo — kept equal to values.skills.repo).
             - name: HARMOSTES_SKILLS_REPO
               value: {{ .Values.skills.repo | quote }}
+            # #408 item 9: the dispatcher passes the pinned rev through so
+            # per-Attempt Jobs serve the SAME revision the pool serves.
+            - name: HARMOSTES_SKILLS_REV
+              value: {{ .Values.skills.rev | default "" | quote }}
             # GH_TOKEN deliberately aliases the same secret the dispatch path
             # already mounts as HARMOSTES_GIT_TOKEN — the gh CLI wants its
             # canonical name; one credential, one secret, two env spellings.
@@ -162,6 +182,23 @@ spec:
                 secretKeyRef:
                   name: harmostes-forgejo-token
                   key: token
+            # harmostes-bot review identity (#480): native review objects post
+            # as the whitelisted bot — the primary token is the PR author's,
+            # and the forge 422s self-reviews. Optional: installs without the
+            # bot secret keep working (post-review falls back to the primary
+            # token and speaks the host's rejection in the artifact).
+            - name: HARMOSTES_FORGEJO_BOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: harmostes-forgejo-bot-token
+                  key: token
+                  optional: true
+            # The exact forge origin the bot credential is minted for (#480
+            # r2 t3): the deploy plugin overrides its auth only when the
+            # pr-context host matches this exactly — never on dialect alone
+            # (IS_FJ is "not github.com", true for any untrusted host).
+            - name: HARMOSTES_FORGEJO_BOT_HOST
+              value: {{ .Values.worker.forgejoBotHost | default "git.rezus.cloud" | quote }}
             - name: LITELLM_URL
               valueFrom:
                 secretKeyRef:
@@ -172,6 +209,19 @@ spec:
                 secretKeyRef:
                   name: harmostes-litellm-token
                   key: key
+            # Turn-budget extension's hard tool-call cap (#484) — forwarded to
+            # attempt Jobs via the dispatch allowlist. Empty = uncapped.
+            - name: PI_TOOL_BUDGET
+              value: {{ .Values.agent.toolBudget | quote }}
+            # The finalize lane: post-cap bash commands touching any of these
+            # substrings still execute (the agent must always be able to
+            # write its output artifact — v1's missing-write-tool failure).
+            - name: PI_TOOL_BUDGET_ALLOW
+              value: {{ .Values.agent.toolBudgetAllow | quote }}
+            # Mid-budget checkpoint (#487): one blocked call at this count
+            # with a converge-now instruction. "0" off; empty = cap/2.
+            - name: PI_TOOL_BUDGET_NUDGE
+              value: {{ .Values.agent.toolBudgetNudge | quote }}
           volumeMounts:
             - name: skills
               mountPath: /skills

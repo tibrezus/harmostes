@@ -24,9 +24,10 @@ host::api_base() { # <host>
   # matches every loopback glob and parses 127.0.0.1:80 as USERINFO — so
   # the value is regex-parsed (scheme, loopback host, numeric port, no
   # userinfo) and anything else is refused loudly to the canonical base.
-  local __seam
+  local __seam=""
   case "$1" in
     github.com)      __seam="${HARMOSTES_TEST_GITHUB_API_BASE:-}";;
+    codeberg.org)    __seam="${HARMOSTES_TEST_CODEBERG_API_BASE:-}";;
     git.rezus.cloud) __seam="${HARMOSTES_TEST_FORGEJO_API_BASE:-}";;
   esac
   if [ -n "$__seam" ]; then

@@ -1,4 +1,4 @@
-package worker
+package gate
 
 // Cancel-on-supersede (#402): a claim the gate released as superseded/closed
 // leaves its review Job RUNNING — this pass deletes it and finalizes the
@@ -25,6 +25,7 @@ import (
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
 	"github.com/tibrezus/harmostes/internal/attempt"
+	"github.com/tibrezus/harmostes/internal/review"
 )
 
 // RunRecordAlias keeps the fixtures readable without a second import alias
@@ -481,13 +482,49 @@ func TestFinalizeCancelledClaimNoopOnLiveClaim(t *testing.T) {
 	}
 }
 
-// classifyRelease decides which reason strings authorize a DELETION — it
-// must have direct coverage, not just transitive (r4 P8 gap 1). The table
-// pins the prose-matching contract AND the trap the r4 review named: a
-// "merged" standdown reason deliberately classifies as standdown (the
-// verdict may still land), not as a cancellation.
+// classifyRelease decides which releases authorize a DELETION — it must
+// have direct coverage, not just transitive (r4 P8 gap 1). The table pins
+// BOTH routes (#408 item 2): the machine Code (what review.go now emits)
+// and the legacy prose fallback (pre-code Evaluations, external writers).
+// And the trap the r4 review named: a "merged" standdown deliberately
+// classifies as standdown (the verdict may still land), not as a
+// cancellation.
 func TestClassifyReleaseVocabulary(t *testing.T) {
-	cases := []struct {
+	codeCases := []struct {
+		in   review.Evaluation
+		want string
+	}{
+		{review.Evaluation{Decision: review.DecisionStanddown, Code: review.CodePRClosed}, v1alpha1.ReleaseReasonPRClosed},
+		{review.Evaluation{Decision: review.DecisionStanddown, Code: review.CodeConsumed}, "consumed"},
+		{review.Evaluation{Decision: review.DecisionStanddown, Code: review.CodeHorizon}, v1alpha1.ReleaseReasonHorizon},
+		{review.Evaluation{Decision: review.DecisionStanddown, Code: review.CodeHeadMoved}, v1alpha1.ReleaseReasonSuperseded},
+		{review.Evaluation{Decision: review.DecisionStanddown, Code: review.CodeDispatchDead}, v1alpha1.ReleaseReasonDispatchTimeout},
+		{review.Evaluation{Decision: review.DecisionStanddown, Code: review.CodeStanddown}, "standdown"},
+	}
+	for _, tc := range codeCases {
+		if got := classifyRelease(tc.in); got != tc.want {
+			t.Errorf("classifyRelease(code=%q) = %q, want %q", tc.in.Code, got, tc.want)
+		}
+	}
+	// The code must AGREE with the legacy prose route for the sentences
+	// review.go emits — a divergence would flip what gets cancelled when a
+	// caller upgrades one side only.
+	proseForCode := map[review.ReleaseCode]string{
+		review.CodePRClosed:     "pull request closed",
+		review.CodeConsumed:     "label absent (verdict posted — consumed)",
+		review.CodeHorizon:      "horizon exceeded while ambiguous",
+		review.CodeHeadMoved:    "head moved while review in flight (dispatched at cafe000, PR now at deadbeef12) — verdict could not land",
+		review.CodeDispatchDead: "dispatch presumed dead without a verdict",
+	}
+	for code, prose := range proseForCode {
+		viaCode := classifyRelease(review.Evaluation{Decision: review.DecisionStanddown, Code: code, Reason: prose})
+		viaProse := classifyRelease(review.Evaluation{Decision: review.DecisionStanddown, Reason: prose})
+		if viaCode != viaProse {
+			t.Errorf("code %q → %q but prose %q → %q — the routes diverged", code, viaCode, prose, viaProse)
+		}
+	}
+	// Legacy prose route itself (empty Code — the pre-#408 shape).
+	proseCases := []struct {
 		in   string
 		want string
 	}{
@@ -500,10 +537,36 @@ func TestClassifyReleaseVocabulary(t *testing.T) {
 		{"head moved while review in flight (dispatched at cafe000, PR now at deadbeef12) — verdict could not land", v1alpha1.ReleaseReasonSuperseded}, // #410
 		{"fresh review request", "standdown"},
 	}
-	for _, tc := range cases {
-		if got := classifyRelease(tc.in); got != tc.want {
-			t.Errorf("classifyRelease(%q) = %q, want %q", tc.in, got, tc.want)
+	for _, tc := range proseCases {
+		if got := classifyRelease(review.Evaluation{Reason: tc.in}); got != tc.want {
+			t.Errorf("classifyRelease(prose %q) = %q, want %q", tc.in, got, tc.want)
 		}
+	}
+}
+
+// Pre-upgrade CRs can carry the OLD release vocabulary (ReleaseReason
+// "closed" — the pre-#403 single word, before the pr-closed split). The
+// cancel pass must SPARE such a claim: IsCancellationRelease only knows
+// the current constants, and an unknown legacy string must fail closed
+// (keep the Job) rather than delete on a guess.
+func TestCancelPassSparesLegacyClosedVocabulary(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := noVerdictServer(t)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	st := &fakeStatus{}
+	disp := time.Now().Add(-30 * time.Minute)
+	claim := releasedClaimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#101", "deadbeef321", "closed", disp)
+	job := reviewJobFixture(wf, claim)
+	deps, ctx := gateEnv(t, wf, st, claim, job)
+
+	if _, err := RunReviewGateSweep(ctx, deps, wf); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+
+	if !jobExists(t, ctx, deps, wf, job.Name) {
+		t.Fatal("a legacy (pre-#403) 'closed' release must NOT authorize Job deletion — the cancel pass deleted it")
 	}
 }
 

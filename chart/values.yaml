@@ -9,6 +9,33 @@ image:
 
 skills:
   repo: https://github.com/tibrezus/agents.git   # cloned by the init container into /skills on every worker pod AND per-Attempt Job (#441, passed to the dispatcher as HARMOSTES_SKILLS_REPO; Go default: internal/k8s.DefaultSkillsRepo)
+  # Pinned served revision (#408 item 9): the fleet clones THIS commit, not
+  # a moving branch — the supply chain is reproducible and the skills-bump
+  # workflow owns freshness (scheduled PR bumping this value when agents
+  # main moves). Empty string = track the repo's default branch (the
+  # pre-#408 behavior; the manifest log line remains the only provenance).
+  # 3707bc7: r18 doctrine (verdicts are advisory) + dw_request_review same-head re-arm guard.
+  rev: "3707bc7ab02cd02a2bb7faad25207d22eb66f8d6"
+
+agent:
+  # Hard tool-call cap per agent session (#484): past the cap only the
+  # finalize lane stays open — bash commands touching toolBudgetAllow and
+  # registered file-writer tools still execute, so the agent can always
+  # produce its output artifact; everything else is refused with
+  # instructions. Turn COUNT is the review's wall clock — 47 calls ≈ 43 min
+  # at ~55s of model latency per call. Empty or 0 = uncapped.
+  toolBudget: "32"
+  # The finalize lane: comma-separated substrings; a post-cap bash command
+  # containing any of them still executes (inert-substring comparison —
+  # compare, never execute). Empty extension-side default = review.json.
+  toolBudgetAllow: "/workspace/review.json"
+  # Mid-budget checkpoint (#487): ONE blocked call at toolBudgetNudge with a
+  # converge-now instruction (name the pillars the diff triggers selected,
+  # verify only those, compose). The block is the only lever the model
+  # demonstrably obeys, so the checkpoint shapes convergence instead of
+  # only cutting it off at the cap. Does not count against the budget.
+  # "0" disables; empty defaults to toolBudget/2.
+  toolBudgetNudge: "16"
 
 controller:
   serviceAccount: harmostes-controller
@@ -25,6 +52,13 @@ dapr:
   # Valkey with an isolated DB so harmostes never crosses llm-wiki (DB 0/1) or
   # fork-maintenance (DB 2).
   stateStore: statestore
+  # Dedicated actor state store (ADR-0010 PRLineage): Dapr requires the
+  # actor-capable store to NOT use keyPrefix none — save-actor-state 404s
+  # on this edge runtime (live: every lineage publish 500'd even after
+  # actorStateStore was declared on the flat store). keyPrefix name gives a
+  # static "actorstore||" prefix: identical across attempt pods (whose
+  # app-ids differ), so the per-PR lineage survives pod churn.
+  actorStateStore: actorstore
   pubSub: pubsub
   secretStore: harmostes-secret-store   # Dapr secret store component (type: secretstores.kubernetes)
   valkeyHost: valkey.llm-wiki.svc.cluster.local:6379
@@ -34,8 +68,19 @@ dapr:
 # Worker deployment-node RBAC (G6: vela-app, flux-reconcile). Opt-in —
 # grants cluster-wide access to KubeVela Application + Flux CRs.
 worker:
+  # The forge origin the bot review credential (harmostes-forgejo-bot-token)
+  # is minted for — the deploy plugin overrides its auth only when the
+  # pr-context host matches exactly (#480). Leave at the default unless the
+  # forge moves.
+  forgejoBotHost: "git.rezus.cloud"
   deployRBAC:
     enabled: false
+  # Leg-2 fast path (owner requirement): while a review-ready workflow
+  # holds an ARMED, NEVER-DISPATCHED claim (waiting for CI), the pool fires
+  # synthetic sweeps at this cadence — the review dispatches within one
+  # tick of the last context landing instead of on the next cron sweep.
+  # "0" = off (cron-only backstop).
+  gateFastPoll: "30s"
   job:                     # per-Attempt Job pods (ADR-0007)
     maxConcurrent: 3       # fleet default; spec.reviewReady.maxConcurrent overrides per Workflow
     attemptRetention: 720h # GC attempts terminal/statusless older than this (#385); 0 means the default — GC cannot be disabled. Bounds the per-attempt audit ledger.
@@ -50,6 +95,14 @@ worker:
     enabled: false
     size: 20Gi
     storageClass: ""       # "" = cluster default
+  # Persistent pi-session lineages (ADR-0010): when enabled, renders the
+  # harmostes-worker-sessions RWX claim; templates opt in per workflow
+  # (workflowTemplates.<name>.sessions.pvc). Deployment-specific — needs
+  # an RWX-capable storage class (e.g. a distributed FS).
+  sessions:
+    enabled: false
+    size: 10Gi
+    storageClass: ""
 
 # workerPool: event-driven worker pool (Dapr pub/sub consumer).
 # A long-running Deployment subscribes to the harmostes-triggers topic via
@@ -217,7 +270,34 @@ workflowTemplates:
         plugin:
           name: pr-review
       maxFixes: 3
+      # OWNER DIRECTIVE (supersedes #542/#543): the night window stays on
+      # the SAME anthropic route as the day model — qwen3.8-flash. The
+      # qwen3.8-max window experiment (#542, Asia/Shanghai 22:00-08:00 =
+      # the Token Plan Night Plan 50%-off hours) FAILED its first live
+      # review round (2026-09-20, fleet PR #557): 45m of exploration hit
+      # the run bound, and the attempt-scoped resume then died on an EMPTY
+      # 0-token completion — the deepseek-class finalize failure
+      # (2026-09-16/17), at ~6x the cost per strike. The litellm flash
+      # fallback cannot catch it: an empty 200 is not a routing error, so
+      # the proxy chain never fires. Re-enable max ONLY after the
+      # empty-completion behavior is fixed proxy-side (or the run bound is
+      # raised to fit max's latency profile); the fallback chain
+      # (fallbacks.ts) stays — it is inert until the window model flips
+      # back. The discount-clock window (UTC+8, DST-proof) STAYS: it is
+      # exactly Alibaba's Night Plan off-peak and costs nothing while the
+      # model is flash. The worker image ships /usr/share/zoneinfo
+      # (verified live), so ResolveModel resolves the zone (#494 would
+      # degrade silently otherwise). Day stays qwen3.8-flash →
+      # glm-5.3-flash. History: deepseek-v4.1-flash owned this window
+      # until it failed to finalize (2026-09-16/17); #536 pinned flash;
+      # #542/#543 corrected to max on the discount clock; this reverts the
+      # MODEL to flash and keeps the clock for a future max retry.
       model: litellm/ali/anthropic/qwen3.8-flash
+      models:
+        - model: litellm/ali/anthropic/qwen3.8-flash
+          start: "22:00"
+          end: "08:00"
+          tz: Asia/Shanghai
       skill: /skills/pr-review/SKILL.md
       taskTemplate:
         configMap: harmostes-tasks
@@ -362,7 +442,14 @@ tasks:
 
     - **PR context**: `cat /workspace/pr-context.json` — host, repo, number, title,
       body, head_sha, head_ref, issue (linked), milestone, ci_status, files_changed,
-      repo_dir, wiki_dir.
+      repo_dir, wiki_dir. The merge state is a FACT from the forge API
+      (`pr_state`, `merged`, `merge_note`) — never narrate it from inference.
+      `gate` lists the exact contexts the kernel gate verified green at this
+      SHA (`required_contexts`, `green_contexts`) — a review may only cite
+      gates from that list; naming a gate that is not there is a finding
+      against YOUR review, not the PR. `diff_source` says where the diff came
+      from ("git" = derived from merge-base..head in the checkout, exact at
+      the dispatched SHA; "api" = forge fallback — treat with care).
     - **Orientation — read `/workspace/rig-briefing.md` FIRST.** It is your
       pre-computed context: the architecture graph's components and dependency
       edges, which components THIS diff touches, their key symbols with
@@ -372,15 +459,28 @@ tasks:
       the briefing does not answer. If pr-context has no `rig_briefing`, fall
       back to `rig` (when `rig_db` is set), and only then to targeted greps.
       `rig_path`/`c4_path` are the wiki's synced copies (background reading only).
-    - **Diff**: `cat /workspace/pr-diff.patch`
+    - **Diff**: `cat /workspace/pr-diff.patch` — the COMPLETE diff (never
+      truncated). For large/huge scopes, navigate it by the manifest first:
+      `files_changed` + `diff_stats` in pr-context.json name every file; grep
+      the patch's `^diff --git` headers to jump to the files that matter
+      instead of reading it end-to-end. Fallback of last resort (diff_source
+      is "api" or the patch looks wrong): `git -C /workspace/repo diff
+      <merge_base> <head_sha>` — the checkout is exact at the reviewed SHA.
     - **Code**: `/workspace/repo` — checked out at the PR's head SHA
     - **Wiki**: `/workspace/wiki` — project design docs (if configured)
 
     ## Your toolkit (use selectively)
 
-    You have a round-trip budget: every tool call costs ~25 seconds of model
-    latency. A good review fits in ~12 calls. The methodology (9 pillars) is
-    inlined below — NEVER search the filesystem for skill or pillar files.
+    You have a round-trip budget: every tool call costs ~1 minute of model
+    latency, and the HARNESS ENFORCES the cap — after PI_TOOL_BUDGET calls
+    (32 by default) only your finalize lane stays open: bash commands touching
+    /workspace/review.json still execute so you can write your review; every
+    other call is refused. A good review fits in ~12 calls; budget as if the
+    cap were 15. Batch aggressively: one bash call can run many greps (chain
+    them with && or ;) — prefer that over many narrow calls, and NEVER repeat
+    a grep or re-read a file you have already seen. The methodology (9
+    pillars) is inlined below — NEVER search the filesystem for skill or
+    pillar files.
 
     - `rig` — the architecture graph, when pr-context.json has `rig_db`. It is
       SHA-exact at the reviewed head (generated at prepare time, verified — a

@@ -42,9 +42,19 @@
 				<svg class="ds-sidebar-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M1 3h14v2H1V3zm0 4h14v2H1V7zm0 4h14v2H1v-2z"></path></svg>
 				Runs
 			</a>
-			<a href="/workflows" class="ds-sidebar-link {{if eq .PageKey "workflows"}}ds-sidebar-link--active{{end}}">
+			<a href="/workflows" class="ds-sidebar-link {{if eq .PageKey "workflows"}}ds-sidebar-link--active{{end}}" title="Your workflow instances — thin instances composed from templates, owner-scoped">
 				<svg class="ds-sidebar-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M2 2h5v5H2V2zm7 0h5v5H9V2zM2 9h5v5H2V9zm7 0h5v5H9V9z"></path></svg>
 				Workflows
+			</a>
+			{{/* #538: Templates first-class in the nav — the definitions ARE the
+			     library every workflow composes from; burying them behind an
+			     in-page tab made the instance→definition relationship
+			     undiscoverable (donor pattern: kestra Flows, conductor
+			     Workflows, temporal Schedules — definitions get their own nav
+			     entry). */}}
+			<a href="/templates" class="ds-sidebar-link {{if eq .PageKey "templates"}}ds-sidebar-link--active{{end}}" title="The template library — reusable pipeline shapes; every workflow starts here">
+				<svg class="ds-sidebar-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M1 2h14v3H1V2zm2 5h4v2H3V7zm0 3.5h4v2H3v-2zM9 7h4v2H9V7zm0 3.5h4v2H9v-2zM6.5 2v1.5h3V2h-3z"></path></svg>
+				Templates
 			</a>
 		</nav>
 		<div class="ds-sidebar-footer">

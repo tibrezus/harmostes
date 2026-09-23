@@ -2,12 +2,15 @@ package k8s
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/tibrezus/harmostes/internal/sessionstore"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -39,14 +42,35 @@ func SkillsRepo() string {
 	return DefaultSkillsRepo
 }
 
-// skillsSyncCommand mirrors the chart's sync-skills init container byte for
-// byte in spirit: clone the agents repo fresh, copy skills/, write the
-// sha256 manifest the pool's startup check consumes. Every attempt therefore
-// serves agents main AS OF THE ATTEMPT — the owner directive "every update
-// should be available in the runtime" at the granularity agents actually
-// move (between pool pod restarts).
-func skillsSyncCommand(repo string) []string {
-	return []string{"sh", "-c", fmt.Sprintf("git clone --depth 1 %s /tmp/agents && mkdir -p /skills && cp -r /tmp/agents/skills/. /skills/ && { echo \"[sync-skills] served skills revision: $(git -C /tmp/agents rev-parse HEAD)\"; (find /skills -name 'SKILL.md' | sort | xargs -r sha256sum > /skills/.manifest) || echo \"[sync-skills] manifest write failed (non-fatal)\"; true; }", repo)}
+// SkillsRev resolves the PINNED skills revision (#408 item 9): the env set
+// by the chart (values.skills.rev passed through), else "" = track the
+// repo's default branch. Empty is the escape hatch — the fleet pins by
+// default and the skills-bump workflow owns keeping the pin fresh, so an
+// operator who wants to live on main says so explicitly.
+func SkillsRev() string {
+	return os.Getenv("HARMOSTES_SKILLS_REV")
+}
+
+// skillsSyncCommand mirrors the chart's sync-skills init container byte
+// for byte: clone the agents repo fresh, copy skills/, write the sha256
+// manifest the pool's startup check consumes. Every attempt therefore
+// serves the pinned skills rev AS OF THE ATTEMPT (#408 item 9) — the
+// owner directive "every update should be available in the runtime" at
+// the granularity the bump bot actually moves (the values pin).
+//
+// #407: the repo URL is deliberately NOT interpolated here. It travels as
+// HARMOSTES_SKILLS_REPO env data (set by the chart / SkillsRepo()), and the
+// script references it quoted as "$HARMOSTES_SKILLS_REPO": POSIX shells
+// never re-parse expansion results as operators, so a crafted skills.repo
+// value cannot execute shell in the pod. The chart template carries the
+// identical literal — keep them in sync.
+//
+// #408 item 9: HARMOSTES_SKILLS_REV pins the served revision. Non-empty →
+// shallow-fetch that exact commit and check it out (clone --branch cannot
+// take an arbitrary SHA); empty → the clone's default branch stands. The
+// rev travels as env data too — same injection argument as the repo URL.
+func skillsSyncCommand() []string {
+	return []string{"sh", "-c", `git clone --depth 1 "$HARMOSTES_SKILLS_REPO" /tmp/agents && { [ -z "$HARMOSTES_SKILLS_REV" ] || { git -C /tmp/agents fetch --depth 1 origin "$HARMOSTES_SKILLS_REV" && git -C /tmp/agents checkout --detach FETCH_HEAD; }; } && mkdir -p /skills && cp -r /tmp/agents/skills/. /skills/ && { echo "[sync-skills] served skills revision: $(git -C /tmp/agents rev-parse HEAD)"; (find /skills -name 'SKILL.md' | sort | xargs -r sha256sum > /skills/.manifest) || echo "[sync-skills] manifest write failed (non-fatal)"; true; }`}
 }
 
 // AttemptJobParams parameterize BuildJob — the per-Attempt Job pod shape
@@ -100,6 +124,45 @@ type AttemptJobParams struct {
 	// /cache (SubPath per workflow — isolation on one RWX claim) and the
 	// flag-gated tool env. Nil or PVC-less = no cache, byte-identical Job.
 	Cache *v1alpha1.CacheSpec
+	// Sessions mounts the persistent pi-session lineage claim (ADR-0010
+	// follow-up): an RWX PVC at /sessions, SubPath per workflow. Nil or
+	// PVC-less = ephemeral /tmp sessions, byte-identical Job.
+	Sessions *v1alpha1.SessionsSpec
+	// Attachments render the workflow's scoped shared storage components
+	// (C2): one mount per attachment, SubPath derived from the scope.
+	Attachments []v1alpha1.SharedAttachment
+	// TriggerRepo/AttemptName feed the repository/attempt attachment
+	// scopes. Empty repo makes a repository-scoped attachment inert (the
+	// run is not PR-shaped).
+	TriggerRepo string
+	AttemptName string
+}
+
+// AttachmentSubPath derives the SubPath for a scoped shared attachment:
+// the scope picks the sharing dimension — workflow (the workflow's name),
+// repository (the sanitized trigger repo, hashed like the session
+// lineages), attempt (the attempt's own name). ok=false when the scope's
+// identity is unavailable (a repository-scoped attachment on a
+// non-PR-shaped run shares nothing — inert, by design).
+func AttachmentSubPath(scope, workflow, repo, attempt string) (string, bool) {
+	switch scope {
+	case v1alpha1.AttachmentScopeRepository:
+		if repo == "" {
+			return "", false
+		}
+		sum := sha256.Sum256([]byte(repo))
+		return fmt.Sprintf("%s-%s", sessionstore.SanitizeRepo(repo), hex.EncodeToString(sum[:4])), true
+	case v1alpha1.AttachmentScopeAttempt:
+		if attempt == "" {
+			return "", false
+		}
+		return "attempt-" + attempt, true
+	default: // workflow ("" too — the zero value)
+		if workflow == "" {
+			return "", false
+		}
+		return workflow, true
+	}
 }
 
 // ConfigMapMount is one additional ConfigMap volume: name (the ConfigMap and
@@ -203,6 +266,45 @@ func BuildJob(p AttemptJobParams) *batchv1.Job {
 			env = append(env, corev1.EnvVar{Name: "XDG_CACHE_HOME", Value: "/cache/xdg"})
 		}
 	}
+	// Persistent session lineages (ADR-0010): one RWX PVC, SubPath per
+	// workflow — the per-PR lineage dirs (<repo>-<hash>~<pr>, and the
+	// SoL-Pi data inside them) survive across per-Attempt Jobs, so a
+	// re-armed PR resumes its compacted context instead of starting
+	// cold. Project isolation is physical (SubPath), like the cache
+	// claim. The TTL env arms the in-attempt janitor; the default keeps
+	// every claim mount self-pruning even when the spec omits it.
+	if p.Sessions != nil && p.Sessions.PVC != "" {
+		volumes = append(volumes, corev1.Volume{
+			Name:         "sessions",
+			VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: p.Sessions.PVC}},
+		})
+		mounts = append(mounts, corev1.VolumeMount{Name: "sessions", SubPath: p.WorkflowName, MountPath: "/sessions"})
+		env = append(env, corev1.EnvVar{Name: "HARMOSTES_PI_SESSIONS", Value: "/sessions"})
+		ttl := p.Sessions.TTL
+		if ttl == "" {
+			ttl = "336h"
+		}
+		env = append(env, corev1.EnvVar{Name: "HARMOSTES_SESSIONS_TTL", Value: ttl})
+	}
+	for _, at := range p.Attachments {
+		if at.PVC == "" || at.Name == "" {
+			continue
+		}
+		volName := "attach-" + at.Name
+		sub, ok := AttachmentSubPath(at.Scope, p.WorkflowName, p.TriggerRepo, p.AttemptName)
+		if !ok {
+			continue // repository scope without a repo: nothing to share
+		}
+		mountPath := at.MountPath
+		if mountPath == "" {
+			mountPath = "/attachments/" + at.Name
+		}
+		volumes = append(volumes, corev1.Volume{
+			Name:         volName,
+			VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: at.PVC}},
+		})
+		mounts = append(mounts, corev1.VolumeMount{Name: volName, SubPath: sub, MountPath: mountPath})
+	}
 	for _, m := range p.ExtraConfigMapMounts {
 		mode := int32(0o755)
 		if m.Mode != nil {
@@ -261,9 +363,16 @@ func BuildJob(p AttemptJobParams) *batchv1.Job {
 					ServiceAccountName: p.ServiceAccount,
 					RestartPolicy:      corev1.RestartPolicyNever,
 					InitContainers: []corev1.Container{{
-						Name:         "sync-skills",
-						Image:        p.Image,
-						Command:      skillsSyncCommand(SkillsRepo()),
+						Name:    "sync-skills",
+						Image:   p.Image,
+						Command: skillsSyncCommand(),
+						// #407/#408: clone source and pinned rev travel as env
+						// data, never spliced into the shell string (see
+						// skillsSyncCommand).
+						Env: []corev1.EnvVar{
+							{Name: "HARMOSTES_SKILLS_REPO", Value: SkillsRepo()},
+							{Name: "HARMOSTES_SKILLS_REV", Value: SkillsRev()},
+						},
 						VolumeMounts: []corev1.VolumeMount{{Name: "skills", MountPath: "/skills"}},
 					}},
 					Containers: []corev1.Container{{
@@ -308,6 +417,10 @@ func ListActiveJobs(ctx context.Context, cl client.Client, namespace, workflow s
 // verdict. Deleting uses default (foreground-adjacent) propagation: the
 // running pod is SIGTERMed, which IS the mechanism — the ctx-cancelled run
 // never reaches post-review, so no verdict can land for the dead head.
+// DeleteJob removes the attempt's review Job. Default propagation cascades
+// to the running pod — and that cascade IS the cancellation mechanism
+// (#402): SIGTERM → context cancel → the graph aborts before post-review
+// ever runs, so a cancelled claim leaves no verdict behind.
 func DeleteJob(ctx context.Context, cl client.Client, namespace, name string) error {
 	j := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name}}
 	return cl.Delete(ctx, j)

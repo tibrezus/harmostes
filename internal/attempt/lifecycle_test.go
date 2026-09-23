@@ -8,6 +8,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
 
@@ -373,5 +374,116 @@ func TestReapStuckAttempts(t *testing.T) {
 	}
 	if after.Status.Phase != v1alpha1.AttemptPhaseFailed || !strings.Contains(after.Status.Message, "reaped") {
 		t.Fatalf("stuck attempt must land failed with a reap message, got phase=%s msg=%q", after.Status.Phase, after.Status.Message)
+	}
+}
+
+// ===========================================================================
+// SupersedePriorAttempts (#583): the ADR-0005 superseded leg
+// ===========================================================================
+
+func TestSupersedePriorAttempts(t *testing.T) {
+	ctx := context.Background()
+	c := newFakeClient(t)
+	ns := "harmostes"
+
+	mk := func(name, kind, subject, targeted string, phase string, claim *v1alpha1.ReviewClaimStatus) *v1alpha1.Attempt {
+		at := &v1alpha1.Attempt{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: ns,
+				Labels: map[string]string{
+					v1alpha1.WorkflowLabel: "pr-review-rhesadox",
+				},
+			},
+			Spec: v1alpha1.AttemptSpec{
+				WorkflowRef: ns + "/pr-review-rhesadox",
+				Objective: v1alpha1.ObjectiveSpec{
+					Kind:           kind,
+					PrimarySubject: v1alpha1.Subject{Binding: "source", Object: subject},
+					TargetedState:  targeted,
+				},
+			},
+		}
+		if phase != "" {
+			at.Status.Phase = phase
+		}
+		if claim != nil {
+			at.Status.Review = claim
+		}
+		return at
+	}
+
+	current := mk("cur", v1alpha1.ObjectiveKindPRReview, "tibrez/rhesadox", "976df06e", v1alpha1.AttemptPhaseReconciling, nil)
+	for _, at := range []*v1alpha1.Attempt{
+		// superseded: prior concrete head of the same objective
+		mk("prior-head", v1alpha1.ObjectiveKindPRReview, "tibrez/rhesadox", "2159a4e7", v1alpha1.AttemptPhaseReconciling, nil),
+		// "head" — the schedule tick's standing identity: never stale
+		mk("rolling-head", v1alpha1.ObjectiveKindPRReview, "tibrez/rhesadox", "head", v1alpha1.AttemptPhaseReconciling, nil),
+		// already terminal
+		mk("old-terminal", v1alpha1.ObjectiveKindPRReview, "tibrez/rhesadox", "d1f69e5e", v1alpha1.AttemptPhaseFailed, nil),
+		// statusless — never reconciled
+		mk("old-statusless", v1alpha1.ObjectiveKindPRReview, "tibrez/rhesadox", "acda5918", "", nil),
+		// claim-bearing unreleased — the gate machinery owns it
+		mk("claim-bearing", v1alpha1.ObjectiveKindPRReview, "tibrez/rhesadox", "d9e46ed4", v1alpha1.AttemptPhaseReconciling,
+			&v1alpha1.ReviewClaimStatus{Released: false}),
+		// different subject (another repo)
+		mk("other-repo", v1alpha1.ObjectiveKindPRReview, "tibrez/other", "abcdef1", v1alpha1.AttemptPhaseReconciling, nil),
+		// different kind
+		mk("other-kind", v1alpha1.ObjectiveKindDocumentationSync, "tibrez/rhesadox", "1234567", v1alpha1.AttemptPhaseReconciling, nil),
+		// other workflow's label — outside the list scope
+		func() *v1alpha1.Attempt {
+			at := mk("other-wf", v1alpha1.ObjectiveKindPRReview, "tibrez/rhesadox", "beefca1", v1alpha1.AttemptPhaseReconciling, nil)
+			at.Labels[v1alpha1.WorkflowLabel] = "pr-review-harmostes"
+			return at
+		}(),
+		current,
+	} {
+		if err := c.Create(ctx, at); err != nil {
+			t.Fatalf("create %s: %v", at.Name, err)
+		}
+	}
+
+	n, err := SupersedePriorAttempts(ctx, c, ns, "pr-review-rhesadox", current)
+	if err != nil {
+		t.Fatalf("supersede: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("superseded %d attempts, want exactly 1 (prior-head)", n)
+	}
+
+	var prior v1alpha1.Attempt
+	if err := c.Get(ctx, types.NamespacedName{Namespace: ns, Name: "prior-head"}, &prior); err != nil {
+		t.Fatalf("get prior: %v", err)
+	}
+	if prior.Status.Phase != v1alpha1.AttemptPhaseSuperseded {
+		t.Fatalf("prior-head phase = %q, want superseded", prior.Status.Phase)
+	}
+	if !strings.Contains(prior.Status.Message, "976df06e") {
+		t.Fatalf("prior-head message should name the new target, got %q", prior.Status.Message)
+	}
+
+	// untouched populations
+	for name, wantPhase := range map[string]string{
+		"rolling-head":   v1alpha1.AttemptPhaseReconciling,
+		"old-terminal":   v1alpha1.AttemptPhaseFailed,
+		"old-statusless": "",
+		"claim-bearing":  v1alpha1.AttemptPhaseReconciling,
+		"other-repo":     v1alpha1.AttemptPhaseReconciling,
+		"other-kind":     v1alpha1.AttemptPhaseReconciling,
+		"other-wf":       v1alpha1.AttemptPhaseReconciling,
+	} {
+		var at v1alpha1.Attempt
+		if err := c.Get(ctx, types.NamespacedName{Namespace: ns, Name: name}, &at); err != nil {
+			t.Fatalf("get %s: %v", name, err)
+		}
+		if at.Status.Phase != wantPhase {
+			t.Errorf("%s phase = %q, want %q (must be untouched)", name, at.Status.Phase, wantPhase)
+		}
+	}
+
+	// a "head"-targeted current (the schedule tick) supersedes nothing
+	rolling := mk("cur-head", v1alpha1.ObjectiveKindPRReview, "tibrez/rhesadox", "head", v1alpha1.AttemptPhaseReconciling, nil)
+	if n, err := SupersedePriorAttempts(ctx, c, ns, "pr-review-rhesadox", rolling); err != nil || n != 0 {
+		t.Fatalf("head-targeted current: n=%d err=%v, want 0/nil", n, err)
 	}
 }

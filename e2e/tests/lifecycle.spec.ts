@@ -27,8 +27,9 @@ test.describe.serial('run-with-inputs round-trip', () => {
     const page = await ctx.newPage();
     await page.goto('/workflows');
     await expect(page.getByTestId('wf-new-link')).toHaveCount(0);
-    // The catalog itself still renders.
-    await expect(page.locator('.page-tab--active')).toContainText('Workflows');
+    // The catalog itself still renders (#538: the nav marks the page, the
+    // in-page tab pair is gone).
+    await expect(page.locator('.ds-sidebar-link--active')).toContainText('Workflows');
     // Deep-linking to the form redirects to the catalog.
     await page.goto('/workflows/new');
     await expect(page).toHaveURL(/\/workflows$/);

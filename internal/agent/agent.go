@@ -15,6 +15,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -64,6 +65,13 @@ func (g CmdGate) Run(ctx context.Context) (bool, string, error) {
 	defer span.End()
 	cmd := exec.CommandContext(ctx, "sh", "-c", g.Command)
 	cmd.Dir = g.Dir
+	// #480 r8 t15: CmdGate never set cmd.Env, so the gate shell inherited the
+	// process env verbatim — the approval-capable bot credential included, in
+	// any pod mounting the secret. Scrub at this leaf too; the enumerated-env
+	// invariant the graph legs hold (RunPlugin/GatePlugin set cmd.Env
+	// explicitly) applies here only as a scrub, since the gate command may
+	// legitimately need the rest of the ambient env.
+	cmd.Env = ChildEnv(os.Environ())
 	var out strings.Builder
 	cmd.Stdout = &out
 	cmd.Stderr = &out
@@ -87,6 +95,7 @@ type taskConfig struct {
 	sessionWriter SessionWriter
 	toolPublisher ToolPublisher
 	sessionMeta   SessionMeta
+	turnPublisher TurnPublisher
 }
 
 // WithSessionWriter injects a callback that writes the SessionRecord to a
@@ -99,6 +108,30 @@ func WithSessionWriter(w SessionWriter) TaskOption {
 // for real-time UI updates.
 func WithToolPublisher(p ToolPublisher) TaskOption {
 	return func(c *taskConfig) { c.toolPublisher = p }
+}
+
+// TurnProgress is one completed turn as the harness saw it: the turn's own
+// usage plus the session's running totals. Published immediately at turn
+// completion — not gate-lagged — so live surfaces (the wall's token column,
+// the event timeline) stream while the agent still works.
+type TurnProgress struct {
+	Turn      int    // 0-based index of the turn that produced this sample
+	Label     string // "initial task", "feedback #N"
+	TokensIn  int    // this turn's input tokens
+	TokensOut int    // this turn's output tokens
+	TotalIn   int    // session-cumulative input so far
+	TotalOut  int    // session-cumulative output so far
+	Turns     int    // turns completed so far (≥ Turn+1)
+}
+
+// TurnPublisher observes each completed turn as it lands. Nil-safe; called
+// synchronously on the agent loop — keep implementations fast and
+// best-effort (the run must never fail because telemetry did).
+type TurnPublisher func(ctx context.Context, p TurnProgress)
+
+// WithTurnPublisher injects a per-turn progress observer.
+func WithTurnPublisher(p TurnPublisher) TaskOption {
+	return func(c *taskConfig) { c.turnPublisher = p }
 }
 
 // WithSessionMeta sets the identity metadata (workflow, run, model, skill)
@@ -166,6 +199,15 @@ func Task(ctx context.Context, sess PiSession, gate Gate, task string, maxFixes 
 		)
 		_, _, turnUsage, capture, err := sess.Prompt(tctx, message, label)
 		usage.add(turnUsage)
+		if err == nil && capture.AssistantMessageEnd && strings.TrimSpace(capture.Response) == "" && turnUsage.Input+turnUsage.Output+turnUsage.CacheRead+turnUsage.CacheWrite == 0 {
+			// #504: silent-empty model responses — a LiteLLM key-access 403
+			// or an unhealthy upstream surfaces as ~100ms empty turns, not
+			// errors. Fail the turn LOUDLY, naming the model, instead of
+			// feeding empty text to the gate loop and burning silent retries.
+			return capture, turnUsage, fmt.Errorf(
+				"model %s returned an EMPTY completion (0 tokens) — check the provider catalog and the key's model access groups",
+				cfg.sessionMeta.Model)
+		}
 		// Extension handler throws (r5/r6): pi continues with the throwing
 		// extension inert — the count on the turn span makes that visible in
 		// the trace, not just the per-turn ledger blob.
@@ -184,6 +226,21 @@ func Task(ctx context.Context, sess PiSession, gate Gate, task string, maxFixes 
 		return capture, turnUsage, err
 	}
 
+	// publishTurn reports a landed turn to the live surfaces (timeline
+	// event, attempt Progress window). Best-effort by contract: telemetry
+	// failures are swallowed — a lost sample never fails a run.
+	publishTurn := func(tctx context.Context, turn int, label string, turnUsage Usage) {
+		if cfg.turnPublisher == nil {
+			return
+		}
+		cfg.turnPublisher(tctx, TurnProgress{
+			Turn: turn, Label: label,
+			TokensIn: turnUsage.Input, TokensOut: turnUsage.Output,
+			TotalIn: usage.Input, TotalOut: usage.Output,
+			Turns: len(session.Turns),
+		})
+	}
+
 	// turn 1 — the task itself
 	capture, turnUsage, err := promptTurn("initial task", "agent.task", task)
 	if err != nil {
@@ -195,8 +252,10 @@ func Task(ctx context.Context, sess PiSession, gate Gate, task string, maxFixes 
 		Response: capture.Response,
 		Tools:    capture.Tools,
 		Usage:    turnUsage,
+		Budget:   budgetStats(capture.Tools),
 	}
 	session.Turns = append(session.Turns, currentTurn)
+	publishTurn(ctx, 0, "initial task", turnUsage)
 	attempts := 0
 	for attempt := 1; attempt <= maxFixes; attempt++ {
 		attempts = attempt
@@ -228,7 +287,9 @@ func Task(ctx context.Context, sess PiSession, gate Gate, task string, maxFixes 
 			Response: capture.Response,
 			Tools:    capture.Tools,
 			Usage:    fbUsage,
+			Budget:   budgetStats(capture.Tools),
 		})
+		publishTurn(ctx, len(session.Turns)-1, fmt.Sprintf("feedback #%d", attempt), fbUsage)
 	}
 	// final gate after the last fix
 	attempts++

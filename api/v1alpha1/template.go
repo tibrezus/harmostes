@@ -43,6 +43,9 @@ func ApplyTemplateDefaults(wf *Workflow, tmpl *WorkflowTemplate) {
 	if a.Model == "" {
 		a.Model = ta.Model
 	}
+	if len(a.Models) == 0 {
+		a.Models = ta.Models // time-windowed overrides (#494)
+	}
 	if a.Skill == "" {
 		a.Skill = ta.Skill
 	}
@@ -81,6 +84,13 @@ func ApplyTemplateDefaults(wf *Workflow, tmpl *WorkflowTemplate) {
 	// knobs an instance would partially override.
 	if s.Cache == nil {
 		s.Cache = t.Cache
+	}
+
+	// Sessions: same whole-struct inherit — the lineage claim (and its
+	// TTL) is one storage decision, declared on the template, not a
+	// per-instance knob.
+	if s.Sessions == nil {
+		s.Sessions = t.Sessions
 	}
 
 	// Instance scope wins PER KEY: spec.config overlays prepare.config —

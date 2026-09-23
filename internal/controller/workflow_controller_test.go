@@ -511,3 +511,87 @@ func TestReconcile_WebhookLoserRequeuesAtFloor(t *testing.T) {
 		t.Fatalf("webhook-due loser must requeue at the 10s floor (never 0 — hot-loop guard), got %v", result.RequeueAfter)
 	}
 }
+
+// #574 — schedule sources honor the cron watermark, not PollInterval.
+func TestIsDue_ScheduleCronWatermark(t *testing.T) {
+	r := &WorkflowReconciler{PollInterval: 30 * time.Minute}
+
+	// Weekly cron, last ran 1h ago (PollInterval long since elapsed — the
+	// old bug fired here): not due, requeue points at the next Sunday 04:00.
+	wf := &v1alpha1.Workflow{}
+	wf.Spec.Source.Schedule = "0 4 * * 0"
+	wf.Status.LastRunAt = metav1.NewTime(time.Now().Add(-time.Hour))
+	due, requeue := r.isDue(wf)
+	if due {
+		t.Error("weekly cron with LastRunAt 1h ago must not be due")
+	}
+	if requeue <= 0 || requeue > 7*24*time.Hour {
+		t.Errorf("requeue = %v, want next-activation look-ahead within a week", requeue)
+	}
+
+	// Last ran 8 days ago → the Sunday 04:00 window passed → due.
+	wf.Status.LastRunAt = metav1.NewTime(time.Now().Add(-8 * 24 * time.Hour))
+	if due, _ := r.isDue(wf); !due {
+		t.Error("weekly cron with LastRunAt 8 days ago must be due")
+	}
+
+	// Never run (zero LastRunAt) → fire once immediately; the watermark
+	// takes over from that run.
+	wf.Status.LastRunAt = metav1.Time{}
+	if due, _ := r.isDue(wf); !due {
+		t.Error("never-run schedule workflow must be due")
+	}
+
+	// A due-minute cron still respects the PollInterval cooldown via
+	// claimTriggerSlot, but isDue itself reports due when the window passed.
+	wf.Spec.Source.Schedule = "0 4 * * *"
+	wf.Status.LastRunAt = metav1.NewTime(time.Now().Add(-25 * time.Hour))
+	if due, _ := r.isDue(wf); !due {
+		t.Error("daily cron with LastRunAt 25h ago must be due")
+	}
+
+	// Spec-change wake still outranks the cron watermark (human intent).
+	wf.Spec.Source.Schedule = "0 4 * * 0"
+	wf.Status.LastRunAt = metav1.NewTime(time.Now().Add(-time.Hour))
+	wf.Generation = 2
+	wf.Status.ObservedGeneration = 1
+	if due, _ := r.isDue(wf); !due {
+		t.Error("spec change must be due even inside a cron window")
+	}
+}
+
+// #574 — an unparsable cron fails closed (never fire-every-poll).
+func TestIsDue_ScheduleInvalidFailsClosed(t *testing.T) {
+	r := &WorkflowReconciler{PollInterval: 30 * time.Minute}
+
+	wf := &v1alpha1.Workflow{}
+	wf.Spec.Source.Schedule = "every sunday maybe"
+	wf.Status.LastRunAt = metav1.NewTime(time.Now().Add(-8 * 24 * time.Hour))
+	due, requeue := r.isDue(wf)
+	if due {
+		t.Error("invalid cron must fail closed, not fire")
+	}
+	if requeue != invalidScheduleRetry {
+		t.Errorf("requeue = %v, want invalidScheduleRetry (%v)", requeue, invalidScheduleRetry)
+	}
+
+	// Non-schedule sources are unaffected: the default poll path still fires
+	// once PollInterval elapses.
+	wf.Spec.Source.Schedule = ""
+	wf.Spec.Source.Kind = "git"
+	if due, _ := r.isDue(wf); !due {
+		t.Error("git source with stale LastRunAt must stay due on the poll path")
+	}
+}
+
+// #574 — sub-minute crons are clamped to a bounded requeue, never a spin.
+func TestNextCronActivationClamp(t *testing.T) {
+	r := &WorkflowReconciler{PollInterval: 30 * time.Minute}
+	wf := &v1alpha1.Workflow{}
+	wf.Spec.Source.Schedule = "* * * * *" // every minute
+	wf.Status.LastRunAt = metav1.NewTime(time.Now())
+	_, requeue := r.isDue(wf)
+	if requeue < minScheduleRequeue {
+		t.Errorf("requeue = %v, want >= minScheduleRequeue", requeue)
+	}
+}

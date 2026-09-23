@@ -45,10 +45,12 @@ import (
 	"github.com/tibrezus/harmostes/internal/agentlineage"
 	"github.com/tibrezus/harmostes/internal/attempt"
 	"github.com/tibrezus/harmostes/internal/dapr"
+	"github.com/tibrezus/harmostes/internal/gate"
 	"github.com/tibrezus/harmostes/internal/graph"
 	"github.com/tibrezus/harmostes/internal/k8s"
 	"github.com/tibrezus/harmostes/internal/observability"
 	"github.com/tibrezus/harmostes/internal/piargs"
+	"github.com/tibrezus/harmostes/internal/sessionstore"
 	"github.com/tibrezus/harmostes/internal/timeline"
 	"github.com/tibrezus/harmostes/internal/worker"
 	"github.com/tibrezus/harmostes/version"
@@ -74,6 +76,52 @@ func graphPresenceLine(graphPath string) (string, bool) {
 		return "graph: unstamped — prepare emitted rig.db but no .sha; the rig tool will serve it with an unverified-graph caveat (sha_state=absent-refusal)", true
 	}
 	return "", false
+}
+
+// botTokenEnvForNode is the #480 credential-scoping policy: the bot review
+// credential rides ONLY the node whose plugin is post-review — its sole
+// reader — regardless of what the node is named in the graph (compiled
+// "deploy" or CR-authored IDs; r5 t10). Every other node (prepare runs
+// emit-rig + the Go toolchain inside the untrusted PR clone) gets the
+// scrubbed base. The token itself is scrubbed from the process env at the
+// agent spawn leaf (agent.FilterEnv) and from this extraEnv slice.
+func botTokenEnvForNode(node v1alpha1.NodeSpec, base []string, resolver worker.PluginResolver) []string {
+	if node.Type != "plugin" {
+		return base
+	}
+	var cfg graph.PluginNodeConfig
+	if err := json.Unmarshal(node.Config, &cfg); err != nil {
+		return base
+	}
+	// Identity = the canonical resolution: resolve the node's ref and the
+	// canonical {name: post-review} ref and grant only on equality. A path-
+	// shape suffix cannot be the identity — the shipped BuiltinResolver maps
+	// the builtin to a FLAT image path (/usr/local/lib/harmostes/plugins/
+	// post-review.sh) while tests produce the repo layout, so any suffix
+	// guess matches one world and silently no-ops the other (r11 t21).
+	// Phase "plugin" — the SAME resolution the executor performs
+	// (plugin_executor.go); r14 t21: resolving the identity under a
+	// different phase than the leg that runs the script is the r11 t21
+	// failure mode again (identity that matches one world and no-ops the
+	// other) the moment a resolver becomes phase-aware.
+	nodeCmd, _, err := resolver.Resolve(context.Background(), cfg.ToPluginRef(), "plugin")
+	if err != nil || nodeCmd == "" {
+		return base
+	}
+	canonical, _, err := resolver.Resolve(context.Background(),
+		v1alpha1.PluginRef{Name: "post-review"}, "plugin")
+	if err != nil || canonical == "" || nodeCmd != canonical {
+		return base
+	}
+	bt := os.Getenv(agent.BotTokenEnvKey)
+	if bt == "" {
+		return base
+	}
+	grant := []string{
+		agent.BotTokenEnvKey + "=" + bt,
+		agent.BotHostEnvKey + "=" + os.Getenv(agent.BotHostEnvKey),
+	}
+	return append(append([]string{}, base...), grant...)
 }
 
 // spawnEnv extends the pi child env with the ADR-0009 rig freshness
@@ -221,14 +269,14 @@ func runOneShot() {
 		if cerr != nil {
 			fatal("review-ready: %v", cerr)
 		}
-		gateDeps := worker.GateDeps{
+		gateDeps := gate.GateDeps{
 			Status: k8s.StatusPatcher{Client: cl, Namespace: namespace},
 			Client: cl, Scheme: scheme,
 			Log: logf, TL: gateTL,
 			Wake:                     wakeFromEnv(),
 			DisableCancelOnSupersede: !cancelOnSupersede,
 		}
-		dispatches, err := worker.RunReviewGateWake(ctx, gateDeps, wf)
+		dispatches, err := gate.RunReviewGateWake(ctx, gateDeps, wf)
 		if err != nil {
 			fatal("review-ready: %v", err)
 		}
@@ -290,6 +338,13 @@ func runOneShot() {
 	// Session capture (Phase 1): wire Dapr state writer + pub/sub publisher so
 	// the agent transcript (prompts, tools, responses, gates) is persisted for
 	// the UI session viewer.
+	// Pin the run's model ONCE (#494): ResolveModel evaluates the
+	// time-windowed schedule at run start and the result is written into
+	// the in-memory spec — pi args, events, graph config and session
+	// metadata all carry the SAME model, and a run never switches models
+	// mid-flight because the clock crossed a window boundary.
+	wf.Spec.Agent.Model = wf.Spec.Agent.ResolveModel(time.Now())
+
 	runID := runName()
 	sessionMeta := agent.SessionMeta{
 		Workflow: workflow,
@@ -306,20 +361,9 @@ func runOneShot() {
 		_ = runTL.Emit(ctx, timeline.KindRunStarted, "", map[string]any{"source": source})
 	}
 
-	seenTurns := 0
 	sessionWriter := func(sctx context.Context, session agent.SessionRecord) error {
 		if deps.Dapr == nil {
 			return nil
-		}
-		if runTL != nil {
-			for i := seenTurns; i < len(session.Turns); i++ {
-				t := session.Turns[i]
-				_ = runTL.Emit(sctx, timeline.KindAgentTurn, "agent", map[string]any{
-					"turn": i, "label": t.Label, "green": t.Gate != nil && t.Gate.Green,
-					"tokensIn": t.Usage.Input, "tokensOut": t.Usage.Output,
-				})
-			}
-			seenTurns = len(session.Turns)
 		}
 		key := fmt.Sprintf("%s:%s:session", workflow, runID)
 		b, err := json.Marshal(session)
@@ -327,6 +371,30 @@ func runOneShot() {
 			return err
 		}
 		return deps.Dapr.SaveState(sctx, deps.DaprStateStore, key, string(b))
+	}
+	// turnPublisher: each landed turn publishes IMMEDIATELY (the old path
+	// waited for the gate evaluation, so a turn's tokens appeared minutes
+	// late). Two consumers, one callback: the timeline event (evidence,
+	// TTL'd) and the Attempt's live Progress window (the wall's token
+	// column reads it for in-flight rows). Cumulative totals ride every
+	// sample so readers need only the newest event.
+	turnPublisher := func(pctx context.Context, p agent.TurnProgress) {
+		if runTL != nil {
+			_ = runTL.Emit(pctx, timeline.KindAgentTurn, "agent", map[string]any{
+				"turn": p.Turn, "label": p.Label,
+				"tokensIn": p.TokensIn, "tokensOut": p.TokensOut,
+				"totalIn": p.TotalIn, "totalOut": p.TotalOut, "turns": p.Turns,
+			})
+		}
+		attemptName := os.Getenv("HARMOSTES_ATTEMPT")
+		if attemptName == "" {
+			return
+		}
+		if err := attempt.RecordProgress(pctx, cl, namespace, attemptName, v1alpha1.RunProgress{
+			Turn: p.Turn, Turns: p.Turns, TokensIn: p.TotalIn, TokensOut: p.TotalOut,
+		}); err != nil {
+			logf("warn: record progress: %v", err)
+		}
 	}
 	toolPublisher := func(pctx context.Context, wfName, rid string, tool agent.ToolCall) {
 		if runTL != nil {
@@ -364,6 +432,20 @@ func runOneShot() {
 	} else {
 		piSessions = ""
 	}
+	// Lineage TTL (ADR-0010 follow-up): idle lineages (closed/merged PRs)
+	// expire from the persistent claim; active ones are touched by every
+	// resumed turn, so they are structurally never pruned. Runs only when
+	// the Job mounted the sessions claim (the Job builder sets the TTL
+	// env) — ephemeral /tmp roots stay untouched.
+	if ttl := os.Getenv("HARMOSTES_SESSIONS_TTL"); ttl != "" && piSessions != "" {
+		if d, err := time.ParseDuration(ttl); err == nil {
+			if n := worker.JanitorSessions(piSessions, d, time.Now()); n > 0 {
+				logf("sessions janitor: pruned %d idle lineage dir(s) (ttl %s)", n, ttl)
+			}
+		} else {
+			logf("sessions TTL %q unparsable — lineages not pruned", ttl)
+		}
+	}
 	// ADR-0010: PR-shaped runs own ONE session lineage — resume, don't
 	// rebuild. The delta note (HARMOSTES_SESSION_RESUME) is read by the
 	// graph agent executor; this process runs exactly one review, so the
@@ -379,40 +461,62 @@ func runOneShot() {
 			// ACTOR owns the lineage (isolated + durable + turn-based);
 			// fetch it and materialize as the local session file, so the
 			// stable id RESUMES the real conversation (KV-cache economics).
-			if raw, err := deps.Dapr.InvokeActor(ctx, agentlineage.ActorType, aid, "fetch", nil); err == nil {
-				var sess agentlineage.Session
-				if json.Unmarshal(raw, &sess) == nil && sess.Session != "" {
-					// Materialize under the pi-ADOPTABLE name: the stored
-					// filename if the actor has one, else a fresh timestamped
-					// name pi's --session-id resolution can decode.
-					// VALIDATED (r24 P4.1): File is client-settable state; a
-					// traversal string must never become a write path. Only a
-					// basename ending in "_"+id+".jsonl" is honored.
-					name := filepath.Base(sess.File)
-					if !strings.HasSuffix(name, "_"+id+".jsonl") {
-						name = filepath.Base(agent.LineageSessionPath(dir, id))
-					}
-					if err := os.WriteFile(filepath.Join(dir, name), []byte(sess.Session), 0o600); err != nil {
-						logf("session lineage materialize failed: %v", err)
-					} else {
-						resume = true
-						logf("session lineage: actor gen=%d lastHead=%s file=%s", sess.Generation, sess.LastHead, name)
-					}
+			store := sessionstore.Store{Actors: deps.Dapr}
+			sess, ferr := store.Fetch(ctx, triggerRepo(), triggerPR())
+			if ferr != nil {
+				logf("session lineage fetch failed (fresh if absent): %v", ferr)
+			} else if sess.Session != "" {
+				// Materialize under the pi-ADOPTABLE name (the stored
+				// filename if the actor has one). VALIDATED (r24 P4.1):
+				// File is client-settable state; only a basename ending in
+				// "_"+id+".jsonl" is honored — traversal strings are not
+				// write paths.
+				name, resumed, merr := sessionstore.Materialize(dir, id, sess)
+				if merr != nil {
+					logf("session lineage materialize failed: %v", merr)
+				} else {
+					resume = resumed
+					logf("session lineage: actor gen=%d lastHead=%s file=%s", sess.Generation, sess.LastHead, name)
 				}
-			} else {
-				logf("session lineage fetch failed (fresh if absent): %v", err)
 			}
 			if resume {
 				_ = os.Setenv("HARMOSTES_SESSION_RESUME", "1")
+				// C4: the note TEXT is composed here — the process that owns
+				// the lineage fact and the new head — and carried to the
+				// executor as data. The kernel-side executor renders
+				// envelope-provided notes verbatim; it holds no
+				// pr-review vocabulary of its own.
+				note := "Session note: this is a RESUMED session. Your prior orientation, findings, and verdict reasoning are already in the transcript above — do not redo that work. Verify only what changed since your last turn"
+				if sha := envOr("HARMOSTES_TRIGGER_SHA", ""); sha != "" {
+					note += " (new head: " + sha + ")"
+				}
+				_ = os.Setenv("HARMOSTES_SESSION_NOTE", note+".")
 			}
 			logf("session lineage: resume=%v id=%s", resume, id)
 		}
 	}
+	// Research journal (#494): the workflow's recent outcomes — compact,
+	// capped by the writer, injected as context the agent may consult (the
+	// graph agent executor appends it to the task). Best-effort.
+	if deps.Dapr != nil {
+		if raw, err := deps.Dapr.GetState(ctx, deps.DaprStateStore, "pi-research/"+wf.Name); err == nil && raw != "" {
+			if j := worker.RenderResearchJournal([]byte(raw), worker.ResearchInjectMaxBytes); j != "" {
+				_ = os.Setenv("HARMOSTES_RESEARCH_JOURNAL", j)
+				logf("research journal injected (%d bytes)", len(j))
+			}
+		}
+	}
+
 	// ADR-0009 freshness: prepare stamps /workspace/rig.db.sha with the
 	// reviewed SHA; the rig-query extension compares it against RIG_EXPECTED_SHA
 	// and REFUSES on mismatch. Scoped to the pi child's env — not process-global
 	// (deploy/gate plugins must not inherit a one-consumer variable, #338 r15).
-	piEnv := os.Environ()
+	// The bot review credential is scrubbed from the pi child for the mirror
+	// reason, inverted (#480 r2 t4): pi's input includes untrusted PR content,
+	// and the bot token can satisfy required_approvals — it must not sit in
+	// an LLM loop's env. The deploy plugin (post-review) reads it from the
+	// process env, which this filter does not touch.
+	piEnv := agent.ChildEnv(os.Environ())
 	logfFn("%s", piargs.ExtensionsLogLine())
 	deps.Agent = worker.RPCAgentRunner{
 		// The rig freshness contract arms at AGENT-NODE SPAWN, not run
@@ -451,17 +555,17 @@ func runOneShot() {
 				// the bare read ENOENT'd every round, publishing nothing).
 				// Redact BEFORE it enters durable state (#115 class, r22 P5);
 				// bound it like SavePiSession (OOM vector, r22 P5).
-				if file, raw, err := agent.FindLineageSession(lineageDir, sessionID); err == nil {
+				if file, raw, err := sessionstore.FindLineageSession(lineageDir, sessionID); err == nil {
 					if len(raw) > maxLineageBytes {
 						// WARN-visible (r26 P4): continuity loss must be attributable
 						// from the run summary alone, not only from a log grep.
 						logf("WARN: session lineage publish REFUSED: %s is %d bytes (cap %d) — fresh next round", filepath.Base(file), len(raw), maxLineageBytes)
 					} else {
-						payload, _ := json.Marshal(agentlineage.Session{Session: worker.Redact(string(raw)), LastHead: envOr("HARMOSTES_TRIGGER_SHA", ""), File: filepath.Base(file)})
-						if out, err := deps.Dapr.InvokeActor(fctx, agentlineage.ActorType, actorID, "publish", payload); err != nil {
-							logf("session lineage publish failed: %v", err)
+						pub := sessionstore.Lineage{Session: worker.Redact(string(raw)), LastHead: envOr("HARMOSTES_TRIGGER_SHA", ""), File: filepath.Base(file)}
+						if perr := (sessionstore.Store{Actors: deps.Dapr}).Publish(fctx, triggerRepo(), triggerPR(), pub); err != nil {
+							logf("session lineage publish failed: %v", perr)
 						} else {
-							logf("session lineage published %s redacted (%d bytes) %s", filepath.Base(file), len(raw), strings.TrimSpace(string(out)))
+							logf("session lineage published %s redacted (%d bytes)", filepath.Base(file), len(raw))
 						}
 					}
 				} else {
@@ -492,8 +596,15 @@ func runOneShot() {
 	// Pass HARMOSTES_LAST_RIG_HASH so the rig-emit plugin can do a cross-run
 	// deterministic skip (structure unchanged → changed=false → graph skips
 	// agent/deploy). Also propagate the full process env so plugins inherit
-	// credentials and Dapr endpoints.
-	extraEnv := os.Environ()
+	// credentials and Dapr endpoints — MINUS the bot review credential
+	// (#480 r4 t7): prepare/gate run extractor and gate tooling inside the
+	// cloned PR's trust boundary (workspace.sh → emit-rig.py → go mod
+	// download/list inherit the env verbatim), and a token whose whole
+	// purpose is approving third-party PRs must not sit in
+	// untrusted-content-driven process env. The grant is re-scoped per node
+	// by botTokenEnvForNode (this file) via WorkflowContext.ExtraEnvForNode
+	// — post-review, its only reader, is the sole node that receives it.
+	extraEnv := agent.ChildEnv(os.Environ())
 	if wf.Status.LastRigHash != "" {
 		extraEnv = append(extraEnv, "HARMOSTES_LAST_RIG_HASH="+wf.Status.LastRigHash)
 	}
@@ -524,6 +635,7 @@ func runOneShot() {
 		KubeClient:     graph.NewKubeClient(cl),
 		SessionWriter:  sessionWriter,
 		ToolPublisher:  toolPublisher,
+		TurnPublisher:  turnPublisher,
 		SessionMeta:    sessionMeta,
 	}
 	graphDeps.Timeline = runTL
@@ -563,6 +675,9 @@ func runOneShot() {
 			Shadow:         shadow,
 			State:          wf.Name,
 			ExtraEnv:       extraEnv,
+			ExtraEnvForNode: func(node v1alpha1.NodeSpec, base []string) []string {
+				return botTokenEnvForNode(node, base, deps.Plugins)
+			},
 		}),
 	)
 
@@ -570,6 +685,27 @@ func runOneShot() {
 		_ = runTL.Emit(ctx, timeline.KindRunCompleted, "", map[string]any{
 			"status": result.Status, "message": result.Message, "source": source,
 		})
+	}
+
+	// Research journal (#494): append this run's outcome to the workflow's
+	// journal so the NEXT session starts knowing it. Deterministic (the
+	// run's own record), capped, best-effort — never a run failure.
+	if deps.Dapr != nil {
+		key := "pi-research/" + wf.Name
+		var prev []byte
+		if raw, err := deps.Dapr.GetState(ctx, deps.DaprStateStore, key); err == nil {
+			prev = []byte(raw)
+		}
+		next := worker.AppendResearchJournal(prev, worker.ResearchEntry{
+			At:     time.Now().UTC().Format(time.RFC3339),
+			Run:    runName(),
+			Status: string(result.Status),
+			Model:  wf.Spec.Agent.Model,
+			Note:   result.Message,
+		}, worker.ResearchJournalEntries, worker.ResearchJournalMaxBytes)
+		if err := deps.Dapr.SaveState(ctx, deps.DaprStateStore, key, string(next)); err != nil {
+			logf("research journal append failed: %v", err)
+		}
 	}
 
 	// Patch Workflow status from the graph result (mirrors the declarative
@@ -767,14 +903,14 @@ func envReq(key string) string {
 // REPO; EnvelopeEnv writes a BARE NUMBER plus HARMOSTES_TRIGGER_REPO. SHA
 // wins over REVISION — each producer writes exactly one of the two names.
 // An operator running `harmostes-worker run` by hand can use either shape.
-func wakeFromEnv() worker.GateWake {
+func wakeFromEnv() gate.GateWake {
 	pr := os.Getenv("HARMOSTES_TRIGGER_PR")
 	if pr != "" && !strings.Contains(pr, "#") {
 		if repo := os.Getenv("HARMOSTES_TRIGGER_REPO"); repo != "" {
 			pr = repo + "#" + pr // bare number + repo → the gate's pointer form
 		}
 	}
-	return worker.GateWake{
+	return gate.GateWake{
 		PR:       pr,
 		Action:   os.Getenv("HARMOSTES_TRIGGER_ACTION"),
 		Revision: envOr("HARMOSTES_TRIGGER_SHA", os.Getenv("HARMOSTES_TRIGGER_REVISION")),
@@ -786,13 +922,25 @@ func wakeFromEnv() worker.GateWake {
 // pipelines keep the per-run session dirs (#243): they have no
 // conversation worth resuming. Non-PR or malformed pointer → empty dir/id
 // (the caller falls back to per-run persistence).
+// triggerRepo/triggerPR: the wake's PR identity, split. Empty when the
+// run is not PR-shaped.
+func triggerRepo() string {
+	repo, _, _ := strings.Cut(wakeFromEnv().PR, "#")
+	return repo
+}
+
+func triggerPR() string {
+	_, num, _ := strings.Cut(wakeFromEnv().PR, "#")
+	return num
+}
+
 func sessionLineageForRun(root string) (dir, id, key string, resume bool, err error) {
 	pr := wakeFromEnv().PR
 	repo, num, ok := strings.Cut(pr, "#")
 	if pr == "" || !ok || repo == "" || num == "" {
 		return "", "", "", false, nil
 	}
-	dir, id, resume, err = agent.ResolveSession(root, repo, num)
+	dir, id, resume, err = sessionstore.ResolveSession(root, repo, num)
 	if err != nil {
 		return "", "", "", false, err
 	}
@@ -879,11 +1027,13 @@ func fetchWorkspaceRepo(ctx context.Context, wr *v1alpha1.WorkspaceRepoSpec, bas
 	_ = os.RemoveAll(target) // idempotent: remove a stale checkout
 	cloneURL := tokenizeGitURL(wr.URL, os.Getenv("HARMOSTES_GIT_TOKEN"))
 	cmd := exec.CommandContext(ctx, "git", "clone", "--depth", "100", cloneURL, target)
+	cmd.Env = agent.ChildEnv(os.Environ())
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("git clone %s: %w (%s)", redact(wr.URL), err, string(out))
 	}
 	if wr.Branch != "" {
 		co := exec.CommandContext(ctx, "git", "-C", target, "checkout", wr.Branch)
+		co.Env = agent.ChildEnv(os.Environ())
 		if out, err := co.CombinedOutput(); err != nil {
 			return "", fmt.Errorf("git checkout %s: %w (%s)", wr.Branch, err, string(out))
 		}

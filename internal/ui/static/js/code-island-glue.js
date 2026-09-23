@@ -18,10 +18,17 @@
 	// Monaco theme colors accept only #rrggbb — tokens.css speaks oklch.
 	// Convert (with gamut clamping) so the token file stays the single
 	// color source; a future retune needs no island change.
+	//
+	// Lightness comes in BOTH forms (#537): tokens.css writes 0–1 form
+	// (oklch(0.145 0.006 250)); DESIGN.md documents percentage form
+	// (oklch(14.5% 0.006 250)). Dividing unconditionally — as this once
+	// did — turned every mapped color into L≈0.001, i.e. near-black text
+	// on a near-black editor, in BOTH themes. The % suffix is the
+	// discriminator: divide only when it is present.
 	function toHex(v) {
-		var m = /^oklch\(([\d.]+)%?\s+([\d.]+)\s+([\d.]+)(?:\s*\/\s*[\d.]+)?\)$/.exec(v.replace(/\s+/g, ' '))
+		var m = /^oklch\(([\d.]+)(%)?\s+([\d.]+)\s+([\d.]+)(?:\s*\/\s*[\d.]+)?\)$/.exec(v.replace(/\s+/g, ' '))
 		if (!m) return v
-		var L = parseFloat(m[1]) / 100, C = parseFloat(m[2]), H = parseFloat(m[3]) * Math.PI / 180
+		var L = m[2] ? parseFloat(m[1]) / 100 : parseFloat(m[1]), C = parseFloat(m[3]), H = parseFloat(m[4]) * Math.PI / 180
 		var a = Math.cos(H) * C, b = Math.sin(H) * C
 		var l_ = L + 0.3963377774 * a + 0.2158037573 * b
 		var m_ = L - 0.1055613458 * a - 0.0638541728 * b
@@ -32,6 +39,10 @@
 			-1.2684380046 * l + 2.6097574011 * mm - 0.3413193965 * ss,
 			-0.0041960863 * l - 0.7034186147 * mm + 1.7076147010 * ss,
 		].map(function (c) {
+			// Linear light → sRGB-encoded: the transfer function. Without
+			// it mid-tones render far too dark (oklch L=0.5 linear ≈ 0.21
+			// encoded — the island's surfaces collapsed toward black; #537).
+			c = c <= 0.0031308 ? 12.92 * c : 1.055 * Math.pow(c, 1 / 2.4) - 0.055
 			c = Math.round(Math.min(1, Math.max(0, c)) * 255)
 			return (c < 16 ? '0' : '') + c.toString(16)
 		})

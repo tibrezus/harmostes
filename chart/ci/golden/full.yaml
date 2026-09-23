@@ -98,16 +98,20 @@ data:
       assert.deepEqual(DEFAULT_FALLBACKS, {
         "mtplx/qwen38-27b-optimized-speed-fp16": ["ali/anthropic/qwen3.8-flash"],
         "ali/anthropic/qwen3.8-flash": ["zai/anthropic/glm-5.3-flash"],
+        "ali/anthropic/deepseek-v4.1-flash": ["zai/anthropic/glm-5.3-flash"],
+        "ali/anthropic/qwen3.8-max": ["ali/anthropic/qwen3.8-flash"],
         "zai/anthropic/glm-5.3-flash": ["ali/anthropic/qwen3.8-flash"],
       });
-      // And ALL THREE wire over a proxy exposing exactly the three known
+      // And ALL FOUR wire over a proxy exposing exactly the four known
       // groups: speed keeps its own 256 KiB window (fallback LARGER — no
       // clamp, no early compaction); flash pays the documented fallback clamp
       // down to glm (128 Ki ctx / 8k out) — the pre-#363 shape, retained on
-      // purpose; glm clamps nothing (flash is larger in both dimensions).
+      // purpose; max nets to flash, which is larger in both dims — no clamp;
+      // glm clamps nothing (flash is larger in both dimensions).
       const proxy = new Map([
         ["mtplx/qwen38-27b-optimized-speed-fp16", { max_input_tokens: 262144, max_output_tokens: 32768 }],
         ["ali/anthropic/qwen3.8-flash", { max_input_tokens: 1048576, max_output_tokens: 32768 }],
+        ["ali/anthropic/qwen3.8-max", { max_input_tokens: 991808, max_output_tokens: 131072 }],
         ["zai/anthropic/glm-5.3-flash", { max_input_tokens: 131072, max_output_tokens: 8192 }],
       ]);
       const models = [...proxy.entries()].map(([id, m]) => ({ id, ...m }));
@@ -124,12 +128,19 @@ data:
       assert.deepEqual(glm.samplingParams, { fallbacks: ["ali/anthropic/qwen3.8-flash"] });
       assert.equal(glm.contextWindow, 131072); // own window — flash is larger, no clamp
       assert.equal(glm.clampNote, undefined);
+      const max = annotated.find((m) => m.id === "ali/anthropic/qwen3.8-max")!;
+      assert.deepEqual(max.samplingParams, { fallbacks: ["ali/anthropic/qwen3.8-flash"] });
+      assert.equal(max.contextWindow, 991808); // own ctx — the net (flash) is larger on input
+      assert.match(max.clampNote!, /maxTokens 131072→32768/); // fallback clamp: flash's 32k out
       assert.deepEqual(wired.sort(), [
         "ali/anthropic/qwen3.8-flash → zai/anthropic/glm-5.3-flash", // wired entries are primary→fallback summaries
+        "ali/anthropic/qwen3.8-max → ali/anthropic/qwen3.8-flash",
         "mtplx/qwen38-27b-optimized-speed-fp16 → ali/anthropic/qwen3.8-flash",
         "zai/anthropic/glm-5.3-flash → ali/anthropic/qwen3.8-flash",
       ]);
-      assert.deepEqual(unwiredChains, []); // every default key is a served primary
+      // deepseek-v4.1-flash is in the table but NOT in this proxy map — inert
+      // by design (unwired) until the proxy serves it (owner directive).
+      assert.deepEqual(unwiredChains, ["ali/anthropic/deepseek-v4.1-flash"]);
     });
     
     // The documented off-switch, pinned (#401 review r2: it had no test at any
@@ -145,9 +156,9 @@ data:
     
     // The default table is a deliberate SUPERSET of any one proxy's groups
     // (#401 review r3): over a 2-group proxy (the chart-default shape, where
-    // speed is ops-side), exactly the speed key is reported inert and the two
-    // served directions still wire — the unwired note is expected output, not
-    // an alarm.
+    // speed is ops-side), exactly the unserved keys (speed, deepseek, max)
+    // are reported inert and the two served directions still wire — the
+    // unwired note is expected output, not an alarm.
     test("applyChains: a subset proxy reports exactly the unserved key", () => {
       const two = new Map([
         ["ali/anthropic/qwen3.8-flash", { max_input_tokens: 1048576, max_output_tokens: 32768 }],
@@ -155,7 +166,13 @@ data:
       ]);
       const twoModels = [...two.entries()].map(([id, m]) => ({ id, ...m }));
       const { wired, unwiredChains } = applyChains(twoModels, DEFAULT_FALLBACKS, two);
-      assert.deepEqual(unwiredChains, ["mtplx/qwen38-27b-optimized-speed-fp16"]);
+      // insertion order of the default table: speed first, deepseek third,
+      // max fourth
+      assert.deepEqual(unwiredChains, [
+        "mtplx/qwen38-27b-optimized-speed-fp16",
+        "ali/anthropic/deepseek-v4.1-flash",
+        "ali/anthropic/qwen3.8-max",
+      ]);
       assert.deepEqual(wired.sort(), [
         "ali/anthropic/qwen3.8-flash → zai/anthropic/glm-5.3-flash",
         "zai/anthropic/glm-5.3-flash → ali/anthropic/qwen3.8-flash",
@@ -322,8 +339,27 @@ data:
       assert.deepEqual(after, {
         "mtplx/qwen38-27b-optimized-speed-fp16": ["ali/anthropic/qwen3.8-flash"],
         "ali/anthropic/qwen3.8-flash": ["zai/anthropic/glm-5.3-flash"],
+        "ali/anthropic/deepseek-v4.1-flash": ["zai/anthropic/glm-5.3-flash"],
+        "ali/anthropic/qwen3.8-max": ["ali/anthropic/qwen3.8-flash"],
         "zai/anthropic/glm-5.3-flash": ["ali/anthropic/qwen3.8-flash"],
       });
+    });
+    
+    test("the night-window primary (owner directive) carries the glm-5.3-flash second option", () => {
+    	// deepseek-v4.1-flash 16:00-02:00 CET is the night first option; its
+    	// chain must name glm-5.3-flash (the all-hours second option). The
+    	// chain is inert until the proxy catalog lists the id — this assert
+    	// keeps the INTENT in the table so the admin-side model addition
+    	// activates it without a code change.
+    	assert.deepEqual(DEFAULT_FALLBACKS["ali/anthropic/deepseek-v4.1-flash"], [
+    		"zai/anthropic/glm-5.3-flash",
+    	]);
+    	// The CURRENT night primary (owner correction, #536 → -230):
+    	// qwen3.8-max nets to flash — the proven finalizer on this contract,
+    	// and larger than max in both dims, so the chain clamps nothing.
+    	assert.deepEqual(DEFAULT_FALLBACKS["ali/anthropic/qwen3.8-max"], [
+    		"ali/anthropic/qwen3.8-flash",
+    	]);
     });
     
   fallbacks.ts: |
@@ -355,6 +391,18 @@ data:
     export const DEFAULT_FALLBACKS: Record<string, string[]> = {
       "mtplx/qwen38-27b-optimized-speed-fp16": ["ali/anthropic/qwen3.8-flash"],
       "ali/anthropic/qwen3.8-flash": ["zai/anthropic/glm-5.3-flash"],
+      // Night-window primary (owner directive): deepseek-v4.1-flash 16:00-02:00
+      // CET with glm-5.3-flash as the all-hours second option. The chain is
+      // INERT until the proxy catalog lists the id (unwiredChains below) — the
+      // LiteLLM admin must add the model and grant the fleet key access
+      // (probe evidence, #507: absent from /v1/models, key not allowed).
+      "ali/anthropic/deepseek-v4.1-flash": ["zai/anthropic/glm-5.3-flash"],
+      // Night-window primary (owner directive, #536 → -230): qwen3.8-max
+      // 16:00-02:00 CET. Proxy-verified served (991,808 in / 131,072 out);
+      // unproven on the finalize contract, so its net is flash — the only id
+      // with green fleet history on the review round — and flash is larger in
+      // both dims, so this chain clamps nothing.
+      "ali/anthropic/qwen3.8-max": ["ali/anthropic/qwen3.8-flash"],
       // glm is a live primary too — the --model default of cmd/harmostes-agent
       // and harmostes.py (#401 review r2): without an entry a glm-primary run
       // attaches no failover at all. flash is LARGER in both dimensions, so
@@ -950,10 +998,31 @@ data:
         git checkout "$FORK_DEFAULT_BRANCH" 2>/dev/null || git checkout -b "$FORK_DEFAULT_BRANCH" "origin/$FORK_DEFAULT_BRANCH"
       fi
     
+      # Shallow-history soundness (#566): the clone and the upstream fetch are
+      # --depth 100, and a shallow graph can lack the common ancestor — a
+      # merge-base that fails (or silently mis-resolves) here turns the
+      # up-to-date decision into a coin flip. The false "up to date" is the
+      # worst outcome: the sync silently no-ops forever, defeating the
+      # dead-man's switch it feeds. So:
+      #   1. the up-to-date test is `merge-base --is-ancestor` (exit-status
+      #      semantics — upstream head fully contained in the fork), never a
+      #      string compare that an empty MERGE_BASE can corrupt;
+      #   2. a missing common ancestor triggers an unshallow retry before the
+      #      merge — a real 300+-commit range cannot merge from 100-deep
+      #      history at all;
+      #   3. if the ancestor is STILL unresolvable, we proceed to the merge,
+      #      which fails LOUDLY (unrelated histories) instead of skipping.
       MERGE_BASE=$(git merge-base "HEAD" "upstream/$UPSTREAM_BRANCH" 2>/dev/null || echo "")
+      if [ -z "$MERGE_BASE" ]; then
+        echo "=== shallow history has no common ancestor — unshallowing upstream ==="
+        git fetch --unshallow upstream "$UPSTREAM_BRANCH" 2>/dev/null \
+          || git fetch --deepen=2000 upstream "$UPSTREAM_BRANCH" 2>/dev/null \
+          || true
+        MERGE_BASE=$(git merge-base "HEAD" "upstream/$UPSTREAM_BRANCH" 2>/dev/null || echo "")
+      fi
       UPSTREAM_HEAD=$(git rev-parse "upstream/$UPSTREAM_BRANCH")
     
-      if [ "$MERGE_BASE" = "$UPSTREAM_HEAD" ]; then
+      if git merge-base --is-ancestor "upstream/$UPSTREAM_BRANCH" "HEAD" 2>/dev/null; then
         echo ""
         echo "=== Already up to date — mirror has no new commits ==="
         if [ "$PHASED" = "1" ]; then
@@ -1274,7 +1343,22 @@ data:
           | awk -F/ '{print $NF}' | sort -V | tail -1)
         LAST_N=$(echo "${LAST_REZUS}" | sed -nE 's/.*-rezus\.([0-9]+).*/\1/p')
         [ -z "$LAST_N" ] && LAST_N=0
-        NEXT_N=$((LAST_N + 1))
+        # Base-10, not octal: a padded ordinal (08/09) would be invalid octal
+        # in arithmetic and crash the phase.
+        NEXT_N=$((10#$LAST_N + 1))
+        # Ordinal tag-shape contract (#595) — two rules:
+        # 1. Ordinals are UNPADDED. A digit-only prerelease identifier
+        #    (…-rezus.10) is ranked NUMERICALLY by semver — monotonic at every
+        #    boundary. A zero-padded one (…-rezus.01) is INVALID semver
+        #    (leading zeros) and invisible to any semver ImagePolicy.
+        # 2. The IMAGE tag is the git tag VERBATIM (v…-rezus.11) — no variant
+        #    suffix at all (rezuscloud/signoz#67 dropped one; the ordinal IS
+        #    the version). If a variant is ever truly unavoidable, DOT-join it
+        #    (v…-rezus.11.community), never dash-fused (…-rezus.11-community):
+        #    a fused identifier is alphanumeric, ranks lexically, and
+        #    "10-community" < "9-community" silently stalls the policy at
+        #    every 9→10 boundary (observed: rezuscloud/signoz — flux marker
+        #    stuck at v0.127.0-rezus.3-community since 2026-06-29).
         RELEASE_TAG="${UPSTREAM_VER}-rezus.${NEXT_N}"
     
         HEAD_TAG=$(git tag --points-at HEAD | grep -E "${UPSTREAM_VER}-rezus\." || true)
@@ -3307,7 +3391,7 @@ data:
     # =============================================================================
     # validate-fork.sh — Centralized, UNIVERSAL fork validation
     # =============================================================================
-    # Runs build + clean-tree + integration checks against a fork's working
+    # Runs build + test + clean-tree + integration checks against a fork's working
     # directory. Which checks run is declared per-fork in the fork definition
     # (`forks/<name>.yaml` → `validation:`), so this script is host-agnostic and
     # language-agnostic — it does NOT hardcode any fork's structure.
@@ -3322,6 +3406,12 @@ data:
     #     go_build:               # compile Go packages (any Go fork)
     #       - module: .           #   working dir (module root) within the workdir
     #         packages: [./cmd/community]
+    #     go_test:                # run Go packages' tests (BEHAVIORAL gate #564)
+    #       - module: pkg/metrics #   presence ≠ behavior: signatures prove the
+    #         packages: [./...]   #   patch survived the merge; tests prove the
+    #         timeout: 120s       #   feature still works (timeout REQUIRED-guard:
+    #                             #   packages must be declared EXPLICITLY — no
+    #                             #   silent ./... fallback)
     #     clean_tree:             # verify generated code is committed (codegen drift)
     #       paths: [staging/.../zz_generated_*.go]
     #     integration:            # opt-in; `kind` selects the harness routine
@@ -3403,6 +3493,48 @@ data:
         echo "  $status  $module  [${pkgs[*]}]"
         echo "  $module [${pkgs[*]}]: $status" >> "$RESULTS_FILE"
         $build_ok || ALL_PASS=false
+      done
+      echo '```' >> "$RESULTS_FILE"
+    fi
+    
+    # =============================================================================
+    # Check: go_test — run declared Go packages' tests (behavioral gate, #564)
+    # =============================================================================
+    # Complementary to signatures: a signature proves the patch TEXT survived the
+    # merge; a test proves the FEATURE works on the merged tree. A semantic break
+    # (upstream changed an API our patch depends on) greps clean and compiles —
+    # only the tests fail. Declare TARGETED feature packages, never upstream's
+    # full suite: the gate runs per sync and must stay fast and deterministic.
+    TEST_COUNT=$(ry '.validation.go_test // [] | length')
+    if [ "${TEST_COUNT:-0}" -gt 0 ]; then
+      HAS_ANY=true
+      echo "=== Check: Go test ==="
+      {
+        echo "### Go Test"
+        echo ""
+        echo '```'
+      } >> "$RESULTS_FILE"
+      for i in $(seq 0 $((TEST_COUNT - 1))); do
+        module=$(ry ".validation.go_test[$i].module // \".\"")
+        mapfile -t pkgs < <(ry ".validation.go_test[$i].packages[]")
+        if [ "${#pkgs[@]}" -eq 0 ]; then
+          # Hard, visible error — NOT a ./... default. A forgotten packages key
+          # on a monorepo module would run upstream's entire (flaky, networked)
+          # suite in a blocking gate and fail every sync for an unreadable reason.
+          echo "  ❌  go_test[$i]: packages must be declared explicitly (no silent ./... fallback)"
+          echo "  go_test[$i]: ❌ packages must be declared explicitly (no silent ./... fallback)" >> "$RESULTS_FILE"
+          ALL_PASS=false
+          continue
+        fi
+        timeout_s=$(ry ".validation.go_test[$i].timeout // \"120s\"")
+        test_ok=true
+        # Explicit bound: go's default is 10m PER PACKAGE — a hung test would
+        # cost N×10m inside the sync and yield no verdict at all.
+        ( cd "$WORKDIR/$module" && go test -timeout="$timeout_s" "${pkgs[@]}" 2>&1 ) || test_ok=false
+        status=$(if $test_ok; then echo '✅'; else echo '❌'; fi)
+        echo "  $status  $module  [${pkgs[*]}]"
+        echo "  $module [${pkgs[*]}]: $status" >> "$RESULTS_FILE"
+        $test_ok || ALL_PASS=false
       done
       echo '```' >> "$RESULTS_FILE"
     fi
@@ -3856,7 +3988,7 @@ data:
     2. **Permanent divergences re-applied** — deleted upstream dirs re-deleted; additive paths preserved.
     3. **Post-merge hook succeeded** — per-fork code generation (SDK regen, swagger, `go mod tidy`, ee-stripping) ran and produced the expected artifacts.
     4. **Patch signatures intact** — every feature patch's grep-verifiable proof string is still present (a merge didn't silently drop it).
-    5. **Validation passed** — the checks *this fork* declares (go_build / clean_tree / integration), built with the **fork's declared toolchain**, all green, run in a real toolchain.
+    5. **Validation passed** — the checks *this fork* declares (go_build / go_test / clean_tree / integration), built with the **fork's declared toolchain**, all green, run in a real toolchain.
     6. **(Agentic) conflict resolved & re-validated** — if a semantic conflict required agent resolution, the resolution itself was validated before the PR is marked auto-mergeable.
     7. **(Opt-in) Auto-merge + auto-release** — if all above pass *and* `auto.merge: true`, the plugin merges the PR immediately; if `auto.release: true` it also cuts the next machine tag `<upstream-ver>-rezus.<N+1>` so the fork's tag-triggered workflow builds an image that Flux image automation deploys (identity = upstream version; see [Version identity](#version-identity-upstream-identity-versioning)).
     
@@ -4061,6 +4193,9 @@ data:
     validation:                               # ← multi-project: declare YOUR checks
       toolchain: { go: "1.25.7" }             # pin Go minor (precedence: declared > go.mod)
       go_build:   [{ module, packages }]
+      go_test:    [{ module, packages }]   # behavioral gate (#564): declare TARGETED
+                                           # feature packages, never upstream's suite
+                                           # (fast + deterministic — runs every sync)
       clean_tree: { paths: [...] }
       integration: { kind: forgejo-live, image, module, env }
     ```
@@ -4288,6 +4423,7 @@ data:
     |------------|-----|------------------|
     | Toolchain | `validation.toolchain.go` | pins the exact Go minor via `GOTOOLCHAIN` (precedence: declared > `go.mod`) |
     | Go build | `validation.go_build[]` | declared packages compile, per module, with the declared toolchain |
+    | Go test | `validation.go_test[]` | declared packages' tests pass — the BEHAVIORAL gate (#564): a signature proves the patch text survived the merge, a test proves the feature works. Declare targeted feature packages, never upstream's full suite (the gate runs per sync: fast + deterministic) |
     | Clean tree | `validation.clean_tree.paths` | generated code committed matches freshly-regenerated (no codegen drift) |
     | Integration | `validation.integration.kind` | opt-in harness routine (e.g. `forgejo-live`) |
     
@@ -4528,6 +4664,7 @@ data:
     `validate-fork.sh` runs only the checks in the fork's `validation:` block, in a **real toolchain** (the CronJob image must match the project's build env — e.g. `golang:1.25-alpine` for a Go `1.25.x` project, not whatever Go the operator's laptop has).
     
     - `go_build` — declared packages compile.
+    - `go_test` — declared feature packages' tests pass (#564 behavioral gate: a signature proves the patch text survived the merge, a test proves the feature works; packages must be declared explicitly — no `./...` fallback — and each run is bounded by an explicit `-timeout`, default 120s).
     - `clean_tree` — after the hook regenerated code, `git status` shows no drift (generated == committed).
     - `integration` — opt-in live harness (e.g. spin up the real server, run SDK tests).
     
@@ -4642,7 +4779,14 @@ data:
     
     - **PR context**: `cat /workspace/pr-context.json` — host, repo, number, title,
       body, head_sha, head_ref, issue (linked), milestone, ci_status, files_changed,
-      repo_dir, wiki_dir.
+      repo_dir, wiki_dir. The merge state is a FACT from the forge API
+      (`pr_state`, `merged`, `merge_note`) — never narrate it from inference.
+      `gate` lists the exact contexts the kernel gate verified green at this
+      SHA (`required_contexts`, `green_contexts`) — a review may only cite
+      gates from that list; naming a gate that is not there is a finding
+      against YOUR review, not the PR. `diff_source` says where the diff came
+      from ("git" = derived from merge-base..head in the checkout, exact at
+      the dispatched SHA; "api" = forge fallback — treat with care).
     - **Orientation — read `/workspace/rig-briefing.md` FIRST.** It is your
       pre-computed context: the architecture graph's components and dependency
       edges, which components THIS diff touches, their key symbols with
@@ -4652,15 +4796,28 @@ data:
       the briefing does not answer. If pr-context has no `rig_briefing`, fall
       back to `rig` (when `rig_db` is set), and only then to targeted greps.
       `rig_path`/`c4_path` are the wiki's synced copies (background reading only).
-    - **Diff**: `cat /workspace/pr-diff.patch`
+    - **Diff**: `cat /workspace/pr-diff.patch` — the COMPLETE diff (never
+      truncated). For large/huge scopes, navigate it by the manifest first:
+      `files_changed` + `diff_stats` in pr-context.json name every file; grep
+      the patch's `^diff --git` headers to jump to the files that matter
+      instead of reading it end-to-end. Fallback of last resort (diff_source
+      is "api" or the patch looks wrong): `git -C /workspace/repo diff
+      <merge_base> <head_sha>` — the checkout is exact at the reviewed SHA.
     - **Code**: `/workspace/repo` — checked out at the PR's head SHA
     - **Wiki**: `/workspace/wiki` — project design docs (if configured)
     
     ## Your toolkit (use selectively)
     
-    You have a round-trip budget: every tool call costs ~25 seconds of model
-    latency. A good review fits in ~12 calls. The methodology (9 pillars) is
-    inlined below — NEVER search the filesystem for skill or pillar files.
+    You have a round-trip budget: every tool call costs ~1 minute of model
+    latency, and the HARNESS ENFORCES the cap — after PI_TOOL_BUDGET calls
+    (32 by default) only your finalize lane stays open: bash commands touching
+    /workspace/review.json still execute so you can write your review; every
+    other call is refused. A good review fits in ~12 calls; budget as if the
+    cap were 15. Batch aggressively: one bash call can run many greps (chain
+    them with && or ;) — prefer that over many narrow calls, and NEVER repeat
+    a grep or re-read a file you have already seen. The methodology (9
+    pillars) is inlined below — NEVER search the filesystem for skill or
+    pillar files.
     
     - `rig` — the architecture graph, when pr-context.json has `rig_db`. It is
       SHA-exact at the reviewed head (generated at prepare time, verified — a
@@ -4783,7 +4940,11 @@ spec:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: harmostes-ui-crd-reader
+  # Release-unique: dev and prod share one cluster, and identically-named
+  # cluster-scoped objects from two Helm releases fight over subjects —
+  # the losing release's UI SA loses /api/schema (#549). The namespace
+  # discriminates the releases.
+  name: harmostes-ui-crd-reader-harmostes-ci
   labels:
     app.kubernetes.io/name: harmostes
     app.kubernetes.io/component: ui
@@ -4800,14 +4961,14 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: harmostes-ui-crd-reader
+  name: harmostes-ui-crd-reader-harmostes-ci
   labels:
     app.kubernetes.io/name: harmostes
     app.kubernetes.io/component: ui
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: harmostes-ui-crd-reader
+  name: harmostes-ui-crd-reader-harmostes-ci
 subjects:
   - kind: ServiceAccount
     name: harmostes-ui
@@ -5083,8 +5244,8 @@ spec:
         # (stale-pod-wins; #368-1). Checksums cover everything the pod mounts:
         # the fork-maintenance.yaml template output (scripts/checks/defs/
         # hooks/skill CMs) and the litellm extension payload.
-        checksum/fork-maintenance: 082d8c5472ee15b9beacfd112a46beff3f5121af68d95f1af2eadb6fd64372f4
-        checksum/litellm-extension: b48e7a02c4d911c0def232e6c0cf41528c4cac8cec9bc6e19c65627688f48be1
+        checksum/fork-maintenance: a48513e9c6041d7873742840f0753a5c1566035a2316331134a00e64108a5c2d
+        checksum/litellm-extension: 883d76f7ef3dcce17099fbf3c7b7aea0e7d7d16003ca83cfb465a7422078b4e1
     spec:
       imagePullSecrets:
         - name: ghcr-pull
@@ -5151,6 +5312,15 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: harmostes-github-token
+                  key: token
+            # z.ai provider key — resolve-conflict.sh invokes pi DIRECTLY on
+            # zai/glm-* (RESOLVER_MODEL default zai/glm-5.2), not through the
+            # litellm proxy; without it every resolution exits rc=1 before pi
+            # even starts and the conflict escalates to a needs-fix PR (#587).
+            - name: ZAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: harmostes-zai-token
                   key: token
           resources:
             limits:
@@ -5232,6 +5402,14 @@ spec:
         dapr.io/config: harmostes-config
         dapr.io/sidecar-image: "ghcr.io/rezuscloud/daprd:otel-metrics-latest-amd64"
         dapr.io/env: "OTEL_EXPORTER_OTLP_INSECURE=true"
+        # UI self-telemetry (#525): the UI's /metrics (Prometheus format,
+        # outside auth — the scraper is in-cluster and holds no identity)
+        # registers with the annotation-based kubernetes-pods receiver
+        # (concepts/annotation-based-observability). The UI is scrape-only
+        # (no OTel SDK); without these annotations nothing ingests it.
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8083"
+        prometheus.io/path: /metrics
     spec:
       serviceAccountName: harmostes-ui
       imagePullSecrets:
@@ -5328,7 +5506,19 @@ spec:
         - name: sync-skills
           image: "ghcr.io/tibrezus/harmostes-worker:0.4.2"
           imagePullPolicy: Always
-          command: ["sh", "-c", "git clone --depth 1 https://github.com/tibrezus/agents.git /tmp/agents && mkdir -p /skills && cp -r /tmp/agents/skills/. /skills/ && { echo \"[sync-skills] served skills revision: $(git -C /tmp/agents rev-parse HEAD)\"; (find /skills -name 'SKILL.md' | sort | xargs -r sha256sum > /skills/.manifest) || echo \"[sync-skills] manifest write failed (non-fatal)\"; true; }"]
+          # #407: the repo URL travels as env data and the script references it
+          # quoted as "$HARMOSTES_SKILLS_REPO" — POSIX shells never re-parse
+          # expansion results as operators, so a crafted values.skills.repo
+          # cannot execute shell in the pod. #408 item 9: values.skills.rev
+          # pins the served revision the same way ("$HARMOSTES_SKILLS_REV",
+          # fetch+checkout when non-empty). Byte-identical literal to
+          # internal/k8s.skillsSyncCommand (Go side, per-Attempt Jobs).
+          command: ["sh", "-c", "git clone --depth 1 \"$HARMOSTES_SKILLS_REPO\" /tmp/agents && { [ -z \"$HARMOSTES_SKILLS_REV\" ] || { git -C /tmp/agents fetch --depth 1 origin \"$HARMOSTES_SKILLS_REV\" && git -C /tmp/agents checkout --detach FETCH_HEAD; }; } && mkdir -p /skills && cp -r /tmp/agents/skills/. /skills/ && { echo \"[sync-skills] served skills revision: $(git -C /tmp/agents rev-parse HEAD)\"; (find /skills -name 'SKILL.md' | sort | xargs -r sha256sum > /skills/.manifest) || echo \"[sync-skills] manifest write failed (non-fatal)\"; true; }"]
+          env:
+            - name: HARMOSTES_SKILLS_REPO
+              value: "https://github.com/tibrezus/agents.git"
+            - name: HARMOSTES_SKILLS_REV
+              value: "3707bc7ab02cd02a2bb7faad25207d22eb66f8d6"
           volumeMounts:
             - name: skills
               mountPath: /skills
@@ -5355,6 +5545,10 @@ spec:
               value: "3"
             - name: HARMOSTES_ATTEMPT_RETENTION
               value: "720h"
+            # Leg-2 fast path: sweep cadence for ARMED-not-dispatched
+            # claims — CI-green dispatches within one tick. "0" = off.
+            - name: HARMOSTES_GATE_FASTPOLL
+              value: "30s"
             - name: HARMOSTES_CANCEL_ON_SUPERSEDE
               value: "true"
             - name: HARMOSTES_JOB_TTL_SECONDS
@@ -5411,6 +5605,10 @@ spec:
             # (internal/k8s.DefaultSkillsRepo — kept equal to values.skills.repo).
             - name: HARMOSTES_SKILLS_REPO
               value: "https://github.com/tibrezus/agents.git"
+            # #408 item 9: the dispatcher passes the pinned rev through so
+            # per-Attempt Jobs serve the SAME revision the pool serves.
+            - name: HARMOSTES_SKILLS_REV
+              value: "3707bc7ab02cd02a2bb7faad25207d22eb66f8d6"
             # GH_TOKEN deliberately aliases the same secret the dispatch path
             # already mounts as HARMOSTES_GIT_TOKEN — the gh CLI wants its
             # canonical name; one credential, one secret, two env spellings.
@@ -5431,6 +5629,23 @@ spec:
                 secretKeyRef:
                   name: harmostes-forgejo-token
                   key: token
+            # harmostes-bot review identity (#480): native review objects post
+            # as the whitelisted bot — the primary token is the PR author's,
+            # and the forge 422s self-reviews. Optional: installs without the
+            # bot secret keep working (post-review falls back to the primary
+            # token and speaks the host's rejection in the artifact).
+            - name: HARMOSTES_FORGEJO_BOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: harmostes-forgejo-bot-token
+                  key: token
+                  optional: true
+            # The exact forge origin the bot credential is minted for (#480
+            # r2 t3): the deploy plugin overrides its auth only when the
+            # pr-context host matches this exactly — never on dialect alone
+            # (IS_FJ is "not github.com", true for any untrusted host).
+            - name: HARMOSTES_FORGEJO_BOT_HOST
+              value: "git.rezus.cloud"
             - name: LITELLM_URL
               valueFrom:
                 secretKeyRef:
@@ -5441,6 +5656,19 @@ spec:
                 secretKeyRef:
                   name: harmostes-litellm-token
                   key: key
+            # Turn-budget extension's hard tool-call cap (#484) — forwarded to
+            # attempt Jobs via the dispatch allowlist. Empty = uncapped.
+            - name: PI_TOOL_BUDGET
+              value: "32"
+            # The finalize lane: post-cap bash commands touching any of these
+            # substrings still execute (the agent must always be able to
+            # write its output artifact — v1's missing-write-tool failure).
+            - name: PI_TOOL_BUDGET_ALLOW
+              value: "/workspace/review.json"
+            # Mid-budget checkpoint (#487): one blocked call at this count
+            # with a converge-now instruction. "0" off; empty = cap/2.
+            - name: PI_TOOL_BUDGET_NUDGE
+              value: "16"
           volumeMounts:
             - name: skills
               mountPath: /skills
@@ -5576,6 +5804,37 @@ spec:
     # anyway.
     - name: keyPrefix
       value: "none"
+    # ADR-0010 PR-lineage actor state (PRLineage||<repo>~<pr>): without
+    # SOME store flagged actorStateStore, Dapr has NO actor state store —
+    # every actor state access nil-panics in the sidecar (onGetActorState,
+    # actors.go) and every lineage publish 500s. The dedicated store lives
+    # below (keyPrefix none breaks save-actor-state on this runtime).
+
+---
+# Source: harmostes/templates/dapr.yaml
+# Actor state store (ADR-0010): separate from the flat app store because
+# Dapr's actor state path rejects keyPrefix none (save-actor-state 404s).
+# keyPrefix "name" pins the prefix to the component name — static across
+# attempt pods, so one PR's lineage is one shared actor entity.
+apiVersion: dapr.io/v1alpha1
+kind: Component
+metadata:
+  name: actorstore
+  namespace: harmostes-ci
+  labels:
+    app.kubernetes.io/name: harmostes
+spec:
+  type: state.redis
+  version: v1
+  metadata:
+    - name: redisHost
+      value: valkey.llm-wiki.svc.cluster.local:6379
+    - name: redisDB
+      value: "3"
+    - name: keyPrefix
+      value: name
+    - name: actorStateStore
+      value: "true"
 
 ---
 # Source: harmostes/templates/dapr.yaml
@@ -5754,6 +6013,11 @@ spec:
         name: pr-review
     maxFixes: 3
     model: litellm/ali/anthropic/qwen3.8-flash
+    models:
+    - end: "08:00"
+      model: litellm/ali/anthropic/qwen3.8-flash
+      start: "22:00"
+      tz: Asia/Shanghai
     skill: /skills/pr-review/SKILL.md
     taskTemplate:
       configMap: harmostes-tasks

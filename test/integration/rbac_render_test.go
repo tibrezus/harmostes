@@ -34,8 +34,11 @@ const goldenPath = "../../chart/ci/golden/full.yaml"
 var writeVerbs = map[string]bool{"create": true, "update": true, "patch": true, "delete": true, "deletecollection": true}
 
 type goldenResource struct {
-	Kind     string           `json:"kind"`
-	Metadata map[string]any   `json:"metadata"`
+	Kind     string         `json:"kind"`
+	Metadata map[string]any `json:"metadata"`
+	// Spec is decoded for non-RBAC golden assertions (e.g. #525's UI
+	// scrape-annotation pin); RBAC tests read Rules/RoleRef/Subjects.
+	Spec     map[string]any   `json:"spec,omitempty"`
 	Rules    []map[string]any `json:"rules,omitempty"`
 	RoleRef  map[string]any   `json:"roleRef,omitempty"`
 	Subjects []map[string]any `json:"subjects,omitempty"`
@@ -62,6 +65,20 @@ func loadGoldenResources(t *testing.T) []goldenResource {
 		}
 	}
 	return out
+}
+
+// findGoldenPrefix locates the first golden resource whose name starts with
+// prefix — for release-unique names (#549: namespace-suffixed cluster RBAC).
+func findGoldenPrefix(t *testing.T, kind, prefix string) goldenResource {
+	t.Helper()
+	for _, r := range loadGoldenResources(t) {
+		name, _ := r.Metadata["name"].(string)
+		if r.Kind == kind && strings.HasPrefix(name, prefix) {
+			return r
+		}
+	}
+	t.Fatalf("golden render has no %s/%s*", kind, prefix)
+	return goldenResource{}
 }
 
 func findGolden(t *testing.T, kind, name string) goldenResource {
@@ -97,8 +114,14 @@ func contains(list []string, want string) bool {
 
 func TestGoldenUIRBAC(t *testing.T) {
 	// ClusterRole: exactly one rule — get on the two harmostes CRDs, narrowed
-	// by resourceNames. Nothing cluster-scoped beyond that.
-	cr := findGolden(t, "ClusterRole", "harmostes-ui-crd-reader")
+	// by resourceNames. Nothing cluster-scoped beyond that. The name is
+	// release-unique (namespace-suffixed): dev and prod share one cluster and
+	// identically-named cluster-scoped objects fight over subjects (#549).
+	cr := findGoldenPrefix(t, "ClusterRole", "harmostes-ui-crd-reader-")
+	crName, _ := cr.Metadata["name"].(string)
+	if !strings.Contains(crName, "harmostes-ui-crd-reader-") {
+		t.Fatalf("ClusterRole name = %v, want the namespace-suffixed reader", crName)
+	}
 	if len(cr.Rules) != 1 {
 		t.Fatalf("ClusterRole rules = %d, want exactly 1", len(cr.Rules))
 	}
@@ -228,9 +251,9 @@ func TestGoldenUIRBAC(t *testing.T) {
 	if got, _ := rb.RoleRef["kind"].(string); got != "Role" {
 		t.Errorf("RoleBinding roleRef.kind = %q, want Role", got)
 	}
-	crb := findGolden(t, "ClusterRoleBinding", "harmostes-ui-crd-reader")
-	if got, _ := crb.RoleRef["name"].(string); got != "harmostes-ui-crd-reader" {
-		t.Errorf("ClusterRoleBinding roleRef.name = %q, want harmostes-ui-crd-reader", got)
+	crb := findGoldenPrefix(t, "ClusterRoleBinding", "harmostes-ui-crd-reader-")
+	if got, _ := crb.RoleRef["name"].(string); got != crName {
+		t.Errorf("ClusterRoleBinding roleRef.name = %q, want %v (the namespaced CRD reader)", got, crName)
 	}
 	for kind, b := range map[string]goldenResource{"RoleBinding": rb, "ClusterRoleBinding": crb} {
 		if len(b.Subjects) != 1 {
@@ -243,4 +266,73 @@ func TestGoldenUIRBAC(t *testing.T) {
 			t.Errorf("%s subject namespace = %v, want harmostes-ci", kind, b.Subjects[0]["namespace"])
 		}
 	}
+}
+
+// The cancel-on-supersede knob (#408 item 8): the rendered worker-pool env
+// must carry HARMOSTES_CANCEL_ON_SUPERSEDE BY NAME with the default-on
+// value — matched by entry name (never by position), so a helm-side rename
+// or a value flip cannot ship silently. The accepted-value grammar is
+// pinned on the parse side (TestDispatchConfigCancelOnSupersedeKnob,
+// including the "False" case variant); the two stay in step.
+func TestGoldenWorkerCancelKnob(t *testing.T) {
+	type envEntry struct {
+		Name  string `json:"name"`
+		Value string `json:"value"`
+	}
+	type container struct {
+		Name string     `json:"name"`
+		Env  []envEntry `json:"env"`
+	}
+	type deployment struct {
+		Kind     string         `json:"kind"`
+		Metadata map[string]any `json:"metadata"`
+		Spec     struct {
+			Template struct {
+				Spec struct {
+					Containers []container `json:"containers"`
+				} `json:"spec"`
+			} `json:"template"`
+		} `json:"spec"`
+	}
+	var pool *deployment
+	for _, doc := range strings.Split(string(mustReadGolden(t)), "\n---") {
+		doc = strings.TrimSpace(doc)
+		if doc == "" {
+			continue
+		}
+		var d deployment
+		if err := sigsyaml.Unmarshal([]byte(doc), &d); err != nil {
+			t.Fatalf("parse golden doc: %v", err)
+		}
+		if d.Kind == "Deployment" {
+			name, _ := d.Metadata["name"].(string)
+			if strings.Contains(name, "worker-pool") {
+				pool = &d
+				break
+			}
+		}
+	}
+	if pool == nil {
+		t.Fatal("golden render has no worker-pool Deployment")
+	}
+	for _, c := range pool.Spec.Template.Spec.Containers {
+		for _, e := range c.Env {
+			if e.Name == "HARMOSTES_CANCEL_ON_SUPERSEDE" {
+				if e.Value != "true" {
+					t.Errorf("rendered %s = %q, want \"true\" (default-on; the False case-variant grammar is pinned in the parse test)", e.Name, e.Value)
+				}
+				return
+			}
+		}
+	}
+	t.Error("worker-pool render carries no HARMOSTES_CANCEL_ON_SUPERSEDE env entry — the knob is unnamed in the contract")
+}
+
+func mustReadGolden(t *testing.T) []byte {
+	t.Helper()
+	raw, err := os.ReadFile(goldenPath)
+	if err != nil {
+		t.Fatalf("read golden render: %v", err)
+	}
+	return raw
 }

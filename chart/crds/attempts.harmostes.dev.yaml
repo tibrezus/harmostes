@@ -119,6 +119,19 @@ spec:
                   enum: [reconciling, validated, superseded, failed]
                 lastRunAt: { type: string }
                 message:   { type: string }
+                progress:                                           # the executing run's live per-turn progress
+                  type: object
+                  description: |
+                    Live progress window published by the agent harness as
+                    each turn completes. Each write replaces the previous;
+                    the envelope payload supersedes it when the node ends.
+                    A window, not a ledger.
+                  properties:
+                    turn:      { type: integer }
+                    turns:     { type: integer }
+                    tokensIn:  { type: integer }
+                    tokensOut: { type: integer }
+                    updatedAt: { type: string }
                 review:                                             # the gate's per-PR claim (ADR-0007)
                   type: object
                   description: |
@@ -176,6 +189,10 @@ spec:
                       runID:      { type: string }
                       status:     { type: string }
                       summary:    { type: string }
+                      attempt:                                                    # ADR-0012 §9
+                        type: integer
+                        minimum: 1
+                        description: 1-based execution attempt for this node within its run; >1 = the kernel retried a transient failure under the node's retry policy.
                       payload:                                    # node-type-specific Node Payload (opaque to the kernel)
                         type: object
                         x-kubernetes-preserve-unknown-fields: true

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"sync/atomic"
 	"time"
 
 	cloudevents "github.com/cloudevents/sdk-go/v2"
@@ -44,6 +45,22 @@ type ConsumerConfig struct {
 	Topic      string  // topic to subscribe to (default "harmostes-triggers")
 	RunFunc    RunFunc // the function that executes a workflow
 	Logger     *slog.Logger
+	Namespace  string // the namespace the workflows live in (fast-poll runs)
+
+	// FastPoll is the BASE cadence of the kernel's reconciliation floor
+	// (owner requirement, #556): every pass, ArmedWaitingWorkflows names
+	// the review-ready workflows holding an ARMED, NEVER-DISPATCHED claim,
+	// and each gets a sweep through RunFunc. The INSTANT dispatch path is
+	// the CI wake (host-native ci_completed events → a run cycle within
+	// seconds of the last check landing); this loop is the at-most-once
+	// webhook recovery floor, so its cadence backs off exponentially
+	// (base ×2 per stalled pass, 30m cap) and resets to base whenever the
+	// armed set shrinks or grows. It fires ONLY while armed claims exist
+	// and publishes no trigger events. 0 = off.
+	FastPoll time.Duration
+	// ArmedWaitingWorkflows returns the review-ready workflow NAMES with
+	// armed-not-dispatched claims. Nil disables the fast poll.
+	ArmedWaitingWorkflows func(ctx context.Context) []string
 }
 
 // RunFunc executes a single workflow run. The consumer shells out to itself
@@ -65,6 +82,10 @@ type RunRequest struct {
 	Action      string
 	Revision    string
 	PrTitle     string
+	// Repo carries the host-native CI wake's repository (#556): CI payloads
+	// have (repo, sha) but no PR number, so the gate re-derives the PR from
+	// its armed claims. Empty on PR-shaped wakes (the pointer carries it).
+	Repo string
 }
 
 // Consumer is the pub/sub-triggered workflow executor.
@@ -117,6 +138,10 @@ func (c *Consumer) Start(ctx context.Context) error {
 		Handler: mux,
 	}
 
+	if c.cfg.FastPoll > 0 && c.cfg.ArmedWaitingWorkflows != nil {
+		go c.armedBackoffLoop(ctx)
+	}
+
 	c.cfg.Logger.Info("consumer listening",
 		"port", c.cfg.HTTPPort,
 		"topic", c.cfg.Topic,
@@ -131,6 +156,63 @@ func (c *Consumer) Start(ctx context.Context) error {
 	}()
 
 	return c.server.ListenAndServe()
+}
+
+// armedBackoffLoop is the kernel's reconciliation floor (#556): while any
+// review-ready workflow holds an armed-not-dispatched claim, re-sweep at an
+// exponentially backing-off cadence — FastPoll at base, ×2 per stalled
+// pass (the armed set unchanged), capped at 30m; any change in the armed
+// set (a dispatch landed, or a fresh arm arrived) resets to base, because
+// either event is exactly when the next few seconds matter. The sweep is
+// idempotent and capacity-safe (the dispatcher's createMu + the gate's own
+// dedupe), so overlap degrades to a no-op; a busy flag keeps one pass per
+// tick even when a pass overruns. An idle fleet runs ZERO passes: the loop
+// publishes nothing and touches nothing when ArmedWaitingWorkflows is
+// empty (the CI wake owns latency; this loop only bounds webhook loss).
+func (c *Consumer) armedBackoffLoop(ctx context.Context) {
+	const backoffCap = 30 * time.Minute
+	delay := c.cfg.FastPoll
+	lastLen := -1
+	var busy atomic.Bool
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+		}
+		if !busy.CompareAndSwap(false, true) {
+			// Overrun: retry shortly without treating it as a stalled pass.
+			timer.Reset(time.Second)
+			continue
+		}
+		list := c.cfg.ArmedWaitingWorkflows(ctx)
+		for _, wf := range list {
+			runCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+			if err := c.cfg.RunFunc(runCtx, RunRequest{
+				Workflow:  wf,
+				Namespace: c.cfg.Namespace,
+				Source:    "fast-poll",
+			}); err != nil {
+				c.cfg.Logger.Info("backoff sweep failed (retried next pass)", "workflow", wf, "error", err)
+			}
+			cancel()
+		}
+		busy.Store(false)
+		// Cadence: any movement in the armed set resets to base — a shrink
+		// means a dispatch just landed (the next one should not wait out a
+		// backoff), a growth means a fresh arm (same). Only a stalled set
+		// (same size, sweeps converging to no-ops) earns the doubling.
+		switch {
+		case lastLen < 0 || len(list) != lastLen:
+			delay = c.cfg.FastPoll
+		case delay < backoffCap:
+			delay = min(delay*2, backoffCap)
+		}
+		lastLen = len(list)
+		timer.Reset(delay)
+	}
 }
 
 // handleSubscribe returns the Dapr pub/sub subscription configuration.
@@ -208,6 +290,7 @@ func (c *Consumer) handleTrigger(w http.ResponseWriter, r *http.Request) {
 		Action:      trigger.Action,
 		Revision:    trigger.Revision,
 		PrTitle:     trigger.PrTitle,
+		Repo:        trigger.Repo,
 	}); err != nil {
 		c.cfg.Logger.Error("workflow run failed", "workflow", trigger.Workflow, "error", err)
 		http.Error(w, fmt.Sprintf("run failed: %v", err), http.StatusInternalServerError)
@@ -232,6 +315,7 @@ type TriggerEvent struct {
 	Pr          string `json:"pr,omitempty"`
 	PrTitle     string `json:"prTitle,omitempty"`
 	Action      string `json:"action,omitempty"`
+	Repo        string `json:"repo,omitempty"`
 }
 
 // RunConsumer is the entry point for consumer mode. Called from main's
@@ -254,6 +338,11 @@ func RunConsumer(ctx context.Context, muxOpts ...func(*http.ServeMux)) error {
 		Topic:      envOr("HARMOSTES_TRIGGER_TOPIC", "harmostes-triggers"),
 		RunFunc:    dispatcher.Dispatch,
 		Logger:     logger,
+		Namespace:  dispatcher.Namespace(),
+		FastPoll:   fastPollFromEnv(logger),
+		ArmedWaitingWorkflows: func(ctx context.Context) []string {
+			return dispatcher.ArmedWaitingWorkflows(ctx)
+		},
 	})
 	consumer.muxOpts = muxOpts
 
@@ -264,6 +353,21 @@ func RunConsumer(ctx context.Context, muxOpts ...func(*http.ServeMux)) error {
 // live in dispatch.go beside the DispatchConfig they feed — one module owns
 // env→config, so a parsed fact cannot be dropped between a parser and a
 // struct field (the #314 class).
+
+// fastPollFromEnv reads HARMOSTES_GATE_FASTPOLL (Go duration; the chart
+// default is 30s). "0"/unparsable = off — the cron-only backstop.
+func fastPollFromEnv(logger *slog.Logger) time.Duration {
+	raw := os.Getenv("HARMOSTES_GATE_FASTPOLL")
+	if raw == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		logger.Warn("HARMOSTES_GATE_FASTPOLL unparsable — fast poll disabled", "value", raw)
+		return 0
+	}
+	return d
+}
 
 func envOr(key, def string) string {
 	if v := os.Getenv(key); v != "" {

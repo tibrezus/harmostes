@@ -60,12 +60,16 @@ golden-update:
 ## (python3 extensions/rig-query/fixtures/generate.py) and committed; CI
 ## regenerates and fails on drift.
 test-extensions:
+	@test -d extensions/turn-budget/node_modules/@earendil-works/pi-coding-agent || \
+		npm install --prefix extensions/turn-budget --no-audit --no-fund --silent
 	npm ci --prefix extensions/rig-query --no-audit --no-fund --silent
 	node --test --experimental-strip-types \
 		extensions/rig-query/queries.test.ts \
 		extensions/rig-query/index.parse.test.ts \
 		extensions/rig-query/index.runtime.test.ts \
-		extensions/litellm-provider/fallbacks.test.ts
+		extensions/litellm-provider/fallbacks.test.ts \
+		extensions/turn-budget/policy.test.ts \
+		extensions/turn-budget/contract.test.ts
 	@node --experimental-strip-types -e 'await import("./extensions/litellm-provider/index.ts")'
 	python3 extensions/rig-query/fixtures/freshness.py
 	@# Chart copy drift gate: the resolver's litellm-provider ConfigMap source

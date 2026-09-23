@@ -267,6 +267,18 @@ func storeSummary(kind string, p map[string]any) string {
 			line += ": " + fb
 		}
 		return line + ")"
+	case timeline.KindNodeRetry:
+		attempt := payloadString(p, "attempt")
+		of := payloadString(p, "of")
+		delay := payloadString(p, "delayMs")
+		line := "transient failure (attempt " + attempt + "/" + of + ")"
+		if ms, err := strconv.Atoi(delay); err == nil {
+			line += " — retrying in " + formatDuration(time.Duration(ms)*time.Millisecond)
+		}
+		if fb := payloadString(p, "feedback"); fb != "" {
+			line += ": " + fb
+		}
+		return line
 	case timeline.KindPluginTail:
 		return "plugin output" + lineSuffix(payloadString(p, "line"))
 	case timeline.KindAgentTurn:
@@ -277,6 +289,11 @@ func storeSummary(kind string, p map[string]any) string {
 		}
 		if tok := payloadString(p, "tokensIn"); tok != "" {
 			line += " (" + tok + "→" + payloadString(p, "tokensOut") + " tok)"
+		}
+		// Cumulative totals ride every sample (the immediate turn publisher
+		// stamps them) — the newest turn's row answers "how much so far".
+		if tot := payloadString(p, "totalIn"); tot != "" {
+			line += " · total " + tot + "→" + payloadString(p, "totalOut")
 		}
 		return line
 	case timeline.KindAgentTool:

@@ -1,6 +1,8 @@
 package k8s
 
 import (
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -10,6 +12,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	sigsyaml "sigs.k8s.io/yaml"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
 
@@ -150,6 +153,137 @@ func TestBuildJobShape(t *testing.T) {
 // restart. Without it the workflow's --skill /skills/... path resolves to
 // nothing inside the attempt and agents run on the task prompt alone (the
 // skill's methodology detail never reached a single production review run).
+func envValue(env []corev1.EnvVar, name string) string {
+	for _, e := range env {
+		if e.Name == name {
+			return e.Value
+		}
+	}
+	return ""
+}
+
+// #407: skills.repo (values → HARMOSTES_SKILLS_REPO env) is operator-
+// controlled data that used to be fmt.Sprintf'd UNQUOTED into the sync-skills
+// `sh -c` string — a crafted value executed arbitrary shell in every
+// per-Attempt Job pod (which carries the fleet's forge credentials). The
+// fix is env indirection: the command is a constant referencing
+// "$HARMOSTES_SKILLS_REPO"; the value travels as env data, which the shell
+// never re-parses as operators. This test pins that property against
+// every injection shape that mattered: command separators, command
+// substitution, backticks, redirection, and newline smuggling.
+func TestSkillsSyncCommandInjectionSafe(t *testing.T) {
+	hostile := []string{
+		"https://example.com/x; rm -rf /",
+		"https://example.com/$(touch /pwned)",
+		"https://example.com/x`touch /pwned2`",
+		"https://example.com/x > /etc/passwd",
+		"https://example.com/x\nrm -rf /",
+	}
+	for _, repo := range hostile {
+		t.Setenv("HARMOSTES_SKILLS_REPO", repo)
+		job := BuildJob(AttemptJobParams{
+			Attempt:      jobTestAttempt(),
+			WorkflowName: "pr-review-harmostes",
+			Namespace:    "harmostes",
+			Image:        "ghcr.io/tibrezus/harmostes-worker:1.2.3",
+		})
+		ic := job.Spec.Template.Spec.InitContainers[0]
+		cmd := strings.Join(ic.Command, " ")
+		for _, payload := range []string{"rm -rf", "touch /pwned", "`touch", "> /etc/passwd"} {
+			if strings.Contains(cmd, payload) {
+				t.Fatalf("hostile repo %q: payload %q reached the command string: %q", repo, payload, cmd)
+			}
+		}
+		if v := envValue(ic.Env, "HARMOSTES_SKILLS_REPO"); v != repo {
+			t.Fatalf("hostile repo must travel verbatim as env data, got env=%q", v)
+		}
+		// The literal contract: one quoted env reference, no %s hole left.
+		if !strings.Contains(cmd, `--depth 1 "$HARMOSTES_SKILLS_REPO" /tmp/agents`) {
+			t.Fatalf("command must reference the env var quoted, got %q", cmd)
+		}
+	}
+}
+
+// #408 item 9: a PINNED revision rides the same env-indirection contract —
+// hostile payload in HARMOSTES_SKILLS_REV must reach the shell only as env
+// data (inert), with the command referencing "$HARMOSTES_SKILLS_REV"
+// quoted inside the fetch/checkout segment.
+func TestSkillsRevPinnedCheckoutInjectionSafe(t *testing.T) {
+	hostile := []string{
+		"main; rm -rf /",
+		"$(touch /pwned-rev)",
+		"9b63a39c36cb`touch /pwned3`",
+		"--upload-pack=evil",
+		"deadbeef\nrm -rf /",
+	}
+	for _, rev := range hostile {
+		t.Setenv("HARMOSTES_SKILLS_REV", rev)
+		job := BuildJob(AttemptJobParams{
+			Attempt:      jobTestAttempt(),
+			WorkflowName: "pr-review-harmostes",
+			Namespace:    "harmostes",
+			Image:        "ghcr.io/tibrezus/harmostes-worker:1.2.3",
+		})
+		ic := job.Spec.Template.Spec.InitContainers[0]
+		cmd := strings.Join(ic.Command, " ")
+		for _, payload := range []string{"rm -rf", "touch /pwned", "`touch", "--upload-pack=evil"} {
+			if strings.Contains(cmd, payload) {
+				t.Fatalf("hostile rev %q: payload %q reached the command string: %q", rev, payload, cmd)
+			}
+		}
+		if v := envValue(ic.Env, "HARMOSTES_SKILLS_REV"); v != rev {
+			t.Fatalf("hostile rev must travel verbatim as env data, got env=%q", v)
+		}
+		// Positive shape: the shell must reference the rev env var QUOTED in
+		// the fetch/checkout segment — an env-only value the command never
+		// reads would silently unpin the fleet.
+		for _, need := range []string{
+			`[ -z "$HARMOSTES_SKILLS_REV" ]`,
+			`fetch --depth 1 origin "$HARMOSTES_SKILLS_REV"`,
+			`checkout --detach FETCH_HEAD`,
+		} {
+			if !strings.Contains(cmd, need) {
+				t.Fatalf("command must carry %q, got %q", need, cmd)
+			}
+		}
+	}
+}
+
+// #408 item 9: the chart template and the Go side MUST stay byte-identical
+// (#407 discipline, now mechanically pinned). The worker-pool template's
+// sync-skills command is a single-line YAML flow scalar — parse it and
+// compare against skillsSyncCommand's script.
+func TestSyncSkillsCommandMatchesChartTemplate(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "chart", "templates", "worker-pool.yaml"))
+	if err != nil {
+		t.Fatalf("read chart template: %v", err)
+	}
+	var cmdLine string
+	for _, line := range strings.Split(string(raw), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, `command: ["sh", "-c", "git clone --depth 1`) {
+			cmdLine = trimmed
+			break
+		}
+	}
+	if cmdLine == "" {
+		t.Fatal("worker-pool.yaml carries no sync-skills command line — template moved? update this test's anchor")
+	}
+	// Strip the mapping key — the flow sequence parses standalone.
+	flow := strings.TrimPrefix(cmdLine, "command: ")
+	var parsed []string
+	if err := sigsyaml.Unmarshal([]byte(flow), &parsed); err != nil {
+		t.Fatalf("parse chart command scalar: %v", err)
+	}
+	if len(parsed) != 3 || parsed[0] != "sh" || parsed[1] != "-c" {
+		t.Fatalf("chart command shape = %#v, want [sh -c <script>]", parsed)
+	}
+	want := skillsSyncCommand()[2]
+	if parsed[2] != want {
+		t.Errorf("chart and Go sync-skills literals DIVERGED:\nchart: %s\ngo:    %s", parsed[2], want)
+	}
+}
+
 func TestBuildJobServesFreshSkills(t *testing.T) {
 	job := BuildJob(AttemptJobParams{
 		Attempt:        jobTestAttempt(),
@@ -169,8 +303,24 @@ func TestBuildJobServesFreshSkills(t *testing.T) {
 		t.Fatalf("sync-skills must use the run container's image (same fj/gh tooling), got %q", ic.Image)
 	}
 	cmd := strings.Join(ic.Command, " ")
-	if !strings.Contains(cmd, "git clone --depth 1 "+DefaultSkillsRepo) {
-		t.Fatalf("sync-skills must clone the agents repo (default %s), got %q", DefaultSkillsRepo, cmd)
+	// #407: the repo URL is passed as ENV DATA, never interpolated into
+	// the shell string — the command references it as "$HARMOSTES_SKILLS_REPO".
+	// Env expansion results are not re-parsed as shell operators (POSIX),
+	// so any metacharacters in the value are inert.
+	if !strings.Contains(cmd, `git clone --depth 1 "$HARMOSTES_SKILLS_REPO" /tmp/agents`) {
+		t.Fatalf("sync-skills must clone via the env-indirected repo URL, got %q", cmd)
+	}
+	if envVal := envValue(ic.Env, "HARMOSTES_SKILLS_REV"); envVal != "" {
+		t.Fatalf("unset HARMOSTES_SKILLS_REV must resolve to empty (track default branch), got %q", envVal)
+	}
+	if !strings.Contains(cmd, `[ -z "$HARMOSTES_SKILLS_REV" ]`) || !strings.Contains(cmd, `fetch --depth 1 origin "$HARMOSTES_SKILLS_REV"`) {
+		t.Fatalf("sync-skills must carry the pinned-rev fetch/checkout segment referencing the env var quoted, got %q", cmd)
+	}
+	if strings.Contains(cmd, DefaultSkillsRepo) {
+		t.Fatalf("#407: the repo URL must never be spliced into the command string, got %q", cmd)
+	}
+	if strings.Contains(cmd, DefaultSkillsRepo) {
+		t.Fatalf("#407: the repo URL must never be spliced into the command string, got %q", cmd)
 	}
 	if !strings.Contains(cmd, "cp -r /tmp/agents/skills/. /skills/") || !strings.Contains(cmd, ".manifest") {
 		t.Fatalf("sync-skills must copy skills/ and write the sha256 manifest, got %q", cmd)
@@ -216,12 +366,17 @@ func TestBuildJobSkillsRepoOverride(t *testing.T) {
 		Attempt: jobTestAttempt(), WorkflowName: "pr-review-harmostes", Namespace: "harmostes",
 		Image: "img", ServiceAccount: "sa",
 	})
-	cmd := strings.Join(job.Spec.Template.Spec.InitContainers[0].Command, " ")
-	if !strings.Contains(cmd, "git clone --depth 1 https://git.rezus.cloud/tibrezus/agents.git") {
-		t.Fatalf("skills repo override must reach the sync-skills clone, got %q", cmd)
+	// #407: the override travels as env data (see skillsSyncCommand) — the
+	// clone reads it at runtime via "$HARMOSTES_SKILLS_REPO".
+	ic := job.Spec.Template.Spec.InitContainers[0]
+	if v := envValue(ic.Env, "HARMOSTES_SKILLS_REPO"); v != "https://git.rezus.cloud/tibrezus/agents.git" {
+		t.Fatalf("skills repo override must reach sync-skills as env data, got %q", v)
 	}
-	if strings.Contains(cmd, "github.com/tibrezus/agents") {
-		t.Fatalf("default repo leaked past the override: %q", cmd)
+	if strings.Contains(strings.Join(ic.Command, " "), "git.rezus.cloud") {
+		t.Fatalf("#407: override must not be spliced into the command string: %q", ic.Command)
+	}
+	if strings.Contains(strings.Join(ic.Command, " "), "github.com/tibrezus/agents") {
+		t.Fatalf("default repo leaked into the command string: %q", ic.Command)
 	}
 }
 
@@ -404,6 +559,121 @@ func TestBuildJobWallSecondsMatchesDeadline(t *testing.T) {
 	for _, e := range job.Spec.Template.Spec.Containers[0].Env {
 		if e.Name == "HARMOSTES_WALL_SECONDS" && e.Value != strconv.FormatInt(int64(v1alpha1.OneShotRunBound/time.Second), 10) {
 			t.Fatalf("default wall = %s, want %d", e.Value, int64(v1alpha1.OneShotRunBound/time.Second))
+		}
+	}
+}
+
+func TestAttachmentSubPath(t *testing.T) {
+	// C2: the scope picks the sharing dimension; identity-unavailable
+	// scopes are INERT (a repository attachment on a non-PR run shares
+	// nothing, by design).
+	cases := []struct {
+		name     string
+		scope    string
+		workflow string
+		repo     string
+		attempt  string
+		want     string
+		ok       bool
+	}{
+		{"workflow default", "", "wf-a", "o/r#1", "att-1", "wf-a", true},
+		{"explicit workflow", "workflow", "wf-a", "o/r#1", "att-1", "wf-a", true},
+		{"repository shares by repo hash", "repository", "wf-a", "git.rezus.cloud/tibrez/rhesadox", "att-1", "git.rezus.cloud-tibrez-rhesadox-" + "d782cf64", true},
+		{"repository inert without repo", "repository", "wf-a", "", "att-1", "", false},
+		{"attempt is private", "attempt", "wf-a", "o/r#1", "att-1", "attempt-att-1", true},
+		{"attempt inert without attempt", "attempt", "wf-a", "o/r#1", "", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := AttachmentSubPath(tc.scope, tc.workflow, tc.repo, tc.attempt)
+			if ok != tc.ok {
+				t.Fatalf("ok=%v want %v", ok, tc.ok)
+			}
+			if tc.ok && !strings.HasPrefix(got, tc.want) {
+				t.Fatalf("subpath %q, want prefix %q", got, tc.want)
+			}
+		})
+	}
+	// the repository hash must be the collision-proof LineageDir scheme
+	_, ok := AttachmentSubPath("repository", "wf", "a_b/c", "x")
+	_, ok2 := AttachmentSubPath("repository", "wf", "a/b-c", "x")
+	if ok && ok2 {
+		sub1, _ := AttachmentSubPath("repository", "wf", "a_b/c", "x")
+		sub2, _ := AttachmentSubPath("repository", "wf", "a/b-c", "x")
+		if sub1 == sub2 {
+			t.Fatalf("sanitizer colliders must not share a subpath: %q", sub1)
+		}
+	}
+}
+
+func TestBuildJobAttachments(t *testing.T) {
+	// C2 rendering: one volume per attachment, SubPath from the scope,
+	// default mountPath /attachments/<name>, shared PVC deduped by claim.
+	p := AttemptJobParams{
+		WorkflowName: "pr-review-rhesadox",
+		AttemptName:  "attempt-abc",
+		Attempt:      &v1alpha1.Attempt{ObjectMeta: metav1.ObjectMeta{Name: "attempt-abc", Namespace: "default"}},
+		TriggerRepo:  "git.rezus.cloud/tibrez/rhesadox",
+		Attachments: []v1alpha1.SharedAttachment{
+			{Name: "sol-pi", Scope: v1alpha1.AttachmentScopeRepository, PVC: "harmostes-worker-sessions"},
+			{Name: "scratch", Scope: v1alpha1.AttachmentScopeAttempt, PVC: "harmostes-worker-sessions", MountPath: "/scratch"},
+			{Name: "nolabel", PVC: ""}, // no backend → skipped
+		},
+	}
+	job := BuildJob(p)
+	mounts := map[string]corev1.VolumeMount{}
+	for _, m := range job.Spec.Template.Spec.Containers[0].VolumeMounts {
+		mounts[m.Name] = m
+	}
+	if m := mounts["attach-sol-pi"]; m.SubPath != "git.rezus.cloud-tibrez-rhesadox-d782cf64" || m.MountPath != "/attachments/sol-pi" {
+		t.Fatalf("sol-pi mount: %+v", m)
+	}
+	if m := mounts["attach-scratch"]; m.SubPath != "attempt-attempt-abc" || m.MountPath != "/scratch" {
+		t.Fatalf("scratch mount: %+v", m)
+	}
+	claims := map[string]string{}
+	for _, v := range job.Spec.Template.Spec.Volumes {
+		if strings.HasPrefix(v.Name, "attach-") {
+			claims[v.Name] = v.PersistentVolumeClaim.ClaimName
+		}
+	}
+	if claims["attach-sol-pi"] != "harmostes-worker-sessions" || claims["attach-scratch"] != "harmostes-worker-sessions" {
+		t.Fatalf("both attachments must ride the sessions claim: %+v", claims)
+	}
+	for _, m := range job.Spec.Template.Spec.Containers[0].VolumeMounts {
+		if m.Name == "attach-nolabel" {
+			t.Fatalf("backend-less attachment must be skipped: %+v", m)
+		}
+	}
+}
+
+// #408 item 9 follow-up (live-learned on 222): the pinned rev must be the
+// FULL 40-hex object name — GitHub refuses fetch-by-SHA for abbreviations
+// ("couldn't find remote ref 9b63a39c36cb") and a short pin crash-loops
+// every sync-skills init container fleet-wide. Empty (track default branch)
+// stays legal. Fail the render, not the fleet.
+func TestSkillsRevPinIsFullShaOrEmpty(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "chart", "values.yaml"))
+	if err != nil {
+		t.Fatalf("read values: %v", err)
+	}
+	rev := ""
+	for _, line := range strings.Split(string(raw), "\n") {
+		if strings.HasPrefix(line, `  rev: "`) {
+			rev = strings.TrimSuffix(strings.TrimPrefix(line, `  rev: "`), `"`)
+			break
+		}
+	}
+	if rev == "" {
+		return // tracking default branch — legal escape hatch
+	}
+	if len(rev) != 40 {
+		t.Fatalf("values.skills.rev = %q — must be the FULL 40-hex sha (fetch-by-SHA refuses abbreviations) or empty", rev)
+	}
+	isHex := func(r rune) bool { return '0' <= r && r <= '9' || 'a' <= r && r <= 'f' }
+	for _, r := range rev {
+		if !isHex(r) {
+			t.Fatalf("values.skills.rev = %q — not hex", rev)
 		}
 	}
 }

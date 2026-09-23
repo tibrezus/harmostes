@@ -68,6 +68,14 @@ func (s *Server) handleRunLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The drawer polls with ?part=lines: only the log lines re-render, so
+	// the scroller and header survive the 3s swap (reading position holds,
+	// #551). Full renders replace the whole drawer.
+	frag := "pages/frag_run_logs.html"
+	if r.URL.Query().Get("part") == "lines" {
+		frag = "pages/frag_run_logs_lines.html"
+	}
+
 	data := runLogsData{
 		AttemptName: attemptName,
 		RunName:     jobName,
@@ -78,7 +86,7 @@ func (s *Server) handleRunLogs(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.logger.Error("list pods for run logs", "attempt", attemptName, "err", err)
 		data.LogsError = "Failed to list pods: " + err.Error()
-		s.renderFragment(w, "pages/frag_run_logs.html", data)
+		s.renderFragment(w, frag, data)
 		return
 	}
 
@@ -96,7 +104,7 @@ func (s *Server) handleRunLogs(w http.ResponseWriter, r *http.Request) {
 		// Pod GC'd (the normal terminal state under Job-per-attempt).
 		// The session transcript persists in the state store — point there.
 		data.PodGone = true
-		s.renderFragment(w, "pages/frag_run_logs.html", data)
+		s.renderFragment(w, frag, data)
 		return
 	}
 
@@ -109,7 +117,7 @@ func (s *Server) handleRunLogs(w http.ResponseWriter, r *http.Request) {
 
 	if s.logFetch == nil {
 		data.LogsError = "log streaming not configured"
-		s.renderFragment(w, "pages/frag_run_logs.html", data)
+		s.renderFragment(w, frag, data)
 		return
 	}
 	logs, err := s.logFetch(r.Context(), s.namespace, pod.Name, resolveContainer(pod))
@@ -119,7 +127,7 @@ func (s *Server) handleRunLogs(w http.ResponseWriter, r *http.Request) {
 	} else {
 		data.Logs = formatLogs(logs)
 	}
-	s.renderFragment(w, "pages/frag_run_logs.html", data)
+	s.renderFragment(w, frag, data)
 }
 
 // renderFragmentString renders a template fragment to a string (for SSE

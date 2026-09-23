@@ -9,6 +9,7 @@ package v1alpha1
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -88,8 +89,9 @@ type WorkflowList struct {
 // A Workflow can be defined in two equivalent forms:
 //
 //  1. **Declarative** (default): the fixed prepare → agent → deploy pipeline.
-//     Populate Prepare, Agent, and Deploy. The worker runs worker.Run().
-//     This is what all existing production workflows use.
+//     Populate Prepare, Agent, and Deploy. Compiled to a graph and executed
+//     by the graph executor (worker.Run is the legacy in-process runner,
+//     retained for tests).
 //
 //  2. **Graph-native**: an explicit directed graph of nodes + edges. Populate
 //     Graph with nodes (any type from the node executor registry) and edges
@@ -113,8 +115,20 @@ type WorkflowSpec struct {
 	Bindings      []ExternalSystemBinding `json:"bindings,omitempty"`    // ADR-0003: external system authority boundary (static; runtime may not expand)
 	Events        *EventsSpec             `json:"events,omitempty"`
 	Cache         *CacheSpec              `json:"cache,omitempty"`
-	Scaling       *ScalingSpec            `json:"scaling,omitempty"`
-	Disabled      bool                    `json:"disabled,omitempty"`
+	Sessions      *SessionsSpec           `json:"sessions,omitempty"`
+	// Attachments are scoped shared storage components (#516 C2): sandboxes
+	// stay isolated per attempt, while named stores are shared on demand at
+	// the scope the workflow declares (workflow | repository | attempt).
+	// Example — per-REPOSITORY sol-pi storage shared by every attempt that
+	// reviews the same repo:
+	//   attachments:
+	//   - name: sol-pi
+	//     scope: repository
+	//     pvc: harmostes-worker-sessions
+	//     mountPath: /attachments/sol-pi
+	Attachments []SharedAttachment `json:"attachments,omitempty"`
+	Scaling     *ScalingSpec       `json:"scaling,omitempty"`
+	Disabled    bool               `json:"disabled,omitempty"`
 }
 
 // WorkspaceRepoSpec is the repo a pipeline operates on. The worker fetches it
@@ -185,15 +199,75 @@ type PrepareSpec struct {
 func (a AgentSpec) EnabledOrDefault() bool { return a.Enabled == nil || *a.Enabled }
 
 type AgentSpec struct {
-	Enabled      *bool        `json:"enabled,omitempty"`  // nil/true = run, false = skip (deterministic-only)
-	Model        string       `json:"model"`              // e.g. litellm/zai/anthropic/glm-5.3-flash
-	Skill        string       `json:"skill"`              // path to SKILL.md
-	Tools        []string     `json:"tools,omitempty"`    // tool allowlist
-	TaskTemplate TaskTemplate `json:"taskTemplate"`       // the interpretive task
-	Gate         GateRef      `json:"gate"`               // validation plugin
-	MaxFixes     int          `json:"maxFixes,omitempty"` // default 3
-	Timeout      int          `json:"timeout,omitempty"`  // seconds, default 1800
-	Scope        string       `json:"scope,omitempty"`    // optional task scope override
+	Enabled      *bool         `json:"enabled,omitempty"`  // nil/true = run, false = skip (deterministic-only)
+	Model        string        `json:"model"`              // e.g. litellm/zai/anthropic/glm-5.3-flash
+	Models       []ModelWindow `json:"models,omitempty"`   // time-windowed overrides (#494): first match at run start wins
+	Skill        string        `json:"skill"`              // path to SKILL.md
+	Tools        []string      `json:"tools,omitempty"`    // tool allowlist
+	TaskTemplate TaskTemplate  `json:"taskTemplate"`       // the interpretive task
+	Gate         GateRef       `json:"gate"`               // validation plugin
+	MaxFixes     int           `json:"maxFixes,omitempty"` // default 3
+	Timeout      int           `json:"timeout,omitempty"`  // seconds, default 1800
+	Scope        string        `json:"scope,omitempty"`    // optional task scope override
+}
+
+// ModelWindow routes runs in [Start, End) (window's tz, midnight-wrap
+// allowed) to a different model. Malformed windows never match — a bad
+// schedule degrades to the base model, never fails a run (#494).
+type ModelWindow struct {
+	Model string `json:"model"`        // the model this window resolves to
+	Start string `json:"start"`        // HH:MM in TZ
+	End   string `json:"end"`          // HH:MM in TZ
+	TZ    string `json:"tz,omitempty"` // IANA zone; empty = UTC
+}
+
+// ResolveModel returns the model for `now`: the first window containing it
+// (in order), else the base model. The evaluation point is the worker's
+// run start — one resolution per run, so a run that starts inside a window
+// finishes with that window's model even if the clock crosses out.
+func (a AgentSpec) ResolveModel(now time.Time) string {
+	for _, w := range a.Models {
+		loc, err := time.LoadLocation(w.tzOrUTC())
+		if err != nil {
+			continue // unknown zone: the window cannot match, by design
+		}
+		start, err1 := minutesOfDay(w.Start)
+		end, err2 := minutesOfDay(w.End)
+		if err1 != nil || err2 != nil {
+			continue
+		}
+		local := now.In(loc)
+		nowMin := local.Hour()*60 + local.Minute()
+		if w.wrapsMidnight() {
+			// "16:00"→"02:00": the window is [start, 24:00) ∪ [0, end).
+			if nowMin >= start || nowMin < end {
+				return w.Model
+			}
+		} else if nowMin >= start && nowMin < end {
+			return w.Model
+		}
+	}
+	return a.Model
+}
+
+func (w ModelWindow) tzOrUTC() string {
+	if w.TZ == "" {
+		return "UTC"
+	}
+	return w.TZ
+}
+
+func (w ModelWindow) wrapsMidnight() bool {
+	return w.Start >= w.End // "16:00" → "02:00" spans midnight
+}
+
+// minutesOfDay parses "HH:MM" into minutes since midnight.
+func minutesOfDay(s string) (int, error) {
+	t, err := time.Parse("15:04", s)
+	if err != nil {
+		return 0, err
+	}
+	return t.Hour()*60 + t.Minute(), nil
 }
 
 // TaskTemplate names the prompt text for the agent (lives in a ConfigMap).
@@ -235,6 +309,50 @@ type CacheSpec struct {
 	Git bool   `json:"git,omitempty"`
 	Go  bool   `json:"go,omitempty"`
 	NPM bool   `json:"npm,omitempty"`
+}
+
+// SessionsSpec declares the persistent pi-session lineage store the
+// per-Attempt Job mounts (ADR-0010 follow-up): one RWX PVC at /sessions,
+// SubPath-isolated per workflow — per-PR session lineages (the compacted
+// context, and the SoL-Pi data inside the session dir) survive across
+// attempt Jobs until they age out of TTL. Mounting is a DEPLOYMENT fact
+// (needs an RWX storage class): templates reference a claim name, the
+// deploying environment renders the claim and opts its templates in.
+// SharedAttachment declares one scoped shared storage component (C2):
+// a named store mounted into every attempt sandbox of the workflow, at a
+// SubPath derived from the SCOPE — the dimension along which attempts
+// share. "workflow" (default) shares across the workflow's attempts;
+// "repository" shares across every attempt targeting the same repo
+// (pr-review's per-repository sol-pi store); "attempt" is private to one
+// attempt. The backend is an RWX-capable PVC the deployment provisions
+// (the sessions claim pattern). MountPath defaults to
+// /attachments/<name>; SubPath is derived from the scope — never user
+// input — so traversal cannot escape the mount.
+type SharedAttachment struct {
+	// Name identities the attachment: the mount name and the default
+	// MountPath tail. DNS-1123 label.
+	Name string `json:"name"`
+	// Scope selects the sharing dimension: workflow | repository | attempt.
+	Scope string `json:"scope,omitempty"`
+	// PVC is the RWX claim backing the attachment.
+	PVC string `json:"pvc,omitempty"`
+	// MountPath overrides the default /attachments/<name>.
+	MountPath string `json:"mountPath,omitempty"`
+}
+
+// AttachmentScope values.
+const (
+	AttachmentScopeWorkflow   = "workflow"
+	AttachmentScopeRepository = "repository"
+	AttachmentScopeAttempt    = "attempt"
+)
+
+type SessionsSpec struct {
+	PVC string `json:"pvc,omitempty"`
+	// TTL prunes lineage dirs idle longer than the duration (Go format,
+	// default 336h = 14 days — covers a PR's review lifetime; closed and
+	// merged PRs' lineages expire by age, the janitor runs in-attempt).
+	TTL string `json:"ttl,omitempty"`
 }
 
 // ScalingSpec selects the trigger model.

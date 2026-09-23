@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/tibrezus/harmostes/internal/attempt"
+	"github.com/tibrezus/harmostes/internal/review"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -45,6 +46,12 @@ func newTestDispatcher(t *testing.T, objects ...runtime.Object) (*Dispatcher, co
 		cfg: DispatchConfig{
 			FleetMaxConcurrent: 3,
 			JobImage:           "harmostes-worker:test",
+			NewReviewAPI: func() review.API {
+				if testReviewAPI != nil {
+					return testReviewAPI
+				}
+				return nil
+			},
 		},
 	}
 	return d, context.Background()
@@ -327,6 +334,8 @@ func TestJobEnvAllowlistCarriesCLIAliases(t *testing.T) {
 		{"FORGEJO_TOKEN", "the fj CLI's env fallback — without it the inline-thread protocol's Forgejo leg dies to prose"},
 		{"GH_TOKEN", "gh's native env — without it the protocol's GitHub leg dies to prose"},
 		{"LITELLM_FALLBACKS", "the extension's override knob is a pool-pod-only no-op without it (#359 r4 P4.1)"},
+		{"HARMOSTES_FORGEJO_BOT_TOKEN", "the whitelisted bot review identity (#480) — without it native APPROVED/REQUEST_CHANGES reviews 422 as self-reviews on author-owned PRs"},
+		{"HARMOSTES_FORGEJO_BOT_HOST", "the other half of the #480 gate pair (#480 r3 t5) — token without host means the Job-side script compares against a compiled-in default and a non-default botHost silently never matches"},
 	}
 	for _, row := range rows {
 		found := false

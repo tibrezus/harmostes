@@ -123,7 +123,21 @@ spec:
                   required: [model, taskTemplate, gate]
                   properties:
                     enabled: { type: boolean }                  # nil/true = run, false = skip (deterministic-only)
-                    model: { type: string }                    # litellm/zai/anthropic/glm-5.3-flash
+                    model: { type: string }
+                    models:
+                      type: array
+                      description: >-
+                        Time-windowed model overrides (template overlay) —
+                        evaluated at run start; first window containing `now`
+                        wins, else `model`.
+                      items:
+                        type: object
+                        required: [model, start, end]
+                        properties:
+                          model: { type: string }
+                          start: { type: string, pattern: '^([01]\d|2[0-3]):[0-5]\d$' }
+                          end: { type: string, pattern: '^([01]\d|2[0-3]):[0-5]\d$' }
+                          tz: { type: string, description: IANA timezone (default UTC) }                    # litellm/zai/anthropic/glm-5.3-flash
                     skill: { type: string }                    # /skills/…/SKILL.md
                     tools: { type: array, items: { type: string } }
                     taskTemplate:                              # the interpretive task
@@ -178,6 +192,32 @@ spec:
                     git: { type: boolean }
                     go:  { type: boolean }
                     npm: { type: boolean }
+
+                # persistent pi-session lineages (ADR-0010): RWX PVC at /sessions,
+                # SubPath per workflow — per-PR sessions (and the SoL-Pi data
+                # inside them) survive across attempt Jobs; TTL prunes idle
+                # lineages (Go duration string, default 336h)
+                sessions:
+                  type: object
+                  properties:
+                    pvc: { type: string }
+                    ttl: { type: string }
+
+                # scoped shared storage components (#516 C2): sandboxes stay
+                # isolated per attempt; named stores are shared on demand at
+                # the declared scope (workflow | repository | attempt).
+                # Backed by an RWX claim; SubPath derives from the scope.
+                attachments:
+                  type: array
+                  items:
+                    type: object
+                    required: [name]
+                    properties:
+                      name: { type: string }
+                      scope: { type: string, enum: [workflow, repository, attempt] }
+                      pvc: { type: string }
+                      mountPath: { type: string }
+
 
                 scaling:
                   type: object
@@ -271,6 +311,21 @@ spec:
                               properties:
                                 binding:    { type: string }      # ExternalSystemBinding.Name
                                 capability: { type: string }      # repository.read | issue-tracker.comment.write | ...
+                          retry:                                     # ADR-0012 §9: transient-fault retry policy
+                            type: object
+                            description: Retries a failed node ONLY when its executor classified the failure transient (plugin exit 75 EX_TEMPFAIL / 69 EX_UNAVAILABLE). Timeouts and executor errors are terminal. Empty = no retry; failure goes straight into when:failed routing.
+                            properties:
+                              maxAttempts:
+                                type: integer
+                                minimum: 1
+                                maximum: 5
+                                description: Total execution attempts including the first. 1/absent = no retry.
+                              initialDelay:
+                                type: string
+                                description: Backoff before the first retry (Go duration, e.g. 2s); default 5s.
+                              maxDelay:
+                                type: string
+                                description: Backoff cap (Go duration); default 1m.
                     edges:
                       type: array
                       items:
@@ -280,7 +335,6 @@ spec:
                           to: { type: string }
                           when: { type: string }
                           maxRetries: { type: integer }
-
             status:
               type: object
               properties:
@@ -298,6 +352,22 @@ spec:
                     lastDecision: { type: string, enum: [proceed, waiting, standdown, idle] }
                     lastReason:   { type: string }
                     lastSweepAbortAt: { type: string, format: date-time, description: "When a sweep last died before completing arm-to-dispatch (#379) — claims stranded by an abort release as sweep-aborted, not dispatch-lost (no churn strike)" }
+                    lastWake:       { type: string, description: "The trigger event the last sweep ran on (#556) — 'repo#N (labeled)' or 'repo@shorthash (ci_completed)'; a no-op poll keeps the previous wake visible" }
+                    refusals:
+                      type: array
+                      x-kubernetes-list-type: atomic
+                      description: "Heads the gate refused to re-review (#567): a pr-review verdict trailer already stands at that SHA, so re-arming would re-run a finished review. The gate is read-only (it cannot remove the label), so refused heads are memoised here and skipped before any host call; a push (new SHA) misses the memo and flows normally. Bounded to the 16 most recent."
+                      items:
+                        type: object
+                        properties:
+                          repo:    { type: string, description: "host/owner/name the refusal belongs to" }
+                          pr:      { type: integer, description: "pull-request number" }
+                          headSha: { type: string, description: "the reviewed head (a verdict trailer stands at this SHA)" }
+                          reason:  { type: string, description: "the refusal directive — the dev-facing close-out contract" }
+                          at:      { type: string, format: date-time }
+                          emitted: { type: boolean, description: "the gate-standdown timeline event for THIS refusal has landed — per-candidate dedupe so repeat memo skips do not re-emit while other candidates' standdowns still land" }
+                          verdictUrl: { type: string, description: "deep link to the verdict comment that stands at headSha (#577) — the host-facing notice links here" }
+                          hostNotified: { type: boolean, description: "the one-line PR comment pointing at this refusal has been posted (#577) — dedupe per refusal; a failed post retries on the next sweep" }
                 lastRunAt: { type: string }
                 message: { type: string }
                 conditions:

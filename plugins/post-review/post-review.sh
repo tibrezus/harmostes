@@ -19,7 +19,24 @@ IS_GITLAB=$(host::is_gitlab "$HOST")
 # post-review always authenticates (POST comment, consume label) — fail fast
 # at resolve time rather than at curl time.
 TOKEN=$(host::token "$HOST" required)
-export API_BASE TOKEN HOST REPO PR_NUM REVIEW LABEL IS_FJ IS_GITLAB WORKDIR
+# Native review OBJECTS (APPROVED / REQUEST_CHANGES + inline threads) must
+# post as the whitelisted bot identity (#480): the primary token usually
+# belongs to the PR author, and both Forgejo and GitHub 422 self-reviews
+# ("approve/reject your own pull is not allowed") — observed live on
+# rhesadox#2169: twice-APPROVED green, required_approvals unsatisfiable.
+# Verdict COMMENTS stay on TOKEN (authors may comment).
+# EXACT-HOST-GATED (r2 review t3): IS_FJ only means "not github.com" — it
+# is true for codeberg.org and ANY *) host built from the untrusted
+# pr-context. The bot credential goes ONLY to the forge it was minted
+# for: HOST must equal HARMOSTES_FORGEJO_BOT_HOST exactly.
+if [ "${IS_FJ:-}" = "true" ] \
+   && [ -n "${HARMOSTES_FORGEJO_BOT_TOKEN:-}" ] \
+   && [ "${HARMOSTES_FORGEJO_BOT_HOST:-git.rezus.cloud}" = "$HOST" ]; then
+  REVIEW_TOKEN="$HARMOSTES_FORGEJO_BOT_TOKEN"
+else
+  REVIEW_TOKEN="$TOKEN"
+fi
+export API_BASE TOKEN REVIEW_TOKEN HOST REPO PR_NUM REVIEW LABEL IS_FJ IS_GITLAB WORKDIR
 # ── Moved-head guard (ADR-0006): the verdict is only valid at the exact ──
 # reviewed SHA. If the PR head moved while the agent worked, do NOT post and
 # do NOT consume the label — the synchronize event has already re-armed the
@@ -67,8 +84,13 @@ GATE_STATUS_FILE="$(mktemp)"; : > "$GATE_STATUS_FILE"; export GATE_STATUS_FILE
 CS_JSON=$(python3 - << 'PYEOF'
 # Emits the unified comment list on stdout; each comment carries a boolean
 # "resolved": GitHub = GraphQL reviewThreads.isResolved mapped from
-# databaseId (REST never shows a GraphQL-side resolve, C1); Forgejo = always
-# false (closure is a closing reply); GitLab = native flag. On a listing
+# databaseId (REST never shows a GraphQL-side resolve, C1); Forgejo = the
+# fork's NATIVE resolver state (a resolved review comment serializes the
+# resolve_doer object as `resolver`; absent/null = unresolved â closing
+# replies cannot be expressed through this REST shape, the fork's
+# in_reply_to is a rezuscloud/forgejo follow-up, so native resolve is the
+# only closable path and must be authoritative); GitLab = native flag.
+# On a listing
 # failure or an unwired dialect it emits `null` and writes the structured
 # skip reason to $GATE_STATUS_FILE (C3: a skip must be alarmable, never
 # silent) — the shell puts it in the run's event JSON.
@@ -115,7 +137,7 @@ try:
         cs=[]
         for r in paged(f"/repos/{repo}/pulls/{pr}/reviews"):
             cs+=paged(f"/repos/{repo}/pulls/{pr}/reviews/{r['id']}/comments")
-        for c in cs: c["resolved"]=False  # Forgejo resolves by closing reply
+        for c in cs: c["resolved"]=bool(c.get("resolver"))  # fork-native resolve_doer object; absent = open (in_reply_to is the fork gap)
         print(json.dumps(cs)); raise SystemExit
     cs=paged(f"/repos/{repo}/pulls/{pr}/comments")
     owner, name = repo.split("/", 1)
@@ -179,12 +201,37 @@ dec="APPROVE"
 # (the exact lost-round signature this plugin exists to prevent). Anything
 # whose dialect/identity we cannot read is counted as CLOSED-BY-DEFAULT
 # here: a false APPROVE re-reviews next round, a crash wedges the head.
+# Round identity = commit_id; roots = non-reply comments at a prior head.
+# The r12 invariant, made mechanical (#579 — the rhesadox#2360 burn): the
+# downgrade counts unresolved threads on the NEWEST PRIOR ROUND only —
+# selected over ALL prior-round roots (a fully-resolved newest round must
+# yield zero, not fall back to counting stale older rounds). Older
+# rounds' leftovers are bookkeeping: the reviewer re-reviews the whole
+# diff each round, so a still-live finding reappears at the current head
+# (commit_id == sha, excluded) or on the immediately-prior round. Naive
+# all-round counting let duplicates accumulate monotonically (the
+# reviewer re-posts canonical findings as NEW threads each round; the
+# author resolves only the newest review's — 3×5=15 stale threads
+# downgraded verdicts over a fixed diff on #2360, the exact "trusts UI
+# state" failure r12 forbade). Both hosts emit Z-suffixed RFC3339 (the
+# non-Z caveat is the marker rule's); unlike closure, ordering merely
+# picks WHICH round gets counted — a non-Z round can shift the count to
+# another real round, never to zero.
+def reply_parent(c):
+    return c.get("in_reply_to_id") or c.get("in_reply_to")
+_roots=[c for c in cs
+    if isinstance(c, dict) and not reply_parent(c)
+    and c.get("commit_id") not in (None, "")
+    and str(c.get("commit_id"))!=sha]
+_rounds={}
+for _c in _roots:
+    _rounds.setdefault(str(_c.get("commit_id")), []).append(_c)
+_newest=max(_rounds, key=lambda _cid: max(str(_c.get("created_at") or "") for _c in _rounds[_cid])) if _rounds else None
 if cs and isinstance(cs[0], dict) and "resolvable" in cs[0]:
     # GitLab dialect: native resolve is authoritative.
-    open_threads=[c for c in cs
+    open_threads=[c for c in (_rounds.get(_newest, []) if _newest else [])
         if isinstance(c, dict)
-        and c.get("resolvable") and not c.get("resolved")
-        and str(c.get("commit_id") or "")!=sha]
+        and c.get("resolvable") and not c.get("resolved")]
 else:
     # GitHub/Forgejo dialect: a thread is CLOSED by real resolve state
     # (C1 — a GraphQL-side resolve leaves no reply) or by a reply.
@@ -192,17 +239,105 @@ else:
     # in_reply_to_id, Forgejo in_reply_to — read both (the live review
     # loop of #467 tripped this: replies never closed threads on GitHub,
     # so every APPROVE downgraded on phantom open threads).
-    def reply_parent(c):
-        return c.get("in_reply_to_id") or c.get("in_reply_to")
     replied={reply_parent(c) for c in cs if isinstance(c, dict) and reply_parent(c)}
-    open_threads=[c for c in cs
+    # Fork-gap addressal marker (#572): on Forgejo the REST create-review
+    # API cannot SET in_reply_to (a rezuscloud/forgejo follow-up) and the
+    # fork-native resolver (resolve_doer) is only settable through the
+    # web UI — so the documented author/reviewer protocol (the pr-review
+    # skill) addresses a thread with a follow-up review comment at the
+    # SAME anchor whose body references the original comment id
+    # (`path:line (comment N) — fix SHA + rationale`). Without parsing
+    # that marker, a REST-only review round can never close a prior-round
+    # thread: every round downgrades until a human uses the browser (the
+    # rhesadox#2359 burn — five consecutive downgrades over a fixed
+    # diff; the protocol-shaped replies themselves added unresolvable
+    # flat threads to the count). Closure requirements, all deliberate:
+    #   same path     — the marker's path must equal the thread's. #573
+    #                  round 5 (the rhesadox#2376 burn): the fork
+    #                  serializes each comment's position against ITS
+    #                  OWN head — a fix that edits the file above the
+    #                  anchor shifts the marker's position (thread at
+    #                  pos 96, marker at pos 83 over a 15-line insert),
+    #                  so exact position equality can NEVER hold when
+    #                  the fix touches the addressed file. The id-in-body
+    #                  + lead + identity + later requirements already pin
+    #                  WHICH thread the marker addresses; the position
+    #                  adds only fragility. (GitHub unaffected: threads
+    #                  there close via in_reply_to natively.)
+    #   later        — created_at strictly after the thread's. Both
+    #                  sides must be Z-suffixed RFC3339 (both hosts emit
+    #                  Z today): a +hh:mm offset sorts lexically by
+    #                  wall-clock text and can read "later" while being
+    #                  earlier (#573 review round 1). Non-Z entries never
+    #                  close via the marker — conservative, same posture
+    #                  as the missing-timestamp case.
+    #   id in body   — the thread's id as a BOUNDED token anywhere in the
+    #                  body (`(?<!\d)N(?!\d)`): no substring matching
+    #                  ('4026' must not match inside '40268' — dense ids
+    #                  at one anchor are the collision domain, #573
+    #                  round 1) and not limited to a parenthesized lead
+    #                  (round 3: 'path:line — fixed at abc (see comment
+    #                  N)' is protocol-conformant and must close). An id
+    #                  is REQUIRED — an id-less reply cannot be attributed
+    #                  to one thread at a shared anchor.
+    #   leads path:line — the body must OPEN with the anchor's own
+    #                  `path:line` enumeration lead (markdown emphasis /
+    #                  bullet prefixes tolerated).
+    #   other author  — the marker's author must DIFFER from the thread's
+    #                  (user.login): an addressal is written by the party
+    #                  being reviewed (the PR author), a finding by the
+    #                  reviewer. #573 round 4: the reviewer itself emits
+    #                  path:line-leading re-findings at an unresolved
+    #                  anchor ('w.yml:433 — still wrong, see 40268' — raw
+    #                  bodies on Forgejo, no marker prefix) which under a
+    #                  lead-only grammar closed the older thread AND
+    #                  erased themselves — a false APPROVE through the
+    #                  merge currency. Identity restores the round-2
+    #                  invariant (closure evidence never deletes
+    #                  itself): a same-author comment — sibling findings,
+    #                  reviewer cross-references — closes nothing; a
+    #                  missing user on either side reads as same-author
+    #                  (conservative). The reviewer's own verification
+    #                  still cannot close mechanically — the dev's reply
+    #                  is mandatory per the protocol, and THAT closes.
+    import re as _re
+    _lead_form=_re.compile(r'^\s*[*_>\-\s]*[\w./+-]+:\d+\b')
+    def _bounded(tid):
+        return _re.compile(r'(?<!\d)'+_re.escape(str(tid))+r'(?!\d)')
+    def anchor_key(c):
+        return c.get("path")
+    def author_of(c):
+        u=c.get("user")
+        return (u.get("login") if isinstance(u, dict) else None) or ""
+    addressed=set()   # thread ids a marker closed
+    marker_ids=set()  # the marker replies that closed them (a reply is not
+                      # itself a finding thread — without this, the flat
+                      # model counts every protocol reply as ANOTHER open
+                      # thread: the rhesadox#2359 count grew 1→2→3 as the
+                      # author followed the documented protocol)
+    for r in cs:
+        if not isinstance(r, dict) or r.get("id") is None:
+            continue
+        body=str(r.get("body") or "")
+        if not _lead_form.match(body):
+            continue
+        for t in cs:
+            if (isinstance(t, dict) and t.get("id") is not None
+                and str(t.get("id"))!=str(r.get("id"))
+                and author_of(r)!=author_of(t)
+                and _bounded(t.get("id")).search(body)
+                and anchor_key(t)==anchor_key(r)
+                and str(r.get("created_at") or "").endswith("Z")
+                and str(t.get("created_at") or "").endswith("Z")
+                and str(r.get("created_at"))>str(t.get("created_at"))):
+                addressed.add(t.get("id")); marker_ids.add(r.get("id"))
+    open_threads=[c for c in (_rounds.get(_newest, []) if _newest else [])
         if isinstance(c, dict)
         and not reply_parent(c)
         and c.get("id") not in replied
-        and not c.get("resolved")
-        # No commit_id → round unattributable: never downgrade on it (C4).
-        and c.get("commit_id") not in (None, "")
-        and str(c.get("commit_id"))!=sha]
+        and c.get("id") not in addressed
+        and c.get("id") not in marker_ids
+        and not c.get("resolved")]
 open_n=len(open_threads)
 if open_threads:
     dec="REQUEST_CHANGES"
@@ -274,7 +409,7 @@ if os.environ.get("DOWNGRADED"):
     # must stay self-describing: the downgrade fires on PRIOR-round threads,
     # so "N blocking findings" would be false here.
     line=(f"{dec} at {sha} — downgraded: {os.environ.get('OPEN_THREADS','0')} unresolved "
-          "prior-round thread(s); reply with the fix SHA, resolve, then re-arm.")
+          "prior-round thread(s); reply with the fix SHA, resolve, then push (any commit) and re-arm — a same-head re-arm is refused (#567, #579).")
 elif dec=="APPROVE":
     line=f"APPROVE at {sha} — all pillars clean, no blocking findings. Label consumed; re-arm with the label to review again."
     todos=review.get("todos",[]) or []
@@ -413,7 +548,9 @@ merged=all_cs[:20]+[{**t,"body":b} for t,b in zip(
     [t for t in all_todos if isinstance(t,dict) and t.get("path") and t.get("body")][:max(0,20-len(all_cs[:20]))],
     todo_bodies[:max(0,20-len(all_cs[:20]))])]
 cs=merged
-base=os.environ["API_BASE"]; tok=os.environ["TOKEN"]
+base=os.environ["API_BASE"]
+# Native reviews post as the bot when provisioned (#480) — see REVIEW_TOKEN above.
+tok=os.environ.get("REVIEW_TOKEN") or os.environ["TOKEN"]
 repo=os.environ["REPO"]; pr=os.environ["PR_NUM"]; sha=review.get("reviewed_sha","")
 fj = os.environ.get("IS_FJ")=="true"
 marker=os.environ["MARKER"]
@@ -457,6 +594,7 @@ if fj:
     if ok:
         posted += len(valid)
     else:
+        last_error = reason  # r5 t12: the artifact must carry the host's reason (the #480 symptom was an unattributable rejection)
         print(f"[post-review] WARN: batch publish rejected ({reason[:120]}) — falling back per finding", file=sys.stderr)
         for p,l,_,b in valid:
             ok2, reason2 = curl(f"/repos/{repo}/pulls/{pr}/reviews", {"event":os.environ["REVIEW_EVENT"],"commit_id":sha,"body":marker,
@@ -464,6 +602,8 @@ if fj:
             if ok2: posted+=1
             else:
                 rejected+=1
+                if not last_error:
+                    last_error = reason2
                 print(f"[post-review] WARN: inline thread {p}:{l} rejected — {reason2}", file=sys.stderr)
 else:
     for p,l,side,b in valid:
@@ -472,6 +612,8 @@ else:
         if ok: posted+=1
         else:
             rejected+=1
+            if not last_error:
+                last_error = reason
             print(f"[post-review] WARN: inline thread {p}:{l} rejected — {reason}", file=sys.stderr)
 dropped=[c.get("path","?") for c in all_cs[len(cs):]]
 if dropped:
@@ -500,13 +642,42 @@ cs=[{"path":t["path"],"new_position":int(t["line"]),"body":P+str(t["body"])}
 json.dump({"event":"APPROVED","commit_id":r.get("reviewed_sha",""),
            "body":os.environ["MARKER"],"comments":cs}, sys.stdout)
 PYTODO
-  curl -fsS --max-time 20 -X POST \
-    -H "authorization: token $TOKEN" -H "content-type: application/json" \
+  APPROVAL_RESP_FILE="$(mktemp)"
+  # `|| true`: under set -euo pipefail a plain assignment propagates the
+  # substitution's exit status — a curl TRANSPORT failure (timeout, DNS,
+  # reset; distinct from HTTP 4xx/5xx which exit 0 without -f) would abort
+  # the whole plugin before label-consume + artifact (r1 review t2). A
+  # transport failure yields APPROVAL_CODE=000 → the * branch speaks.
+  # stderr lands in the response file: with -sS transport errors (timeout,
+  # DNS, reset — the cases that motivated || true) report ONLY on stderr and
+  # write no body, so without this the WARN degrades to http 000 with no
+  # cause (r14 t22 — the #480 unattributable-rejection symptom, one layer
+  # down). HTTP responses carry a body and empty stderr: unambiguous.
+  APPROVAL_CODE="$(curl -sS --max-time 20 -o "$APPROVAL_RESP_FILE" -w "%{http_code}" -X POST \
+    -H "authorization: token $REVIEW_TOKEN" -H "content-type: application/json" \
     -d @"$APPROVAL_JSON" \
-    "$API_BASE/repos/$REPO/pulls/$PR_NUM/reviews" >/dev/null 2>&1 \
-    && echo '{"posted":1,"rejected":0,"capped":0}' > "$THREAD_STATUS_FILE" \
-    || echo '{"posted":0,"rejected":1,"capped":0,"skipped":"approval-post-failed"}' > "$THREAD_STATUS_FILE"
-  rm -f "$APPROVAL_JSON"
+    "$API_BASE/repos/$REPO/pulls/$PR_NUM/reviews" 2>>"$APPROVAL_RESP_FILE" || true)"
+  case "$APPROVAL_CODE" in
+    200|201) echo '{"posted":1,"rejected":0,"capped":0}' > "$THREAD_STATUS_FILE" ;;
+    000)
+      APPROVAL_BODY="$(head -c 120 "$APPROVAL_RESP_FILE" 2>/dev/null || true)"
+      echo '{"posted":0,"rejected":1,"capped":0,"skipped":"approval-transport-failed"}' > "$THREAD_STATUS_FILE"
+      log "WARN: native approval transport failure (no HTTP response) — $APPROVAL_BODY"
+      ;;
+    *)
+      # SPEAK (r4-P8): the artifact must distinguish "credential missing, host
+      # rejected a self-review" (#480 — bot token not provisioned) from any
+      # other rejection; the response body lands in the deploy log either way.
+      APPROVAL_BODY="$(head -c 120 "$APPROVAL_RESP_FILE" 2>/dev/null || true)"
+      case "$APPROVAL_BODY" in
+        *"own pull"*) APPROVAL_SKIP="self-review-forbidden" ;;
+        *) APPROVAL_SKIP="approval-post-failed" ;;
+      esac
+      echo "{\"posted\":0,\"rejected\":1,\"capped\":0,\"skipped\":\"$APPROVAL_SKIP\"}" > "$THREAD_STATUS_FILE"
+      log "WARN: native approval rejected (http ${APPROVAL_CODE:-000}) — $APPROVAL_BODY"
+      ;;
+  esac
+  rm -f "$APPROVAL_JSON" "$APPROVAL_RESP_FILE"
 fi
 THREADS=$(cat "$THREAD_STATUS_FILE")
 # The scan-failed flag (written by the dedupe scan on failure) splices into

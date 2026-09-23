@@ -33,9 +33,15 @@ test.describe('topology projection', () => {
     // The stored CR is thin (templateRef + source only) — the topology
     // shows the merged shape: the template's agent appears.
     const nodes = page.getByTestId('topology-node');
-    await expect(nodes).toHaveCount(3);
+    // 4 = the instance's virtual trigger + the merged shape (#541).
+    await expect(nodes).toHaveCount(4);
     await expect(page.locator('[data-testid="topology-node"][data-node="agent"]')).toBeVisible();
     await expect(page.locator('[data-testid="topology-node"][data-node="deploy"]')).toContainText('post-review');
+    // Identity cards: the trigger is the canvas root, the agent card
+    // carries the template's model + fix-loop budget.
+    await expect(page.locator('[data-testid="topology-node"][data-node="trigger"]')).toContainText('webhook');
+    await expect(page.locator('[data-testid="topology-node"][data-node="agent"]')).toContainText('litellm');
+    await expect(page.locator('[data-testid="topology-node"][data-node="agent"]')).toContainText('maxFixes');
   });
 
   test('revision graph diff marks node and edge deltas', async ({ page }) => {
@@ -64,7 +70,10 @@ test.describe('topology projection', () => {
     await expect(newer.locator('[data-testid="topology-edge"][data-diff="removed"]')).toHaveCount(1);
 
     // The YAML diff pane carries added and removed lines with real deltas.
-    await expect(page.locator('[data-testid="yaml-diff-line"][data-diff="added"]').filter({ hasText: 'litellm/ali/anthropic/qwen3.8-flash' })).toHaveCount(1);
+    // One added line per route: agent.model AND the night window's
+    // models[0].model — both qwen3.8-flash (values #536, day+window
+    // converged since the #557-era max revert).
+    await expect(page.locator('[data-testid="yaml-diff-line"][data-diff="added"]').filter({ hasText: 'litellm/ali/anthropic/qwen3.8-flash' })).toHaveCount(2);
     await expect(page.locator('[data-testid="yaml-diff-line"][data-diff="removed"]').filter({ hasText: 'pr-fetch-stale' })).toHaveCount(1);
 
     // The legend explains the vocabulary.

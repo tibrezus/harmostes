@@ -297,6 +297,56 @@ code, pre {
 	color: var(--warning);
 }
 
+/* ---- Run-log drawer (#551) — full width below the Runs table ----
+   Opens where the eyes are (never inside the ledger's action cell),
+   newest line first, live polls swap only the inner line list so the
+   reading position survives. */
+.runlogs-drawer {
+	margin-top: var(--sp-3);
+	border: 1px solid var(--ds-border-faint);
+	border-radius: var(--radius-lg, 6px);
+	background: var(--ds-bg-elevated, var(--bg-elevated));
+}
+.runlogs-drawer:empty {
+	display: none;
+}
+.runlogs-head {
+	display: flex;
+	align-items: center;
+	gap: var(--sp-3);
+	flex-wrap: wrap;
+	padding: 0.45rem 0.75rem;
+	border-bottom: 1px solid var(--ds-border-faint);
+}
+.runlogs-title {
+	font-size: 0.82rem;
+	font-weight: 600;
+}
+.runlogs-meta {
+	margin-left: auto;
+	font-size: 0.72rem;
+	color: var(--ds-text-muted);
+	display: inline-flex;
+	align-items: center;
+	gap: 0.4rem;
+}
+.runlogs-body {
+	max-height: 22rem;
+	overflow-y: auto;
+	overscroll-behavior: contain;
+	background: var(--bg-elevated);
+}
+.runlogs-lines {
+	font-family: var(--font-mono);
+	font-size: 0.75rem;
+	line-height: 1.6;
+	padding: 0.4rem 0.75rem;
+}
+.log-line--empty {
+	color: var(--ds-text-muted);
+	font-style: italic;
+}
+
 /* ===== Gate-centric workflow grouping ===== */
 
 .gate-group-section {
@@ -1821,6 +1871,7 @@ code, pre {
 	gap: 0.75rem;
 	flex-wrap: wrap;
 	margin-bottom: 0.75rem;
+}
 
 /* ===== Session viewer: fork hint ===== */
 .pi-fork-hint {
@@ -1872,6 +1923,77 @@ code, pre {
 .wall-header-note {
 	color: var(--ds-text-muted);
 	font-size: 0.8rem;
+}
+
+/* Header state tally (kestra's execution-tab counts): one chip per live
+   state, over the whole live selection. Rendered inside the SSE fragment
+   so it stays fresh with the grid. */
+.wall-counts {
+	display: flex;
+	align-items: center;
+	gap: 0.45rem;
+	margin: -0.35rem 0 0.75rem;
+	font-size: 0.78rem;
+}
+.wall-live-tokens {
+	color: var(--running);
+	font-variant-numeric: tabular-nums;
+}
+
+/* Wall v2 (#554): template → workflow → subject. Sections carry the
+   template name; each workflow block (a rowspan cell) owns its
+   step-timing strip — the compiled shape with the latest attempt's
+   wall-clock shares, painted by the SAME rg-state tokens as the
+   run-detail waterfall (one palette, no second truth). */
+.wall-section {
+	margin-bottom: 1.4rem;
+}
+.wall-section:last-child {
+	margin-bottom: 0;
+}
+.wall-section-h {
+	display: flex;
+	align-items: baseline;
+	gap: 0.6rem;
+	margin: 0 0 0.45rem;
+	font-size: 0.78rem;
+	font-weight: 600;
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+	color: var(--fg-muted);
+}
+.wall-section-h .ids {
+	color: var(--fg);
+}
+.wall-section-count {
+	color: var(--ds-text-muted);
+	font-weight: 400;
+	letter-spacing: 0;
+	text-transform: none;
+}
+.wall-wf-cell {
+	vertical-align: top;
+	padding-right: 1rem;
+	min-width: 9.5rem;
+}
+.wall-wf {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-start;
+	gap: 0.35rem;
+}
+.wall-wf .ids {
+	font-weight: 600;
+}
+.wall-steps {
+	display: block;
+}
+.rg-timing-bar.rg-state-pending {
+	fill: var(--ds-border);
+}
+.wall-more {
+	margin-top: 0.6rem;
+	font-size: 0.82rem;
 }
 .wall-grid {
 	display: grid;
@@ -1957,11 +2079,35 @@ code, pre {
 }
 .rg-panel {
 	flex: 0 1 300px;
+	/* min-width: 0 lets the panel shrink below its content's min-content
+	   width — long dd values (summaries, run ids) must WRAP, never blow
+	   the panel across the graph (#551: the deploy details box covered
+	   the window when selected). */
+	min-width: 0;
+	overflow: hidden;
 	border: 1px solid var(--ds-border-faint);
 	border-radius: 6px;
 	padding: 0.75rem 1rem;
 	min-height: 4rem;
 	background: var(--ds-bg-elevated, transparent);
+}
+.rg-panel .ds-definition-list {
+	margin: 0;
+	min-width: 0;
+}
+.rg-panel .ds-definition-list dt {
+	font-size: 0.68rem;
+	font-weight: 700;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	color: var(--ds-text-muted);
+	margin-top: 0.45rem;
+}
+.rg-panel .ds-definition-list dd {
+	margin: 0.1rem 0 0;
+	font-size: 0.78rem;
+	overflow-wrap: anywhere; /* unbreakable ids/summaries wrap, not shove */
+	color: var(--ds-text);
 }
 .rg-panel-empty {
 	color: var(--ds-text-muted);
@@ -1976,25 +2122,44 @@ code, pre {
 .rg-node:focus {
 	outline: none;
 }
+/* Graph canvas (#537, donor language: xyflow-family canvases — kestra
+   @vue-flow/background, windmill @xyflow/svelte, conductor reaflow). The
+   dot grid IS this surface's subject (a graph canvas), the one legitimate
+   grid case; dots tint from the border token so both themes read. */
+.rg-canvas {
+	border: 1px solid var(--ds-border-faint, var(--ds-border));
+	border-radius: var(--radius-lg);
+	padding: var(--sp-4);
+	margin: var(--sp-2) 0;
+	background-color: var(--bg-alt);
+	background-image: radial-gradient(
+		color-mix(in oklab, var(--ds-border) 55%, transparent) 1px,
+		transparent 1.2px
+	);
+	background-size: 16px 16px;
+	background-position: -1px -1px;
+	overflow-x: auto;
+}
+
 .rg-box {
-	fill: var(--ds-bg-elevated, var(--ds-bg, #fff));
+	fill: var(--ds-bg-elevated);
 	stroke: var(--ds-border);
 	stroke-width: 1.5;
 }
-.rg-node--ok .rg-box { stroke: var(--ds-positive, #2e7d32); stroke-width: 2; }
-.rg-node--failed .rg-box { stroke: var(--ds-negative, #c62828); stroke-width: 2; }
+.rg-node--ok .rg-box { stroke: var(--ds-positive); stroke-width: 2; }
+.rg-node--failed .rg-box { stroke: var(--ds-negative); stroke-width: 2; }
 .rg-node--skipped .rg-box { stroke-dasharray: 4 3; }
 .rg-node--skipped .rg-label { fill: var(--ds-text-muted); }
 .rg-node--external .rg-box { stroke-dasharray: 2 3; }
 .rg-node--external .rg-label { fill: var(--ds-text-muted); }
 .rg-node--pending .rg-box { stroke-dasharray: none; opacity: 0.75; }
 .rg-node--running .rg-box {
-	stroke: var(--ds-warning, #ef6c00);
+	stroke: var(--ds-warning);
 	stroke-width: 2.5;
 	animation: rg-live 1.6s ease-in-out infinite;
 }
 .rg-pulse {
-	fill: var(--ds-warning, #ef6c00);
+	fill: var(--ds-warning);
 	animation: rg-pulse 1.6s ease-in-out infinite;
 }
 @keyframes rg-live {
@@ -2014,10 +2179,55 @@ code, pre {
 	fill: var(--ds-text-muted);
 	text-anchor: end;
 }
+
+/* ---- Identity cards (#541): the canvas carries workflow semantics —
+   type chip, headline, fact lines; status = accent bar + glyph chip
+   (color AND glyph — survives grayscale; one-state vocabulary). ---- */
+.rg-title {
+	font-size: 13.5px;
+	font-weight: 600;
+	fill: var(--ds-text);
+}
+.rg-fact {
+	font-size: 11px;
+	fill: var(--ds-text-muted);
+}
+.rg-chip {
+	font-size: 9.5px;
+	font-weight: 700;
+	letter-spacing: 0.12em;
+	text-transform: uppercase;
+	fill: var(--ds-text-muted);
+}
+/* Per-kind chip tint — the type reads at a glance, tokens only. */
+.rg-chipkind--source .rg-chip { fill: var(--ds-accent, var(--ds-warning)); }
+.rg-chipkind--agent .rg-chip { fill: var(--ds-warning); }
+.rg-chipkind--gate .rg-chip { fill: var(--ds-negative); }
+.rg-chipkind--prepare .rg-chip, .rg-chipkind--deploy .rg-chip { fill: var(--ds-positive); }
+.rg-statext {
+	font-size: 10px;
+	font-weight: 600;
+	text-anchor: end;
+}
+.rg-statext--ok { fill: var(--ds-positive); }
+.rg-statext--failed { fill: var(--ds-negative); }
+.rg-statext--running { fill: var(--ds-warning); }
+.rg-statext--skipped, .rg-statext--pending, .rg-statext--external { fill: var(--ds-text-muted); }
+/* Status accent bar: the card's left edge states the state (kestra/Argo
+   language); the box stroke stays as the secondary signal. */
+.rg-bar { rx: 2; }
+.rg-bar--ok { fill: var(--ds-positive); }
+.rg-bar--failed { fill: var(--ds-negative); }
+.rg-bar--running { fill: var(--ds-warning); }
+.rg-bar--skipped, .rg-bar--pending, .rg-bar--external { fill: var(--ds-border); }
 .rg-edge {
 	fill: none;
 	stroke: var(--ds-border);
 	stroke-width: 1.5;
+}
+/* The trigger's cause-edge: dashed — cause, not data flow. */
+.rg-edge--cause, .tp-edge--cause {
+	stroke-dasharray: 5 4;
 }
 
 /* Run-graph timing waterfall (#298): one lane per node, bar = wall-clock share */
@@ -2029,6 +2239,19 @@ code, pre {
 	color: var(--ink-soft);
 }
 .rg-timing { display: block; max-width: 640px; }
+/* Below 1100px the detail panel leaves the graph's side and stacks under
+   it (#551 follow-up): in the 736–1100 band the squeezed, horizontally
+   scrolled waterfall read as the panel "sitting on" the timeline. Same
+   stack point as .rd-duo — one breakpoint for the whole page. The stream
+   pins to the container width (in column direction the node graph's
+   attribute width would otherwise grow the page); the waterfall takes the
+   freed full width; bar labels scale with the SVG. */
+@media (max-width: 1100px) {
+	.run-graph-layout { flex-direction: column; }
+	.run-graph-stream { width: 100%; max-width: 100%; }
+	.run-graph-layout .rg-panel { flex: none; width: auto; }
+	.run-graph-stream .rg-timing { max-width: none; }
+}
 .rg-timing-label {
 	font-size: 11px;
 	fill: var(--ink);
@@ -2036,12 +2259,17 @@ code, pre {
 .rg-timing-bar { opacity: 0.85; }
 .rg-timing-dur { font-size: 10px; fill: var(--ink-soft); }
 .rg-timing-dur-in { fill: var(--paper); }
+.rg-timing-bar { fill: var(--neutral); }
 .rg-timing-bar.rg-state-overhead { opacity: 0.4; }
 /* Waterfall bars share the node-graph state palette so a red run reads red. */
-.rg-timing-bar.rg-state-ok { fill: var(--ds-positive, #2e7d32); }
-.rg-timing-bar.rg-state-failed { fill: var(--ds-negative, #c62828); opacity: 0.9; }
-.rg-timing-bar.rg-state-skipped { fill: var(--ink-soft, #888); opacity: 0.5; }
-.rg-timing-bar.rg-state-running { fill: var(--ink, #222); opacity: 0.85; }
+.rg-timing-bar.rg-state-ok { fill: var(--ds-positive); }
+.rg-timing-bar.rg-state-failed { fill: var(--ds-negative); opacity: 0.9; }
+.rg-timing-bar.rg-state-skipped { fill: var(--ink-soft); opacity: 0.5; }
+.rg-timing-bar.rg-state-running { fill: var(--running); opacity: 0.85; }
+/* Live waterfall: the in-flight lane's bar grows with wall clock (the
+   graph SSE re-renders every 15s while the attempt runs); the pulse says
+   "this number is moving" between wakes. */
+.rg-timing-bar.rg-state-running.rg-timing-live { animation: rg-pulse 1.6s ease-in-out infinite; }
 
 /* ---- Topology projection (#417, ADR-0012 §3) ----
    Same visual language as the run graph (shared geometry engine), painted
@@ -2071,6 +2299,12 @@ code, pre {
 	fill: var(--ds-text);
 	font-family: var(--ds-font-mono, monospace);
 }
+/* Topology cards share the run graph's identity-card language (#541):
+   same facts path, same classes — one visual vocabulary. */
+.tp-node .rg-chip--prepare, .tp-node .rg-chip--deploy { fill: var(--ds-positive); }
+.tp-node .rg-chip--agent { fill: var(--ds-warning); }
+.tp-node .rg-chip--gate { fill: var(--ds-negative); }
+.tp-node .rg-chip--source { fill: var(--ds-accent, var(--ds-warning)); }
 .tp-type {
 	font-size: 10px;
 	fill: var(--ds-text-muted);

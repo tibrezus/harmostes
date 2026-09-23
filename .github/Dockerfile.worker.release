@@ -72,8 +72,8 @@ COPY ${TARGETPLATFORM}/harmostes-agent  /usr/local/bin/harmostes-agent
 # kinds are out of the flag binder's scope by design).
 # KEEP IN SYNC: this block is duplicated in .github/Dockerfile.worker.release.
 ARG TARGETARCH
-RUN curl -fsSL "https://github.com/rezuscloud/forgejo/releases/download/v16.0.3-rezus.2/fj-linux-${TARGETARCH}.tar.gz" -o /tmp/fj.tgz \
-    && curl -fsSL "https://github.com/rezuscloud/forgejo/releases/download/v16.0.3-rezus.2/checksums.txt" -o /tmp/fj.sha \
+RUN curl -fsSL "https://github.com/rezuscloud/forgejo/releases/download/v16.0.3-rezus.6/fj-linux-${TARGETARCH}.tar.gz" -o /tmp/fj.tgz \
+    && curl -fsSL "https://github.com/rezuscloud/forgejo/releases/download/v16.0.3-rezus.6/checksums.txt" -o /tmp/fj.sha \
     && grep "fj-linux-${TARGETARCH}.tar.gz$" /tmp/fj.sha | sed "s#  .*#  /tmp/fj.tgz#" | sha256sum -c - \
     && mkdir -p /tmp/fjx && tar -xzf /tmp/fj.tgz -C /tmp/fjx \
     && F="$(find /tmp/fjx -type f -name 'fj-linux-*')" && [ "$(printf '%s\n' "$F" | wc -l)" = "1" ] \
@@ -91,6 +91,7 @@ COPY plugins/rig-emit/rig-to-c4.py /usr/local/lib/harmostes/plugins/rig-to-c4.py
 COPY plugins/wiki-lint/wiki-lint.sh /usr/local/lib/harmostes/plugins/wiki-lint.sh
 COPY plugins/git-push/git-push.sh   /usr/local/lib/harmostes/plugins/git-push.sh
 COPY plugins/workspace/workspace.sh      /usr/local/lib/harmostes/plugins/workspace.sh
+COPY plugins/workspace/pr_context.py     /usr/local/lib/harmostes/plugins/pr_context.py
 COPY plugins/lib/                        /usr/local/lib/harmostes/lib/
 COPY plugins/pr-review/pr-review.sh      /usr/local/lib/harmostes/plugins/pr-review.sh
 COPY plugins/post-review/post-review.sh  /usr/local/lib/harmostes/plugins/post-review.sh
@@ -105,6 +106,7 @@ RUN git config --global user.name 'harmostes-bot' && \
 # pi extensions.
 COPY extensions/litellm-provider /extensions/litellm-provider
 COPY extensions/rig-query        /extensions/rig-query
+COPY extensions/turn-budget     /extensions/turn-budget
 RUN pi install npm:pi-searxng
 # defaultProjectTrust=never (#426 r3 finding 1): review workspaces are
 # UNTRUSTED PR content — a repo shipping .pi/sol-pi.json must not be able to
@@ -119,9 +121,9 @@ ENV SEARXNG_URL=http://searxng.searxng.svc.cluster.local:8080
 # fails the build. Typebox itself resolves through pi's alias injection
 # (guaranteed by the pinned PI_VERSION below), which is why unresolvable-
 # dependency failures are covered by the TS tier, not this probe.
-RUN PI_SKIP_VERSION_CHECK=1 timeout 60 pi -e /extensions/rig-query --mode rpc </dev/null >/tmp/pi-load.log 2>&1; rc=$?; \
+RUN PI_SKIP_VERSION_CHECK=1 PI_TOOL_BUDGET=3 timeout 60 pi -e /extensions/rig-query -e /extensions/turn-budget --mode rpc </dev/null >/tmp/pi-load.log 2>&1; rc=$?; \
     if [ $rc -ne 0 ]; then \
-      echo "rig-query load probe failed (pi exit $rc):"; cat /tmp/pi-load.log; exit 1; \
+      echo "rig-query/turn-budget load probe failed (pi exit $rc):"; cat /tmp/pi-load.log; exit 1; \
     fi
 # litellm-provider load probe (#359 r17 P8): mirror of the dev image's gate —
 # the stub URL fails the /v1/models fetch fast; the extension must degrade
@@ -169,7 +171,7 @@ COPY extensions/sol-pi /extensions/sol-pi
 COPY extensions/sol-pi/sol-pi.json /root/.pi/agent/sol-pi.json
 COPY extensions/sol-pi/settings.json /root/.pi/agent/settings.json
 RUN node /extensions/sol-pi/scripts/check-sol-pi-config.mjs --config /root/.pi/agent/sol-pi.json > /tmp/sol-pi-config.json \
-    && node -e 'const c=JSON.parse(require("fs").readFileSync("/tmp/sol-pi-config.json","utf8"));const e=c.effective_config||c;if(!e.actionFusion||!e.observationPack||e.evidencePreservingReducer!==false||e.onlineContextCompact!==false){console.error("sol-pi profile drift:",JSON.stringify(e));process.exit(1)}' \
+    && node -e 'const c=JSON.parse(require("fs").readFileSync("/tmp/sol-pi-config.json","utf8"));const e=c.effective_config||c;if(!(e.actionFusion===true&&e.observationPack===true&&e.evidencePreservingReducer===true&&e.onlineContextCompact===true&&e.evidencePreservingReducerProvider==="litellm"&&e.evidencePreservingReducerModel==="litellm/ali/anthropic/qwen3.8-flash")){console.error("sol-pi profile drift:",JSON.stringify(e));process.exit(1)}' \
     || { echo "sol-pi config/profile check failed"; cat /tmp/sol-pi-config.json 2>/dev/null; exit 1; }
 RUN PI_SKIP_VERSION_CHECK=1 timeout 60 pi -e /extensions/sol-pi --mode rpc </dev/null >/tmp/pi-solpi-load.log 2>&1; rc=$?; \
     head -5 /tmp/pi-solpi-load.log; \
@@ -196,7 +198,7 @@ RUN set -e; \
     rc=0; \
     PI_SKIP_VERSION_CHECK=1 timeout 60 pi --no-approve -e /extensions/sol-pi -e /extensions/sol-pi.trust-probe.mjs --mode rpc </dev/null >/tmp/pi-solpi-arm1.log 2>&1 || rc=$?; \
     grep -q sol_pi_trust_probe /tmp/pi-solpi-arm1.log || { echo "sol-pi trust gate arm1: probe line missing (pi rc=$rc)"; cat /tmp/pi-solpi-arm1.log; exit 1; }; \
-    node -e 'const l=require("fs").readFileSync("/tmp/pi-solpi-arm1.log","utf8").split("\n").find(l=>l.includes("sol_pi_trust_probe"));const e=JSON.parse(l);if(e.error){console.error("trust probe errored:",e.error);process.exit(1)}if(e.reducer!==false||e.actionFusion!==true){console.error("ARM1 FAIL: --no-approve must yield the shipped profile, got",l);process.exit(1)}' || { echo "sol-pi trust gate arm1 assertion failed"; cat /tmp/pi-solpi-arm1.log; exit 1; }; \
+    node -e 'const l=require("fs").readFileSync("/tmp/pi-solpi-arm1.log","utf8").split("\n").find(l=>l.includes("sol_pi_trust_probe"));const e=JSON.parse(l);if(e.error){console.error("trust probe errored:",e.error);process.exit(1)}if(e.reducer!==true||e.actionFusion!==true){console.error("ARM1 FAIL: --no-approve must yield the shipped profile (actionFusion+reducer on; the hostile file said actionFusion=false), got",l);process.exit(1)}' || { echo "sol-pi trust gate arm1 assertion failed"; cat /tmp/pi-solpi-arm1.log; exit 1; }; \
     rc=0; \
     PI_SKIP_VERSION_CHECK=1 timeout 60 pi -e /extensions/sol-pi -e /extensions/sol-pi.trust-probe.mjs --mode rpc </dev/null >/tmp/pi-solpi-arm2.log 2>&1 || rc=$?; \
     grep -q sol_pi_trust_probe /tmp/pi-solpi-arm2.log || { echo "sol-pi trust gate arm2: probe line missing (pi rc=$rc)"; cat /tmp/pi-solpi-arm2.log; exit 1; }; \

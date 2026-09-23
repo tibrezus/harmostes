@@ -27,6 +27,7 @@
 package review
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -59,14 +60,47 @@ type Envelope struct {
 	Label            string   `json:"label"`            // the review-request label
 	RequiredContexts []string `json:"requiredContexts"` // merge-rule required contexts
 	GreenContexts    []string `json:"greenContexts"`    // contexts observed green at head
+	// VerdictURL: the anchor of the verdict comment that stands at HeadSHA
+	// (#577) — set only on verdict-standing refusals so the host-facing
+	// one-liner deep-links the author to the review they missed.
+	VerdictURL string `json:"verdictUrl,omitempty"`
 }
 
 // Evaluation is one gate decision plus its reason.
 type Evaluation struct {
 	Decision Decision
 	Reason   string
+	// Code is the machine-readable release code for standdown Evaluations
+	// (#408 item 2): the gate's release classification consults the code
+	// FIRST and falls back to Reason substrings only for legacy producers
+	// (pre-code Evaluations, external reason writers). The safety property —
+	// which releases authorize Job deletion — must not rest on sentence
+	// wording; the prose stays for humans (logs, timeline, the CR).
+	Code     ReleaseCode
 	Envelope *Envelope // set only on proceed
 }
+
+// ReleaseCode is the closed vocabulary of standdown reasons the gate can
+// classify. It maps 1:1 onto the release-reason vocabulary via
+// gate.classifyRelease; an empty code on a standdown Evaluation means a
+// legacy/external producer — the prose fallback applies.
+type ReleaseCode string
+
+const (
+	CodePRClosed     ReleaseCode = "pr-closed"     // PR closed — the verdict can never land (cancel)
+	CodeConsumed     ReleaseCode = "consumed"      // verdict posted, label consumed — review done
+	CodeHorizon      ReleaseCode = "horizon"       // ambiguity horizon exceeded — verdict may still land (ADR-0006)
+	CodeHeadMoved    ReleaseCode = "head-moved"    // PR advanced past the dispatched head (#410) — verdict void (cancel)
+	CodeDispatchDead ReleaseCode = "dispatch-dead" // dispatched, no verdict within the dispatch timeout (cancel; no live Job left)
+	CodeStanddown    ReleaseCode = "standdown"     // anything else the gate stops asking for — never cancels
+	// CodeVerdictStanding (#567): a verdict trailer already stands at the
+	// head being armed — this exact diff was reviewed and got its verdict.
+	// Re-dispatching would deterministically re-run a finished review (the
+	// rhesadox#2359 class: six identical reviews of one head because re-arm
+	// had become a retry button against a non-deterministic verdict). A head
+	// is reviewed exactly once; a new review requires a new head (a push).
+	CodeVerdictStanding ReleaseCode = "verdict-standing"
+)
 
 // API is the per-host API surface the gate reads. It exists so tests can
 // stub the transport.
@@ -76,6 +110,20 @@ type API interface {
 	RequiredContexts(ctx context.Context, repo, branch string) ([]string, error)
 	ContextStates(ctx context.Context, repo, sha string) (map[string]string, error)
 	ListComments(ctx context.Context, repo string, number int, since time.Time) ([]IssueComment, error)
+	// ListCommentsAll walks the conversation WITHOUT a since filter — the
+	// standing-verdict scan's primitive (#567). It reports truncated: the
+	// page cap on an UNFILTERED walk keeps the OLDEST pages, and the verdict
+	// is the newest thing in the conversation, so silent truncation would
+	// fail OPEN (proceed on an unscannable history — the #2359 churn, back
+	// on exactly the longest-running PRs). Callers treat truncated as
+	// inconclusive and wait (#242 page-1-hides-the-verdict, #308 dialect).
+	ListCommentsAll(ctx context.Context, repo string, number int) (comments []IssueComment, truncated bool, err error)
+	// PostComment writes one conversation comment (#577): the standing-
+	// verdict refusal is invisible on the PR surface (status + timeline are
+	// controller-side bookkeeping the author never sees), so the first
+	// refusal of a head posts a one-line pointer to the missed verdict. The
+	// sweep runs worker-side (token-bearing); the controller never posts.
+	PostComment(ctx context.Context, repo string, number int, body string) error
 }
 
 // PullRequest is the normalized PR view the gate needs.
@@ -225,6 +273,57 @@ func (a *RESTAPI) get(ctx context.Context, host Host, path, accept string, out a
 
 var errNotFound = fmt.Errorf("review: not found")
 
+// post writes one JSON payload to the host with the same token/transport
+// conventions as get. The gate is read-only everywhere EXCEPT the refusal
+// notice (#577): the sweep runs worker-side where the host tokens live, so
+// the one-line pointer to a missed verdict posts from here.
+func (a *RESTAPI) post(ctx context.Context, host Host, path string, payload any) error {
+	if a.Client == nil {
+		a.Client = http.DefaultClient
+	}
+	p, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.baseURL(host)+path, bytes.NewReader(p))
+	if err != nil {
+		return err
+	}
+	token := ""
+	if a.TokenLookup != nil {
+		for _, env := range host.TokenEnvNames() {
+			if v := a.TokenLookup(env); v != "" {
+				token = v
+				break
+			}
+		}
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "token "+token)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := a.Client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return &httpError{Status: resp.StatusCode, Body: string(body)}
+	}
+	return nil
+}
+
+// PostComment writes one conversation comment (#577). Both host kinds
+// expose issue comments at the same path shape with the same {body} payload.
+func (a *RESTAPI) PostComment(ctx context.Context, repo string, number int, body string) error {
+	host, err := ResolveHost(repo)
+	if err != nil {
+		return err
+	}
+	return a.post(ctx, host, fmt.Sprintf("/repos/%s/issues/%d/comments", host.RepoPath, number), map[string]string{"body": body})
+}
+
 // httpError carries a non-2xx status from get().
 type httpError struct {
 	Status int
@@ -270,9 +369,14 @@ func (a *RESTAPI) GetPullRequest(ctx context.Context, repo string, number int) (
 }
 
 // IssueComment is the minimal issue/PR comment view the gate needs: the
-// body, scanned for the verdict trailer.
+// body, scanned for the verdict trailer, plus the anchor fields the
+// refusal notice links through (#577): ID and HTMLURL identify the exact
+// verdict comment so the host-facing one-liner can deep-link the author to
+// the review they missed.
 type IssueComment struct {
-	Body string `json:"body"`
+	ID      int64  `json:"id"`
+	Body    string `json:"body"`
+	HTMLURL string `json:"html_url"`
 }
 
 // maxCommentPages bounds the page walk in ListComments: 10 pages of 100
@@ -323,6 +427,37 @@ func (a *RESTAPI) ListComments(ctx context.Context, repo string, number int, sin
 	return out, nil
 }
 
+// ListCommentsAll walks the FULL conversation with no since filter. The
+// truncated flag is the load-bearing part (#567 r36): an ascending page
+// walk capped at maxCommentPages keeps the oldest pages, so a conversation
+// longer than the cap hides its newest verdict from this scan — reported,
+// never swallowed.
+func (a *RESTAPI) ListCommentsAll(ctx context.Context, repo string, number int) ([]IssueComment, bool, error) {
+	host, err := ResolveHost(repo)
+	if err != nil {
+		return nil, false, err
+	}
+	pageSize := "limit=100"
+	if host.Kind == HostGitHub {
+		pageSize = "per_page=100"
+	}
+	base := fmt.Sprintf("/repos/%s/issues/%d/comments?%s", host.RepoPath, number, pageSize)
+	var out []IssueComment
+	truncated := false
+	for page := 1; page <= maxCommentPages; page++ {
+		var batch []IssueComment
+		if err := a.get(ctx, host, fmt.Sprintf("%s&page=%d", base, page), "application/json", &batch); err != nil {
+			return nil, false, err
+		}
+		out = append(out, batch...)
+		if len(batch) < 100 {
+			return out, false, nil
+		}
+	}
+	truncated = true
+	return out, truncated, nil
+}
+
 // RequiredContexts reads the repo's merge rules and returns the contexts
 // that must be green to merge — the single definition of "CI green". A repo
 // without branch protection has no required contexts (label alone proceeds).
@@ -362,6 +497,78 @@ func (a *RESTAPI) RequiredContexts(ctx context.Context, repo, branch string) ([]
 			return nil, err
 		}
 		return prot.StatusCheckContexts, nil
+	}
+}
+
+// classifyRequiredContexts buckets the required contexts by state — the
+// ONE classification home, shared by the label-present proceed path and
+// labelAbsentHoldNote (#512): red beats running beats missing beats green,
+// and a context with a live-but-unfinished run (running) is distinct from
+// one with NO record at the head at all (missing) — the forgejo#132 class,
+// where an operator compared green records at an old head while the gate
+// silently held on contexts that had never started (#588).
+func classifyRequiredContexts(required []string, states map[string]string) (red, running, missing, green []string) {
+	for _, ctx := range required {
+		switch states[ctx] {
+		case "success":
+			green = append(green, ctx)
+		case "failure":
+			red = append(red, ctx)
+		case "pending": // a live run exists but is unfinished
+			running = append(running, ctx)
+		default: // no record on either surface at this head
+			missing = append(missing, ctx)
+		}
+	}
+	return red, running, missing, green
+}
+
+// ciWaitingHead stamps a CI waiting reason with the evaluated head (short
+// SHA) (#588): the forgejo#132 incident stayed mysterious for hours because
+// the reason did not carry WHICH head's CI the gate had evaluated, so the
+// operator's stale-head comparison could not be falsified at a glance.
+func ciWaitingHead(head string) string {
+	if len(head) > 7 {
+		head = head[:7]
+	}
+	return head
+}
+
+// labelAbsentHoldNote names WHY an armed, label-absent, verdict-less claim
+// is holding (#512): the armed claim dispatches on CI green regardless of
+// the label — the queued-claim re-dispatch pass reads the claim, not the
+// ingress — so "ci red/pending at head" is the benign majority (dispatch
+// follows green). "ingress may be lost" is reserved for the genuinely
+// ambiguous residual: a green or unreadable head with the label gone and
+// no verdict (the #1635 class). Best-effort by design: a fetch failure
+// degrades to the ambiguous wording, never to a wrong CI claim.
+func labelAbsentHoldNote(ctx context.Context, api API, p Params, pr *PullRequest) string {
+	required, err := api.RequiredContexts(ctx, p.Repo, pr.Base)
+	if err != nil || len(required) == 0 {
+		// No merge-rule contexts: the label is the whole contract — its
+		// absence with no verdict is exactly the ambiguous case.
+		return "ingress may be lost"
+	}
+	states, err := api.ContextStates(ctx, p.Repo, pr.HeadSHA)
+	if err != nil {
+		return "ingress may be lost"
+	}
+	red, running, missing, _ := classifyRequiredContexts(required, states)
+	head := ciWaitingHead(pr.HeadSHA)
+	switch {
+	case len(red) > 0:
+		return "ci red at head " + head + " (" + strings.Join(red, ", ") + ") — dispatch on green"
+	case len(running) > 0 || len(missing) > 0:
+		var parts []string
+		if len(running) > 0 {
+			parts = append(parts, "running: "+strings.Join(running, ", "))
+		}
+		if len(missing) > 0 {
+			parts = append(parts, "no records at head: "+strings.Join(missing, ", "))
+		}
+		return "ci pending at head " + head + " (" + strings.Join(parts, "; ") + ") — dispatch on green"
+	default:
+		return "ci green at head, dispatch imminent; if this persists, ingress may be lost"
 	}
 }
 
@@ -416,20 +623,24 @@ func (a *RESTAPI) ContextStates(ctx context.Context, repo, sha string) (map[stri
 			}
 		}
 	default: // Forgejo
-		var statuses []struct {
-			Context string `json:"context"`
-			State   string `json:"state"`  // GitHub field name
-			StatusF string `json:"status"` // Forgejo/Gitea field name
+		// The COMBINED status view seeds first: it is the forge's own
+		// deduped per-context answer for this SHA. The raw /statuses list is
+		// vulnerable to foreign-run mis-binds (the known status-aggregator
+		// bug: another run's job posts a pending against this SHA with a
+		// NEWER created_at — live: rhesadox #2234's fresh arm read
+		// 'backend-compile (rocm)' as pending for hours while the combined
+		// view said success). Raw entries still fill contexts the combined
+		// view does not cover; contexts it covers are authoritative.
+		var combined struct {
+			Statuses []struct {
+				Context string `json:"context"`
+				State   string `json:"state"`  // GitHub field name
+				StatusF string `json:"status"` // Forgejo/Gitea field name
+			} `json:"statuses"`
 		}
-		get(fmt.Sprintf("/repos/%s/commits/%s/statuses", host.RepoPath, sha), "application/json", &statuses)
-		// Forgejo returns NEWEST-FIRST with multiple entries per context
-		// (superseded attempts linger below). FIRST entry wins — last-wins
-		// let a stale pending clobber the fresh success, arming the gate
-		// forever on green heads (observed live on rhesadox #1566). Field
-		// name differs by host: GitHub sends `state`, Forgejo sends
-		// `status` (a missing field parsing as "" classified as failure —
-		// observed live: an all-green head read as red).
-		for _, s := range statuses {
+		get(fmt.Sprintf("/repos/%s/commits/%s/status", host.RepoPath, sha), "application/json", &combined)
+		combinedCovered := map[string]bool{}
+		for _, s := range combined.Statuses {
 			v := s.State
 			if v == "" {
 				v = s.StatusF
@@ -437,6 +648,58 @@ func (a *RESTAPI) ContextStates(ctx context.Context, repo, sha string) (map[stri
 			if _, ok := states[s.Context]; !ok {
 				states[s.Context] = normalizeStatusState(v)
 			}
+			combinedCovered[s.Context] = true
+		}
+		var statuses []struct {
+			Context   string `json:"context"`
+			State     string `json:"state"`  // GitHub field name
+			StatusF   string `json:"status"` // Forgejo/Gitea field name
+			CreatedAt string `json:"created_at"`
+		}
+		get(fmt.Sprintf("/repos/%s/commits/%s/statuses", host.RepoPath, sha), "application/json", &statuses)
+		// Forgejo returns NEWEST-FIRST with multiple entries per context
+		// (superseded attempts linger below). First-wins per context, with
+		// a SAME-SECOND tie-break: Forgejo can repost a status within the
+		// same second (CI re-run), and the newest-first order between equal
+		// timestamps is unstable — a stale pending can sit ABOVE the fresh
+		// success (observed live on rhesadox #2234: pending@23:00:08 above
+		// success@23:00:08 → first-wins kept the gate armed on a green head
+		// for hours). At equal timestamps the CONCLUSIVE state wins
+		// (success < pending < failure); genuinely newer entries (distinct
+		// timestamps) still win outright, so a real pending or red beats an
+		// older green exactly as before. First-wins over last-wins stays
+		// (last-wins let a stale pending clobber a fresh success — rhesadox
+		// #1566). Field name differs by host: GitHub sends `state`, Forgejo
+		// sends `status` (a missing field parsing as "" classified as
+		// failure — observed live: an all-green head read as red).
+		precedence := map[string]int{"success": 0, "pending": 1}
+		curAt := map[string]string{}
+		for _, s := range statuses {
+			if combinedCovered[s.Context] {
+				// The combined view owns this context — a raw entry (possibly
+				// a foreign-run mis-bind) cannot override it.
+				continue
+			}
+			v := s.State
+			if v == "" {
+				v = s.StatusF
+			}
+			nv := normalizeStatusState(v)
+			cur, ok := states[s.Context]
+			if !ok {
+				states[s.Context] = nv
+				curAt[s.Context] = s.CreatedAt
+				continue
+			}
+			// Same-second rows: the more conclusive state wins; a context
+			// only degrades (success→pending→failure) when the newer entry
+			// is strictly NEWER.
+			if s.CreatedAt == curAt[s.Context] && precedence[nv] < precedence[cur] {
+				states[s.Context] = nv
+			} else if s.CreatedAt > curAt[s.Context] {
+				states[s.Context] = nv
+			}
+			curAt[s.Context] = s.CreatedAt
 		}
 		var checks struct {
 			CheckRuns []struct {
@@ -556,7 +819,7 @@ func Evaluate(ctx context.Context, api API, p Params) Result {
 	}
 
 	if p.DisarmHint {
-		return Result{Evaluation: standdown("pull request closed"), NewArmedSha: ""}
+		return Result{Evaluation: standdown(CodePRClosed, "pull request closed"), NewArmedSha: ""}
 	}
 
 	pr, err := api.GetPullRequest(ctx, p.Repo, p.PR)
@@ -593,7 +856,17 @@ func Evaluate(ctx context.Context, api API, p Params) Result {
 	}
 
 	if pr.State != "open" {
-		return withPresence(standdown("pull request "+stateWord(pr.State)), "", time.Time{})
+		// #408 item 2: a Forgejo host can report state "merged" where GitHub
+		// says "closed". merged still classifies as plain standdown — NEVER a
+		// cancellation — because the run bound lets an in-flight verdict drain
+		// and the moved-head guard discards it; only closed is terminal for
+		// the review. Do not widen CodePRClosed to merged without revisiting
+		// that drain path.
+		code := CodeStanddown
+		if pr.State == "closed" {
+			code = CodePRClosed
+		}
+		return withPresence(standdown(code, "pull request "+stateWord(pr.State)), "", time.Time{})
 	}
 
 	if !pr.HasLabel(p.Label) {
@@ -626,7 +899,7 @@ func Evaluate(ctx context.Context, api API, p Params) Result {
 			return withoutPresence(waiting("label absent; verdict check failed: "+err.Error()), keepSha, armTime(p.ArmedAt, now))
 		}
 		if hasVerdict(comments) {
-			return withoutPresence(standdown("label absent (verdict posted — consumed)"), "", time.Time{})
+			return withoutPresence(standdown(CodeConsumed, "label absent (verdict posted — consumed)"), "", time.Time{})
 		}
 		armedAt := armTime(p.ArmedAt, now)
 		// Head moved during the ambiguity window: reset the horizon clock,
@@ -637,9 +910,18 @@ func Evaluate(ctx context.Context, api API, p Params) Result {
 			armedAt = now
 		}
 		if now.Sub(armedAt) > p.Horizon {
-			return withoutPresence(standdown("horizon exceeded (label absent, no verdict; pending > "+p.Horizon.String()+")"), "", time.Time{})
+			return withoutPresence(standdown(CodeHorizon, "horizon exceeded (label absent, no verdict; pending > "+p.Horizon.String()+")"), "", time.Time{})
 		}
-		return withPresence(waiting("label absent, no verdict — ingress may be lost, staying armed"), pr.HeadSHA, armedAt)
+		// #512: the hold note discriminates WHY the armed claim is parked —
+		// an armed claim dispatches on CI green regardless of the label (the
+		// queued-claim re-dispatch pass reads the claim, not the ingress),
+		// so "CI not green yet" is the benign, self-resolving majority.
+		// Only a green (or unreadable) head with the label gone and no
+		// verdict is the genuinely ambiguous #1635 class. One log line must
+		// answer "why is this PR not being reviewed?" without a second
+		// query — the old single wording read like a lost ingress on every
+		// red-CI hold.
+		return withPresence(waiting("label absent, no verdict — "+labelAbsentHoldNote(ctx, api, p, pr)+", staying armed"), pr.HeadSHA, armedAt)
 	}
 
 	// Head moved since arming: re-arm at the new head (reset the horizon).
@@ -649,7 +931,7 @@ func Evaluate(ctx context.Context, api API, p Params) Result {
 	}
 
 	if now.Sub(armedAt) > p.Horizon {
-		return withPresence(standdown("horizon exceeded (CI pending > "+p.Horizon.String()+")"), "", time.Time{})
+		return withPresence(standdown(CodeHorizon, "horizon exceeded (CI pending > "+p.Horizon.String()+")"), "", time.Time{})
 	}
 
 	// In-flight discrimination (#250 r2) + liveness bound (#248) — BEFORE
@@ -674,7 +956,7 @@ func Evaluate(ctx context.Context, api API, p Params) Result {
 			return withPresence(waiting("in-flight verdict check failed: "+err.Error()), pr.HeadSHA, armedAt)
 		}
 		if hasVerdict(comments) {
-			return withPresence(standdown("verdict posted — consumed"), "", time.Time{})
+			return withPresence(standdown(CodeConsumed, "verdict posted — consumed"), "", time.Time{})
 		}
 		// Head moved while the review was in flight (#410): the run was
 		// dispatched at the claim's head, but the PR has advanced past it.
@@ -693,12 +975,45 @@ func Evaluate(ctx context.Context, api API, p Params) Result {
 		// already prevented. A failed verdict scan stays on the waiting
 		// path above (conservative: retry the whole evaluation next sweep).
 		if p.ArmedSha != "" && p.ArmedSha != pr.HeadSHA {
-			return Result{Evaluation: standdown(fmt.Sprintf("head moved while review in flight (dispatched at %s, PR now at %s) — verdict could not land", p.ArmedSha, pr.HeadSHA)), NewArmedSha: ""}
+			return Result{Evaluation: standdown(CodeHeadMoved, fmt.Sprintf("head moved while review in flight (dispatched at %s, PR now at %s) — verdict could not land", p.ArmedSha, pr.HeadSHA)), NewArmedSha: ""}
 		}
 		if p.DispatchTimeout > 0 && now.Sub(p.DispatchedAt) >= p.DispatchTimeout {
-			return withPresence(standdown(fmt.Sprintf("dispatch presumed dead (no verdict after %s; run bound %s) — backlog will re-arm", p.DispatchTimeout, v1alpha1.OneShotRunBound)), "", time.Time{})
+			return withPresence(standdown(CodeDispatchDead, fmt.Sprintf("dispatch presumed dead (no verdict after %s; run bound %s) — backlog will re-arm", p.DispatchTimeout, v1alpha1.OneShotRunBound)), "", time.Time{})
 		}
 		return withPresence(waiting("review in flight — dispatched, verdict pending"), pr.HeadSHA, armedAt)
+	}
+
+	// A head is reviewed exactly once (#567): a verdict standing at the
+	// CURRENT head means this diff already got its verdict — proceeding
+	// would re-run a finished review. Checked AFTER the in-flight block (a
+	// running review is left alone to land) and BEFORE anything else can
+	// proceed: the refusal dominates CI state, horizon, and merge-rule
+	// fetches, because none of those can change the answer for an unchanged
+	// diff. Full history (zero since): the standing verdict may be hours old
+	// — predating this arm. The gate is read-only, so the refusal is memoised
+	// by the caller (ReviewReadyStatus.Refusals); without the memo the
+	// labeled scan would re-arm the refused PR every sweep, because the
+	// label it cannot remove is still on the host.
+	comments, truncated, err := api.ListCommentsAll(ctx, p.Repo, p.PR)
+	if err != nil {
+		return withPresence(waiting("verdict-standing check failed: "+err.Error()), pr.HeadSHA, armedAt)
+	}
+	if truncated {
+		// The scan could not see the whole conversation — inconclusive, and
+		// inconclusive must NOT proceed (fail closed, r36): the verdict sits
+		// at the newest end of exactly the history we could not read.
+		return withPresence(waiting("verdict-standing scan inconclusive (conversation exceeds the scan cap) — staying armed"), pr.HeadSHA, armedAt)
+	}
+	if verdict, src, ok := standingVerdictAt(comments, pr.HeadSHA); ok {
+		ev := standdown(CodeVerdictStanding, fmt.Sprintf(
+			"verdict already stands at head %s (%s) — the gate reviews each head exactly once: push a fix commit (new head), reply on the finding threads (fj review reply <pr> <comment-id>), resolve them (fj review resolve), then re-arm",
+			pr.HeadSHA, verdict))
+		// The refusal carries its head + the verdict's anchor (#577: the
+		// host-facing one-liner deep-links the author to the review they
+		// missed) so the caller can memoise it; the other envelope fields
+		// stay empty — nothing was dispatched.
+		ev.Envelope = &Envelope{Repo: p.Repo, PR: p.PR, HeadSHA: pr.HeadSHA, Label: p.Label, VerdictURL: src.HTMLURL}
+		return withPresence(ev, pr.HeadSHA, armedAt)
 	}
 
 	required, err := api.RequiredContexts(ctx, p.Repo, pr.Base)
@@ -717,26 +1032,26 @@ func Evaluate(ctx context.Context, api API, p Params) Result {
 		return withPresence(waiting("contexts fetch failed: "+err.Error()), pr.HeadSHA, armedAt)
 	}
 
-	var pending, red, green []string
-	for _, ctx := range required {
-		switch states[ctx] {
-		case "success":
-			green = append(green, ctx)
-		case "failure":
-			red = append(red, ctx)
-		default: // pending or missing entirely (run not started)
-			pending = append(pending, ctx)
-		}
-	}
+	red, running, missing, green := classifyRequiredContexts(required, states)
 
 	switch {
 	case len(red) > 0:
 		// Red CI is a silent non-event: the dev already sees red CI; a
 		// REQUEST_CHANGES verdict would be noise. Stay armed — the next
 		// push (synchronize) re-arms at the new head.
-		return withPresence(waiting("ci red at head ("+strings.Join(red, ", ")+") — staying armed"), pr.HeadSHA, armedAt)
-	case len(pending) > 0:
-		return withPresence(waiting("ci pending ("+strings.Join(pending, ", ")+")"), pr.HeadSHA, armedAt)
+		return withPresence(waiting("ci red at head "+ciWaitingHead(pr.HeadSHA)+" ("+strings.Join(red, ", ")+") — staying armed"), pr.HeadSHA, armedAt)
+	case len(running) > 0 || len(missing) > 0:
+		// #588: running (a live unfinished run) and missing (no record at
+		// this head at all) are different operator diagnoses — "wait" vs
+		// "the workflow never started / wrong head compared".
+		var parts []string
+		if len(running) > 0 {
+			parts = append(parts, "running: "+strings.Join(running, ", "))
+		}
+		if len(missing) > 0 {
+			parts = append(parts, "no records at head: "+strings.Join(missing, ", "))
+		}
+		return withPresence(waiting("ci pending at head "+ciWaitingHead(pr.HeadSHA)+" ("+strings.Join(parts, "; ")+")"), pr.HeadSHA, armedAt)
 	default:
 		return proceed(p, pr, required, green)
 	}
@@ -779,16 +1094,39 @@ func nowFrom(p Params) time.Time {
 }
 
 func waiting(reason string) Evaluation { return Evaluation{Decision: DecisionWaiting, Reason: reason} }
-func standdown(reason string) Evaluation {
-	return Evaluation{Decision: DecisionStanddown, Reason: reason}
+func standdown(code ReleaseCode, reason string) Evaluation {
+	return Evaluation{Decision: DecisionStanddown, Reason: reason, Code: code}
 }
 
 // verdictTrailer anchors hasVerdict to the FULL trailer shape the pr-review
-// skill emits — decision, space-@-space, lowercase hex sha, terminal `-->`.
-// Matching the bare `<!-- pr-review: ` prefix read any comment QUOTING the
-// contract (docs, review instructions) as a consumed verdict, disarming a
-// still-pending request (#242).
-var verdictTrailer = regexp.MustCompile(`<!-- pr-review: (APPROVE|REQUEST_CHANGES|COMMENT) @ [0-9a-f]{7,40} -->`)
+// skill emits — decision, space-@-space, lowercase hex sha (7-40 chars),
+// terminal `-->`. Matching the bare `<!-- pr-review: ` prefix
+// read any comment QUOTING the contract (docs, review instructions) as a
+// consumed verdict, disarming a still-pending request (#242). Capture
+// groups expose the decision and the reviewed sha for the standing-verdict
+// refusal (#567).
+var verdictTrailer = regexp.MustCompile(`<!-- pr-review: (APPROVE|REQUEST_CHANGES|COMMENT) @ ([0-9a-f]{7,40}) -->`)
+
+// standingVerdictAt reports whether a verdict trailer stands at exactly
+// headSHA (#567), returning its decision. Trailer shas abbreviate the head
+// (the skill's contract allows 7-40 hex; hosts always report the full
+// head), so a trailer matches as a case-insensitive prefix of the head —
+// never the reverse: a head shorter than a trailer is a fake-world shape,
+// not a real abbreviation. Verdicts at any OTHER sha do not block — a push
+// (new head) is what re-opens review.
+func standingVerdictAt(comments []IssueComment, headSHA string) (decision string, source IssueComment, found bool) {
+	head := strings.ToLower(headSHA)
+	for _, c := range comments {
+		m := verdictTrailer.FindStringSubmatch(c.Body)
+		if m == nil {
+			continue
+		}
+		if strings.HasPrefix(head, strings.ToLower(m[2])) {
+			return m[1], c, true
+		}
+	}
+	return "", IssueComment{}, false
+}
 
 // hasVerdict reports whether any conversation comment carries a pr-review
 // verdict trailer (the skill's output contract — the merge currency). A

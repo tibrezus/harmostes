@@ -127,6 +127,39 @@ def build_briefing(db_path: str, ctx: dict) -> str:
             if shown >= MAX_SYMBOLS_PER_FILE * 4:
                 break
 
+    # 4. Cross-file symbol index — the diff's names and where ELSE they live.
+    # The bd563e2e5f1e measurement (#484): 43 minutes, 47 calls, and the
+    # repeated question was flow-level discovery — "who else host-gates
+    # this", "where else is that env var consumed" — which the per-file
+    # symbol lists above do not answer. This section pre-answers it from
+    # the graph: for each symbol DEFINED in a touched file, every OTHER
+    # file defining the same name (interfaces, overrides, mirrors, tests).
+    # That is the "who else implements X" lookup the agent used to burn a
+    # dozen greps on.
+    names: dict[str, list[tuple[str, int]]] = {}
+    for cid, paths in touched.items():
+        for path in paths[:MAX_FILES_LISTED]:
+            for name, kind, line in rows(db,
+                    "SELECT name, kind, line FROM symbols WHERE file = ? "
+                    "AND kind IN ('function','method','type','class') LIMIT 24", (path,)):
+                names.setdefault(name, []).append((path, line))
+    cross = []
+    for name, homes in sorted(names.items()):
+        home_files = {p for p, _ in homes}
+        others = [(f, l) for f, l in rows(db,
+                  "SELECT file, line FROM symbols WHERE name = ? "
+                  "AND kind IN ('function','method','type','class') ORDER BY file LIMIT 12", (name,))
+                  if f not in home_files]
+        if others:
+            cross.append((name, others))
+        if len(cross) >= 12:
+            break
+    if cross:
+        out.append("\n## Cross-file names (same symbol defined in several places — check these before claiming anything is the only implementation)\n")
+        for name, others in cross:
+            out.append(f"- `{name}` also defined at: " + "; ".join(f"`{f}:{l}`" for f, l in others[:5])
+                       + (f" (+{len(others) - 5} more)" if len(others) > 5 else ""))
+
     out.append("\nUse `rig search` ONLY for symbols this briefing does not answer; "
                "`read` whole files; grep/find/ls expeditions are forbidden — "
                "everything above was already known before your first call.\n")

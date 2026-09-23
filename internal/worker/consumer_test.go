@@ -224,7 +224,7 @@ func TestDispatcherFromEnvWiresExtraMounts(t *testing.T) {
 
 	// The seam's final hop: config → params → rendered Job.
 	at := &v1alpha1.Attempt{ObjectMeta: metav1.ObjectMeta{Name: "attempt-seam", Namespace: "default"}}
-	job := k8s.BuildJob(cfg.JobParams(at, "pr-review-harmostes", "default", 0, nil, nil))
+	job := k8s.BuildJob(cfg.JobParams(at, "pr-review-harmostes", "default", 0, nil, nil, nil, "", nil))
 
 	var volNames []string
 	for _, v := range job.Spec.Template.Spec.Volumes {
@@ -272,6 +272,19 @@ func TestDispatchConfigCancelOnSupersedeKnob(t *testing.T) {
 	}
 	if !cfg.DisableCancelOnSupersede {
 		t.Fatal("HARMOSTES_CANCEL_ON_SUPERSEDE=false must disable the pass")
+	}
+
+	// Case variant (#408 item 8): the rendered chart could carry "False" —
+	// the render contract and ParseBool's accepted grammar stay pinned
+	// together, so a helm-side casing change cannot ship a knob that only
+	// looks off.
+	t.Setenv("HARMOSTES_CANCEL_ON_SUPERSEDE", "False")
+	cfg, err = DispatchConfigFromEnv(func(string, ...any) {})
+	if err != nil {
+		t.Fatalf("case-variant off config: %v", err)
+	}
+	if !cfg.DisableCancelOnSupersede {
+		t.Fatal("HARMOSTES_CANCEL_ON_SUPERSEDE=False must disable the pass (ParseBool grammar)")
 	}
 
 	t.Setenv("HARMOSTES_CANCEL_ON_SUPERSEDE", "sometimes")

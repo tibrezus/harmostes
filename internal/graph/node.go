@@ -91,6 +91,15 @@ type NodeResult struct {
 	// these fields are merged on top of the kernel-stamped authoritative fields
 	// (NodeID, RunID, Status, Provenance, ProducedAt).
 	Envelope *v1alpha1.NodeResultEnvelope
+
+	// Transient marks a failure the executor classified retryable (plugin
+	// exit 75 EX_TEMPFAIL / 69 EX_UNAVAILABLE). The graph executor consults
+	// it against the node's retry policy; the flag itself never persists —
+	// the envelope's Attempt count is the durable trace.
+	Transient bool
+
+	// Attempt is the 1-based attempt this result came from (>1 on retries).
+	Attempt int
 }
 
 // NodeExecutor executes a single node in the pipeline graph. Each node type
@@ -173,6 +182,11 @@ type Dependencies struct {
 	ToolPublisher agent.ToolPublisher // optional
 	SessionMeta   agent.SessionMeta   // identity metadata
 
+	// TurnPublisher observes each completed agent turn as it lands (immediate,
+	// not gate-lagged): the worker stamps the Attempt's live Progress window
+	// and emits the timeline turn event from here.
+	TurnPublisher agent.TurnPublisher // optional
+
 	// Timeline (evidence layer of the Canonical Orchestration History): when
 	// non-nil, node boundary events and plugin output tails are appended per
 	// run. Nil-safe — consumers without Dapr skip evidence silently.
@@ -205,6 +219,7 @@ func NewDefaultRegistry(deps Dependencies) *Registry {
 	agentExec := NewAgentExecutor(deps.AgentRunner, deps.TaskResolver, deps.PluginResolver, deps.DaprClient, deps.StateStore)
 	agentExec.sessionWr = deps.SessionWriter
 	agentExec.toolPub = deps.ToolPublisher
+	agentExec.turnPub = deps.TurnPublisher
 	agentExec.sessionMeta = deps.SessionMeta
 	r.Register(agentExec)
 	r.Register(NewBranchExecutor())

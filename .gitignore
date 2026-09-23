@@ -18,6 +18,7 @@ __pycache__/
 # Playwright E2E tier (e2e/)
 e2e/node_modules/
 e2e/test-results/
+/test-results/
 e2e/playwright-report/
 /harmostes-agent
 /rig.db
@@ -30,3 +31,5 @@ e2e/playwright-report/
 # vendored sol-pi (#425): derived by make test-sol-pi / npm ci — never committed
 extensions/sol-pi/node_modules/
 tools/code-island/node_modules/
+extensions/turn-budget/node_modules/
+e2e/probe-prod-257.mjs

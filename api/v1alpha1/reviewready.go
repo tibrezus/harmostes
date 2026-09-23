@@ -1,8 +1,10 @@
 package v1alpha1
 
 import (
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"strings"
 	"time"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // OneShotRunBound is the hard wall-clock ceiling the worker's one-shot
@@ -285,4 +287,127 @@ type ReviewReadyStatus struct {
 	// (only observed dispatches burn the budget). Cleared implicitly by
 	// age: the release pass trusts it for reDispatchGrace.
 	LastSweepAbortAt *metav1.Time `json:"lastSweepAbortAt,omitempty"`
+
+	// LastWake records the trigger event this sweep ran on (#556) —
+	// "host/owner/name#N (labeled)" for PR-shaped wakes, "repo@shorthash
+	// (ci_completed)" for host-native CI wakes, empty for poll sweeps
+	// (the previous wake stays visible: the field explains WHAT ran, and
+	// a blanking poll would erase the answer).
+	LastWake string `json:"lastWake,omitempty"`
+
+	// Refusals memoises heads the gate refused to re-review (#567): a
+	// pr-review verdict trailer already stands at that SHA, so a re-armed
+	// request would deterministically re-run a finished review (the
+	// rhesadox#2359 class — six identical reviews of one head). The memo
+	// exists because the gate is READ-ONLY: it cannot remove the label, so
+	// without this list the labeled scan would re-arm the refused PR every
+	// sweep. Keyed repo+pr+sha; a push produces a new SHA and flows
+	// normally. Bounded — the 16 most recent refusals per workflow.
+	Refusals []ReviewRefusal `json:"refusals,omitempty"`
+}
+
+// MaxReviewRefusals bounds the standing-verdict memo. Entries are keyed by
+// an immutable SHA — they never expire, they are superseded: a fix push
+// changes the head and the candidate flows normally without a memo hit.
+const MaxReviewRefusals = 16
+
+// RecordReviewRefusal upserts a refusal (newest first) and prunes to the
+// cap. Package-level so the gate can maintain the memo on a sweep-local
+// slice (the sweep's liveAgg read may be nil on a fresh workflow); the
+// method below delegates. Upsert, not append: a repeated refusal of the
+// same head refreshes the timestamp instead of growing the list. On the
+// same-head re-refusal (a human re-arm lands here by design) the refusal
+// fields refresh, but the notification state CARRIES: the PR notice for
+// this (pr, head) already landed (#577 — exactly one notice per head);
+// a changed verdict link still re-notifies, pointing at the newer verdict.
+func RecordReviewRefusal(list []ReviewRefusal, r ReviewRefusal) []ReviewRefusal {
+	for i := range list {
+		if list[i].Repo == r.Repo && list[i].PR == r.PR && list[i].HeadSHA == r.HeadSHA {
+			if list[i].VerdictURL == r.VerdictURL {
+				r.HostNotified = list[i].HostNotified
+			}
+			out := make([]ReviewRefusal, 0, len(list))
+			out = append(out, r)
+			out = append(out, list[:i]...)
+			out = append(out, list[i+1:]...)
+			if len(out) > MaxReviewRefusals {
+				out = out[:MaxReviewRefusals]
+			}
+			return out
+		}
+	}
+	out := make([]ReviewRefusal, 0, len(list)+1)
+	out = append(out, r)
+	out = append(out, list...)
+	if len(out) > MaxReviewRefusals {
+		out = out[:MaxReviewRefusals]
+	}
+	return out
+}
+
+// ReviewRefusalFor returns the newest memo entry for (repo, pr), or nil.
+// The caller compares the head SHA (ReviewRefusal.Matches) — the entry
+// alone means only that this PR was refused at SOME head.
+func ReviewRefusalFor(list []ReviewRefusal, repo string, pr int) *ReviewRefusal {
+	for i := range list {
+		if list[i].Repo == repo && list[i].PR == pr {
+			return &list[i]
+		}
+	}
+	return nil
+}
+
+// ReviewRefusal is one refused re-review: (repo, pr) at HeadSHA carries a
+// standing verdict, recorded when the gate stood down with
+// CodeVerdictStanding.
+type ReviewRefusal struct {
+	Repo    string       `json:"repo"`
+	PR      int          `json:"pr"`
+	HeadSHA string       `json:"headSha"`
+	Reason  string       `json:"reason,omitempty"`
+	At      *metav1.Time `json:"at,omitempty"`
+	// VerdictURL: deep link to the verdict comment that stands at HeadSHA
+	// (#577) — captured at creation so the host-facing notice can link the
+	// author to the review they missed without re-walking the conversation.
+	VerdictURL string `json:"verdictUrl,omitempty"`
+	// Emitted: the gate-standdown timeline event for THIS refusal has
+	// landed. Per-candidate dedupe (r38 F-B): a workflow-level headline
+	// mute suppressed a DIFFERENT candidate's terminal standdown and
+	// oscillated with multi-PR sweeps — repetition state must live on the
+	// refusal, not on the sweep's single lastReason.
+	Emitted bool `json:"emitted,omitempty"`
+	// HostNotified: the one-line PR comment pointing at this refusal has
+	// been posted (#577). The refusal was invisible on the PR surface —
+	// the only one the author watches — and a same-head re-arm storm read
+	// as a stalled queue (rhesadox#2340: four arms over four hours against
+	// a verdict that landed before the first). Dedupe per refusal; a
+	// failed post leaves this false and the next sweep retries.
+	HostNotified bool `json:"hostNotified,omitempty"`
+}
+
+// RecordRefusal upserts a refusal (newest first) and prunes to the cap.
+func (s *ReviewReadyStatus) RecordRefusal(r ReviewRefusal) {
+	s.Refusals = RecordReviewRefusal(s.Refusals, r)
+}
+
+// RefusalFor returns the newest memo entry for (repo, pr), or nil. The
+// caller compares the head SHA (Refusal.Matches) — the entry alone means
+// only that this PR was refused at SOME head.
+func (s *ReviewReadyStatus) RefusalFor(repo string, pr int) *ReviewRefusal {
+	return ReviewRefusalFor(s.Refusals, repo, pr)
+}
+
+// Matches reports whether the memo entry covers the given head SHA: trailer
+// shas may abbreviate (7-40 hex per the skill's trailer contract), so the
+// comparison is a case-insensitive prefix in the longer direction. An empty
+// stored sha matches nothing — never skip a candidate on a blind entry.
+func (r ReviewRefusal) Matches(headSHA string) bool {
+	if r.HeadSHA == "" || headSHA == "" {
+		return false
+	}
+	memo, head := strings.ToLower(r.HeadSHA), strings.ToLower(headSHA)
+	if len(memo) <= len(head) {
+		return strings.HasPrefix(head, memo)
+	}
+	return strings.HasPrefix(memo, head)
 }

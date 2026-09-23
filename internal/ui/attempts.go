@@ -12,6 +12,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	sigsyaml "sigs.k8s.io/yaml"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
 	"github.com/tibrezus/harmostes/internal/agent"
@@ -76,6 +77,20 @@ func (s *Server) handleAttemptList(w http.ResponseWriter, r *http.Request) {
 	sort.Slice(groups, func(i, j int) bool {
 		return groups[i].LastActivity > groups[j].LastActivity
 	})
+
+	// Per-subject usage onto each group (the latest attempt's envelope
+	// payload; empty for queued/pre-payload attempts — honest absence).
+	byName := map[string]*v1alpha1.Attempt{}
+	for i := range attempts {
+		byName[attempts[i].Name] = &attempts[i]
+	}
+	for gi := range groups {
+		if u := usageFromAttempt(byName[groups[gi].LatestAttempt]); u != nil {
+			groups[gi].TokensIn = u.InputTokens
+			groups[gi].TokensOut = u.OutputTokens
+			groups[gi].Model = u.Model
+		}
+	}
 
 	// The strip counts the WHOLE window; the tabs filter it. Rank order
 	// floats failures to the top regardless of activity (the orchestration-
@@ -197,6 +212,11 @@ type attemptGroup struct {
 	LatestAttempt string // name of the most recently active attempt (wall + drill-down)
 	LastActivity  string
 	Attempts      []attemptSummary
+	// Per-subject usage (the latest attempt's agent envelope payload —
+	// the Attempt CR is the per-PR source of record, #586).
+	TokensIn  int
+	TokensOut int
+	Model     string
 }
 
 // windowCutoff resolves the list window; unknown values fall back to 24h.
@@ -331,21 +351,25 @@ type attemptDetailData struct {
 	TotalRuns      int
 	TotalNodeRes   int
 	TotalEvidence  int
-	NodeResults    []v1alpha1.NodeResultEnvelope
+	NodeResults    []nodeResultRow
 	Evidence       []v1alpha1.EvidenceReference
 	Owner          string
 	AgentEnabled   bool
 	Claim          *claimView // review-gate claim state (nil = not a gated attempt)
 	LastRunAt      string
-	TotalDuration  string       // earliest run start → latest run end ("" if unknown)
-	Graph          runGraphView // timeline graph: compiled workflow + node state
-	NodeDataJSON   template.JS  // hover payload (own json.Marshal output: safe raw)
+	TotalDuration  string        // earliest run start → latest run end ("" if unknown)
+	Graph          runGraphView  // timeline graph: compiled workflow + node state
+	NodeDataJSON   template.JS   // hover payload (own json.Marshal output: safe raw)
+	WorkflowYAML   string        // the run's resolved workflow document (Workflow Code pane)
+	ModelPath      string        // island model path (workflow-<name>.yaml)
+	TimelineHTML   template.HTML // Event Timeline initial render (own renderEventTimeline output: safe)
 }
 
 // claimView is the review-gate claim state attached to a run.
 type claimView struct {
 	PR            string // host/owner/name#N (normalized)
 	HeadSHA       string
+	HeadShort     string // shortSHA(HeadSHA), precomputed for the fact strip
 	State         string // dispatched | released | armed/waiting…
 	ArmedSince    string
 	DispatchedAt  string
@@ -362,6 +386,16 @@ type runSummary struct {
 	StartedAt string
 	EndedAt   string
 	Phase     string
+	Duration  string // ended−started, humanized; "" while running
+}
+
+// nodeResultRow is the ledger projection of one Node Result Envelope
+// (ADR-0004): precomputed server-side so the template stays arithmetic-free.
+type nodeResultRow struct {
+	NodeID   string
+	Status   string
+	Duration string // humanized from DurationMs; "" when unset
+	Summary  string
 }
 
 // agentEnabledFor resolves whether a workflow runs an agent, matching the
@@ -398,6 +432,10 @@ func (s *Server) handleAttemptDetail(w http.ResponseWriter, r *http.Request) {
 	for _, run := range att.Status.Runs {
 		started := ""
 		ended := ""
+		duration := ""
+		if !run.StartedAt.IsZero() && !run.EndedAt.IsZero() && run.EndedAt.After(run.StartedAt.Time) {
+			duration = formatDuration(run.EndedAt.Sub(run.StartedAt.Time))
+		}
 		if !run.StartedAt.IsZero() {
 			started = run.StartedAt.Format("2006-01-02 15:04:05 MST")
 			if earliest.IsZero() || run.StartedAt.Time.Before(earliest) {
@@ -414,6 +452,7 @@ func (s *Server) handleAttemptDetail(w http.ResponseWriter, r *http.Request) {
 			Name:      run.Name,
 			StartedAt: started,
 			EndedAt:   ended,
+			Duration:  duration,
 			Phase:     run.Phase,
 		})
 	}
@@ -428,10 +467,18 @@ func (s *Server) handleAttemptDetail(w http.ResponseWriter, r *http.Request) {
 	// Fetch the Workflow to determine whether the agent is enabled.
 	// This controls whether the Session link is shown for runs. The ref is
 	// platform-prefixed ("ns/name"); the CR is addressed by its bare name.
+	// The same fetch feeds the Workflow Code pane: the document is the
+	// RESOLVED spec (instance overlaid on template defaults) — the exact
+	// shape this attempt's worker compiled, not the thin stored CR.
 	agentEnabled := false
 	var wf v1alpha1.Workflow
+	workflowYAML := ""
+	modelPath := ""
 	if err := s.k8sClient.Get(r.Context(), client.ObjectKey{Namespace: s.namespace, Name: workflowCRName(att.Spec.WorkflowRef)}, &wf); err == nil {
 		agentEnabled = s.agentEnabledFor(r.Context(), &wf)
+		resolved := s.resolveWorkflow(r.Context(), &wf)
+		workflowYAML = workflowYAMLOf(&wf, resolved.Spec)
+		modelPath = "workflow-" + wf.Name + ".yaml"
 	}
 
 	data := attemptDetailData{
@@ -448,8 +495,8 @@ func (s *Server) handleAttemptDetail(w http.ResponseWriter, r *http.Request) {
 		TotalRuns:      att.Status.TotalRuns(),
 		TotalNodeRes:   att.Status.TotalNodeResults(),
 		TotalEvidence:  att.Status.TotalEvidence(),
-		NodeResults:    att.Status.NodeResults,
 		Evidence:       att.Status.Evidence,
+		NodeResults:    nodeResultRows(att.Status.NodeResults),
 		Owner:          att.Spec.Owner,
 		AgentEnabled:   agentEnabled,
 		LastRunAt:      formatMetaTime(att.Status.LastRunAt),
@@ -459,6 +506,7 @@ func (s *Server) handleAttemptDetail(w http.ResponseWriter, r *http.Request) {
 		data.Claim = &claimView{
 			PR:             rv.PR,
 			HeadSHA:        rv.HeadSHA,
+			HeadShort:      shortSHA(rv.HeadSHA),
 			State:          claimState(rv),
 			Released:       rv.Released,
 			ReleaseReason:  rv.ReleaseReason,
@@ -476,7 +524,51 @@ func (s *Server) handleAttemptDetail(w http.ResponseWriter, r *http.Request) {
 		nodeJSON = []byte("{}")
 	}
 	data.NodeDataJSON = template.JS(nodeJSON)
+	// Workflow Code pane (#533): the resolved document. A failed timeline
+	// render degrades to empty — the SSE stream fills the pane on load and
+	// the first wake; the page never fails because a projection did.
+	data.WorkflowYAML = workflowYAML
+	data.ModelPath = modelPath
+	if frag, err := s.renderEventTimeline(r, att); err == nil {
+		data.TimelineHTML = template.HTML(frag)
+	} else {
+		s.logger.Error("initial timeline render", "attempt", att.Name, "err", err)
+	}
 	s.render(w, r, "pages/attempt_detail.html", data)
+}
+
+// workflowDocument is the canonical YAML projection of a Workflow as the
+// run executed it: identity + RESOLVED spec (template defaults overlaid,
+// instance fields win), no status, no server bookkeeping — the same
+// document discipline as templateDocument, one shape down: what a review
+// reads beside the event stream is what the worker compiled.
+type workflowDocument struct {
+	APIVersion string                `json:"apiVersion"`
+	Kind       string                `json:"kind"`
+	Metadata   templateDocumentMeta  `json:"metadata"`
+	Spec       v1alpha1.WorkflowSpec `json:"spec"`
+}
+
+// workflowYAMLOf renders the Workflow's resolved document YAML for an
+// explicit spec (identity stays the live CR's). Marshal failure is a
+// programming error (structs with json tags); degrade to a marked
+// placeholder rather than panicking — the pane shows the failure honestly.
+func workflowYAMLOf(wf *v1alpha1.Workflow, spec v1alpha1.WorkflowSpec) string {
+	doc := workflowDocument{
+		APIVersion: v1alpha1.SchemeGroupVersion.Identifier(),
+		Kind:       "Workflow",
+		Metadata: templateDocumentMeta{
+			Name:      wf.Name,
+			Namespace: wf.Namespace,
+			Labels:    wf.Labels,
+		},
+		Spec: spec,
+	}
+	b, err := sigsyaml.Marshal(doc)
+	if err != nil {
+		return "# workflow serialization failed: " + err.Error()
+	}
+	return string(b)
 }
 
 // formatMetaTime renders a metav1.Time for dense display; zero → "".
@@ -727,6 +819,20 @@ func (s *Server) handleAttemptPiSession(w http.ResponseWriter, r *http.Request) 
 }
 
 // chipState maps an attempt phase onto the shared chip vocabulary.
+// nodeResultRows projects envelopes into ledger table rows, durations
+// humanized server-side (the template never computes).
+func nodeResultRows(envs []v1alpha1.NodeResultEnvelope) []nodeResultRow {
+	rows := make([]nodeResultRow, 0, len(envs))
+	for _, e := range envs {
+		dur := ""
+		if e.DurationMs > 0 {
+			dur = formatDuration(time.Duration(e.DurationMs) * time.Millisecond)
+		}
+		rows = append(rows, nodeResultRow{NodeID: e.NodeID, Status: e.Status, Duration: dur, Summary: e.Summary})
+	}
+	return rows
+}
+
 func chipState(phase string) string {
 	switch phase {
 	case "failed":

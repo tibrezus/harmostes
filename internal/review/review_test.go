@@ -24,6 +24,9 @@ type fakeAPI struct {
 	ctxErr       error
 	comments     []fakeComment
 	commentsErr  error
+	truncated    bool
+	posted       []postedComment
+	commentErr   error
 }
 
 // fakeComment pairs an IssueComment with its host-side updated_at (the
@@ -35,6 +38,33 @@ type fakeComment struct {
 
 func (f *fakeAPI) GetPullRequest(ctx context.Context, repo string, n int) (*PullRequest, error) {
 	return f.pr, f.prErr
+}
+
+func (f *fakeAPI) ListCommentsAll(_ context.Context, _ string, _ int) ([]IssueComment, bool, error) {
+	if f.commentsErr != nil {
+		return nil, false, f.commentsErr
+	}
+	out := make([]IssueComment, 0, len(f.comments))
+	for _, c := range f.comments {
+		out = append(out, c.IssueComment)
+	}
+	return out, f.truncated, nil
+}
+
+// PostComment records the call (#577): tests assert the refusal notice's
+// posting count and payload through postedComments.
+func (f *fakeAPI) PostComment(_ context.Context, repo string, number int, body string) error {
+	if f.commentErr != nil {
+		return f.commentErr
+	}
+	f.posted = append(f.posted, postedComment{Repo: repo, PR: number, Body: body})
+	return nil
+}
+
+type postedComment struct {
+	Repo string
+	PR   int
+	Body string
 }
 
 func (f *fakeAPI) ListLabeledOpenPulls(_ context.Context, _, _ string) ([]PullRequest, error) {
@@ -184,6 +214,60 @@ func TestLabelAbsentNoVerdictHorizonStandsDown(t *testing.T) {
 	r := Evaluate(context.Background(), api, p)
 	if r.Decision != DecisionStanddown || r.NewArmedSha != "" {
 		t.Fatalf("want standdown past horizon, got %s sha=%s", r.Decision, r.NewArmedSha)
+	}
+}
+
+func TestLabelAbsentHoldNoteDiscriminatesCI(t *testing.T) {
+	// #512: the label-absent hold must NAME its reason. An armed claim
+	// dispatches on CI green regardless of the label (the queued-claim
+	// re-dispatch pass), so red/pending CI is the benign majority — say
+	// so. "ingress may be lost" is reserved for a green (or unreadable)
+	// head with the label gone and no verdict.
+	green := &fakeAPI{pr: openPR("full-pipeline"), required: []string{"a"}, states: map[string]string{"a": "success"}}
+	r := Evaluate(context.Background(), green, base)
+	if r.Decision != DecisionWaiting || !strings.Contains(r.Reason, "ci green at head") || !strings.Contains(r.Reason, "ingress may be lost") {
+		t.Fatalf("green head must keep the ambiguity note, got %q", r.Reason)
+	}
+
+	redC := &fakeAPI{pr: openPR("full-pipeline"), required: []string{"a", "b"}, states: map[string]string{"a": "success", "b": "failure"}}
+	r = Evaluate(context.Background(), redC, base)
+	if r.Decision != DecisionWaiting || !strings.Contains(r.Reason, "ci red at head abc123 (b)") || !strings.Contains(r.Reason, "dispatch on green") {
+		t.Fatalf("red CI must be named with the evaluated head + dispatch-on-green, got %q", r.Reason)
+	}
+	if strings.Contains(r.Reason, "ingress may be lost") {
+		t.Fatalf("red CI is not the ambiguous class, got %q", r.Reason)
+	}
+
+	pend := &fakeAPI{pr: openPR("full-pipeline"), required: []string{"a", "b"}, states: map[string]string{"a": "success", "b": "pending"}}
+	r = Evaluate(context.Background(), pend, base)
+	if r.Decision != DecisionWaiting || !strings.Contains(r.Reason, "ci pending at head abc123 (running: b)") || !strings.Contains(r.Reason, "dispatch on green") {
+		t.Fatalf("pending CI must be named with the evaluated head + dispatch-on-green, got %q", r.Reason)
+	}
+
+	// #588: a context with a live unfinished run (pending) is DISTINCT from
+	// one with no record at the head at all — "wait" vs "never started /
+	// stale-head comparison" (the forgejo#132 class).
+	mix := &fakeAPI{pr: openPR("full-pipeline"), required: []string{"a", "b", "c"}, states: map[string]string{"a": "success", "b": "pending"}}
+	r = Evaluate(context.Background(), mix, base)
+	if r.Decision != DecisionWaiting || !strings.Contains(r.Reason, "running: b") || !strings.Contains(r.Reason, "no records at head: c") || !strings.Contains(r.Reason, "at head abc123") {
+		t.Fatalf("running vs missing must be named separately at the evaluated head, got %q", r.Reason)
+	}
+}
+
+func TestLabelAbsentHoldNoteDegradesToAmbiguity(t *testing.T) {
+	// Best-effort by design (#512): a failed statuses fetch (or no merge
+	// rules at all — the label is then the whole contract) degrades to
+	// the ambiguous wording, never to a wrong CI claim.
+	ctxErr := &fakeAPI{pr: openPR("full-pipeline"), required: []string{"a"}, states: map[string]string{"a": "success"}, ctxErr: errors.New("boom")}
+	r := Evaluate(context.Background(), ctxErr, base)
+	if r.Decision != DecisionWaiting || !strings.Contains(r.Reason, "ingress may be lost") {
+		t.Fatalf("statuses fetch failure must keep the ambiguity note, got %q", r.Reason)
+	}
+
+	noRules := &fakeAPI{pr: openPR("full-pipeline"), required: nil, states: map[string]string{"a": "success"}}
+	r = Evaluate(context.Background(), noRules, base)
+	if r.Decision != DecisionWaiting || !strings.Contains(r.Reason, "ingress may be lost") {
+		t.Fatalf("no merge rules must keep the ambiguity note, got %q", r.Reason)
 	}
 }
 
@@ -422,6 +506,10 @@ func TestRESTGitHubShapes(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"check_runs": []map[string]string{{"name": "lint", "status": "completed", "conclusion": "success"}},
 			})
+		case "/repos/tibrezus/harmostes/issues/10/comments":
+			// #567: the standing-verdict scan reads the conversation before
+			// any proceed — an empty history is the clean-slate fixture.
+			_ = json.NewEncoder(w).Encode([]any{})
 		default:
 			http.NotFound(w, req)
 		}
@@ -598,6 +686,83 @@ func TestContextStatesNewestFirstWins(t *testing.T) {
 	}
 	if states["ci / build-test (push)"] != "success" {
 		t.Fatalf("single entries unaffected: %+v", states)
+	}
+}
+
+func TestContextStatesCombinedViewOwnsTheContext(t *testing.T) {
+	// Live regression (rhesadox #2234): a foreign run's job mis-binds a
+	// pending status against this SHA with a NEWER created_at than the real
+	// success (the forge status-aggregator bug). The raw list's newest-wins
+	// kept the gate armed on a green head for hours while the combined
+	// /status view said success. The combined view is the forge's own
+	// deduped per-context answer — it owns the context; raw fills only the
+	// contexts it does not cover.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(req.URL.Path, "/check-runs"):
+			_ = json.NewEncoder(w).Encode(map[string]any{"check_runs": []any{}})
+		case strings.HasSuffix(req.URL.Path, "/statuses"):
+			// the poisoned raw list: a foreign pending NEWER than the success
+			_ = json.NewEncoder(w).Encode([]map[string]string{
+				{"context": "ci / backend-compile (rocm) (push)", "status": "pending", "created_at": "2026-09-15T23:30:00Z"},
+				{"context": "ci / backend-compile (rocm) (push)", "status": "success", "created_at": "2026-09-15T23:00:08Z"},
+				{"context": "ci / build-test (push)", "status": "success", "created_at": "2026-09-15T22:58:00Z"},
+			})
+		case strings.HasSuffix(req.URL.Path, "/status"):
+			// the combined view: the authoritative per-context answer
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"statuses": []map[string]string{
+					{"context": "ci / backend-compile (rocm) (push)", "status": "success"},
+					{"context": "ci / build-test (push)", "status": "success"},
+				},
+			})
+		default:
+			http.NotFound(w, req)
+		}
+	}))
+	defer srv.Close()
+	api := &RESTAPI{Client: srv.Client(), BaseOverride: srv.URL + "/api/v1"}
+	states, err := api.ContextStates(context.Background(), "git.rezus.cloud/o/r", "abc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if states["ci / backend-compile (rocm) (push)"] != "success" {
+		t.Fatalf("the combined view must own the context over a newer foreign pending: %+v", states)
+	}
+	if states["ci / build-test (push)"] != "success" {
+		t.Fatalf("covered contexts unaffected: %+v", states)
+	}
+	// A context the combined view does not cover is filled from the raw list.
+	if states["integration / integration (cpu) (pull_request)"] != "" {
+		t.Fatalf("unexpected context: %+v", states)
+	}
+}
+
+func TestContextStatesCombinedAbsentFallsBackToRaw(t *testing.T) {
+	// A forge (or fake) that 404s the combined endpoint: raw-list semantics
+	// (newest-wins + same-second tie-break) apply unchanged.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(req.URL.Path, "/check-runs"):
+			_ = json.NewEncoder(w).Encode(map[string]any{"check_runs": []any{}})
+		case strings.HasSuffix(req.URL.Path, "/statuses"):
+			_ = json.NewEncoder(w).Encode([]map[string]string{
+				{"context": "ci", "status": "success", "created_at": "2026-09-15T23:00:08Z"},
+			})
+		default:
+			http.NotFound(w, req)
+		}
+	}))
+	defer srv.Close()
+	api := &RESTAPI{Client: srv.Client(), BaseOverride: srv.URL + "/api/v1"}
+	states, err := api.ContextStates(context.Background(), "git.rezus.cloud/o/r", "abc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if states["ci"] != "success" {
+		t.Fatalf("raw fallback must serve uncovered contexts: %+v", states)
 	}
 }
 
@@ -903,5 +1068,70 @@ func TestUnprotectedProceedStillReachableWhenNotInFlight(t *testing.T) {
 	}
 	if len(res.Envelope.RequiredContexts) != 0 {
 		t.Fatalf("proceed must carry the empty required set, got %v", res.Envelope.RequiredContexts)
+	}
+}
+
+// Live regression (rhesadox #2234): Forgejo can repost a status within the
+// SAME second (CI re-run), and the newest-first order between equal
+// timestamps is unstable — the stale pending sat ABOVE the fresh success,
+// so first-wins kept the gate armed on a green head for hours. At equal
+// timestamps the CONCLUSIVE state wins; a genuinely newer pending/red
+// still beats an older success.
+func TestContextStatesSameSecondTieBreak(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(req.URL.Path, "/check-runs"):
+			_ = json.NewEncoder(w).Encode(map[string]any{"check_runs": []any{}})
+		case strings.HasSuffix(req.URL.Path, "/statuses"):
+			_ = json.NewEncoder(w).Encode([]map[string]string{
+				// newest-first; the same-second pair is the live shape:
+				// pending ABOVE success at identical created_at.
+				{"context": "ci / backend-compile (rocm) (push)", "status": "pending", "created_at": "2026-09-15T23:00:08Z"},
+				{"context": "ci / backend-compile (rocm) (push)", "status": "success", "created_at": "2026-09-15T23:00:08Z"},
+				{"context": "ci / build-test (push)", "status": "success", "created_at": "2026-09-15T22:58:00Z"},
+			})
+		default:
+			http.NotFound(w, req)
+		}
+	}))
+	defer srv.Close()
+	api := &RESTAPI{Client: srv.Client(), BaseOverride: srv.URL + "/api/v1"}
+	states, err := api.ContextStates(context.Background(), "git.rezus.cloud/o/r", "abc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if states["ci / backend-compile (rocm) (push)"] != "success" {
+		t.Fatalf("same-second tie must resolve to the conclusive state: %+v", states)
+	}
+	if states["ci / build-test (push)"] != "success" {
+		t.Fatalf("uncontested entries unaffected: %+v", states)
+	}
+
+	// A genuinely NEWER pending still wins over an older success.
+	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(req.URL.Path, "/check-runs") {
+			_ = json.NewEncoder(w).Encode(map[string]any{"check_runs": []any{}})
+			return
+		}
+		if strings.HasSuffix(req.URL.Path, "/status") {
+			// empty combined view: the raw list is the only source here
+			_ = json.NewEncoder(w).Encode(map[string]any{"statuses": []any{}})
+			return
+		}
+		_ = json.NewEncoder(w).Encode([]map[string]string{
+			{"context": "ci", "status": "pending", "created_at": "2026-09-15T23:10:00Z"},
+			{"context": "ci", "status": "success", "created_at": "2026-09-15T23:00:08Z"},
+		})
+	}))
+	defer srv2.Close()
+	api2 := &RESTAPI{Client: srv2.Client(), BaseOverride: srv2.URL + "/api/v1"}
+	states2, err := api2.ContextStates(context.Background(), "git.rezus.cloud/o/r", "abc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if states2["ci"] != "pending" {
+		t.Fatalf("newer pending must win over older success: %+v", states2)
 	}
 }

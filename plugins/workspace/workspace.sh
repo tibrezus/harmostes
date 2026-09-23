@@ -49,102 +49,13 @@ export HOST REPO PR_NUM HEAD_SHA API_BASE IS_FJ WIKI_URL TRIG_CONTEXTS WORKDIR G
 # stale review.json/review-diff.patch from another repo's review
 # confuses the agent (observed live: reviewers disregarding foreign
 # files instead of reading fresh ones).
-rm -f "$WORKDIR/review.json" "$WORKDIR/review-diff.patch" "$WORKDIR/pr-context.json" "$WORKDIR/pr-diff.patch"
+rm -f "$WORKDIR/review.json" "$WORKDIR/review-diff.patch" "$WORKDIR/pr-context.json" "$WORKDIR/pr-diff.patch" "$WORKDIR/.head_ref" "$WORKDIR/.pr-meta.json"
 log "provisioning workspace for $HOST/$REPO#$PR_NUM (head=${HEAD_SHA:0:8}, base=$TRIG_BASE)"
 
-# ── PR context: metadata, files, linked issue, CI, diff ───────────────────
-python3 << 'PYEOF'
-import json, os, re, time, urllib.request
-host=os.environ["HOST"]; base=os.environ["API_BASE"]; repo=os.environ["REPO"]
-num=int(os.environ["PR_NUM"]); sha=os.environ["HEAD_SHA"]; ref=""
-workdir=os.environ["WORKDIR"]; wiki_url=os.environ.get("WIKI_URL","")
-is_fj=os.environ.get("IS_FJ","false")=="true"
-token=os.environ["GIT_HOST_TOKEN"]  # resolved above via host::token (mirrors review.go TokenEnvNames)
-gate_ctx=os.environ.get("TRIG_CONTEXTS","")  # the envelope (already verified green by the gate)
-def api(path, accept="application/json"):
-    # Bounded retry (3 attempts, 2s/4s backoff) around every fetch:
-    # python resolves single-shot with no resolver retry, so one dropped
-    # DNS UDP response during a cluster DNS burst fails the whole
-    # prepare step and stalls the review for the burst duration
-    # (harmostes#267 — observed twice on 2026-08-30). Retries ONLY
-    # transport-level failures (URLError/socket), never HTTPError: a
-    # 401/403/404 is a deterministic answer, not weather.
-    req=urllib.request.Request(base+path, headers={"authorization":f"token {token}" if token else "","accept":accept})
-    last=None
-    for attempt in range(3):
-        try:
-            with urllib.request.urlopen(req) as resp:
-                if "diff" in accept or "text/plain" in accept: return resp.read().decode("utf-8","replace")
-                return json.loads(resp.read())
-        except urllib.error.HTTPError: raise
-        except (urllib.error.URLError, OSError) as e:
-            last=e
-            if attempt<2: time.sleep(2*(attempt+1))
-    raise last
-pr=api(f"/repos/{repo}/pulls/{num}")
-ref=pr.get("head",{}).get("ref","")
-open(f"{workdir}/.head_ref","w").write(ref)
-files=api(f"/repos/{repo}/pulls/{num}/files?limit=100")
-fs=[{"status":f["status"],"filename":f["filename"],"additions":f["additions"],"deletions":f["deletions"]} for f in files]
-issue_num=None
-m=re.search(r"(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?|refs?)\s+#(\d+)",pr.get("body") or "",re.I)
-if m: issue_num=int(m.group(1))
-issue_data=None;milestone=None
-if issue_num:
-    try:
-        issue_data=api(f"/repos/{repo}/issues/{issue_num}")
-        ms=issue_data.get("milestone")
-        if ms: milestone={"title":ms["title"],"description":ms.get("description",""),"state":ms["state"]}
-    except Exception as e: print(f"WARN issue: {e}",file=sys.stderr)
-ci={"status":"none"}
-try:
-    if is_fj:
-        statuses=api(f"/repos/{repo}/commits/{sha}/statuses")
-        # First-wins per context (list is newest-first): superseded
-        # attempts (label-event treadmill re-dispatches) must not clobber
-        # the freshest state — mirrors the kernel gate evaluator
-        # (internal/review/review.go ContextStates dedupe).
-        states={}
-        for s in statuses:
-            states.setdefault(s.get("context"), s.get("status"))
-        if states:
-            vals=list(states.values())
-            ci={"total":len(vals),"all_success":all(v=="success" for v in vals),"states":sorted(set(vals))}
-    else:
-        cr=api(f"/repos/{repo}/commits/{sha}/check-runs?per_page=30")
-        runs=cr.get("check_runs",[])
-        if runs:
-            c=[r.get("conclusion") for r in runs if r.get("conclusion")]
-            ci={"total":len(runs),"completed":len(c),"all_success":bool(c) and all(x=="success" for x in c),"conclusions":sorted(set(c))}
-except Exception as e: print(f"WARN ci: {e}",file=sys.stderr)
-diff=""
-try:
-    if is_fj:
-        # Forgejo does NOT honor Accept content negotiation on /pulls/N
-        # (it returns the API JSON object — observed: pr-diff.patch with
-        # zero 'diff --git' lines). The .diff suffix is the supported
-        # surface.
-        diff=api(f"/repos/{repo}/pulls/{num}.diff",accept="text/plain")
-    else: diff=api(f"/repos/{repo}/pulls/{num}",accept="application/vnd.github.v3.diff")
-except: pass
-with open(f"{workdir}/pr-diff.patch","w") as f: f.write(diff[:100000])
-# Deterministic scope signal (#30): facts in prepare, interpretation
-# in the task. Counts from the RAW patch — the agent only ever sees
-# the truncated file, so metrics describe the real review surface.
-dfiles=len(set(re.findall(r"^diff --git (\S+)",diff,re.M)))
-dins=sum(1 for l in diff.splitlines() if l.startswith("+") and not l.startswith("+++"))
-ddel=sum(1 for l in diff.splitlines() if l.startswith("-") and not l.startswith("---"))
-dlines=dins+ddel
-scope="huge" if dlines>2000 or dfiles>40 else ("large" if dlines>400 or dfiles>10 else "focused")
-ctx={"host":host,"repo":repo,"number":num,"title":pr["title"],"body":pr.get("body") or "",
-     "user":pr.get("user",{}).get("login","?"),"url":pr.get("html_url",""),
-     "head_sha":sha,"head_ref":ref,"base":os.environ.get("TRIG_BASE",""),"issue_number":issue_num,
-     "issue":{"title":issue_data["title"],"body":issue_data.get("body") or "","labels":[l["name"] for l in issue_data.get("labels",[])]} if issue_data else None,
-     "milestone":milestone,"ci_status":ci,"files_changed":fs,"repo_dir":f"{workdir}/repo",
- "diff_stats":{"files":dfiles,"insertions":dins,"deletions":ddel},"scope":scope,
-     "wiki_dir":f"{workdir}/wiki" if wiki_url else "","review_path":f"{workdir}/review.json"}
-with open(f"{workdir}/pr-context.json","w") as f: json.dump(ctx,f,indent=2)
-PYEOF
+# ── PR metadata + head ref (pr_context.py meta — network tier) ────────────
+# Runs BEFORE the clone: the clone wants the branch name, and the merge
+# state it fetches is a FACT the context later states (#428 finding 1).
+python3 "$(dirname "$0")/pr_context.py" meta
 HEAD_REF=$(cat "$WORKDIR/.head_ref" 2>/dev/null || echo "")
 
 # ── Tool availability (the agent's knowns — no self-discovery) ────────────
@@ -168,8 +79,29 @@ else
   git clone --quiet --depth 50 "$CLONE_URL" "$REPO_DIR" 2>&1|tail -1
 fi
 git -C "$REPO_DIR" fetch --quiet --depth 50 origin "$HEAD_SHA" 2>/dev/null || true
+# ── Stale-dispatch guard (#2190 churn): the label re-arms on every push, so
+# a review dispatched at SHA N can start after the dev pushed N+1 (rebase
+# mid-loop). The post-review gate refuses sha != head, so a superseded round
+# burns ~15 min of agent turns on a verdict that cannot publish. The clone
+# above is the branch TIP — compare BEFORE checking out the dispatched SHA
+# and fail fast; the loop re-dispatches at the new head.
+TIP=$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || echo "")
+if [ -n "$TIP" ] && [ "$TIP" != "$HEAD_SHA" ]; then
+  log "SUPERSEDED: dispatched at ${HEAD_SHA:0:10} but branch head is now ${TIP:0:10} — skipping (re-dispatch lands at the new head)"
+  exit 2
+fi
 git -C "$REPO_DIR" checkout --quiet "$HEAD_SHA" 2>/dev/null || true
 git config --global --add safe.directory '*' 2>/dev/null || true
+# The base branch for merge-base diffing (#428): the context derives the
+# patch from merge-base(origin/base, HEAD_SHA)..HEAD_SHA in THIS clone.
+git -C "$REPO_DIR" fetch --quiet --depth 50 origin "$TRIG_BASE" 2>/dev/null || true
+
+# ── PR context (pr_context.py context — git tier, falls back to API) ──────
+# After the checkout: diff, files and stats come from the reviewed tree
+# itself — full, untruncated, attributable to the dispatched SHA (#428).
+# CI/issue/metadata come from the API; merge state and the gate's verified
+# contexts are stated as facts.
+python3 "$(dirname "$0")/pr_context.py" context
 
 # ── Wiki + RIG (architecture graph for the Architect stance) ──────────────
 if [ -n "$WIKI_URL" ]; then

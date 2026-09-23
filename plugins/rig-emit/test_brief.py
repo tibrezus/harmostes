@@ -12,6 +12,8 @@ model goodwill. These tests pin:
   4. blast radius — reverse deps of a touched component are named
   5. fail-open   — missing db / empty graph → exit 0, NOTHING written
   6. stamp       — pr-context.json gains rig_briefing
+  7. cross-file  — a symbol defined in several places lists the other
+     files, pre-answering "who else implements X" (the #484 grep storm)
 
 Run: python3 plugins/rig-emit/test_brief.py  (stdlib only; exit ≠ 0 fails)
 CI:  wired next to test_validator.py (make test-rig-emit).
@@ -57,6 +59,8 @@ def symbols() -> list[dict]:
          "line": 88, "signature": "func Gate(ctx context.Context) bool"},
         {"file": "internal/statestore/client.go", "name": "Save", "kind": "method",
          "line": 17, "signature": "func (c *Client) Save(key string, v any) error"},
+        {"file": "internal/statestore/client.go", "name": "Gate", "kind": "function",
+         "line": 99, "signature": "func Gate(ctx context.Context) bool"},
     ]
 
 
@@ -110,6 +114,13 @@ def main() -> int:
         kernel_section = brief.split("### Kernel")[1] if "### Kernel" in brief else ""
         if "UI" not in kernel_section[:400]:
             failures.append("blast radius: reverse dep of the touched component missing")
+
+        # 7. cross-file: `Gate` is defined in BOTH the touched kernel file and
+        # statestore — the briefing must name the other site.
+        if "Cross-file names" not in brief:
+            failures.append("cross-file: section missing")
+        if "internal/statestore/client.go:99" not in brief:
+            failures.append("cross-file: the other definition of `Gate` not listed")
 
     # 5. fail-open: no rig.db → exit 0, no file.
     with tempfile.TemporaryDirectory() as td:

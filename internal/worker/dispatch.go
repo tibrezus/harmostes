@@ -18,9 +18,12 @@ import (
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
 	"github.com/tibrezus/harmostes/internal/attempt"
 	"github.com/tibrezus/harmostes/internal/dapr"
+	"github.com/tibrezus/harmostes/internal/gate"
 	"github.com/tibrezus/harmostes/internal/k8s"
 	"github.com/tibrezus/harmostes/internal/review"
 	"github.com/tibrezus/harmostes/internal/timeline"
+
+	"github.com/tibrezus/harmostes/internal/agent"
 )
 
 // Dispatcher is the consumer's RunFunc implementation (ADR-0007 phase 3):
@@ -66,12 +69,15 @@ type DispatchConfig struct {
 	// full run bound before the moved-head guard discards its verdict.
 	// Default on; HARMOSTES_CANCEL_ON_SUPERSEDE=false turns it off.
 	DisableCancelOnSupersede bool
-	JobImage                 string
-	ServiceAccount           string
-	JobTTLSeconds            *int32
-	DaprdImage               string
-	PluginConfigMaps         []string
-	ExtraConfigMapMounts     []k8s.ConfigMapMount
+	// NewReviewAPI overrides the review API construction for the gate
+	// sweep — the worker tests pin the API through it (C3 seam).
+	NewReviewAPI         func() review.API
+	JobImage             string
+	ServiceAccount       string
+	JobTTLSeconds        *int32
+	DaprdImage           string
+	PluginConfigMaps     []string
+	ExtraConfigMapMounts []k8s.ConfigMapMount
 }
 
 // DispatchConfigFromEnv resolves the fleet-level dispatch configuration
@@ -196,7 +202,7 @@ func (c DispatchConfig) Validate() error {
 // so a config fact cannot be dropped at a struct-copy hop (#311/#314):
 // callers supply only the per-run fields (attempt, workflow, namespace,
 // extraEnv).
-func (c DispatchConfig) JobParams(at *v1alpha1.Attempt, workflow, namespace string, runBound time.Duration, cache *v1alpha1.CacheSpec, extraEnv []string) k8s.AttemptJobParams {
+func (c DispatchConfig) JobParams(at *v1alpha1.Attempt, workflow, namespace string, runBound time.Duration, cache *v1alpha1.CacheSpec, sessions *v1alpha1.SessionsSpec, attachments []v1alpha1.SharedAttachment, triggerRepo string, extraEnv []string) k8s.AttemptJobParams {
 	return k8s.AttemptJobParams{
 		Attempt:                 at,
 		WorkflowName:            workflow,
@@ -210,6 +216,10 @@ func (c DispatchConfig) JobParams(at *v1alpha1.Attempt, workflow, namespace stri
 		ExtraConfigMapMounts:    c.ExtraConfigMapMounts,
 		ExtraEnv:                extraEnv,
 		Cache:                   cache,
+		Sessions:                sessions,
+		Attachments:             attachments,
+		TriggerRepo:             triggerRepo,
+		AttemptName:             at.Name,
 	}
 }
 
@@ -261,6 +271,41 @@ func NewDispatcher(ctx context.Context, cfg DispatchConfig, logf func(string, ..
 	}, nil
 }
 
+// Namespace is the namespace this dispatcher works in (the fast-poll loop
+// reads it to scope its workflow lists).
+func (d *Dispatcher) Namespace() string { return d.namespace }
+
+// ArmedWaitingWorkflows lists the review-ready workflows that currently
+// hold an ARMED, NEVER-DISPATCHED claim — the durable queue waiting for
+// CI (the leg-2 fast poll drives these to dispatch the tick their last
+// context lands).
+func (d *Dispatcher) ArmedWaitingWorkflows(ctx context.Context) []string {
+	var wfs v1alpha1.WorkflowList
+	if err := d.cl.List(ctx, &wfs, client.InNamespace(d.namespace)); err != nil {
+		d.logf("fast-poll: workflow list failed: %v", err)
+		return nil
+	}
+	var out []string
+	for i := range wfs.Items {
+		wf := wfs.Items[i]
+		if wf.Spec.ReviewReady == nil {
+			continue
+		}
+		claims, err := attempt.LiveReviewClaims(ctx, d.cl, &wf)
+		if err != nil {
+			d.logf("fast-poll: live claims %s: %v", wf.Name, err)
+			continue
+		}
+		for _, c := range claims {
+			if c.Status.Review != nil && c.Status.Review.DispatchedAt == nil {
+				out = append(out, wf.Name)
+				break
+			}
+		}
+	}
+	return out
+}
+
 // DispatcherFromEnv resolves the fleet-level configuration from the chart
 // environment (DispatchConfigFromEnv) and builds the dispatcher on top of
 // it.
@@ -307,22 +352,23 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req RunRequest) error {
 	// Only workflows with reviewReady gate; every other class dispatches
 	// straight through (every class is Job-per-run, ADR-0007). The gate
 	// drains to capacity: one sweep accepts every free slot.
-	gateDeps := GateDeps{
+	gateDeps := gate.GateDeps{
 		Status:                   k8s.StatusPatcher{Client: d.cl, Namespace: req.Namespace},
 		Client:                   d.cl,
 		Scheme:                   d.scheme,
 		FleetMaxConcurrent:       d.cfg.FleetMaxConcurrent,
 		AttemptRetention:         d.cfg.AttemptRetention,
 		DisableCancelOnSupersede: d.cfg.DisableCancelOnSupersede,
+		NewReviewAPI:             d.cfg.NewReviewAPI,
 		Log:                      d.logf,
-		Wake:                     GateWake{PR: req.Pr, Action: req.Action, Revision: req.Revision},
+		Wake:                     gate.GateWake{PR: req.Pr, Action: req.Action, Revision: req.Revision, Repo: req.Repo},
 		TL: timeline.NewGateWriter(dapr.Tracing(dapr.New(os.Getenv("DAPR_HTTP_ENDPOINT"))),
 			envOr("HARMOSTES_STATE_STORE", "statestore"), wf.Name, "", triggerSubject(req)),
 	}
 
-	var dispatches []GateDispatch
+	var dispatches []gate.GateDispatch
 	if wf.Spec.ReviewReady != nil {
-		dispatches, err = RunReviewGateSweep(ctx, gateDeps, wf)
+		dispatches, err = gate.RunReviewGateSweep(ctx, gateDeps, wf)
 		if err != nil {
 			return fmt.Errorf("review gate: %w", err)
 		}
@@ -342,7 +388,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req RunRequest) error {
 		if err != nil {
 			return fmt.Errorf("resolve attempt: %w", err)
 		}
-		dispatches = append(dispatches, GateDispatch{Attempt: at.Name})
+		dispatches = append(dispatches, gate.GateDispatch{Attempt: at.Name})
 	}
 
 	// ── Create the Jobs (serialized: dedupe racing wakes). ──────────────
@@ -369,7 +415,12 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req RunRequest) error {
 		if err := d.cl.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: g.Attempt}, &at); err != nil {
 			return fmt.Errorf("get claim attempt %s: %w", g.Attempt, err)
 		}
-		job := k8s.BuildJob(d.cfg.JobParams(&at, req.Workflow, req.Namespace, runBound, cache,
+		triggerRepo := ""
+		if g.Envelope != nil {
+			triggerRepo = g.Envelope.Repo
+		}
+		job := k8s.BuildJob(d.cfg.JobParams(&at, req.Workflow, req.Namespace, runBound, cache, wf.Spec.Sessions,
+			wf.Spec.Attachments, triggerRepo,
 			append(jobCredentialEnv(), dispatchEnv(req, &at, g.Envelope)...)))
 		if err := d.cl.Create(ctx, job); err != nil {
 			if errors.IsAlreadyExists(err) {
@@ -408,6 +459,16 @@ func triggerSubject(req RunRequest) timeline.Subject {
 // boundary, and future credentials are added here explicitly.
 var jobEnvAllowlist = []string{
 	"HARMOSTES_FORGEJO_TOKEN",
+	// The whitelisted bot review identity (#480): native review objects must
+	// post as harmostes-bot — the primary token is the PR author's, and the
+	// forge 422s self-reviews. Optional secret; absent = primary token only.
+	agent.BotTokenEnvKey,
+	// The other half of the #480 r3 t5 pair: the gate matches the pr-context
+	// host against this value EXACTLY (post-review.sh). Forwarding the token
+	// without the host halves the contract — the Job-side script would
+	// compare against its compiled-in default and a non-default botHost
+	// would silently never match.
+	agent.BotHostEnvKey,
 	// CLI-canonical alias names (#374 protocol): the chart aliases the
 	// shared forge secrets at the exact names the agent CLIs read natively
 	// (worker-pool.yaml "CLI aliases" block) — the review agents drive
@@ -433,6 +494,23 @@ var jobEnvAllowlist = []string{
 	// the reviewer's grep caught the first attempt landing on the wrong
 	// branch; this entry IS the fix).
 	"LITELLM_FALLBACKS",
+	// PI_TOOL_BUDGET: the turn-budget extension's hard tool-call cap
+	// (#484). The 43-minute review round ran 47 calls at ~55s of model
+	// latency each — turn COUNT is the wall clock; the prompt's ~12-call
+	// guidance was ignored, so the cap is enforced in the harness. Absent
+	// on a deployment → the extension is inert and reviews run uncapped
+	// (the pre-#484 status quo).
+	"PI_TOOL_BUDGET",
+	// PI_TOOL_BUDGET_ALLOW: the turn-budget extension's finalize lane —
+	// post-cap bash commands touching any of these substrings still execute
+	// (v2: v1 blocked everything except a `write` tool that is not
+	// registered in review sessions, bricking the run — 4 failed gate
+	// attempts, no review.json, attempt 57a1232749c0).
+	"PI_TOOL_BUDGET_ALLOW",
+	// PI_TOOL_BUDGET_NUDGE: the one-shot mid-budget checkpoint (#487) — a
+	// single blocked call at this count carrying a converge-now
+	// instruction. "0" off; empty = cap/2.
+	"PI_TOOL_BUDGET_NUDGE",
 }
 
 // jobCredentialEnv forwards the allowlisted deployment-level vars from the

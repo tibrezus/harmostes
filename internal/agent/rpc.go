@@ -48,6 +48,49 @@ type RPC struct {
 	sessionDir string
 }
 
+// The credential-boundary keys. EVERY Go site that scrubs, grants, forwards
+// or pins these credentials must reference these constants — the boundary is
+// fail-open if sites spell the names independently (r9 t16: a rename touching
+// some sites left others inheriting the credential while each pinning test
+// asserted its own copy of the literal). post-review.sh is bash and cannot
+// import this package; its literal is pinned by the boundary-scan test.
+const (
+	// BotTokenEnvKey holds the approval-capable bot review credential. It must
+	// never reach a child env whose input includes untrusted PR content (pi,
+	// gate shells, prepare tooling) — only the deploy/post-review node.
+	BotTokenEnvKey = "HARMOSTES_FORGEJO_BOT_TOKEN"
+	// BotHostEnvKey is the forge origin the bot credential is minted for; it
+	// travels with the token through the same scoped grant.
+	BotHostEnvKey = "HARMOSTES_FORGEJO_BOT_HOST"
+)
+
+// ChildEnv is THE exec-leaf env for children whose input includes untrusted
+// PR content (pi sessions, gate shells, workspace tooling): it strips the
+// approval-capable bot credential. Every exec site must route through this
+// helper (or enumerate cmd.Env fully, as the graph plugin legs do) — the
+// boundary-scan test (internal/agent/boundary_test.go) pins the closure.
+func ChildEnv(env []string) []string {
+	return FilterEnv(env, BotTokenEnvKey, BotHostEnvKey)
+}
+
+// FilterEnv returns env without KEY=… entries whose key is exactly any of
+// the given keys. Exported for entrypoints that must prove (testably) which
+// credentials never reach a child env (pi, gate shells).
+func FilterEnv(env []string, keys ...string) []string {
+	drop := make(map[string]bool, len(keys))
+	for _, k := range keys {
+		drop[k] = true
+	}
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		if k, _, ok := strings.Cut(kv, "="); ok && drop[k] {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
+}
+
 // SessionFiles returns the pi session files this RPC wrote, oldest first.
 // Empty when session persistence is off or pi wrote nothing (crash, abort
 // before first flush). Callers should read them after Abort.
@@ -138,7 +181,12 @@ func NewRPC(ctx context.Context, opts RPCOptions) (*RPC, error) {
 	}
 	cmd := exec.CommandContext(ctx, pi, args...)
 	cmd.Dir = opts.Workdir
-	cmd.Env = opts.Env
+	// #480 r5 t9: scrub the approval-capable bot credential at the shared
+	// pi-spawn leaf — BOTH entrypoints (harmostes-worker and
+	// harmostes-agent) route through NewRPC, and pi's input includes
+	// untrusted PR content. The deploy plugin (post-review) reads the
+	// credential from its own exec env, which does not pass through here.
+	cmd.Env = ChildEnv(opts.Env)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err
@@ -226,6 +274,7 @@ func (r *RPC) Prompt(ctx context.Context, message, label string) (Event, int, Us
 			logf(r.log, ev)
 			switch ev.Type {
 			case "message_end":
+				capture.AssistantMessageEnd = true
 				if u, ok := messageEndUsage(ev.Raw); ok {
 					usage.add(u)
 				}

@@ -1,33 +1,57 @@
 {{define "pages/frag_run_graph.html"}}
-{{- /* frag_run_graph.html — the attempt's workflow graph as SVG: layered
-      layout, per-node state colors, pulsing live position. Re-rendered over
-      SSE; the hover panel lives OUTSIDE this fragment (delegation survives
-      swaps). */ -}}
+{{- /* frag_run_graph.html — the attempt's workflow graph as SVG: identity
+      cards (#541) carrying workflow semantics — what triggers this (the
+      virtual source node), what the deterministic nodes do, what the agent
+      runs — plus per-node runtime state (accent bar + glyph chip) and the
+      pulsing live position. Re-rendered over SSE; the hover/click panel
+      lives OUTSIDE this fragment (delegation survives swaps). */ -}}
 {{- with .Graph}}
 {{- if .Available}}
+<div class="rg-canvas" data-testid="graph-canvas">
 <svg id="run-graph-svg" viewBox="0 0 {{.Width}} {{.Height}}" width="{{.Width}}" height="{{.Height}}" role="img" aria-label="Workflow graph for {{.Workflow}}">
+	<defs>
+		{{- /* Arrowheads inherit the edge stroke (context-stroke) — the
+		marker is tokenized by construction, one def serves both themes. */ -}}
+		<marker id="rg-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+			<path d="M 0 1 L 9 5 L 0 9 z" fill="context-stroke"></path>
+		</marker>
+		{{- /* Per-card clip paths (#551): SVG text does not wrap or clip on
+		its own — a long title/fact on a platform with a wider fallback font
+		would paint over the neighboring card (and intercept its clicks).
+		Server-side truncation is the first line; the clip is the guarantee:
+		ink NEVER leaves the 224×92 card. One SVG per page — ids are safe. */ -}}
+		{{range .Nodes}}<clipPath id="rg-clip-{{.ID}}"><rect x="{{.X}}" y="{{.Y}}" width="224" height="92" rx="8"></rect></clipPath>{{end}}
+	</defs>
 	{{range .Edges}}
-	<path class="rg-edge" d="{{.Path}}"></path>
+	<path class="rg-edge{{if .Cause}} rg-edge--cause{{end}}" d="{{.Path}}" marker-end="url(#rg-arrow)"{{if .Cause}} data-testid="trigger-edge"{{end}}></path>
 	{{end}}
 	{{range .Nodes}}
-	<g class="rg-node rg-node--{{.Status}}" data-node="{{.ID}}" data-testid="graph-node" tabindex="0">
-		<title>{{.ID}} — {{.Status}}</title>
-		<rect class="rg-box" x="{{.X}}" y="{{.Y}}" width="168" height="40" rx="6"></rect>
+	<g class="rg-node rg-node--{{.Status}} rg-chipkind--{{.Chip}}" data-node="{{.ID}}" data-testid="graph-node" data-type="{{.Type}}" tabindex="0" clip-path="url(#rg-clip-{{.ID}})">
+		<title>{{.Title}} — {{.Status}}</title>
+		<rect class="rg-box" x="{{.X}}" y="{{.Y}}" width="224" height="92" rx="8"></rect>
+		{{- /* Status accent bar + glyph chip: color AND glyph — status
+		survives grayscale/color-blind viewing (one-state vocabulary). */ -}}
+		<rect class="rg-bar rg-bar--{{.Status}}" x="{{.BarX}}" y="{{.BarY}}" width="4" height="{{.BarH}}" rx="2"></rect>
+		<text class="rg-chip" x="{{.ChipX}}" y="{{.ChipY}}">{{.Chip}}</text>
+		<text class="rg-statext rg-statext--{{.Status}}" x="{{.StatX}}" y="{{.StatY}}">{{.StatusText}}</text>
+		<text class="rg-title" x="{{.TitleX}}" y="{{.TitleY}}">{{.Title}}</text>
+		{{- if .Title2}}<text class="rg-title" x="{{.Title2X}}" y="{{.Title2Y}}">{{.Title2}}</text>{{end}}
+		{{- if .Fact1}}<text class="rg-fact" x="{{.Fact1X}}" y="{{.Fact1Y}}">{{.Fact1}}</text>{{end}}
+		{{- if .Fact2}}<text class="rg-fact" x="{{.Fact2X}}" y="{{.Fact2Y}}">{{.Fact2}}</text>{{end}}
 		{{if eq .Status "running"}}<circle class="rg-pulse" cx="{{.PulseX}}" cy="{{.PulseY}}" r="5"></circle>{{end}}
-		<text class="rg-label" x="{{.LabelX}}" y="{{.LabelY}}">{{.Label}}</text>
-		<text class="rg-type" x="{{.TypeX}}" y="{{.TypeY}}">{{.Type}}</text>
 	</g>
 	{{end}}
 </svg>
+</div>
 {{- with .Timing}}
 <div class="rg-timing-title">Step timing — bar width is wall-clock share</div>
 <svg class="rg-timing" role="img" aria-label="per-step timing waterfall" viewBox="0 0 {{$.Graph.TimingW}} {{$.Graph.TimingH}}" width="100%" preserveAspectRatio="xMinYMin meet">
 	{{- range $s := .}}
 	<g class="rg-timing-lane" data-testid="timing-lane" data-label="{{$s.Label}}" transform="translate(0, {{$s.Y}})">
 		<text class="rg-timing-label" x="8" y="15">{{$s.Label}}</text>
-		<rect class="rg-timing-bar rg-state-{{$s.Status}}" x="{{$s.X}}" y="4" width="{{$s.Width}}" height="14" rx="3"><title>{{$s.Title}}</title></rect>
+		<rect class="rg-timing-bar rg-state-{{$s.Status}}{{if $s.Live}} rg-timing-live{{end}}" x="{{$s.X}}" y="4" width="{{$s.Width}}" height="14" rx="3"><title>{{$s.Title}}</title></rect>
 		{{- if $s.Right}}
-		<text class="rg-timing-dur" x="{{$s.TextX}}" y="15">{{$s.Title}}</text>
+		<text class="rg-timing-dur"{{if $s.Anchor}} text-anchor="{{$s.Anchor}}"{{end}} x="{{$s.TextX}}" y="15">{{$s.Title}}</text>
 		{{- else}}
 		<text class="rg-timing-dur rg-timing-dur-in" x="{{$s.TextX}}" y="15">{{$s.Title}}</text>
 		{{- end}}

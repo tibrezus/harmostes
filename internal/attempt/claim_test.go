@@ -701,6 +701,64 @@ func TestArmClaim_LabelFailureAbortsBeforeStatusCommit(t *testing.T) {
 	}
 }
 
+// TestArmClaim_HealsStrandedReleaseMarker (#512 direction 2, inverted
+// polarity): a claim can strand with the release marker SET while its
+// status says LIVE — the residue class of the old-polarity incident (the
+// production remedy there was a manual kubectl label). Under absence-
+// means-live such a claim is INVISIBLE to LiveReviewClaims (it holds no
+// counted slot and blocks nothing), and the next candidate arm is the
+// repair sweep: ArmClaim resolves the same object, removes the marker,
+// and refreshes the live status — no external reconciliation needed.
+func TestArmClaim_HealsStrandedReleaseMarker(t *testing.T) {
+	ctx := context.Background()
+	c := newFakeClient(t)
+	wf := wikiWorkflow()
+	const pr = "git.rezus.cloud/tibrez/rhesadox#2234"
+	const sha = "272b3c76cafe2234"
+
+	name, err := armFor(t, ctx, c, wf, pr, sha, "needs-review", false)
+	if err != nil {
+		t.Fatalf("arm: %v", err)
+	}
+	// Strand it: status stays live (Released=false) but the marker is set
+	// — e.g. a stale marker surviving a revival regression.
+	var at v1alpha1.Attempt
+	if err := c.Get(ctx, client.ObjectKey{Namespace: "harmostes", Name: name}, &at); err != nil {
+		t.Fatal(err)
+	}
+	base := at.DeepCopy()
+	if at.Labels == nil {
+		at.Labels = map[string]string{}
+	}
+	at.Labels[v1alpha1.ReviewClaimLabel] = v1alpha1.ReviewClaimReleased
+	if err := c.Patch(ctx, &at, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+		t.Fatalf("strand marker: %v", err)
+	}
+
+	// Invisible while stranded: the marker is the list bound.
+	if claims, err := LiveReviewClaims(ctx, c, wf); err != nil || len(claims) != 0 {
+		t.Fatalf("stranded claim must be invisible, got %d (%v)", len(claims), err)
+	}
+
+	// The next arm is the repair sweep.
+	if _, err := ArmClaim(ctx, c, wfScheme(t), wf, pr, sha, "needs-review", false); err != nil {
+		t.Fatalf("healing arm: %v", err)
+	}
+	healed, err := resolveForTest(t, ctx, c, wf, sha)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, marked := healed.Labels[v1alpha1.ReviewClaimLabel]; marked {
+		t.Fatal("healing arm must remove the stranded marker")
+	}
+	if healed.Status.Review == nil || healed.Status.Review.Released {
+		t.Fatal("healed claim must be live")
+	}
+	if claims, err := LiveReviewClaims(ctx, c, wf); err != nil || len(claims) != 1 {
+		t.Fatalf("healed claim must be listed live, got %d (%v)", len(claims), err)
+	}
+}
+
 // labelFailClient fails every main-resource Patch (metadata: the release
 // marker) while passing status-subresource patches through.
 type labelFailClient struct {
@@ -893,5 +951,104 @@ func TestArmClaim_UnstampedBudgetAgesOutWithClaim(t *testing.T) {
 	}
 	if a.Status.Review.DispatchLostReleases != 0 {
 		t.Fatalf("the arm must reset the stale budget, got %d", a.Status.Review.DispatchLostReleases)
+	}
+}
+
+// #569: the release reason is the era's outcome — the phase follows it, so
+// a consumed verdict no longer leaves the attempt reading "reconciling"
+// forever (the #2359 zombie-column class).
+func TestReleaseClaimStampsPhase(t *testing.T) {
+	ctx := context.Background()
+	c := newFakeClient(t)
+	wf := wikiWorkflow()
+	const pr = "git.rezus.cloud/tibrez/rhesadox#1801"
+	const sha = "cafe567890ab"
+
+	name, err := armFor(t, ctx, c, wf, pr, sha, "needs-review", false)
+	if err != nil {
+		t.Fatalf("arm: %v", err)
+	}
+
+	// consumed → validated: the targeted state WAS deterministically
+	// reviewed; the round is complete.
+	if err := ReleaseClaim(ctx, c, "harmostes", name, "consumed"); err != nil {
+		t.Fatalf("consumed release: %v", err)
+	}
+	at, err := resolveForTest(t, ctx, c, wf, sha)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if at.Status.Phase != v1alpha1.AttemptPhaseValidated {
+		t.Errorf("consumed release phase = %q, want validated", at.Status.Phase)
+	}
+	if !at.Status.Review.Released || at.Status.Review.ReleaseReason != "consumed" {
+		t.Errorf("release bookkeeping missing: released=%v reason=%q", at.Status.Review.Released, at.Status.Review.ReleaseReason)
+	}
+
+	// superseded → superseded: the phase matches the release reason.
+	if err := ReleaseClaim(ctx, c, "harmostes", name, v1alpha1.ReleaseReasonSuperseded); err != nil {
+		t.Fatalf("superseded release: %v", err)
+	}
+	at, _ = resolveForTest(t, ctx, c, wf, sha)
+	if at.Status.Phase != v1alpha1.AttemptPhaseSuperseded {
+		t.Errorf("superseded release phase = %q, want superseded", at.Status.Phase)
+	}
+}
+
+// #569: dispatch-lost stays reconciling (the era may revive — the phase
+// must not claim a terminal outcome the churn counter can still undo).
+func TestReleaseClaimDispatchLostKeepsPhase(t *testing.T) {
+	ctx := context.Background()
+	c := newFakeClient(t)
+	wf := wikiWorkflow()
+	const pr = "git.rezus.cloud/tibrez/rhesadox#1802"
+	const sha = "beef87654321"
+
+	name, err := armFor(t, ctx, c, wf, pr, sha, "needs-review", false)
+	if err != nil {
+		t.Fatalf("arm: %v", err)
+	}
+	if err := ReleaseClaim(ctx, c, "harmostes", name, v1alpha1.ReleaseReasonDispatchLost); err != nil {
+		t.Fatalf("dispatch-lost release: %v", err)
+	}
+	at, err := resolveForTest(t, ctx, c, wf, sha)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if at.Status.Phase != v1alpha1.AttemptPhaseReconciling {
+		t.Errorf("dispatch-lost phase = %q, want reconciling (revival-eligible era)", at.Status.Phase)
+	}
+}
+
+// #569: reviving a terminal-phased era resets the phase — a re-armed attempt
+// must not read validated/superseded while genuinely reconciling.
+func TestArmClaimRevivalResetsTerminalPhase(t *testing.T) {
+	ctx := context.Background()
+	c := newFakeClient(t)
+	wf := wikiWorkflow()
+	const pr = "git.rezus.cloud/tibrez/rhesadox#1803"
+	const sha = "d00d11112222"
+
+	name, err := armFor(t, ctx, c, wf, pr, sha, "needs-review", false)
+	if err != nil {
+		t.Fatalf("arm: %v", err)
+	}
+	if err := ReleaseClaim(ctx, c, "harmostes", name, "consumed"); err != nil {
+		t.Fatalf("consumed release: %v", err)
+	}
+
+	// Human re-request of the same head (the override path) revives the era.
+	if _, err := armFor(t, ctx, c, wf, pr, sha, "needs-review", true); err != nil {
+		t.Fatalf("revival arm: %v", err)
+	}
+	at, err := resolveForTest(t, ctx, c, wf, sha)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if at.Status.Phase != v1alpha1.AttemptPhaseReconciling {
+		t.Errorf("revived era phase = %q, want reconciling", at.Status.Phase)
+	}
+	if at.Status.Review.Released {
+		t.Error("revived era must not read released")
 	}
 }

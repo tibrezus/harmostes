@@ -74,6 +74,19 @@ document renders **read-only** first (editing lands with #418's MR-bridge);
 validation markers and schema completion come from `/api/schema`, never a
 hand-written schema.
 
+## Run-Detail Structure (#547)
+
+The detail page groups into four zones — **masthead** (identity header + a
+`ds-facts` grid absorbing claim/objective), **watch** (execution graph +
+waterfall, the operator's first question), **read** (Workflow Code |
+Event Timeline, the #533 duo, now below the watch), **ledger** (runs, node
+results, evidence — `.tbl` tables, not stacked dl/card rows: the table is
+the product). The `ds-section` family finally carries its styles: bordered
+panels on `--bg-alt`, `sp-5` rhythm between zones, `sp-4/sp-2` around
+headings (more space above than below). No tabs — density over whitespace
+means everything visible in minimum scroll. Below 900px the sidebar topbar
+wraps (it used to push the page 141px wide at phone widths).
+
 ## data-testid Registry (ADR-0012 §6, #421)
 
 Every island and dynamic fragment the tests hook carries a `data-testid`.
@@ -86,14 +99,20 @@ headers change in one place; `data-island-state="ready"` plus the
 
 | Hook | Template | Hooked by |
 | --- | --- | --- |
-| `graph-tab`, `event-timeline-tab`, `event-timeline-pane` | `pages/attempt_detail.html` | event-timeline, run-detail specs |
+| `workflow-code-pane`, `event-timeline-pane` (first-render, no tab), `run-graph-section`, `code-island` (mounts here too) | `pages/attempt_detail.html` | event-timeline, code-island, run-detail specs |
 | `run-link`, `subject-cell`, `tab-*` (all/failed/inflight/verdicts) | `pages/attempts.html` | runs spec |
 | `wf-controls`, `wf-trigger`, `wf-enable`, `wf-disable`, `wf-delete` | `pages/detail.html` | lifecycle spec |
 | `event-timeline`, `event-timeline-empty`, `timeline-row`, `timeline-row-{kind,time,details,payload}` | `pages/frag_event_timeline.html` | event-timeline specs |
 | `graph-node`, `timing-lane` | `pages/frag_run_graph.html` | run-detail, live-event specs |
 | `topology`, `topology-node`, `topology-edge` | `pages/frag_topology.html` | topology, inspector specs |
 | `wall-card`, `wall-card-title`, `wall-alert` | `pages/frag_wall.html` | wall spec |
+| `wall-current`, `wall-counts`, `wall-live-tokens` | `pages/frag_wall.html` | wall live specs (#594: Now column + header state tally; #604: live token stream) |
 | `code-island`, `inspector`, `inspector-field`, `inspector-apply`, `inspector-status`, `propose-button`, `propose-link`, `propose-panel`, `propose-source`, `propose-status`, `rev-historical`, `revisions-link`, `rev-switch`, `rev-switch-option` | `pages/template_detail.html` | code-island, inspector, propose specs |
 | `rev-option`, `rev-picker`, `rev-graph-diff`, `revisions-empty`, `topology-pane`, `topology-legend`, `yaml-diff`, `yaml-diff-line` | `pages/template_revisions.html` | topology diff assertions |
+| `tpl-table`, `tpl-row-link`, `tpl-new-workflow`, `graph-canvas` | `pages/templates.html`, `frag_run_graph.html`, `frag_topology.html` | workflows spec (library table + CTA), run-detail/topology (canvas) |
+| `trigger-edge`, `[data-node="trigger"]` | `frag_run_graph.html`, `frag_topology.html` | runs/topology specs (the virtual trigger node + its dashed cause-edge, #541) |
+| `fact-grid`, `runs-table`, `noderes-table`, `evidence-table` | `pages/attempt_detail.html` | run-detail specs (#547: masthead facts + ledger as tables) |
+| `runlogs-drawer`, `runlogs-lines` | `pages/frag_run_logs.html` + `_lines` | log-drawer specs (#551: full-width below the runs table, NEWEST FIRST, poll swaps only the lines element) |
+| `wall-section`, `wall-workflow-cell`, `wall-workflow-link`, `wall-steps`, `wall-more` | `pages/frag_wall.html` | wall specs (#554: template → workflow → subject sections; strips reuse `rg-state-*` paint) |
 | `wf-new-{link,form,name,cadence,template,templates,submit}` | `pages/workflow_new.html`, `pages/workflows.html` | workflows spec |
 | `data-island-state` (attribute), `window.harmostesCodeIsland` (JS handle) | island glue | code-island, inspector, propose specs |

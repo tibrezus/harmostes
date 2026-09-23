@@ -224,7 +224,7 @@ func TestAttemptDetail_RendersDeadDispatchCounter(t *testing.T) {
 		t.Fatalf("detail render: %d", rec.Code)
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, "Dead Dispatches") || !strings.Contains(body, "3/3") {
+	if !strings.Contains(body, "Dead dispatches") || !strings.Contains(body, "3/3") {
 		t.Error("dead-dispatch counter must render with the budget")
 	}
 	if !strings.Contains(body, "new push or re-label to retry") {

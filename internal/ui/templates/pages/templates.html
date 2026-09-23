@@ -1,37 +1,61 @@
 {{define "pages/templates.html"}}
-<div class="page-tabs">
-	<a href="/workflows" class="page-tab">Workflows</a>
-	<a href="/templates" class="page-tab page-tab--active">Templates</a>
-</div>
-{{- /* templates.html — template catalog with mini pipeline graphs. */ -}}
+{{- /* templates.html — the template library (#538): a real table (design
+      principle 1) — Template · pipeline shape · Workflows (count, linked)
+      · the New Workflow CTA per row. Creation starts from the definition
+      (donor pattern: kestra New Flow, conductor run-with-inputs); the
+      mini-pipeline stays as the shape column. */ -}}
 <div class="page-content">
-	<div class="tpl-list">
-		{{range .Templates}}
-		<a href="/templates/{{.Name}}" class="tpl-card">
-			<header class="tpl-card-header">
-				<span class="tpl-card-name">{{.Name}}</span>
-				{{if .GateName}}<span class="tpl-card-gate">{{.GateName}}</span>{{end}}
-			</header>
-			<p class="tpl-card-desc">{{.Description}}</p>
-			<!-- Mini pipeline graph -->
-			<div class="pg-mini">
-				{{range $i, $node := .Pipeline.Nodes}}
-				{{if gt $i 0}}<span class="pg-mini-arrow">▸</span>{{end}}
-				<span class="pg-mini-node pg-mini-node--{{$node.Type}}">{{$node.Label}}{{if $node.Sublabel}}<span class="pg-mini-sub">{{$node.Sublabel}}</span>{{end}}</span>
+	{{if .Templates}}
+	<div class="ds-table-wrap">
+		<table class="ds-table" data-testid="tpl-table">
+			<thead>
+				<tr>
+					<th class="ds-table-th">Template</th>
+					<th class="ds-table-th">Pipeline</th>
+					<th class="ds-table-th">Workflows</th>
+					<th class="ds-table-th"></th>
+				</tr>
+			</thead>
+			<tbody>
+				{{range .Templates}}
+				<tr>
+					<td>
+						<a href="/templates/{{.Name}}" class="ds-link" data-testid="tpl-row-link">{{.Name}}</a>
+						{{if .GateName}}<span class="tpl-chip">{{.GateName}}</span>{{end}}
+						{{if .Description}}<div class="tpl-row-desc">{{.Description}}</div>{{end}}
+					</td>
+					<td>
+						<div class="pg-mini">
+							{{range $i, $node := .Pipeline.Nodes}}
+							{{if gt $i 0}}<span class="pg-mini-arrow">▸</span>{{end}}
+							<span class="pg-mini-node pg-mini-node--{{$node.Type}}">{{$node.Label}}{{if $node.Sublabel}}<span class="pg-mini-sub">{{$node.Sublabel}}</span>{{end}}</span>
+							{{end}}
+						</div>
+						{{if or .Skill (gt .MaxFixes 0)}}
+						<div class="tpl-row-meta">
+							{{if .Skill}}{{$skill := .Skill}}<span class="tpl-chip">{{$skill | baseName}}</span>{{end}}
+							{{if gt .MaxFixes 0}}<span class="tpl-chip">maxFixes: {{.MaxFixes}}</span>{{end}}
+							{{range .Tools}}<span class="tpl-chip">{{.}}</span>{{end}}
+						</div>
+						{{end}}
+					</td>
+					<td>
+						{{if gt .WorkflowCount 0}}
+						<a href="/workflows" class="ds-link">{{.WorkflowCount}} active</a>
+						{{else}}<span class="ds-text-muted">none yet</span>{{end}}
+					</td>
+					<td class="wf-actions">
+						{{if $.MayWrite}}<a href="/workflows/new?template={{.Name}}" class="ds-btn ds-btn--secondary ds-btn--xs" data-testid="tpl-new-workflow">New Workflow</a>{{end}}
+					</td>
+				</tr>
 				{{end}}
-			</div>
-			<!-- Feature chips row -->
-			<div class="tpl-card-features">
-				{{if .Skill}}<span class="tpl-chip">{{$skill := .Skill}}{{$skill | baseName}}</span>{{end}}
-				{{if gt .MaxFixes 0}}<span class="tpl-chip">maxFixes: {{.MaxFixes}}</span>{{end}}
-				{{range .Tools}}<span class="tpl-chip">{{.}}</span>{{end}}
-			</div>
-		</a>
-		{{else}}
-		<div class="ds-empty-state">
-			<p>No templates found. Templates are WorkflowTemplate CRs applied via GitOps.</p>
-		</div>
-		{{end}}
+			</tbody>
+		</table>
 	</div>
+	{{else}}
+	<div class="ds-empty-state">
+		<p>No templates found. Templates are WorkflowTemplate CRs applied via GitOps.</p>
+	</div>
+	{{end}}
 </div>
 {{end}}

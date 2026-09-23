@@ -331,6 +331,19 @@ func patchAttemptStatus(ctx context.Context, c client.Client, namespace, attempt
 	})
 }
 
+// RecordProgress stamps the executing run's live progress onto the attempt
+// (best-effort caller; per-turn cadence). A window, not a ledger: each write
+// REPLACES the previous sample — the envelope payload remains the post-hoc
+// source of record (#586), and the wall reads Progress only for in-flight
+// rows. Staleness is the reader's job (UpdatedAt travels with the sample).
+func RecordProgress(ctx context.Context, c client.Client, namespace, attemptName string, p v1alpha1.RunProgress) error {
+	now := metav1.Now()
+	p.UpdatedAt = &now
+	return patchAttemptStatus(ctx, c, namespace, attemptName, func(s *v1alpha1.AttemptStatus) {
+		s.Progress = &p
+	})
+}
+
 // UpsertNodeResult records one node execution's envelope incrementally, as
 // the node completes rather than batched at outcome. The ledger is keyed by
 // (NodeID, RunID): a new key appends — preserving history across node retries

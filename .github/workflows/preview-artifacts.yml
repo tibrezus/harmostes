@@ -26,7 +26,14 @@ concurrency:
 jobs:
   images:
     name: Build + push PR images
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    # Dependabot PRs run with a secrets-less token — docker login to GHCR can
+    # never succeed ("Password required"), so the job was a permanent red X on
+    # every dependency bump (none of which ship images anyway). Dependabot
+    # branches skip the push; the preview flow is unaffected (previews are for
+    # human PRs). Everything else still builds.
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -76,9 +83,24 @@ jobs:
       - name: Build + push images
         run: |
           set -euo pipefail
+          # GHCR transient failures have twice killed this push mid-manifest
+          # or mid-blob while controller/ui pushed fine (#481 'unknown blob',
+          # #534 dial tcp i/o timeout) — the preview worker-pool then sat in
+          # ImagePullBackOff until a manual rerun. Deterministic pr-<id>-<sha>
+          # tags make republishing idempotent, so a bounded retry is honest:
+          # 3 attempts, short backoff, per image.
           for img in controller ui worker; do
             docker build -f ".github/Dockerfile.$img.release" -t "ghcr.io/tibrezus/harmostes-$img:$TAG" previewctx
-            docker push "ghcr.io/tibrezus/harmostes-$img:$TAG"
+            pushed=0
+            for attempt in 1 2 3; do
+              if docker push "ghcr.io/tibrezus/harmostes-$img:$TAG"; then
+                pushed=1
+                break
+              fi
+              echo "push $img failed (attempt $attempt/3)" >&2
+              sleep $((attempt * 10))
+            done
+            [ "$pushed" = 1 ] || { echo "push $img failed after 3 attempts" >&2; exit 1; }
             echo "pushed ghcr.io/tibrezus/harmostes-$img:$TAG"
           done
 

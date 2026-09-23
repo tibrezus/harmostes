@@ -231,8 +231,8 @@ func TestLabelAbsentHoldNoteDiscriminatesCI(t *testing.T) {
 
 	redC := &fakeAPI{pr: openPR("full-pipeline"), required: []string{"a", "b"}, states: map[string]string{"a": "success", "b": "failure"}}
 	r = Evaluate(context.Background(), redC, base)
-	if r.Decision != DecisionWaiting || !strings.Contains(r.Reason, "ci red at head (b)") || !strings.Contains(r.Reason, "dispatch on green") {
-		t.Fatalf("red CI must be named with dispatch-on-green, got %q", r.Reason)
+	if r.Decision != DecisionWaiting || !strings.Contains(r.Reason, "ci red at head abc123 (b)") || !strings.Contains(r.Reason, "dispatch on green") {
+		t.Fatalf("red CI must be named with the evaluated head + dispatch-on-green, got %q", r.Reason)
 	}
 	if strings.Contains(r.Reason, "ingress may be lost") {
 		t.Fatalf("red CI is not the ambiguous class, got %q", r.Reason)
@@ -240,8 +240,17 @@ func TestLabelAbsentHoldNoteDiscriminatesCI(t *testing.T) {
 
 	pend := &fakeAPI{pr: openPR("full-pipeline"), required: []string{"a", "b"}, states: map[string]string{"a": "success", "b": "pending"}}
 	r = Evaluate(context.Background(), pend, base)
-	if r.Decision != DecisionWaiting || !strings.Contains(r.Reason, "ci pending (b)") || !strings.Contains(r.Reason, "dispatch on green") {
-		t.Fatalf("pending CI must be named with dispatch-on-green, got %q", r.Reason)
+	if r.Decision != DecisionWaiting || !strings.Contains(r.Reason, "ci pending at head abc123 (running: b)") || !strings.Contains(r.Reason, "dispatch on green") {
+		t.Fatalf("pending CI must be named with the evaluated head + dispatch-on-green, got %q", r.Reason)
+	}
+
+	// #588: a context with a live unfinished run (pending) is DISTINCT from
+	// one with no record at the head at all — "wait" vs "never started /
+	// stale-head comparison" (the forgejo#132 class).
+	mix := &fakeAPI{pr: openPR("full-pipeline"), required: []string{"a", "b", "c"}, states: map[string]string{"a": "success", "b": "pending"}}
+	r = Evaluate(context.Background(), mix, base)
+	if r.Decision != DecisionWaiting || !strings.Contains(r.Reason, "running: b") || !strings.Contains(r.Reason, "no records at head: c") || !strings.Contains(r.Reason, "at head abc123") {
+		t.Fatalf("running vs missing must be named separately at the evaluated head, got %q", r.Reason)
 	}
 }
 

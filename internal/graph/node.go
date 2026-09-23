@@ -182,6 +182,11 @@ type Dependencies struct {
 	ToolPublisher agent.ToolPublisher // optional
 	SessionMeta   agent.SessionMeta   // identity metadata
 
+	// TurnPublisher observes each completed agent turn as it lands (immediate,
+	// not gate-lagged): the worker stamps the Attempt's live Progress window
+	// and emits the timeline turn event from here.
+	TurnPublisher agent.TurnPublisher // optional
+
 	// Timeline (evidence layer of the Canonical Orchestration History): when
 	// non-nil, node boundary events and plugin output tails are appended per
 	// run. Nil-safe — consumers without Dapr skip evidence silently.
@@ -214,6 +219,7 @@ func NewDefaultRegistry(deps Dependencies) *Registry {
 	agentExec := NewAgentExecutor(deps.AgentRunner, deps.TaskResolver, deps.PluginResolver, deps.DaprClient, deps.StateStore)
 	agentExec.sessionWr = deps.SessionWriter
 	agentExec.toolPub = deps.ToolPublisher
+	agentExec.turnPub = deps.TurnPublisher
 	agentExec.sessionMeta = deps.SessionMeta
 	r.Register(agentExec)
 	r.Register(NewBranchExecutor())

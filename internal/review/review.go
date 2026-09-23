@@ -502,21 +502,36 @@ func (a *RESTAPI) RequiredContexts(ctx context.Context, repo, branch string) ([]
 
 // classifyRequiredContexts buckets the required contexts by state — the
 // ONE classification home, shared by the label-present proceed path and
-// labelAbsentHoldNote (#512): red beats pending beats green, and a context
-// with no result yet (run not started, or the surface holds no entry) is
-// pending, not green.
-func classifyRequiredContexts(required []string, states map[string]string) (red, pending, green []string) {
+// labelAbsentHoldNote (#512): red beats running beats missing beats green,
+// and a context with a live-but-unfinished run (running) is distinct from
+// one with NO record at the head at all (missing) — the forgejo#132 class,
+// where an operator compared green records at an old head while the gate
+// silently held on contexts that had never started (#588).
+func classifyRequiredContexts(required []string, states map[string]string) (red, running, missing, green []string) {
 	for _, ctx := range required {
 		switch states[ctx] {
 		case "success":
 			green = append(green, ctx)
 		case "failure":
 			red = append(red, ctx)
-		default: // pending or missing entirely (run not started)
-			pending = append(pending, ctx)
+		case "pending": // a live run exists but is unfinished
+			running = append(running, ctx)
+		default: // no record on either surface at this head
+			missing = append(missing, ctx)
 		}
 	}
-	return red, pending, green
+	return red, running, missing, green
+}
+
+// ciWaitingHead stamps a CI waiting reason with the evaluated head (short
+// SHA) (#588): the forgejo#132 incident stayed mysterious for hours because
+// the reason did not carry WHICH head's CI the gate had evaluated, so the
+// operator's stale-head comparison could not be falsified at a glance.
+func ciWaitingHead(head string) string {
+	if len(head) > 7 {
+		head = head[:7]
+	}
+	return head
 }
 
 // labelAbsentHoldNote names WHY an armed, label-absent, verdict-less claim
@@ -538,12 +553,20 @@ func labelAbsentHoldNote(ctx context.Context, api API, p Params, pr *PullRequest
 	if err != nil {
 		return "ingress may be lost"
 	}
-	red, pending, _ := classifyRequiredContexts(required, states)
+	red, running, missing, _ := classifyRequiredContexts(required, states)
+	head := ciWaitingHead(pr.HeadSHA)
 	switch {
 	case len(red) > 0:
-		return "ci red at head (" + strings.Join(red, ", ") + ") — dispatch on green"
-	case len(pending) > 0:
-		return "ci pending (" + strings.Join(pending, ", ") + ") — dispatch on green"
+		return "ci red at head " + head + " (" + strings.Join(red, ", ") + ") — dispatch on green"
+	case len(running) > 0 || len(missing) > 0:
+		var parts []string
+		if len(running) > 0 {
+			parts = append(parts, "running: "+strings.Join(running, ", "))
+		}
+		if len(missing) > 0 {
+			parts = append(parts, "no records at head: "+strings.Join(missing, ", "))
+		}
+		return "ci pending at head " + head + " (" + strings.Join(parts, "; ") + ") — dispatch on green"
 	default:
 		return "ci green at head, dispatch imminent; if this persists, ingress may be lost"
 	}
@@ -1009,16 +1032,26 @@ func Evaluate(ctx context.Context, api API, p Params) Result {
 		return withPresence(waiting("contexts fetch failed: "+err.Error()), pr.HeadSHA, armedAt)
 	}
 
-	red, pending, green := classifyRequiredContexts(required, states)
+	red, running, missing, green := classifyRequiredContexts(required, states)
 
 	switch {
 	case len(red) > 0:
 		// Red CI is a silent non-event: the dev already sees red CI; a
 		// REQUEST_CHANGES verdict would be noise. Stay armed — the next
 		// push (synchronize) re-arms at the new head.
-		return withPresence(waiting("ci red at head ("+strings.Join(red, ", ")+") — staying armed"), pr.HeadSHA, armedAt)
-	case len(pending) > 0:
-		return withPresence(waiting("ci pending ("+strings.Join(pending, ", ")+")"), pr.HeadSHA, armedAt)
+		return withPresence(waiting("ci red at head "+ciWaitingHead(pr.HeadSHA)+" ("+strings.Join(red, ", ")+") — staying armed"), pr.HeadSHA, armedAt)
+	case len(running) > 0 || len(missing) > 0:
+		// #588: running (a live unfinished run) and missing (no record at
+		// this head at all) are different operator diagnoses — "wait" vs
+		// "the workflow never started / wrong head compared".
+		var parts []string
+		if len(running) > 0 {
+			parts = append(parts, "running: "+strings.Join(running, ", "))
+		}
+		if len(missing) > 0 {
+			parts = append(parts, "no records at head: "+strings.Join(missing, ", "))
+		}
+		return withPresence(waiting("ci pending at head "+ciWaitingHead(pr.HeadSHA)+" ("+strings.Join(parts, "; ")+")"), pr.HeadSHA, armedAt)
 	default:
 		return proceed(p, pr, required, green)
 	}

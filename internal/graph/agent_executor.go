@@ -32,6 +32,7 @@ type AgentExecutor struct {
 	stateStore  string                // Dapr state store component name
 	sessionWr   agent.SessionWriter   // optional: persists session transcript
 	toolPub     agent.ToolPublisher   // optional: publishes per-tool pub/sub events
+	turnPub     agent.TurnPublisher   // optional: observes per-turn progress (live tokens)
 	sessionMeta agent.SessionMeta     // identity metadata for the session record
 }
 
@@ -136,6 +137,9 @@ func (e *AgentExecutor) Execute(ctx context.Context, node v1alpha1.NodeSpec, env
 	}
 	if e.toolPub != nil {
 		agentOpts = append(agentOpts, agent.WithToolPublisher(e.toolPub))
+	}
+	if e.turnPub != nil {
+		agentOpts = append(agentOpts, agent.WithTurnPublisher(e.turnPub))
 	}
 
 	result, err := e.runner.Run(ctx, task, gate, maxFixes, nil, agentOpts...)

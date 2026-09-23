@@ -252,8 +252,18 @@ else:
     # rhesadox#2359 burn — five consecutive downgrades over a fixed
     # diff; the protocol-shaped replies themselves added unresolvable
     # flat threads to the count). Closure requirements, all deliberate:
-    #   same anchor  — path + (line, else position): a marker for another
-    #                  conversation never closes this one
+    #   same path     — the marker's path must equal the thread's. #573
+    #                  round 5 (the rhesadox#2376 burn): the fork
+    #                  serializes each comment's position against ITS
+    #                  OWN head — a fix that edits the file above the
+    #                  anchor shifts the marker's position (thread at
+    #                  pos 96, marker at pos 83 over a 15-line insert),
+    #                  so exact position equality can NEVER hold when
+    #                  the fix touches the addressed file. The id-in-body
+    #                  + lead + identity + later requirements already pin
+    #                  WHICH thread the marker addresses; the position
+    #                  adds only fragility. (GitHub unaffected: threads
+    #                  there close via in_reply_to natively.)
     #   later        — created_at strictly after the thread's. Both
     #                  sides must be Z-suffixed RFC3339 (both hosts emit
     #                  Z today): a +hh:mm offset sorts lexically by
@@ -295,7 +305,7 @@ else:
     def _bounded(tid):
         return _re.compile(r'(?<!\d)'+_re.escape(str(tid))+r'(?!\d)')
     def anchor_key(c):
-        return (c.get("path"), c.get("line") if c.get("line") is not None else c.get("position"))
+        return c.get("path")
     def author_of(c):
         u=c.get("user")
         return (u.get("login") if isinstance(u, dict) else None) or ""

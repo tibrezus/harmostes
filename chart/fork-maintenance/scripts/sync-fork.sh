@@ -220,10 +220,31 @@ phase_merge() {
     git checkout "$FORK_DEFAULT_BRANCH" 2>/dev/null || git checkout -b "$FORK_DEFAULT_BRANCH" "origin/$FORK_DEFAULT_BRANCH"
   fi
 
+  # Shallow-history soundness (#566): the clone and the upstream fetch are
+  # --depth 100, and a shallow graph can lack the common ancestor — a
+  # merge-base that fails (or silently mis-resolves) here turns the
+  # up-to-date decision into a coin flip. The false "up to date" is the
+  # worst outcome: the sync silently no-ops forever, defeating the
+  # dead-man's switch it feeds. So:
+  #   1. the up-to-date test is `merge-base --is-ancestor` (exit-status
+  #      semantics — upstream head fully contained in the fork), never a
+  #      string compare that an empty MERGE_BASE can corrupt;
+  #   2. a missing common ancestor triggers an unshallow retry before the
+  #      merge — a real 300+-commit range cannot merge from 100-deep
+  #      history at all;
+  #   3. if the ancestor is STILL unresolvable, we proceed to the merge,
+  #      which fails LOUDLY (unrelated histories) instead of skipping.
   MERGE_BASE=$(git merge-base "HEAD" "upstream/$UPSTREAM_BRANCH" 2>/dev/null || echo "")
+  if [ -z "$MERGE_BASE" ]; then
+    echo "=== shallow history has no common ancestor — unshallowing upstream ==="
+    git fetch --unshallow upstream "$UPSTREAM_BRANCH" 2>/dev/null \
+      || git fetch --deepen=2000 upstream "$UPSTREAM_BRANCH" 2>/dev/null \
+      || true
+    MERGE_BASE=$(git merge-base "HEAD" "upstream/$UPSTREAM_BRANCH" 2>/dev/null || echo "")
+  fi
   UPSTREAM_HEAD=$(git rev-parse "upstream/$UPSTREAM_BRANCH")
 
-  if [ "$MERGE_BASE" = "$UPSTREAM_HEAD" ]; then
+  if git merge-base --is-ancestor "upstream/$UPSTREAM_BRANCH" "HEAD" 2>/dev/null; then
     echo ""
     echo "=== Already up to date — mirror has no new commits ==="
     if [ "$PHASED" = "1" ]; then
@@ -544,7 +565,22 @@ phase_tag() {
       | awk -F/ '{print $NF}' | sort -V | tail -1)
     LAST_N=$(echo "${LAST_REZUS}" | sed -nE 's/.*-rezus\.([0-9]+).*/\1/p')
     [ -z "$LAST_N" ] && LAST_N=0
-    NEXT_N=$((LAST_N + 1))
+    # Base-10, not octal: a padded ordinal (08/09) would be invalid octal
+    # in arithmetic and crash the phase.
+    NEXT_N=$((10#$LAST_N + 1))
+    # Ordinal tag-shape contract (#595) — two rules:
+    # 1. Ordinals are UNPADDED. A digit-only prerelease identifier
+    #    (…-rezus.10) is ranked NUMERICALLY by semver — monotonic at every
+    #    boundary. A zero-padded one (…-rezus.01) is INVALID semver
+    #    (leading zeros) and invisible to any semver ImagePolicy.
+    # 2. The IMAGE tag is the git tag VERBATIM (v…-rezus.11) — no variant
+    #    suffix at all (rezuscloud/signoz#67 dropped one; the ordinal IS
+    #    the version). If a variant is ever truly unavoidable, DOT-join it
+    #    (v…-rezus.11.community), never dash-fused (…-rezus.11-community):
+    #    a fused identifier is alphanumeric, ranks lexically, and
+    #    "10-community" < "9-community" silently stalls the policy at
+    #    every 9→10 boundary (observed: rezuscloud/signoz — flux marker
+    #    stuck at v0.127.0-rezus.3-community since 2026-06-29).
     RELEASE_TAG="${UPSTREAM_VER}-rezus.${NEXT_N}"
 
     HEAD_TAG=$(git tag --points-at HEAD | grep -E "${UPSTREAM_VER}-rezus\." || true)

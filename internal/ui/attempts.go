@@ -78,6 +78,20 @@ func (s *Server) handleAttemptList(w http.ResponseWriter, r *http.Request) {
 		return groups[i].LastActivity > groups[j].LastActivity
 	})
 
+	// Per-subject usage onto each group (the latest attempt's envelope
+	// payload; empty for queued/pre-payload attempts — honest absence).
+	byName := map[string]*v1alpha1.Attempt{}
+	for i := range attempts {
+		byName[attempts[i].Name] = &attempts[i]
+	}
+	for gi := range groups {
+		if u := usageFromAttempt(byName[groups[gi].LatestAttempt]); u != nil {
+			groups[gi].TokensIn = u.InputTokens
+			groups[gi].TokensOut = u.OutputTokens
+			groups[gi].Model = u.Model
+		}
+	}
+
 	// The strip counts the WHOLE window; the tabs filter it. Rank order
 	// floats failures to the top regardless of activity (the orchestration-
 	// list convention: failed first, then by recency).
@@ -198,6 +212,11 @@ type attemptGroup struct {
 	LatestAttempt string // name of the most recently active attempt (wall + drill-down)
 	LastActivity  string
 	Attempts      []attemptSummary
+	// Per-subject usage (the latest attempt's agent envelope payload —
+	// the Attempt CR is the per-PR source of record, #586).
+	TokensIn  int
+	TokensOut int
+	Model     string
 }
 
 // windowCutoff resolves the list window; unknown values fall back to 24h.

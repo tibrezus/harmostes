@@ -218,3 +218,35 @@ func TestCmdGateScrubBotToken(t *testing.T) {
 		t.Errorf("expected the scrubbed-env branch, output: %s", out)
 	}
 }
+
+// The turn publisher fires per completed turn — IMMEDIATELY, not gate-lagged
+// (the old path emitted at gate-evaluation time, so a turn's tokens appeared
+// minutes late). Samples carry the turn's own usage and the running totals;
+// the wall and the event timeline read only the newest.
+func TestTurnPublisherStreamsPerTurn(t *testing.T) {
+	sess := &fakeSession{usages: []Usage{
+		{Input: 100, Output: 5},
+		{Input: 50, Output: 2},
+	}}
+	gate := &scriptedGate{greens: []bool{false, true}, outputs: []string{"fix it", "ok"}}
+	var samples []TurnProgress
+	res, err := Task(context.Background(), sess, gate, "task", 3, nil, WithTurnPublisher(
+		func(_ context.Context, p TurnProgress) { samples = append(samples, p) },
+	))
+	if err != nil || !res.Green {
+		t.Fatalf("green task: err=%v green=%v", err, res.Green)
+	}
+	if len(samples) != 2 {
+		t.Fatalf("turn samples = %d, want 2", len(samples))
+	}
+	if samples[0].Turn != 0 || samples[0].Label != "initial task" ||
+		samples[0].TokensIn != 100 || samples[0].TokensOut != 5 ||
+		samples[0].TotalIn != 100 || samples[0].TotalOut != 5 || samples[0].Turns != 1 {
+		t.Errorf("sample 0 = %+v", samples[0])
+	}
+	if samples[1].Turn != 1 || samples[1].Label != "feedback #1" ||
+		samples[1].TokensIn != 50 || samples[1].TokensOut != 2 ||
+		samples[1].TotalIn != 150 || samples[1].TotalOut != 7 || samples[1].Turns != 2 {
+		t.Errorf("sample 1 = %+v", samples[1])
+	}
+}

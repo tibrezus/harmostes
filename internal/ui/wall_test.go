@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PuerkitoBio/goquery"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 
@@ -455,5 +457,229 @@ func TestWallStepsUntimedRendersShape(t *testing.T) {
 		if s.Width != want {
 			t.Errorf("untimed step %s width = %d, want %d", s.ID, s.Width, want)
 		}
+	}
+}
+
+// The wall is LIVE (live is not history): active work — in flight, queued,
+// failed — always shows; terminal verdicts linger only wallVerdictGrace;
+// superseded never shows. The live columns name the executing node and its
+// elapsed time for in-flight groups.
+func TestWallLiveOnlySelection(t *testing.T) {
+	now := time.Now()
+	mk := func(name, subject string, phase string, age time.Duration) *v1alpha1.Attempt {
+		a := wallReviewAttempt(name, "pr-review-x")
+		a.Spec.Objective.PrimarySubject.Object = subject
+		a.Status.Phase = phase
+		a.Status.LastRunAt = metav1.NewTime(now.Add(-age))
+		a.CreationTimestamp = metav1.NewTime(now.Add(-age))
+		// Distinct subjects: the review grouping keys on Status.Review.PR.
+		a.Status.Review = &v1alpha1.ReviewClaimStatus{PR: subject, HeadSHA: "abcdef1234567890"}
+		return a
+	}
+	inflight := mk("attempt-pr-review-x-1", "demo/x#1", "reconciling", 2*time.Hour)
+	disp := metav1.NewTime(now.Add(-30 * time.Minute))
+	inflight.Status.Review.DispatchedAt = &disp
+	// prepare done; agent executing — the live position.
+	inflight.Status.NodeResults = []v1alpha1.NodeResultEnvelope{{
+		NodeID: "prepare", Status: "ok", ProducedAt: metav1.NewTime(now.Add(-10 * time.Minute)),
+	}}
+	inflight.Status.Runs = []v1alpha1.RunRecord{
+		{Name: "pr-review-x-1-prepare", StartedAt: metav1.NewTime(now.Add(-11 * time.Minute)), EndedAt: metav1.NewTime(now.Add(-10 * time.Minute)), Phase: "succeeded"},
+		{Name: "pr-review-x-1-agent", StartedAt: metav1.NewTime(now.Add(-9 * time.Minute)), Phase: "running"},
+	}
+	freshVerdict := mk("attempt-pr-review-x-2", "demo/x#2", "validated", 5*time.Minute)
+	freshVerdict.Status.Review.Released = true
+	freshVerdict.Status.Review.ReleaseReason = "consumed"
+	oldVerdict := mk("attempt-pr-review-x-3", "demo/x#3", "validated", 2*time.Hour)
+	oldVerdict.Status.Review.Released = true
+	oldVerdict.Status.Review.ReleaseReason = "consumed"
+	failedOld := mk("attempt-pr-review-x-4", "demo/x#4", "failed", 2*time.Hour)
+	superseded := mk("attempt-pr-review-x-5", "demo/x#5", "superseded", 5*time.Minute)
+	superseded.Status.Review.Released = true
+	superseded.Status.Review.ReleaseReason = "superseded"
+
+	wf := graphSeedWorkflow("pr-review-x")
+	s := wallTestServer(t, wf, inflight, freshVerdict, oldVerdict, failedOld, superseded)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("X-Authentik-Username", "alice")
+	rec := httptest.NewRecorder()
+	s.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET / status = %d", rec.Code)
+	}
+	doc, err := goquery.NewDocumentFromReader(rec.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	doc.Find(`[data-testid="wall-card"]`).Each(func(_ int, sel *goquery.Selection) {
+		seen[sel.AttrOr("data-subject", "")] = true
+	})
+	if !seen["demo/x#1"] {
+		t.Error("in-flight subject must show (active work, however old)")
+	}
+	if !seen["demo/x#2"] {
+		t.Error("fresh verdict must show (within grace)")
+	}
+	if seen["demo/x#3"] {
+		t.Error("verdict past grace must age out to Runs")
+	}
+	if !seen["demo/x#4"] {
+		t.Error("failed must show however old (needs attention)")
+	}
+	if seen["demo/x#5"] {
+		t.Error("superseded must never show (pure history)")
+	}
+
+	// Live columns on the in-flight row: the executing node (first
+	// envelope-less executable node) and its elapsed time.
+	cur := doc.Find(`[data-testid="wall-current"]`).FilterFunction(func(_ int, sel *goquery.Selection) bool {
+		return strings.Contains(sel.Text(), "agent")
+	})
+	if cur.Length() != 1 {
+		t.Errorf("live Now cells naming the agent node = %d, want 1", cur.Length())
+	}
+}
+
+// livePosition: label of the first envelope-less executable node + the
+// running run's elapsed; graceful empty on unknown graphs.
+func TestLivePosition(t *testing.T) {
+	att := wallReviewAttempt("attempt-pr-review-x-1", "pr-review-x")
+	att.Status.NodeResults = []v1alpha1.NodeResultEnvelope{{
+		NodeID: "prepare", Status: "ok", ProducedAt: metav1.NewTime(time.Now().Add(-5 * time.Minute)),
+	}}
+	att.Status.Runs = []v1alpha1.RunRecord{
+		{Name: "pr-review-x-1-prepare", StartedAt: metav1.NewTime(time.Now().Add(-6 * time.Minute)), EndedAt: metav1.NewTime(time.Now().Add(-5 * time.Minute)), Phase: "succeeded"},
+		{Name: "pr-review-x-1-agent", StartedAt: metav1.NewTime(time.Now().Add(-4 * time.Minute)), Phase: "running"},
+	}
+	resolved := graphSeedWorkflow("pr-review-x")
+	node, elapsed := livePosition(resolved, att)
+	if node != "agent" {
+		t.Errorf("live node = %q, want agent", node)
+	}
+	if elapsed == "" {
+		t.Error("elapsed must be set when a run is executing")
+	}
+}
+
+// The wall's token column streams the executing run's live usage: the
+// attempt's Progress window (fresh samples only — a crashed run's last
+// write lingers) renders with the live marker and turn count; stale or
+// absent progress falls back to the envelope/cache numbers.
+func TestWallLiveTokens(t *testing.T) {
+	now := time.Now()
+	mk := func(name string, progress *v1alpha1.RunProgress) *v1alpha1.Attempt {
+		a := wallReviewAttempt(name, "pr-review-x")
+		a.Spec.Objective.PrimarySubject.Object = "demo/x"
+		a.Status.Phase = "reconciling"
+		a.Status.Review = &v1alpha1.ReviewClaimStatus{PR: "demo/x", HeadSHA: "abcdef1234567890"}
+		disp := metav1.NewTime(now.Add(-30 * time.Minute))
+		a.Status.Review.DispatchedAt = &disp
+		a.Status.NodeResults = []v1alpha1.NodeResultEnvelope{{
+			NodeID: "prepare", Status: "ok", ProducedAt: metav1.NewTime(now.Add(-10 * time.Minute)),
+		}}
+		a.Status.Runs = []v1alpha1.RunRecord{
+			{Name: name + "-agent", StartedAt: metav1.NewTime(now.Add(-9 * time.Minute)), Phase: "running"},
+		}
+		a.Status.Progress = progress
+		return a
+	}
+	wf := graphSeedWorkflow("pr-review-x")
+	fresh := mk("attempt-pr-review-x-live", &v1alpha1.RunProgress{
+		Turn: 3, Turns: 4, TokensIn: 2140, TokensOut: 388, UpdatedAt: &metav1.Time{Time: now.Add(-2 * time.Minute)},
+	})
+	stale := mk("attempt-pr-review-x-stale", &v1alpha1.RunProgress{
+		Turn: 3, Turns: 4, TokensIn: 9999, TokensOut: 9999, UpdatedAt: &metav1.Time{Time: now.Add(-2 * time.Hour)},
+	})
+	none := mk("attempt-pr-review-x-none", nil)
+	s := wallTestServer(t, wf, fresh, stale, none)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("X-Authentik-Username", "alice")
+	rec := httptest.NewRecorder()
+	s.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET / status = %d", rec.Code)
+	}
+	doc, err := goquery.NewDocumentFromReader(rec.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	live := map[string]string{}
+	doc.Find(`[data-testid="wall-live-tokens"]`).EachWithBreak(func(_ int, sel *goquery.Selection) bool {
+		card := sel.Closest(`[data-testid="wall-card"]`)
+		live[card.AttrOr("data-subject", "")] = sel.Text()
+		return true
+	})
+	if got, ok := live["demo/x"]; !ok || got == "" {
+		t.Fatalf("live tokens cell missing; cells=%v", live)
+	} else if !strings.Contains(got, "2140") || !strings.Contains(got, "388") || !strings.Contains(got, "↻") {
+		t.Errorf("live tokens cell = %q, want ↻ + 2140/388", got)
+	}
+	if n := len(live); n != 1 {
+		t.Errorf("live tokens cells = %d (%v), want exactly 1 (stale/absent progress show the dash or envelope)",
+			n, live)
+	}
+}
+
+// The header tally counts the whole live selection pre-budget (kestra's
+// execution-tab counts): in flight, queued, failed — but never aged-out
+// history or superseded rows.
+func TestWallCounts(t *testing.T) {
+	now := time.Now()
+	mk := func(name, subject, phase string, age time.Duration, released bool, reason string) *v1alpha1.Attempt {
+		a := wallReviewAttempt(name, "pr-review-x")
+		a.Status.Phase = phase
+		a.Status.Review = &v1alpha1.ReviewClaimStatus{PR: subject, HeadSHA: "abcdef1234567890"}
+		if released {
+			a.Status.Review.Released = true
+			a.Status.Review.ReleaseReason = reason
+		} else {
+			a.Status.Review.DispatchedAt = &metav1.Time{Time: now.Add(-1 * time.Minute)}
+		}
+		a.Status.LastRunAt = metav1.NewTime(now.Add(-age))
+		a.CreationTimestamp = metav1.NewTime(now.Add(-age))
+		return a
+	}
+	wf := graphSeedWorkflow("pr-review-x")
+	attempts := []*v1alpha1.Attempt{
+		mk("attempt-pr-review-x-a", "demo/x#1", "reconciling", 2*time.Hour, false, ""),
+		mk("attempt-pr-review-x-b", "demo/x#2", "reconciling", 2*time.Hour, false, ""),
+		// queued: armed but not dispatched
+		func() *v1alpha1.Attempt {
+			a := mk("attempt-pr-review-x-c", "demo/x#3", "reconciling", 2*time.Hour, false, "")
+			a.Status.Review.DispatchedAt = nil
+			return a
+		}(),
+		mk("attempt-pr-review-x-d", "demo/x#4", "validated", 5*time.Minute, true, "consumed"),
+		// verdict past grace: history — not counted
+		mk("attempt-pr-review-x-e", "demo/x#5", "validated", 2*time.Hour, true, "consumed"),
+	}
+	objs := []runtime.Object{wf}
+	for _, a := range attempts {
+		objs = append(objs, a)
+	}
+	s := wallTestServer(t, objs...)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("X-Authentik-Username", "alice")
+	rec := httptest.NewRecorder()
+	s.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET / status = %d", rec.Code)
+	}
+	doc, err := goquery.NewDocumentFromReader(rec.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	counts := doc.Find(`[data-testid="wall-counts"]`).Text()
+	for _, want := range []string{"in flight 2", "queued 1", "verdict 1"} {
+		if !strings.Contains(counts, want) {
+			t.Errorf("counts = %q, missing %q", counts, want)
+		}
+	}
+	if strings.Contains(counts, "failed") {
+		t.Errorf("counts = %q, failed bucket must be absent when nothing failed", counts)
 	}
 }

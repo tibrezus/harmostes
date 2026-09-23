@@ -1351,7 +1351,9 @@ data:
         #    (…-rezus.10) is ranked NUMERICALLY by semver — monotonic at every
         #    boundary. A zero-padded one (…-rezus.01) is INVALID semver
         #    (leading zeros) and invisible to any semver ImagePolicy.
-        # 2. Variant suffixes in IMAGE tags are DOT-joined to the ordinal
+        # 2. The IMAGE tag is the git tag VERBATIM (v…-rezus.11) — no variant
+        #    suffix at all (rezuscloud/signoz#67 dropped one; the ordinal IS
+        #    the version). If a variant is ever truly unavoidable, DOT-join it
         #    (v…-rezus.11.community), never dash-fused (…-rezus.11-community):
         #    a fused identifier is alphanumeric, ranks lexically, and
         #    "10-community" < "9-community" silently stalls the policy at
@@ -5242,7 +5244,7 @@ spec:
         # (stale-pod-wins; #368-1). Checksums cover everything the pod mounts:
         # the fork-maintenance.yaml template output (scripts/checks/defs/
         # hooks/skill CMs) and the litellm extension payload.
-        checksum/fork-maintenance: 458808bc2510e7018b9b199fc58554df4210e5060ed482f76b7563a015179dac
+        checksum/fork-maintenance: a48513e9c6041d7873742840f0753a5c1566035a2316331134a00e64108a5c2d
         checksum/litellm-extension: 883d76f7ef3dcce17099fbf3c7b7aea0e7d7d16003ca83cfb465a7422078b4e1
     spec:
       imagePullSecrets:

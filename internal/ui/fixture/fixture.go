@@ -202,6 +202,13 @@ func Attempts(namespace string) ([]ctrlclient.Object, error) {
 		{Name: "pr-review-demo-43c2-prepare", StartedAt: t(30, 5), EndedAt: t(30, 12), Phase: "succeeded"},
 		{Name: "pr-review-demo-43c2-agent", StartedAt: t(30, 20), Phase: "running"}, // no EndedAt: in flight
 	}
+	// Live progress window: the agent harness's running totals as of the
+	// newest completed turn. UpdatedAt is pinned RELATIVE to the fixture's
+	// clock so the wall's freshness gate (15m) always passes and e2e is
+	// deterministic.
+	running.Status.Progress = &v1alpha1.RunProgress{
+		Turn: 3, Turns: 4, TokensIn: 2140, TokensOut: 388, UpdatedAt: &metav1.Time{Time: t(31, 10).Time},
+	}
 	// In-flight claim: armed + dispatched, NOT released — the live position.
 	armT2 := t(29, 0)
 	dispT2 := t(29, 30)

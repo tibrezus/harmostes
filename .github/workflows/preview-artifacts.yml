@@ -26,7 +26,14 @@ concurrency:
 jobs:
   images:
     name: Build + push PR images
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    # Dependabot PRs run with a secrets-less token — docker login to GHCR can
+    # never succeed ("Password required"), so the job was a permanent red X on
+    # every dependency bump (none of which ship images anyway). Dependabot
+    # branches skip the push; the preview flow is unaffected (previews are for
+    # human PRs). Everything else still builds.
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:

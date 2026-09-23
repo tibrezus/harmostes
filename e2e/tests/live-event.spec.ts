@@ -36,14 +36,17 @@ async function injectEvent(request: APIRequestContext): Promise<void> {
 test('a lifecycle event reaches the open wall through SSE without reload', async ({ page, request }) => {
   await page.goto('/');
 
-  // The usage model is event-only data: absent until the event arrives.
-  await expect(page.locator('.wall-usage-model')).toHaveCount(0);
+  // The INJECTED usage model is event-only data: absent until the event
+  // arrives. (The fixture's in-flight row carries its own model from the
+  // live Progress window — that one is present at load and is not this
+  // assertion's subject.)
+  const model = page.locator('.wall-usage-model').filter({ hasText: 'e2e-demo-model' });
+  await expect(model).toHaveCount(0);
 
   await injectEvent(request);
 
   // The SSE stream re-renders the wall fragment; the injected model name
   // appears — no navigation happened (the URL never changed, no reload).
-  const model = page.locator('.wall-usage-model').filter({ hasText: 'e2e-demo-model' });
   await expect(model.first()).toBeVisible({ timeout: 10_000 });
   await expect(page).toHaveURL(/\/$/);
 });

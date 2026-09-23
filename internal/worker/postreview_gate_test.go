@@ -42,7 +42,16 @@ const (
 	fjMarkerAddressed = `[{"id":40268,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T01:39:33Z","user":{"login":"harmostes-bot"}},{"id":40305,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T04:17:30Z","user":{"login":"tibrez"},"body":"w.yml:433 (comment 40268) — RESOLVED at abc: the coupled key re-armed"}]`
 	// Same marker shape but anchored on a DIFFERENT conversation — must
 	// not close (the anchor is part of the marker, not decoration).
-	fjMarkerWrongAnchor = `[{"id":40268,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T01:39:33Z"},{"id":40306,"path":"w.yml","line":null,"position":370,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T04:17:30Z","body":"w.yml:370 (comment 40268) — reply for another thread"}]`
+	// #573 round 5 (the rhesadox#2376 burn): the fork serializes each
+	// comment's position against ITS OWN head — a fix that edits the file
+	// above the anchor shifts the marker's position (thread pos 96, marker
+	// pos 83 over a 15-line insert). A protocol-shaped reply (author
+	// identity + path:line lead + bounded id + later) at a DIFFERENT
+	// position of the SAME path must CLOSE.
+	fjMarkerDriftedAnchor = `[{"id":41865,"path":"acceptance.yml","line":null,"position":96,"commit_id":"OLD","created_at":"2026-09-23T00:54:51Z","user":{"login":"harmostes-bot"}},{"id":41887,"path":"acceptance.yml","line":null,"position":83,"commit_id":"OLD","created_at":"2026-09-23T01:11:24Z","user":{"login":"tibrez"},"body":"acceptance.yml:96 — fixed at abc (comment 41865): cancel-in-progress false"}]`
+	// A different PATH is still another conversation — never closes, and
+	// the marker itself stays an open comment.
+	fjMarkerWrongPath = `[{"id":40268,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T01:39:33Z","user":{"login":"harmostes-bot"}},{"id":40306,"path":"other.yml","line":null,"position":370,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T04:17:30Z","user":{"login":"tibrez"},"body":"other.yml:370 (comment 40268) — reply for another thread"}]`
 	// Same anchor, later, but the body never names the original id — a
 	// same-anchor comment that does not identify its thread must not close
 	// it (the id reference is the discriminator).
@@ -146,7 +155,8 @@ func TestPostReviewGateClassifier(t *testing.T) {
 		{"github: current-round thread does not downgrade", ghOpenCur, "CUR", "APPROVE", "0"},
 		{"forgejo in_reply_to dialect closes threads", forgejoDialect, "OLD", "APPROVE", "0"},
 		{"forgejo: same-anchor id-referencing marker closes the thread (#572)", fjMarkerAddressed, "CUR", "APPROVE", "0"},
-		{"forgejo: marker on a different anchor does not close — and itself stays an open comment (#572)", fjMarkerWrongAnchor, "CUR", "REQUEST_CHANGES", "2"},
+		{"forgejo: marker at a DRIFTED position of the same path closes (#573 round 5, the #2376 burn)", fjMarkerDriftedAnchor, "CUR", "APPROVE", "0"},
+		{"forgejo: marker on a different PATH does not close — and itself stays an open comment", fjMarkerWrongPath, "CUR", "REQUEST_CHANGES", "2"},
 		{"forgejo: same-anchor reply without the id reference does not close — and itself stays an open comment (#572)", fjMarkerNoIdRef, "CUR", "REQUEST_CHANGES", "2"},
 		{"forgejo: sibling findings cross-referencing each other both stay open (#573 review)", fjSiblingFindings, "CUR", "REQUEST_CHANGES", "2"},
 		{"forgejo: mid-body id reference without the leading form does not close (#573 review)", fjMarkerMidBodyId, "CUR", "REQUEST_CHANGES", "2"},

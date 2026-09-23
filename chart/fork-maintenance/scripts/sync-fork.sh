@@ -573,7 +573,9 @@ phase_tag() {
     #    (…-rezus.10) is ranked NUMERICALLY by semver — monotonic at every
     #    boundary. A zero-padded one (…-rezus.01) is INVALID semver
     #    (leading zeros) and invisible to any semver ImagePolicy.
-    # 2. Variant suffixes in IMAGE tags are DOT-joined to the ordinal
+    # 2. The IMAGE tag is the git tag VERBATIM (v…-rezus.11) — no variant
+    #    suffix at all (rezuscloud/signoz#67 dropped one; the ordinal IS
+    #    the version). If a variant is ever truly unavoidable, DOT-join it
     #    (v…-rezus.11.community), never dash-fused (…-rezus.11-community):
     #    a fused identifier is alphanumeric, ranks lexically, and
     #    "10-community" < "9-community" silently stalls the policy at

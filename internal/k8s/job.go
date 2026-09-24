@@ -213,6 +213,11 @@ func BuildJob(p AttemptJobParams) *batchv1.Job {
 		{Name: "HARMOSTES_WORKFLOW", Value: p.WorkflowName},
 		{Name: "HARMOSTES_NAMESPACE", Value: p.Namespace},
 		{Name: "POD_NAME", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.name"}}},
+		// #613: this pod is dapr-injected (annotations above) — tell the run
+		// form's startup guard so a skipped injection fails the Job NOW and the
+		// dispatcher's re-arm mints a fresh pod (fresh admission), instead of a
+		// degraded run burning its whole wall clock.
+		{Name: "HARMOSTES_DAPR_REQUIRED", Value: "true"},
 		// The wall the run paces against (#336): the SAME effective bound
 		// ActiveDeadlineSeconds enforces (one source — runBoundSeconds —
 		// so they cannot disagree). The task contract reads this so the

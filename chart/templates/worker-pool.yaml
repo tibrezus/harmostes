@@ -120,6 +120,12 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+            # #613: arms the worker's dapr sidecar startup guard — a pod the
+            # injector skipped (failurePolicy:Ignore during dapr-system churn)
+            # fails fast + self-deletes for re-admission instead of serving
+            # hours with webhooks/state/timeline silently dead.
+            - name: HARMOSTES_DAPR_REQUIRED
+              value: "true"
             {{- if .Values.observability.otlpEndpoint }}
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: {{ .Values.observability.otlpEndpoint | quote }}

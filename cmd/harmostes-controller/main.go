@@ -9,6 +9,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"net"
@@ -29,6 +30,14 @@ import (
 	"github.com/tibrezus/harmostes/internal/observability"
 	"github.com/tibrezus/harmostes/internal/webhook"
 	"github.com/tibrezus/harmostes/version"
+)
+
+// #613 guard knobs — same semantics as the worker's (single source would
+// over-couple the two mains; the chart stamps the REQUIRED flag on both).
+const (
+	daprWaitDefault     = 90 * time.Second
+	daprSelfHealDefault = 30 * time.Second
+	daprProbeInterval   = time.Second
 )
 
 func main() {
@@ -81,6 +90,25 @@ func main() {
 	if daprEndpoint != "" {
 		daprClient = dapr.Tracing(dapr.New(daprEndpoint))
 		setupLogMsg("dapr client wired for trigger publishing at %s", daprEndpoint)
+	}
+
+	// #613: the controller is half of the event system — trigger scheduling
+	// without a sidecar strands every claim arm. Fail fast; self-heal by
+	// deleting this pod so the ReplicaSet re-runs admission (a container
+	// restart cannot re-run it — failurePolicy:Ignore during injector churn
+	// produced exactly this pod shape live).
+	wait := envDurationOr("HARMOSTES_DAPR_WAIT", daprWaitDefault)
+	if err := dapr.StartupGuard(context.Background(), dapr.New(daprEndpoint), wait, daprProbeInterval); err != nil {
+		if errors.Is(err, dapr.ErrSidecarMissing) {
+			time.Sleep(envDurationOr("HARMOSTES_DAPR_SELFHEAL_DELAY", daprSelfHealDefault)) // pace the recreation loop
+			if derr := k8s.DeleteOwnPodInCluster(context.Background(), namespace); derr != nil {
+				setupLog("dapr self-heal: could not delete own pod — exiting anyway", derr)
+			} else {
+				setupLogMsg("dapr self-heal: deleted own pod — the replacement re-runs sidecar admission")
+			}
+		}
+		setupLog("dapr startup guard", err)
+		os.Exit(1)
 	}
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
@@ -198,7 +226,14 @@ func envOr(key, def string) string {
 }
 
 // envDurationOr is reserved for env-driven config; the flag default suffices today.
-func envDurationOr(_ string, def time.Duration) time.Duration { return def }
+func envDurationOr(key string, def time.Duration) time.Duration {
+	if v := os.Getenv(key); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+	}
+	return def
+}
 
 func setupLog(msg string, err error) {
 	ctrl.Log.WithName("setup").Error(err, msg)

@@ -24,6 +24,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -60,6 +61,49 @@ var (
 	logger      *slog.Logger
 	obsShutdown observability.ShutdownFunc
 )
+
+// #613 guard knobs. WAIT bounds the injected-but-slow sidecar; SELFHEAL_DELAY
+// paces the missing-injection self-delete so a long injector outage cannot
+// hot-loop pod recreations.
+const (
+	daprWaitDefault     = 90 * time.Second
+	daprSelfHealDefault = 30 * time.Second
+	daprProbeInterval   = time.Second
+	daprWaitEnv         = "HARMOSTES_DAPR_WAIT"
+	daprSelfHealEnv     = "HARMOSTES_DAPR_SELFHEAL_DELAY"
+)
+
+// guardDaprOrDie runs the #613 sidecar guard and, on the missing-injection
+// case, self-heals by deleting this pod (admission re-runs on the replacement;
+// for attempt Jobs the dispatcher's re-arm mints a fresh pod instead — the
+// caller passes selfHeal=false there, the churn budget already bounds that
+// loop). Guard is a no-op unless the chart stamped HARMOSTES_DAPR_REQUIRED.
+func guardDaprOrDie(ctx context.Context, endpoint, namespace string, selfHeal bool) {
+	err := dapr.StartupGuard(ctx, dapr.New(endpoint), envDurationOr(daprWaitEnv, daprWaitDefault), daprProbeInterval)
+	if err == nil {
+		return
+	}
+	if errors.Is(err, dapr.ErrSidecarMissing) && selfHeal {
+		// Pace the recreation loop before pulling the trigger: a pod that dies
+		// instantly makes the ReplicaSet replace it instantly, forever.
+		time.Sleep(envDurationOr(daprSelfHealEnv, daprSelfHealDefault))
+		if derr := k8s.DeleteOwnPodInCluster(ctx, namespace); derr != nil {
+			logger.Error("dapr self-heal: could not delete own pod — exiting anyway (the workload controller must replace this pod)", "error", derr)
+		} else {
+			logger.Info("dapr self-heal: deleted own pod — the replacement re-runs sidecar admission")
+		}
+	}
+	fatal("dapr startup guard: %v", err)
+}
+
+func envDurationOr(key string, def time.Duration) time.Duration {
+	if v := os.Getenv(key); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+	}
+	return def
+}
 
 // graphPresenceLine reports, at run level, whether the SHA-exact graph and
 // its stamp exist for a run whose reviewed SHA was injected. Empty ok=false
@@ -166,6 +210,10 @@ func main() {
 		logger = slog.Default().With("component", "harmostes-worker")
 		ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 		defer cancel()
+		// #613: the consumer IS the event system's front door — serving without
+		// the sidecar silently drops every webhook trigger. Fail fast; the
+		// self-delete lets the ReplicaSet re-admit against a healthy injector.
+		guardDaprOrDie(ctx, envOr("DAPR_HTTP_ENDPOINT", ""), envOr("HARMOSTES_NAMESPACE", ""), true)
 		// PRLineage actor host (ADR-0010): mounted on the CONSUMER's HTTP
 		// mux — one process, one app-port; a second ListenAndServe would
 		// race the consumer for 8084 and silently kill one half (r21 P4.3).
@@ -232,6 +280,12 @@ func runOneShot() {
 	if err != nil {
 		fatal("k8s client: %v", err)
 	}
+
+	// #613: attempt Job pods are dapr-injected too — a run whose sidecar never
+	// arrived must fail NOW (Job Failed → the dispatcher's re-arm mints a
+	// fresh pod with a fresh admission), not burn the wall clock on a
+	// degraded run. selfHeal=false: the churn machinery owns the retry loop.
+	guardDaprOrDie(ctx, envOr("DAPR_HTTP_ENDPOINT", ""), namespace, false)
 
 	wf, err := worker.FetchWorkflow(ctx, cl, namespace, workflow)
 	if err != nil {

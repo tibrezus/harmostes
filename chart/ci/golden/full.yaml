@@ -5001,6 +5001,14 @@ rules:
   - apiGroups: ["batch"]
     resources: ["jobs"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # #613 sidecar-guard self-heal: a pod the dapr injector skipped (admission
+  # during injector downtime, failurePolicy:Ignore) cannot gain its sidecar by
+  # restarting the container — the controller/worker deletes its OWN pod so
+  # the ReplicaSet re-admits against a healthy injector. Namespace-scoped;
+  # delete is only ever invoked with POD_NAME/HOSTNAME = this process's pod.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "delete"]
   - apiGroups: [""]
     resources: ["configmaps", "events"]
     verbs: ["get", "list", "watch", "create", "update", "patch"]
@@ -5198,6 +5206,11 @@ spec:
           env:
             - name: HARMOSTES_WORKER_IMAGE
               value: ghcr.io/tibrezus/harmostes-worker:0.4.2
+            # #613: arms the controller's dapr sidecar startup guard (outside
+            # the observability gate on purpose — trigger scheduling without a
+            # sidecar strands every claim arm regardless of telemetry).
+            - name: HARMOSTES_DAPR_REQUIRED
+              value: "true"
             # Controller's own OTel SDK: exports its reconcile/create-worker spans +
             # metrics (Phase 4). Without these, observability.Init is a no-op.
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
@@ -5569,6 +5582,12 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+            # #613: arms the worker's dapr sidecar startup guard — a pod the
+            # injector skipped (failurePolicy:Ignore during dapr-system churn)
+            # fails fast + self-deletes for re-admission instead of serving
+            # hours with webhooks/state/timeline silently dead.
+            - name: HARMOSTES_DAPR_REQUIRED
+              value: "true"
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: "signoz-otel-collector.signoz.svc.cluster.local:4317"
             - name: OTEL_EXPORTER_OTLP_INSECURE

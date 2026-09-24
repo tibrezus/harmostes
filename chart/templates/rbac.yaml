@@ -41,6 +41,14 @@ rules:
   - apiGroups: ["batch"]
     resources: ["jobs"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # #613 sidecar-guard self-heal: a pod the dapr injector skipped (admission
+  # during injector downtime, failurePolicy:Ignore) cannot gain its sidecar by
+  # restarting the container — the controller/worker deletes its OWN pod so
+  # the ReplicaSet re-admits against a healthy injector. Namespace-scoped;
+  # delete is only ever invoked with POD_NAME/HOSTNAME = this process's pod.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "delete"]
   - apiGroups: [""]
     resources: ["configmaps", "events"]
     verbs: ["get", "list", "watch", "create", "update", "patch"]

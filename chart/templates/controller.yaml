@@ -51,6 +51,11 @@ spec:
           env:
             - name: HARMOSTES_WORKER_IMAGE
               value: {{ .Values.image.worker }}
+            # #613: arms the controller's dapr sidecar startup guard (outside
+            # the observability gate on purpose — trigger scheduling without a
+            # sidecar strands every claim arm regardless of telemetry).
+            - name: HARMOSTES_DAPR_REQUIRED
+              value: "true"
             {{- if .Values.observability.enabled }}
             # Controller's own OTel SDK: exports its reconcile/create-worker spans +
             # metrics (Phase 4). Without these, observability.Init is a no-op.

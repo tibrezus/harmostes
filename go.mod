@@ -3,7 +3,7 @@ module github.com/tibrezus/harmostes
 go 1.25.0
 
 require (
-	github.com/PuerkitoBio/goquery v1.10.0
+	github.com/PuerkitoBio/goquery v1.13.0
 	github.com/cloudevents/sdk-go/v2 v2.16.2
 	github.com/go-logr/logr v1.4.4
 	github.com/prometheus/client_golang v1.19.1

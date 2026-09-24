@@ -39,9 +39,9 @@ jobs:
     env:
       TAG: pr-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: false

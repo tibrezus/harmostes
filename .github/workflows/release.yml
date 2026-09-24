@@ -50,7 +50,7 @@ jobs:
       sha: ${{ steps.gitversion.outputs.sha }}
       tagExists: ${{ steps.check_tag.outputs.exists }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -90,7 +90,7 @@ jobs:
 
       - name: Create git tag
         if: steps.check_tag.outputs.exists == 'false'
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const tag = `v${{ steps.gitversion.outputs.semVer }}`;
@@ -113,12 +113,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           ref: v${{ needs.version.outputs.semVer }}
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: false
@@ -160,7 +160,7 @@ jobs:
       # Publish the OCI Helm chart after images are built. The chart embeds
       # the image versions, making chart + images an atomic release unit.
       - name: Set up Helm
-        uses: azure/setup-helm@v4
+        uses: azure/setup-helm@v5
 
       - name: Set up yq
         uses: mikefarah/yq@v4
@@ -172,7 +172,7 @@ jobs:
         run: bash .github/scripts/publish-chart.sh
 
       - name: Attach chart to GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: v${{ needs.version.outputs.semVer }}
           files: harmostes-*.tgz
@@ -183,7 +183,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30  # same build pipeline as `release`, minus publish
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -208,7 +208,7 @@ jobs:
         run: |
           echo "SemVer: ${{ steps.gitversion.outputs.semVer }}"
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: false
@@ -247,7 +247,7 @@ jobs:
           GORELEASER_CURRENT_TAG: v${{ steps.gitversion.outputs.semVer }}
 
       - name: Set up Helm
-        uses: azure/setup-helm@v4
+        uses: azure/setup-helm@v5
 
       - name: Set up yq
         uses: mikefarah/yq@v4

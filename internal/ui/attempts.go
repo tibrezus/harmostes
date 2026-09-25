@@ -90,6 +90,14 @@ func (s *Server) handleAttemptList(w http.ResponseWriter, r *http.Request) {
 			groups[gi].TokensOut = u.OutputTokens
 			groups[gi].Model = u.Model
 		}
+		// In-flight rows stream the run's live usage instead — the same
+		// freshness-gated window the wall reads (one staleness rule).
+		switch groupState(groups[gi]) {
+		case "in flight", "reconciling":
+			if p := liveProgressOf(byName[groups[gi].LatestAttempt]); p != nil {
+				groups[gi].Live = &wallLiveTokens{In: p.TokensIn, Out: p.TokensOut, Turns: p.Turns, Model: p.Model}
+			}
+		}
 	}
 
 	// The strip counts the WHOLE window; the tabs filter it. Rank order
@@ -217,6 +225,9 @@ type attemptGroup struct {
 	TokensIn  int
 	TokensOut int
 	Model     string
+	// Live is the executing run's in-flight usage (fresh Progress window);
+	// rendered instead of the post-hoc envelope numbers on in-flight rows.
+	Live *wallLiveTokens
 }
 
 // windowCutoff resolves the list window; unknown values fall back to 24h.

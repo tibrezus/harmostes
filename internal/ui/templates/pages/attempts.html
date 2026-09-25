@@ -43,7 +43,7 @@
 					</td>
 					<td><span class="ids">{{$g.WorkflowRef}}</span></td>
 					<td class="num">{{$g.Count}}</td>
-					<td class="num">{{if or $g.TokensIn $g.TokensOut}}<span {{if $g.Model}}title="{{$g.Model}}"{{end}}>↑{{$g.TokensIn}} ↓{{$g.TokensOut}}</span>{{else}}<span style="color:var(--fg-muted)">—</span>{{end}}</td>
+					<td class="num">{{if $g.Live}}<span class="wall-live-tokens" data-testid="runs-live-tokens" title="live · {{$g.Live.Model}} · {{$g.Live.Turns}} turns">↻ ↑{{$g.Live.In}} ↓{{$g.Live.Out}}</span>{{else if or $g.TokensIn $g.TokensOut}}<span {{if $g.Model}}title="{{$g.Model}}"{{end}}>↑{{$g.TokensIn}} ↓{{$g.TokensOut}}</span>{{else}}<span style="color:var(--fg-muted)">—</span>{{end}}</td>
 					<td class="time">{{$g.LastActivity}}</td>
 				</tr>
 				{{range $g.Attempts}}

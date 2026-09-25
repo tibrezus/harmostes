@@ -418,9 +418,7 @@ func (s *Server) wallSections(r *http.Request, owner string, hydrate bool) ([]wa
 					}
 					wg.CurrentNode, wg.Elapsed = livePosition(&res, att)
 				}
-				if p := att.Status.Progress; p != nil && !p.UpdatedAt.IsZero() &&
-					time.Since(p.UpdatedAt.Time) <= wallProgressFreshness &&
-					p.TokensIn+p.TokensOut > 0 {
+				if p := liveProgressOf(att); p != nil {
 					wg.Live = &wallLiveTokens{In: p.TokensIn, Out: p.TokensOut, Turns: p.Turns, Model: p.Model}
 				}
 			}

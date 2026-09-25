@@ -62,7 +62,7 @@ func TestWaitForSidecar(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer ln.Close()
+		defer func() { _ = ln.Close() }()
 		var hits int32
 		go func() {
 			time.Sleep(30 * time.Millisecond) // the boot window: nothing serves yet
@@ -89,15 +89,6 @@ func TestWaitForSidecar(t *testing.T) {
 			t.Fatal("an aborted wait must fail")
 		}
 	})
-}
-
-func contains(s, sub string) bool {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
-	}
-	return false
 }
 
 func TestStartupGuard(t *testing.T) {

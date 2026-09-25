@@ -37,10 +37,18 @@ func Required() bool { return os.Getenv("HARMOSTES_DAPR_REQUIRED") == "true" }
 // skip the guard exists for.
 func Injected() bool { return os.Getenv("DAPR_HTTP_PORT") != "" }
 
-// WaitForSidecar polls the sidecar's health endpoint until it answers 2xx or
-// the timeout elapses. healthz is the endpoint dapr itself recommends for
-// readiness gating; 204 No Content is its healthy answer (any 2xx accepted —
-// proxies in the path must not turn this into a false negative).
+// WaitForSidecar polls the sidecar's health endpoint until it ANSWERS or the
+// timeout elapses. The guard's question is "did the sidecar arrive and is it
+// alive?" — and ANY complete HTTP response answers it, including 5xx:
+// with dapr.io/app-port + app-health-check enabled (worker-pool), healthz
+// returns 500 until the APPLICATION binds its port — which, on the consumer,
+// happens right AFTER this guard. Treating 500 as "keep waiting" deadlocked
+// the boot (guard waits for 200; daprd waits for :8084; worker exits at the
+// bound; kubelet restarts; forever — live incident 2026-09-25, charts 276+).
+// A sidecar that answers is present; a sidecar that stopped answering
+// (component-init fatal → process exit) degrades to connection errors, which
+// still time out honestly. App-readiness itself is the kubelet readiness
+// probe's job (the worker's own /healthz), never this guard's.
 func WaitForSidecar(ctx context.Context, c *HTTPClient, timeout, interval time.Duration) error {
 	if interval <= 0 {
 		interval = time.Second
@@ -53,7 +61,7 @@ func WaitForSidecar(ctx context.Context, c *HTTPClient, timeout, interval time.D
 			return nil
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("dapr: sidecar at %s not healthy after %s: %w", c.BaseURL, timeout, lastErr)
+			return fmt.Errorf("dapr: sidecar at %s not answering after %s: %w", c.BaseURL, timeout, lastErr)
 		}
 		select {
 		case <-ctx.Done():
@@ -80,10 +88,7 @@ func probeHealthz(ctx context.Context, c *HTTPClient) error {
 	if err != nil {
 		return err
 	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return fmt.Errorf("healthz: %s", resp.Status)
-	}
+	_ = resp.Body.Close()
 	return nil
 }
 

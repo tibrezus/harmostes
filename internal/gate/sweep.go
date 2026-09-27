@@ -115,6 +115,14 @@ type GateDeps struct {
 	DisableCancelOnSupersede bool
 	Log                      func(format string, args ...any)
 	TL                       timeline.Writer
+	// JanitorDue gates the sweep's janitor pass (reap + retention GC,
+	// #629): the passes List EVERY attempt of the workflow twice — with a
+	// 30d retention on a fleet doing ~50 reviews a day that is ~1500
+	// objects per sweep on the uncached client, its own share of the
+	// client-rate-limiter weather. The gate returns whether the janitor
+	// should run THIS sweep; a 30m cadence keeps the same cleanup latency
+	// at a fraction of the traffic. Nil = always due (tests, one-shot).
+	JanitorDue func() bool
 	// NewReviewAPI overrides the review REST API construction — the
 	// worker's dispatch tests pin the API through it (C3 moved the sweep
 	// here; the injection point moved with it). Nil = the default.
@@ -926,11 +934,30 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 			lastDecision, lastReason = string(res.Decision), res.Reason
 			emitGate(ctx, deps.TL, liveAgg, res, cand.repo, cand.pr)
 		case review.DecisionWaiting:
+			// #629: a waiting evaluation on a PR whose review label the
+			// evaluator could NOT confirm is a non-request — UNLESS a human
+			// arm is warranted (cand.labeled, or a granular wake whose
+			// carried direction resolution said PRESENT: that fact beats the
+			// failed evaluator read, r2 P1). Arming the rest minted a claim
+			// that can never dispatch (Evaluate's proceed requires label
+			// presence) and never releases (the waiting shield holds it
+			// until the horizon) — the fleet-wide label-jam zombie class:
+			// push wakes (synchronize) and removal-direction granular wakes
+			// on unlabeled PRs each minted an armed, empty-status CR. The
+			// labeled scan or a real label wake re-candidates the PR the
+			// moment the contract is actually met; until then there is
+			// nothing to hold a slot for.
+			human := cand.labeled || (cand.granularLabel && cand.humanApplied(res.LabelPresent))
+			if !res.LabelPresent && !human {
+				log("review-ready: not arming %s — waiting (%s) but the review label is absent; nothing can dispatch an unlabeled PR", cand.pointer, res.Reason)
+				lastDecision, lastReason = string(res.Decision), res.Reason
+				emitGate(ctx, deps.TL, liveAgg, res, cand.repo, cand.pr)
+				continue
+			}
 			sha := res.NewArmedSha
 			if sha == "" {
 				sha = candSha(cand)
 			}
-			human := cand.labeled || (cand.granularLabel && cand.humanApplied(res.LabelPresent))
 			if _, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf, cand.pointer, sha, label, human); err != nil {
 				if isIntentionalStop(err) {
 					standDown(ctx, deps, liveAgg, wf.Name, cand, err, log, &lastDecision, &lastReason, &heldRecorded)
@@ -1121,7 +1148,12 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 	// view. Best-effort, bounded, on the uncancellable ctx (a sweep abort
 	// must not abort the reap halfway is fine — ReapStuckAttempts is
 	// per-attempt best-effort and the NEXT sweep reaps the rest).
-	if reapCtx, rcancel := context.WithTimeout(recordCtx, 30*time.Second); rcancel != nil {
+	// Cadence-gated (#629 JanitorDue): the passes' full Lists are the
+	// sweep's largest API cost; a 30m cadence bounds it without changing
+	// cleanup latency meaningfully.
+	if deps.JanitorDue != nil && !deps.JanitorDue() {
+		// skip: another sweep ran the janitor recently
+	} else if reapCtx, rcancel := context.WithTimeout(recordCtx, 30*time.Second); rcancel != nil {
 		defer rcancel()
 		if n, err := attempt.ReapStuckAttempts(reapCtx, deps.Client, wf.Namespace, wf.Name, 7*24*time.Hour); err != nil {
 			log("review-ready: reap stuck attempts failed: %v", err)

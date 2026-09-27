@@ -292,11 +292,17 @@ func TestGCAttempts(t *testing.T) {
 		}
 		return at
 	}
+	// #629: statusless debris GCs at min(retention, 24h) — it carries no
+	// ledger, so the 30d audit horizon does not apply. 25h-old statusless
+	// is INSIDE the 30d retention but OUTSIDE the statusless bound: deleted.
+	mid := metav1.NewTime(time.Now().Add(-25 * time.Hour))
 	for _, at := range []*v1alpha1.Attempt{
 		mk("old-failed", v1alpha1.AttemptPhaseFailed, old),
 		mk("old-validated", v1alpha1.AttemptPhaseValidated, old),
 		mk("old-superseded", v1alpha1.AttemptPhaseSuperseded, old),
 		mk("old-statusless", "", old),
+		mk("mid-statusless", "", mid),
+		mk("mid-failed", v1alpha1.AttemptPhaseFailed, mid),           // terminal inside retention — kept
 		mk("old-reconciling", v1alpha1.AttemptPhaseReconciling, old), // claim-bearing — untouchable
 		func() *v1alpha1.Attempt { // r32 finding 4b: failed but claim UNRELEASED — keep
 			at := mk("failed-unreleased-claim", v1alpha1.AttemptPhaseFailed, old)
@@ -316,8 +322,8 @@ func TestGCAttempts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("gc: %v", err)
 	}
-	if n != 4 {
-		t.Fatalf("GC'd %d attempts, want 4 (3 terminal old + 1 statusless old)", n)
+	if n != 5 {
+		t.Fatalf("GC'd %d attempts, want 5 (3 terminal old + old-statusless + mid-statusless at the 24h debris bound)", n)
 	}
 	{ // the unreleased-claim survivor is still present
 		var after v1alpha1.Attempt
@@ -334,12 +340,12 @@ func TestGCAttempts(t *testing.T) {
 	for _, at := range list.Items {
 		got[at.Name] = true
 	}
-	for _, keep := range []string{"old-reconciling", "young-failed", "zero-ts-failed"} {
+	for _, keep := range []string{"old-reconciling", "young-failed", "zero-ts-failed", "mid-failed"} {
 		if !got[keep] {
 			t.Fatalf("attempt %s must survive GC, it was deleted (remaining: %v)", keep, got)
 		}
 	}
-	for _, gone := range []string{"old-failed", "old-validated", "old-superseded", "old-statusless"} {
+	for _, gone := range []string{"old-failed", "old-validated", "old-superseded", "old-statusless", "mid-statusless"} {
 		if got[gone] {
 			t.Fatalf("attempt %s must be GC'd, it survived", gone)
 		}

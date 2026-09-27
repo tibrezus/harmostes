@@ -3201,3 +3201,92 @@ func TestClosedPRsStanddownsBothLandDespiteHeadlineMatch(t *testing.T) {
 		t.Fatalf("identical-reason standdowns are per-candidate information — both must land, got %d events covering %v", len(sds), prs)
 	}
 }
+
+// ── #629: the label-jam zombie minter. A waiting evaluation on a PR the
+// evaluator could not confirm labeled (push wakes / removal-direction
+// granular wakes on unlabeled PRs) must NOT arm: the claim could never
+// dispatch (proceed requires label presence) and never release (the
+// waiting shield) until the horizon — live, five arms over 15h minted
+// five armed empty-status CRs for rhesadox#2463 while the PR carried no
+// review label at all. The human-shaped exceptions stay: a GitHub
+// `labeled` wake and a granular wake whose carried resolution said
+// PRESENT still arm (their evidence beats the failed evaluator read). ──
+func TestMultiArmUnlabeledWaitingWakeDoesNotArm(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := noLabelServer(t)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+
+	for _, action := range []string{"synchronize", "review_request_removed", "label_updated"} {
+		st := &fakeStatus{}
+		deps, ctx := gateEnvW(t, wf, st, "git.rezus.cloud/tibrez/rhesadox#99", action, "deadbeef123")
+		var logs []string
+		deps.Log = func(f string, a ...any) { logs = append(logs, fmt.Sprintf(f, a...)) }
+
+		out, err := RunReviewGateWake(ctx, deps, wf)
+		if err != nil {
+			t.Fatalf("%s: wake: %v", action, err)
+		}
+		if len(out) != 0 {
+			t.Fatalf("%s: an unlabeled waiting wake must not dispatch, got %d", action, len(out))
+		}
+		claims, err := attempt.LiveReviewClaims(ctx, deps.Client, wf)
+		if err != nil || len(claims) != 0 {
+			t.Fatalf("%s: the zombie minter is back — unlabeled waiting armed %d claims (%v)", action, len(claims), err)
+		}
+		joined := strings.Join(logs, "\n")
+		if !strings.Contains(joined, "not arming") {
+			t.Fatalf("%s: the no-arm must name itself, got:\n%s", action, joined)
+		}
+		if st.last.ReviewReady == nil || st.last.ReviewReady.LastDecision != "waiting" {
+			t.Fatalf("%s: aggregates must still record waiting, got %+v", action, st.last.ReviewReady)
+		}
+	}
+}
+
+// The flip side: a LABELED waiting candidate still arms (the #379
+// armed-queued machinery is for labeled PRs holding the pointer while CI
+// runs) — the no-arm must never leak into the label-present path.
+func TestMultiArmLabeledWaitingStillArms(t *testing.T) {
+	clearTriggerEnv(t)
+	// Label present + CI RED → waiting, label confirmed → arm, no dispatch.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(req.URL.Path, "/pulls/"):
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"state": "open", "head": map[string]string{"sha": "deadbeef123"},
+				"base":   map[string]string{"ref": "main"},
+				"labels": []map[string]string{{"name": "needs-review"}},
+			})
+		case strings.Contains(req.URL.Path, "/branch_protections/"):
+			_ = json.NewEncoder(w).Encode(map[string]any{"status_check_contexts": []string{"ci / build-test (push)"}})
+		case strings.HasSuffix(req.URL.Path, "/statuses"):
+			_ = json.NewEncoder(w).Encode([]map[string]string{
+				{"context": "ci / build-test (push)", "status": "failure"},
+			})
+		case strings.Contains(req.URL.Path, "/comments"):
+			_ = json.NewEncoder(w).Encode([]any{})
+		default:
+			http.NotFound(w, req)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	st := &fakeStatus{}
+	deps, ctx := gateEnvW(t, wf, st, "git.rezus.cloud/tibrez/rhesadox#99", "synchronize", "deadbeef123")
+
+	out, err := RunReviewGateWake(ctx, deps, wf)
+	if err != nil {
+		t.Fatalf("wake: %v", err)
+	}
+	if len(out) != 0 {
+		t.Fatalf("a red-CI waiting arm must not dispatch, got %d", len(out))
+	}
+	claims, err := attempt.LiveReviewClaims(ctx, deps.Client, wf)
+	if err != nil || len(claims) != 1 {
+		t.Fatalf("a labeled waiting candidate must still arm (the #379 hold), got %d (%v)", len(claims), err)
+	}
+}

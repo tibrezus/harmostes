@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	kapierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -177,14 +178,14 @@ func ArmClaim(ctx context.Context, c client.Client, scheme *runtime.Scheme, wf *
 	// history never crosses the wire).
 	others, err := LiveReviewClaims(ctx, c, wf)
 	if err != nil {
-		return nil, err
+		return nil, armAbandon(ctx, c, wf, at, created, fmt.Errorf("list live claims: %w", err))
 	}
 	for _, o := range others {
 		if o.Name == at.Name || o.Status.Review.PR != pr {
 			continue
 		}
 		if err := ReleaseClaim(ctx, c, wf.Namespace, o.Name, v1alpha1.ReleaseReasonSuperseded); err != nil {
-			return nil, fmt.Errorf("supersede %s: %w", o.Name, err)
+			return nil, armAbandon(ctx, c, wf, at, created, fmt.Errorf("supersede %s: %w", o.Name, err))
 		}
 	}
 
@@ -193,8 +194,8 @@ func ArmClaim(ctx context.Context, c client.Client, scheme *runtime.Scheme, wf *
 	if cur := at.Status.Review; cur != nil &&
 		cur.PR == pr && cur.HeadSHA == headSHA &&
 		cur.DeadDispatches >= v1alpha1.MaxDeadDispatchesPerHead && !humanRequest {
-		return nil, fmt.Errorf("%w: %d dispatched reviews of %s died without a verdict — automatic re-arm refused; push a new commit or re-issue an explicit label request to override (on Forgejo any label edit on a labeled PR counts)",
-			ErrDeadDispatchBreaker, cur.DeadDispatches, shortSHA(headSHA))
+		return nil, armAbandon(ctx, c, wf, at, created, fmt.Errorf("%w: %d dispatched reviews of %s died without a verdict — automatic re-arm refused; push a new commit or re-issue an explicit label request to override (on Forgejo any label edit on a labeled PR counts)",
+			ErrDeadDispatchBreaker, cur.DeadDispatches, shortSHA(headSHA)))
 	}
 
 	// Live-marker removal BEFORE the status patch (r8 P1): absence means
@@ -205,7 +206,7 @@ func ArmClaim(ctx context.Context, c client.Client, scheme *runtime.Scheme, wf *
 	// gate's list — the committed-but-invisible arm. A refused arm never
 	// reaches this: the claim keeps its marker and its evidence.
 	if err := markClaimLive(ctx, c, wf.Namespace, at.Name); err != nil {
-		return nil, fmt.Errorf("unmark released claim: %w", err)
+		return nil, armAbandon(ctx, c, wf, at, created, fmt.Errorf("unmark released claim: %w", err))
 	}
 
 	now := metav1.NewTime(time.Now())
@@ -293,9 +294,29 @@ func ArmClaim(ctx context.Context, c client.Client, scheme *runtime.Scheme, wf *
 		}
 	})
 	if err != nil {
-		return nil, err
+		return nil, armAbandon(ctx, c, wf, at, created, err)
 	}
 	return at, nil
+}
+
+// armAbandon closes the #629 debris minter: this arm CREATED the attempt
+// object (created=true) and then failed before stamping any status — the
+// guard refusals can only hit pre-existing objects (sameClaim requires
+// !created), but the supersede/markLive/patch steps are real API writes
+// that failed in fleet-weather eras, each leaving a statusless, markerless
+// CR behind (571 of them on one workflow, Sep 19–24). The object carries
+// nothing — no claim, no run, no ledger — so the honest abort deletes it;
+// the next real arm recreates it. Best-effort: the deletion error (if the
+// API is too sick to delete either) is noted, never masks the arm failure.
+func armAbandon(ctx context.Context, c client.Client, wf *v1alpha1.Workflow, at *v1alpha1.Attempt, created bool, armErr error) error {
+	if !created {
+		return armErr
+	}
+	delErr := c.Delete(ctx, &v1alpha1.Attempt{ObjectMeta: metav1.ObjectMeta{Name: at.Name, Namespace: wf.Namespace}})
+	if delErr != nil && !kapierrors.IsNotFound(delErr) {
+		return fmt.Errorf("%w (cleanup: the created-but-unstamped attempt %s could not be deleted: %v)", armErr, at.Name, delErr)
+	}
+	return armErr
 }
 
 // MarkClaimDispatched stamps the dispatch liveness marker (#248): the

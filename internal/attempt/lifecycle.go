@@ -449,8 +449,10 @@ func lastSlash(s string) int {
 // per-sweep cost is all attempts of one workflow — bounded by live
 // attempts per workflow, fine at fleet width.
 // GCAttempts deletes attempts past the retention horizon (#385): terminal
-// attempts (validated / superseded / failed) and statusless attempts older
-// than olderThan. The status subresource drops Status at Create, so
+// attempts older than olderThan, and statusless attempts older than
+// min(olderThan, 24h) (#629 — statusless carries no ledger, so the audit
+// horizon's rationale does not apply to it; see the bound inside). The
+// status subresource drops Status at Create, so
 // "statusless" is a STABLE state — the 1,166-object twin population — not a
 // transient mint window; an object still statusless at 30d never progressed
 // past creation and is pure debris.
@@ -478,16 +480,37 @@ func GCAttempts(ctx context.Context, c client.Client, namespace, workflowName st
 		client.MatchingLabels{"harmostes.dev/workflow": workflowName}); err != nil {
 		return 0, fmt.Errorf("list attempts: %w", err)
 	}
+	// Statusless debris gets its own, much shorter bound (#629): a
+	// statusless attempt carries NO ledger — nothing ever ran on it — so
+	// the retention horizon's audit rationale ("30d of run history") does
+	// not apply. The live-incident fleet accreted 571 such CRs in 8 days,
+	// and every sweep's full List carried all of them across the wire —
+	// its own share of the client-rate-limiter weather. 24h is generous
+	// for a pure mint accident; the retention horizon still governs
+	// terminal attempts (real ledgers).
+	statuslessBound := olderThan
+	if statuslessBound > 24*time.Hour || statuslessBound <= 0 {
+		statuslessBound = 24 * time.Hour
+	}
 	cutoff := time.Now().Add(-olderThan)
+	statuslessCutoff := time.Now().Add(-statuslessBound)
 	gc := 0
 	var firstErr error
 	for i := range list.Items {
 		at := &list.Items[i]
-		terminal := at.Status.Phase == v1alpha1.AttemptPhaseValidated ||
+		statusless := at.Status.Phase == ""
+		terminal := statusless ||
+			at.Status.Phase == v1alpha1.AttemptPhaseValidated ||
 			at.Status.Phase == v1alpha1.AttemptPhaseSuperseded ||
-			at.Status.Phase == v1alpha1.AttemptPhaseFailed ||
-			at.Status.Phase == "" // statusless: stable debris — never progressed past creation
-		if !terminal || at.CreationTimestamp.IsZero() || at.CreationTimestamp.After(cutoff) {
+			at.Status.Phase == v1alpha1.AttemptPhaseFailed
+		if !terminal || at.CreationTimestamp.IsZero() {
+			continue
+		}
+		cut := cutoff
+		if statusless {
+			cut = statuslessCutoff
+		}
+		if at.CreationTimestamp.After(cut) {
 			continue
 		}
 		if r := at.Status.Review; r != nil && !r.Released {

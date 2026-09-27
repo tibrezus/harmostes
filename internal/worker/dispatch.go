@@ -47,6 +47,14 @@ type Dispatcher struct {
 	// cfg is the fleet-level Job shape, carried as ONE value — the
 	// per-field copies this struct replaced are exactly where #314 hid.
 	cfg DispatchConfig
+
+	// janitorLast backs the gate sweep's JanitorDue cadence (#629): the
+	// reap + retention GC passes List every attempt of the workflow — the
+	// sweep's largest API cost — so they run at most once per janitorEvery
+	// instead of on every wake/fast-poll tick.
+	janitorMu    sync.Mutex
+	janitorLast  time.Time
+	janitorEvery time.Duration
 }
 
 // DispatchConfig is the fleet-level half of the Worker Job shape: every
@@ -263,12 +271,31 @@ func NewDispatcher(ctx context.Context, cfg DispatchConfig, logf func(string, ..
 		ns = "harmostes"
 	}
 	return &Dispatcher{
-		cl:        cl,
-		scheme:    scheme,
-		namespace: ns,
-		logf:      logf,
-		cfg:       cfg,
+		cl:           cl,
+		scheme:       scheme,
+		namespace:    ns,
+		logf:         logf,
+		cfg:          cfg,
+		janitorEvery: 30 * time.Minute,
 	}, nil
+}
+
+// janitorDue is the sweep's JanitorDue gate: true at most once per
+// janitorEvery, and true on the very first call (a fresh dispatcher must
+// not skip the first janitor window). Zero janitorEvery (tests building
+// Dispatcher{} directly) = always due.
+func (d *Dispatcher) janitorDue() bool {
+	if d.janitorEvery <= 0 {
+		return true
+	}
+	d.janitorMu.Lock()
+	defer d.janitorMu.Unlock()
+	now := time.Now()
+	if d.janitorLast.IsZero() || now.Sub(d.janitorLast) >= d.janitorEvery {
+		d.janitorLast = now
+		return true
+	}
+	return false
 }
 
 // Namespace is the namespace this dispatcher works in (the fast-poll loop
@@ -360,6 +387,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req RunRequest) error {
 		AttemptRetention:         d.cfg.AttemptRetention,
 		DisableCancelOnSupersede: d.cfg.DisableCancelOnSupersede,
 		NewReviewAPI:             d.cfg.NewReviewAPI,
+		JanitorDue:               d.janitorDue,
 		Log:                      d.logf,
 		Wake:                     gate.GateWake{PR: req.Pr, Action: req.Action, Revision: req.Revision, Repo: req.Repo},
 		TL: timeline.NewGateWriter(dapr.Tracing(dapr.New(os.Getenv("DAPR_HTTP_ENDPOINT"))),

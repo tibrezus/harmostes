@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -1050,5 +1052,44 @@ func TestArmClaimRevivalResetsTerminalPhase(t *testing.T) {
 	}
 	if at.Status.Review.Released {
 		t.Error("revived era must not read released")
+	}
+}
+
+// #629: an arm that CREATES the attempt object and then fails before
+// stamping status must not leave the created-but-statusless CR behind —
+// the Sep 19–24 fleet-weather era accreted 571 of them on one workflow
+// (every post-create abort: supersede/markLive/patch API errors). The
+// honest abort deletes the object it just created; the next real arm
+// recreates it.
+func TestArmClaim_DeletesCreatedObjectWhenTheStampFails(t *testing.T) {
+	ctx := context.Background()
+	wf := wikiWorkflow()
+	scheme := wfScheme(t)
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&v1alpha1.Attempt{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			// The status stamp (patchAttemptStatus's Get→mutate→Status.Patch)
+			// fails the way the rate-limiter weather failed it live.
+			SubResourcePatch: func(ctx context.Context, cl client.Client, subResourceName string, obj client.Object, patch client.Patch, opts ...client.SubResourcePatchOption) error {
+				if _, ok := obj.(*v1alpha1.Attempt); ok {
+					return errors.New("client rate limiter Wait returned an error: context deadline exceeded")
+				}
+				return cl.SubResource(subResourceName).Patch(ctx, obj, patch, opts...)
+			},
+		}).
+		Build()
+
+	_, err := ArmClaim(ctx, cl, scheme, wf, "git.rezus.cloud/tibrez/rhesadox#99", "deadbeef123", "needs-review", false)
+	if err == nil {
+		t.Fatal("the failed stamp must fail the arm")
+	}
+	var leftovers v1alpha1.AttemptList
+	if err := cl.List(ctx, &leftovers, client.InNamespace("harmostes")); err != nil {
+		t.Fatal(err)
+	}
+	if len(leftovers.Items) != 0 {
+		t.Fatalf("a failed arm must delete the created-but-unstamped object, %d left: %v", len(leftovers.Items), err)
 	}
 }

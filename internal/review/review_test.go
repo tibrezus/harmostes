@@ -218,15 +218,17 @@ func TestLabelAbsentNoVerdictHorizonStandsDown(t *testing.T) {
 }
 
 func TestLabelAbsentHoldNoteDiscriminatesCI(t *testing.T) {
-	// #512: the label-absent hold must NAME its reason. An armed claim
-	// dispatches on CI green regardless of the label (the queued-claim
-	// re-dispatch pass), so red/pending CI is the benign majority — say
-	// so. "ingress may be lost" is reserved for a green (or unreadable)
-	// head with the label gone and no verdict.
+	// #512 named the hold reason; #629 corrected the green case: NO
+	// dispatch can follow a label-absent evaluation (proceed requires
+	// label presence), so "dispatch imminent; ingress may be lost" was a
+	// promise the machinery cannot keep — it read as a kernel fault and
+	// sent operators hunting the dispatcher while the PR simply had no
+	// review label (rhesadox #2463: five arms over 15h). The note now
+	// names the real exits: re-apply the label, or the claim ages out.
 	green := &fakeAPI{pr: openPR("full-pipeline"), required: []string{"a"}, states: map[string]string{"a": "success"}}
 	r := Evaluate(context.Background(), green, base)
-	if r.Decision != DecisionWaiting || !strings.Contains(r.Reason, "ci green at head") || !strings.Contains(r.Reason, "ingress may be lost") {
-		t.Fatalf("green head must keep the ambiguity note, got %q", r.Reason)
+	if r.Decision != DecisionWaiting || !strings.Contains(r.Reason, "ci green at head") || !strings.Contains(r.Reason, "the review label is absent") || !strings.Contains(r.Reason, "re-apply") {
+		t.Fatalf("green head must name the absent label + the re-apply exit, got %q", r.Reason)
 	}
 
 	redC := &fakeAPI{pr: openPR("full-pipeline"), required: []string{"a", "b"}, states: map[string]string{"a": "success", "b": "failure"}}

@@ -568,7 +568,14 @@ func labelAbsentHoldNote(ctx context.Context, api API, p Params, pr *PullRequest
 		}
 		return "ci pending at head " + head + " (" + strings.Join(parts, "; ") + ") — dispatch on green"
 	default:
-		return "ci green at head, dispatch imminent; if this persists, ingress may be lost"
+		// #629: green CI with the label absent sounds like "any second now"
+		// but NO dispatch can follow — Evaluate's proceed path requires label
+		// presence, so the only exits are a label wake or the horizon. The
+		// old wording ("dispatch imminent; if this persists, ingress may be
+		// lost") read as a kernel fault and sent the operator hunting the
+		// dispatcher while the PR simply had no review label (live: rhesadox
+		// #2463, five arms over 15h against a PR that never carried one).
+		return "ci green at head " + head + " — the review label is absent, so nothing can dispatch; re-apply it to request the review"
 	}
 }
 

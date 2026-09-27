@@ -27,4 +27,8 @@ test('running run detail: live position on the agent node, settled lanes only', 
   await expect(liveBar).toHaveCount(1);
   const title = await liveBar.locator('title').textContent();
   expect(title).toMatch(/in flight/);
+  // The live lane streams the run's live usage + pinned model — the
+  // drill-down answers the same questions the wall row does (#604/#608).
+  expect(title).toMatch(/↑2140 ↓388/);
+  expect(title).toMatch(/demo\/llm\/fixture-flash/);
 });

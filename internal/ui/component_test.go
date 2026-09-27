@@ -315,6 +315,34 @@ func TestComponent_RunDetail_LivePositionOnRunningAttempt(t *testing.T) {
 	if doc.Find(".rg-timing-live").Length() != 1 {
 		t.Errorf("live timing bars = %d, want 1 (the in-flight lane pulses)", doc.Find(".rg-timing-live").Length())
 	}
+	// The live lane's hover text streams the run's live usage + pinned
+	// model (the fixture 43c2 carries a fresh Progress window) — the
+	// drill-down answers the same questions the wall row does. (SVG <title>
+	// is an element CHILD, not an attribute.)
+	liveTitle := doc.Find(".rg-timing-live title").First().Text()
+	for _, want := range []string{"in flight", "↑2140", "↓388", "demo/llm/fixture-flash"} {
+		if !strings.Contains(liveTitle, want) {
+			t.Errorf("live lane title = %q, missing %q", liveTitle, want)
+		}
+	}
+}
+
+// The runs page's in-flight row streams the live usage too — one freshness
+// rule (liveProgressOf) governs every surface.
+func TestComponent_RunsList_LiveTokens(t *testing.T) {
+	ts := newFixtureServer(t)
+	doc := getAsFixtureUser(t, ts, "/runs?window=all")
+
+	live := testIDSelection(t, doc, "runs-live-tokens")
+	if live.Length() != 1 {
+		t.Fatalf("runs live-token cells = %d, want 1 (the in-flight review)", live.Length())
+	}
+	if txt := live.Text(); !strings.Contains(txt, "2140") || !strings.Contains(txt, "388") || !strings.Contains(txt, "↻") {
+		t.Errorf("runs live cell = %q, want ↻ + 2140/388", txt)
+	}
+	if title := live.AttrOr("title", ""); !strings.Contains(title, "demo/llm/fixture-flash") {
+		t.Errorf("runs live title = %q, want the pinned model", title)
+	}
 }
 
 // The runs list surfaces all three attempts with their phases, including the

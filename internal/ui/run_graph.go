@@ -7,6 +7,7 @@ import (
 	"html/template"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -229,7 +230,7 @@ func (s *Server) buildRunGraph(ctx context.Context, att *v1alpha1.Attempt) runGr
 			// The live node is the one layoutGraph painted as running.
 			for _, n := range view.Nodes {
 				if n.Status == graphStateRunning {
-					live = &liveLane{nodeID: n.ID, start: start}
+					live = &liveLane{nodeID: n.ID, start: start, progress: liveProgressOf(att)}
 					break
 				}
 			}
@@ -280,6 +281,9 @@ const timingViewW = 640
 type liveLane struct {
 	nodeID string
 	start  time.Time
+	// progress is the run's live usage window (#604): the live segment's
+	// hover text streams tokens-so-far + the pinned model, same as the wall.
+	progress *v1alpha1.RunProgress
 }
 
 func buildTimingStrip(nodes []graphNodeView, latest map[string]v1alpha1.NodeResultEnvelope, live *liveLane) []timingSegment {
@@ -288,6 +292,7 @@ func buildTimingStrip(nodes []graphNodeView, latest map[string]v1alpha1.NodeResu
 		start, end    time.Time
 		retries       int // envelope attempt count (>1: retried transient failure)
 		isLive        bool
+		progress      *v1alpha1.RunProgress // live segment only (#604)
 	}
 	var lanes []lane
 
@@ -322,11 +327,12 @@ func buildTimingStrip(nodes []graphNodeView, latest map[string]v1alpha1.NodeResu
 	}
 	if liveNode.ID != "" && live != nil {
 		lanes = append(lanes, lane{
-			label:  liveNode.Label,
-			status: "running",
-			start:  live.start,
-			end:    time.Now(),
-			isLive: true,
+			label:    liveNode.Label,
+			status:   "running",
+			start:    live.start,
+			end:      time.Now(),
+			isLive:   true,
+			progress: live.progress,
 		})
 	}
 
@@ -349,7 +355,14 @@ func buildTimingStrip(nodes []graphNodeView, latest map[string]v1alpha1.NodeResu
 	// (ADR-0012 §9) — the title is where a scanner looks first.
 	segmentTitle := func(l lane) string {
 		if l.isLive {
-			return "↻ " + formatDuration(l.end.Sub(l.start)) + " · in flight"
+			title := "↻ " + formatDuration(l.end.Sub(l.start))
+			if p := l.progress; p != nil {
+				title += " · ↑" + strconv.Itoa(p.TokensIn) + " ↓" + strconv.Itoa(p.TokensOut)
+				if p.Model != "" {
+					title += " · " + p.Model
+				}
+			}
+			return title + " · in flight"
 		}
 		title := formatDuration(l.end.Sub(l.start))
 		if l.retries > 1 {

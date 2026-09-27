@@ -167,6 +167,12 @@ jobs:
       - name: rig-emit validator
         run: make test-rig-emit
 
+      # Fork engine release-identity contract (#627): upstream-exact
+      # major.minor.patch mapping, -rezus.NN reset at every upstream change,
+      # release-line behind-detection. Hermetic file:// git fixtures.
+      - name: fork-maintenance release identity
+        run: make test-fork-maintenance
+
       # Vendor sync (#452 D2): plugins/rig-emit/{emit-rig.py,rig/} is a
       # byte-equivalent vendored copy of llm-wiki-core's repo-map action at
       # the sha pinned in VENDOR.sha, plus exactly the deviations
@@ -417,9 +423,10 @@ jobs:
               if not cond:
                   fail.append(msg)
 
-          # Engine payload: every script key non-empty.
+          # Engine payload: every script key non-empty. (11 since #627:
+          # derive-release-version.sh — the shared identity-mapping helper.)
           scripts = cms.get("fork-maintenance-scripts", {})
-          check(len(scripts) == 10, f"fork-maintenance-scripts: want 10 keys, got {len(scripts)}")
+          check(len(scripts) == 11, f"fork-maintenance-scripts: want 11 keys, got {len(scripts)}")
           check(all(scripts.values()), "fork-maintenance-scripts has an empty key (silent .Files.Get?)")
 
           # litellm extension: relative imports must resolve to rendered keys
@@ -582,9 +589,10 @@ jobs:
           # base-10 ordinal parse (octal trap on padded cuts) and the
           # tag-shape contract comment. The golden diff alone cannot catch
           # their removal — regenerating the golden makes any payload drift
-          # green; this probe is the mechanical backstop.
-          grep -q '10#\$LAST_N' /tmp/golden-render.yaml \
-            || { echo "::error::render-guard: phase_tag base-10 ordinal guard missing from the engine payload (#595)"; exit 1; }
+          # green; this probe is the mechanical backstop. (#627: the parse
+          # moved into derive-release-version.sh's next_rezus_ordinal.)
+          grep -qF '10#${last_n:-0}' /tmp/golden-render.yaml \
+            || { echo "::error::render-guard: base-10 ordinal guard missing from the engine payload (#595/#627)"; exit 1; }
           grep -q 'dash-fused' /tmp/golden-render.yaml \
             || { echo "::error::render-guard: phase_tag tag-shape contract comment missing from the engine payload (#595)"; exit 1; }
           if helm template harmostes chart/ -f chart/ci/golden-values.yaml \

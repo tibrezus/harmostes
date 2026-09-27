@@ -22,6 +22,64 @@
 # =============================================================================
 
 MAPPING_VALIDATE_CMD=$(read_yaml '.validation_command // ".github/fork/sync-validate.sh"')
+# #627 identity-mapping helper — the same derivation sync mode uses.
+# shellcheck source=scripts/derive-release-version.sh
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/derive-release-version.sh"
+# #627 release contract: tags mirror upstream major.minor.patch exactly,
+# -rezus.NN counts addon builds on top and resets at every upstream change.
+# auto_cut: true → the walk mints the tag right after a validated push
+# (same semantics as sync mode's auto.release); "label-pr" → a cut-request
+# PR with the correct next tag name; "none" → describe-only (anchor
+# staleness is always reported, never silently aged).
+RELEASE_AUTO_CUT=$(read_yaml '.release.auto_cut // "none"')
+UPSTREAM_PATTERN=$(read_yaml '.versioning.upstream_pattern // "auto"')
+
+# mapping_release_report <ours-ref> — describe the identity state for one
+# row (always cheap; runs even on no-op rows so staleness is visible).
+mapping_release_report() {
+  local ours="$1"
+  git fetch --quiet origin "+refs/tags/*:refs/tags/*" 2>/dev/null || true
+  if ! derive_upstream_identity "origin/$ours" "$UPSTREAM_URL" "$UPSTREAM_PATTERN"; then
+    echo "  identity: (none derivable — pattern '$UPSTREAM_PATTERN' matched no upstream release)"
+    return 0
+  fi
+  local anchor
+  anchor=$(previous_anchor "$FORK_URL")
+  if [ "$IDENTITY_STATE" = "behind" ]; then
+    echo "  identity: $anchor STALE — upstream $REMOTE_LATEST not in tree (release line unmapped; exact mapping blocked)"
+  elif [ -n "$anchor" ] && [ "$anchor" != "$IDENTITY" ]; then
+    echo "  identity: $IDENTITY (exact) — next cut re-bases: $anchor → $IDENTITY-rezus.1"
+  else
+    echo "  identity: $IDENTITY (exact, anchored)"
+  fi
+}
+
+# mapping_maybe_cut <ours-ref> — mint or nudge per release.auto_cut after a
+# validated push. Never mints a "behind" identity (exact mapping).
+mapping_maybe_cut() {
+  local ours="$1"
+  [ "$RELEASE_AUTO_CUT" = "none" ] && { mapping_release_report "$ours"; return 0; }
+  derive_upstream_identity "origin/$ours" "$UPSTREAM_URL" "$UPSTREAM_PATTERN" || return 0
+  if [ "$IDENTITY_STATE" = "behind" ]; then
+    echo "  NOT cutting: upstream $REMOTE_LATEST content is not in $ours (exact mapping) — map its release line first" >&2
+    return 0
+  fi
+  local next_tag="${IDENTITY}-rezus.$(next_rezus_ordinal "$IDENTITY" "$FORK_URL")"
+  if [ "$RELEASE_AUTO_CUT" = "true" ]; then
+    local minted
+    minted=$(mint_release_tag "origin/$ours" "$IDENTITY" "$FORK_URL") && {
+      [ -n "$minted" ] && echo "  released: $minted (identity $IDENTITY — upstream-mirrored, ordinal reset on change)"
+    } || echo "  WARNING: mint/push failed for $next_tag" >&2
+  elif [ "$RELEASE_AUTO_CUT" = "label-pr" ]; then
+    local pr_url
+    pr_url=$(host_pr_create "$ours" "$ours" \
+      "cut $next_tag (identity $IDENTITY re-based)" \
+      "#627 contract: identity moved to $IDENTITY — deliberate cut request. Merge to release." \
+      "cut-release") || echo "  (cut-request PR may already exist)"
+    echo "  cut-request PR: ${pr_url:-<none>} (tag $next_tag)"
+  fi
+}
 
 mapping_walk() {
   local rows theirs ours conflicted=0 changed=0 base sync_date row_n=0
@@ -39,6 +97,7 @@ mapping_walk() {
 
     if git merge-base --is-ancestor "upstream/$theirs" "origin/$ours"; then
       echo "  ⊇ holds — no-op"
+      mapping_release_report "$ours"
       continue
     fi
 
@@ -58,6 +117,7 @@ mapping_walk() {
         git push origin "HEAD:$ours"
         changed=1
         echo "  pushed — invariant restored (dev-build fires)"
+        mapping_maybe_cut "$ours"   # #627: mint/nudge per release.auto_cut
       else
         echo "ERROR: validation failed for $theirs → $ours; nothing pushed" >&2
         return 1

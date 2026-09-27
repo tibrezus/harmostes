@@ -538,68 +538,94 @@ phase_tag() {
   git checkout --quiet "$FORK_DEFAULT_BRANCH" 2>/dev/null || true
   git reset --hard --quiet "origin/$FORK_DEFAULT_BRANCH"
 
-  # Nearest upstream tag → release identity. Two failure modes in shallow
-  # clones: (1) describe can't reach the real tag (--tags at depth N only
-  # fetches within the window — v16.0.2 wasn't even in the clone), (2) describe
-  # succeeds but returns a NON-RELEASE tag (v16.0.0-dev) reachable in the
-  # window. So: describe under || true (never under pipefail into set -e),
-  # then VALIDATE the result is a pure version; anything else (-dev/-rc/-rezus
-  # suffixes) falls back to the highest pure-version tag ON THE REMOTE for this
-  # release line (branch prefix v16.0/forgejo → v16.0.*, via ls-remote).
-  UPSTREAM_VER=$( { git describe --tags --abbrev=0 "upstream/$UPSTREAM_BRANCH" 2>/dev/null || true; } \
-    | sed -E 's/(-rc\.[0-9]+|-rezus\.[0-9]+).*$//')
-  TAG_PREFIX="${UPSTREAM_BRANCH%%/*}"
-  if ! echo "$UPSTREAM_VER" | grep -qE "^v[0-9]+\.[0-9]+\.[0-9]+$"; then
-    # Pure-version tags live on the UPSTREAM repo (the fork only carries our
-    # v*-rezus.N triggers + possibly legacy hand tags) — query the real host.
-    # Version = three segments: <prefix=vMAJOR.MINOR>.<PATCH>.
-    UPSTREAM_VER=$(git ls-remote --tags "$UPSTREAM_URL" "refs/tags/${TAG_PREFIX}.*" 2>/dev/null \
-      | awk -F/ '{print $NF}' | grep -E "^${TAG_PREFIX//./\\.}\.[0-9]+$" | sort -V | tail -1)
-  fi
-  if [ -z "$UPSTREAM_VER" ]; then
-    echo "WARNING: could not determine upstream version for release tag — skipping auto-release"
-  else
-    # Highest existing rezus build for this upstream version — query the
-    # REMOTE (shallow clones may not have fetched a prior run's tags); default 0.
-    LAST_REZUS=$(git ls-remote --tags origin "refs/tags/${UPSTREAM_VER}-rezus.*" 2>/dev/null \
-      | awk -F/ '{print $NF}' | sort -V | tail -1)
-    LAST_N=$(echo "${LAST_REZUS}" | sed -nE 's/.*-rezus\.([0-9]+).*/\1/p')
-    [ -z "$LAST_N" ] && LAST_N=0
-    # Base-10, not octal: a padded ordinal (08/09) would be invalid octal
-    # in arithmetic and crash the phase.
-    NEXT_N=$((10#$LAST_N + 1))
-    # Ordinal tag-shape contract (#595) — two rules:
-    # 1. Ordinals are UNPADDED. A digit-only prerelease identifier
-    #    (…-rezus.10) is ranked NUMERICALLY by semver — monotonic at every
-    #    boundary. A zero-padded one (…-rezus.01) is INVALID semver
-    #    (leading zeros) and invisible to any semver ImagePolicy.
-    # 2. The IMAGE tag is the git tag VERBATIM (v…-rezus.11) — no variant
-    #    suffix at all (rezuscloud/signoz#67 dropped one; the ordinal IS
-    #    the version). If a variant is ever truly unavoidable, DOT-join it
-    #    (v…-rezus.11.community), never dash-fused (…-rezus.11-community):
-    #    a fused identifier is alphanumeric, ranks lexically, and
-    #    "10-community" < "9-community" silently stalls the policy at
-    #    every 9→10 boundary (observed: rezuscloud/signoz — flux marker
-    #    stuck at v0.127.0-rezus.3-community since 2026-06-29).
-    RELEASE_TAG="${UPSTREAM_VER}-rezus.${NEXT_N}"
+  # Source the #627 identity-mapping helper — the single derivation for ALL
+  # fork-maintenance modes (sync mints here; mapping-mode reuses the same
+  # functions in its own walk).
+  # shellcheck source=scripts/derive-release-version.sh
+  # shellcheck disable=SC1091
+  source "$SCRIPT_DIR/derive-release-version.sh"
 
-    HEAD_TAG=$(git tag --points-at HEAD | grep -E "${UPSTREAM_VER}-rezus\." || true)
-    if [ -n "$HEAD_TAG" ]; then
-      echo "=== HEAD already tagged ($HEAD_TAG) — skipping auto-release ==="
-      RELEASE_TAG=""
-    else
-      echo "=== Auto-releasing: tagging $FORK_DEFAULT_BRANCH as $RELEASE_TAG ==="
-      git tag "$RELEASE_TAG"
-      if git push --quiet origin "$RELEASE_TAG" 2>&1; then
-        echo "  tagged $RELEASE_TAG → fork release workflow will build + publish image"
+  # ── Upstream identity, mapped exactly (#627 contract) ─────────────────────
+  # Tags mirror upstream major.minor.patch exactly; -rezus.NN counts addon
+  # builds on top and RESETS at every upstream change. Identity = the highest
+  # upstream release tag whose CONTENT is in the tree, cross-checked against
+  # the upstream HOST (a shallow clone's tag window never decides — the
+  # #601/#603 lesson class). Pattern: versioning.upstream_pattern (def-
+  # declared, e.g. "b[0-9]*" for llama.cpp revision tags) or "auto" (pure
+  # vX.Y.Z). upstream.release_refs (def-declared, e.g. dapr's release-1.18):
+  # release lines upstream cuts OFF the synced branch — merged here so their
+  # content and tags become claimable; without this the identity would stick
+  # at the last release ever merged into the branch (v1.18.0-forever).
+  RELEASE_REFS=$(read_yaml '.upstream.release_refs // []' 2>/dev/null | sed 's/[][]//g' | tr -d '"' | tr ',' ' ')
+  for rel_ref in $RELEASE_REFS; do
+    [ -z "$rel_ref" ] && continue
+    if ! git fetch --quiet origin "+refs/heads/$rel_ref:refs/heads/release-$rel_ref" 2>/dev/null; then
+      echo "WARNING: release ref $rel_ref not found on origin — identity may anchor stale" >&2
+      continue
+    fi
+    if ! git merge-base --is-ancestor "refs/heads/release-$rel_ref" HEAD 2>/dev/null; then
+      echo "=== Merging release ref $rel_ref (content coverage for exact identity mapping) ==="
+      if git merge --no-ff --no-edit -m "RZ/sync: merge release line $rel_ref ($(date +%F))" "refs/heads/release-$rel_ref"; then
+        git push --quiet origin "HEAD:$FORK_DEFAULT_BRANCH"
       else
-        echo "WARNING: failed to push tag $RELEASE_TAG"
-        RELEASE_TAG=""
+        echo "ERROR: release ref $rel_ref merge conflicted — skipping auto-release this run (resolve manually)" >&2
+        if [ "$PHASED" = "1" ]; then
+          result_json false "fork-sync-$FORK_NAME" tag "release ref $rel_ref conflicted"
+        fi
+        return 0
       fi
+    fi
+  done
+
+  UPSTREAM_PATTERN=$(read_yaml '.versioning.upstream_pattern // "auto"' 2>/dev/null || echo auto)
+  if ! derive_upstream_identity "HEAD" "$UPSTREAM_URL" "$UPSTREAM_PATTERN"; then
+    echo "WARNING: could not determine upstream release identity — skipping auto-release (#627: never mint blind)" >&2
+    if [ "$PHASED" = "1" ]; then
+      result_json false "fork-sync-$FORK_NAME" tag "no upstream release derivable"
+    fi
+    return 0
+  fi
+  PREV_ANCHOR=$(previous_anchor "$FORK_URL")
+  if [ "$IDENTITY_STATE" = "behind" ]; then
+    echo "WARNING: upstream $REMOTE_LATEST is newer than anything reachable from $FORK_DEFAULT_BRANCH — its content is NOT in this tree (#627 exact mapping); declare upstream.release_refs or a mapping row for its line. NOT minting a stale-identity tag." >&2
+    if [ "$PHASED" = "1" ]; then
+      result_json false "fork-sync-$FORK_NAME" tag "identity behind ($REMOTE_LATEST not in tree)"
+    fi
+    return 0
+  fi
+  if [ -n "$PREV_ANCHOR" ] && [ "$PREV_ANCHOR" != "$IDENTITY" ]; then
+    echo "=== Upstream change $PREV_ANCHOR → $IDENTITY: -rezus ordinal resets to 1 ==="
+  fi
+  # Ordinal: highest existing <IDENTITY>-rezus.* on the fork remote + 1 —
+  # the reset at upstream changes falls out of the scoping (a new identity
+  # has no rezus tags yet → 0+1 = 1).
+  NEXT_N=$(next_rezus_ordinal "$IDENTITY" "$FORK_URL")
+  # Ordinal tag-shape contract (#595) — enforced by the helpers: ordinals are
+  # UNPADDED (a digit-only prerelease identifier ranks NUMERICALLY by semver,
+  # monotonic at every boundary; zero-padded …-rezus.01 is INVALID semver and
+  # invisible to semver ImagePolicies) and the image tag is the git tag
+  # VERBATIM — no variant suffix at all (rezuscloud/signoz#67; a dash-fused
+  # variant ranks lexically and "10-community" < "9-community" silently
+  # stalled a policy at every 9→10 boundary — flux marker stuck at
+  # v0.127.0-rezus.3-community since 2026-06-29).
+  RELEASE_TAG="${IDENTITY}-rezus.${NEXT_N}"
+
+  HEAD_TAG=$(git tag --points-at HEAD | grep -E -- "${IDENTITY}-rezus\." || true)
+  if [ -n "$HEAD_TAG" ]; then
+    echo "=== HEAD already tagged ($HEAD_TAG) — skipping auto-release ==="
+    RELEASE_TAG=""
+  else
+    echo "=== Auto-releasing: tagging $FORK_DEFAULT_BRANCH as $RELEASE_TAG (identity $IDENTITY, $IDENTITY_STATE) ==="
+    git tag "$RELEASE_TAG"
+    if git push --quiet origin "$RELEASE_TAG" 2>&1; then
+      echo "  tagged $RELEASE_TAG → fork release workflow will build + publish image"
+    else
+      echo "WARNING: failed to push tag $RELEASE_TAG"
+      RELEASE_TAG=""
     fi
   fi
   if [ "$PHASED" = "1" ]; then
-    [ -n "$RELEASE_TAG" ] && result_json true "$RELEASE_TAG" tag "release tag cut" \
+    [ -n "$RELEASE_TAG" ] && result_json true "$RELEASE_TAG" tag "release tag cut (identity $IDENTITY, $IDENTITY_STATE)" \
                          || result_json false "fork-sync-$FORK_NAME" tag "no release"
   fi
 }

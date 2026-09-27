@@ -12,7 +12,7 @@ TAG           ?= dev
 BIN_DIR       := bin
 GO            := go
 
-.PHONY: all build test test-go test-ui vet tidy generate manifests controller-worker docker docker-push docker-ui test-extensions test-sol-pi test-integration clean test-rig-emit golden-update
+.PHONY: all build test test-go test-ui vet tidy generate manifests controller-worker docker docker-push docker-ui test-extensions test-sol-pi test-integration clean test-rig-emit test-fork-maintenance golden-update
 
 
 all: test build
@@ -124,6 +124,12 @@ test-sol-pi:
 test-rig-emit:
 	python3 plugins/rig-emit/test_validator.py
 	python3 plugins/rig-emit/test_brief.py
+
+## test-fork-maintenance: the fork engine's release-identity contract (#627)
+## — upstream-exact major.minor.patch mapping, -rezus.NN reset semantics,
+## release-line behind-detection — against hermetic file:// git fixtures.
+test-fork-maintenance:
+	bash chart/fork-maintenance/scripts/tests/derive-release-version.test.sh
 
 ## test-integration: integration tier — the attempt ledger + review-claim
 ## lifecycles against a REAL API server (envtest) with the chart CRDs

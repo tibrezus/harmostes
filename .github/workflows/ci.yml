@@ -167,6 +167,12 @@ jobs:
       - name: rig-emit validator
         run: make test-rig-emit
 
+      # Fork engine release-identity contract (#627): upstream-exact
+      # major.minor.patch mapping, -rezus.NN reset at every upstream change,
+      # release-line behind-detection. Hermetic file:// git fixtures.
+      - name: fork-maintenance release identity
+        run: make test-fork-maintenance
+
       # Vendor sync (#452 D2): plugins/rig-emit/{emit-rig.py,rig/} is a
       # byte-equivalent vendored copy of llm-wiki-core's repo-map action at
       # the sha pinned in VENDOR.sha, plus exactly the deviations

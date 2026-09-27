@@ -588,9 +588,10 @@ jobs:
           # base-10 ordinal parse (octal trap on padded cuts) and the
           # tag-shape contract comment. The golden diff alone cannot catch
           # their removal — regenerating the golden makes any payload drift
-          # green; this probe is the mechanical backstop.
-          grep -q '10#\$LAST_N' /tmp/golden-render.yaml \
-            || { echo "::error::render-guard: phase_tag base-10 ordinal guard missing from the engine payload (#595)"; exit 1; }
+          # green; this probe is the mechanical backstop. (#627: the parse
+          # moved into derive-release-version.sh's next_rezus_ordinal.)
+          grep -q '10#{\$last_n:-0}' /tmp/golden-render.yaml \
+            || { echo "::error::render-guard: base-10 ordinal guard missing from the engine payload (#595/#627)"; exit 1; }
           grep -q 'dash-fused' /tmp/golden-render.yaml \
             || { echo "::error::render-guard: phase_tag tag-shape contract comment missing from the engine payload (#595)"; exit 1; }
           if helm template harmostes chart/ -f chart/ci/golden-values.yaml \

@@ -276,6 +276,14 @@ phase_merge() {
       result_json false "fork-sync-$FORK_NAME" merge "up to date — nothing to merge"
       exit 0
     fi
+    # all-mode (#627): a fully converged fork may still owe its RELEASE CUT —
+    # the identity can have moved since the last cut (upstream tagged a
+    # release whose line the fork already carries). Fall through to the tag
+    # phase; its own derivation + ordinal + already-tagged guards decide.
+    AUTO_RELEASE=$(read_yaml '.auto.release // false')
+    if [ "$AUTO_RELEASE" = "true" ]; then
+      phase_tag
+    fi
     exit 0
   fi
   if [ "$MASTER_UPTODATE" = 1 ]; then
@@ -581,7 +589,10 @@ phase_tag() {
   MERGE_SHA="${MERGE_SHA:-}"
   RELEASE_TAG=""
 
-  if [ "$AUTO_RELEASE" != "true" ] || [ -z "$MERGE_SHA" ]; then
+  # MERGE_SHA is informational: a converged fork (up-to-date all-mode, #627)
+  # reaches this phase with no fresh merge and still owes its release cut —
+  # the tag targets the fork default branch HEAD either way.
+  if [ "$AUTO_RELEASE" != "true" ]; then
     echo ""
     echo "=== No release (auto.release=$AUTO_RELEASE, merged=${MERGE_SHA:+yes}${MERGE_SHA:-no}) ==="
     if [ "$PHASED" = "1" ]; then

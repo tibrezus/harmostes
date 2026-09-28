@@ -3290,3 +3290,90 @@ func TestMultiArmLabeledWaitingStillArms(t *testing.T) {
 		t.Fatalf("a labeled waiting candidate must still arm (the #379 hold), got %d (%v)", len(claims), err)
 	}
 }
+
+// ── #633: the wedge, end to end. A queued claim armed at oldhead000; the
+// PR's head moves to newhead111; CI at the new head is PENDING (the wedge
+// shape — it never converges via the green-at-new-head proceed path).
+// OLD semantics: the mismatch reset the horizon clock every poll, so the
+// stale claim held the pointer forever while every new-head candidate
+// dropped "already claimed" (rhesadox#2479: ~3h). NEW: sweep 1 releases
+// the stale claim SUPERSEDED and re-arms at the new head IN THE SAME
+// sweep; sweep 2 dispatches the new claim once CI turns green. ──
+func TestMultiArmMovedHeadWedgeReleasesAndReArmsSameSweep(t *testing.T) {
+	clearTriggerEnv(t)
+	wf := gateWorkflow()
+	st := &fakeStatus{}
+
+	var ciState atomic.Value // "pending" | "success"
+	ciState.Store("pending")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(req.URL.Path, "/pulls"):
+			_ = json.NewEncoder(w).Encode([]map[string]any{
+				{"number": 99, "updated_at": "2026-09-28T00:00:00Z",
+					"labels": []map[string]string{{"name": "needs-review"}}},
+			})
+		case strings.Contains(req.URL.Path, "/pulls/"):
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"state": "open", "head": map[string]string{"sha": "newhead111"},
+				"base":   map[string]string{"ref": "main"},
+				"labels": []map[string]string{{"name": "needs-review"}},
+			})
+		case strings.Contains(req.URL.Path, "/branch_protections/"):
+			_ = json.NewEncoder(w).Encode(map[string]any{"status_check_contexts": []string{"ci / build-test (push)"}})
+		case strings.HasSuffix(req.URL.Path, "/statuses"):
+			status := ciState.Load().(string)
+			_ = json.NewEncoder(w).Encode([]map[string]string{
+				{"context": "ci / build-test (push)", "status": status},
+			})
+		case strings.Contains(req.URL.Path, "/comments"):
+			_ = json.NewEncoder(w).Encode([]any{})
+		default:
+			http.NotFound(w, req)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+
+	armed := time.Now().Add(-30 * time.Minute)
+	stale := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#99", "oldhead000", armed, nil)
+	deps, ctx := gateEnv(t, wf, st, stale) // poll sweep: no wake
+
+	// Sweep 1: the wedge breaks — release + same-sweep re-arm, no dispatch
+	// (CI pending at the new head).
+	out, err := RunReviewGateSweep(ctx, deps, wf)
+	if err != nil {
+		t.Fatalf("sweep 1: %v", err)
+	}
+	if len(out) != 0 {
+		t.Fatalf("CI pending at the new head must not dispatch, got %d", len(out))
+	}
+	var re v1alpha1.Attempt
+	if err := deps.Client.Get(ctx, client.ObjectKey{Namespace: stale.Namespace, Name: stale.Name}, &re); err != nil {
+		t.Fatalf("re-list stale claim: %v", err)
+	}
+	if !re.Status.Review.Released || re.Status.Review.ReleaseReason != v1alpha1.ReleaseReasonSuperseded {
+		t.Fatalf("stale-head claim must release superseded, got released=%t reason=%q",
+			re.Status.Review.Released, re.Status.Review.ReleaseReason)
+	}
+	live, err := attempt.LiveReviewClaims(ctx, deps.Client, wf)
+	if err != nil || len(live) != 1 {
+		t.Fatalf("the new head must be armed same-sweep, got %d live claims (%v)", len(live), err)
+	}
+	newName := live[0].Name
+	if live[0].Status.Review.HeadSHA != "newhead111" {
+		t.Fatalf("the live claim must stand at the new head, got %s", live[0].Status.Review.HeadSHA)
+	}
+
+	// Sweep 2: CI green at the new head — the claim the wedge used to
+	// block now dispatches.
+	ciState.Store("success")
+	out, err = RunReviewGateSweep(ctx, deps, wf)
+	if err != nil {
+		t.Fatalf("sweep 2: %v", err)
+	}
+	if len(out) != 1 || out[0].Attempt != newName || out[0].Envelope.HeadSHA != "newhead111" {
+		t.Fatalf("green CI must dispatch the NEW claim, got %+v (want attempt=%s head=newhead111)", out, newName)
+	}
+}

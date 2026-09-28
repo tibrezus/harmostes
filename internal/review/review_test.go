@@ -294,29 +294,37 @@ func TestVerdictWindowFreshConsumeOnly(t *testing.T) {
 	}
 }
 
-func TestLabelAbsentHeadMovedDuringAmbiguityResetsHorizon(t *testing.T) {
-	// #238 review MINOR: the ambiguity branch now matches the label-present
-	// head-moved path — a head that moved during the window inherits a fresh
-	// horizon clock, not the stale armed clock.
+func TestQueuedClaimMovedHeadReleasesSupersededLabelAbsent(t *testing.T) {
+	// #633: a QUEUED claim on a head the PR abandoned is wedged, not
+	// waiting — the old semantics (#238's "fresh horizon on head move")
+	// reset armedAt to now on EVERY poll while the heads differed, so the
+	// horizon could never fire and the claim held the pointer forever
+	// (rhesadox#2479: ~3h of "already claimed" drops). It releases
+	// SUPERSEDED regardless of label state.
 	api := &fakeAPI{pr: &PullRequest{State: "open", HeadSHA: "newsha", Base: "main", Labels: []string{"other"}}}
 	p := base
 	p.ArmedSha = "abc123"
 	p.ArmedAt = base.Now.Add(-5 * time.Hour) // near the 6h horizon
 	r := Evaluate(context.Background(), api, p)
-	if r.Decision != DecisionWaiting || !r.NewArmedAt.Equal(p.Now) {
-		t.Fatalf("head move during ambiguity must reset the clock: got %s at=%v", r.Decision, r.NewArmedAt)
+	if r.Decision != DecisionStanddown || r.Code != CodeHeadMoved {
+		t.Fatalf("queued moved-head must release head-moved, got %s code=%s (%s)", r.Decision, r.Code, r.Reason)
+	}
+	if r.NewArmedSha != "" {
+		t.Fatalf("the release must disarm, kept sha=%s", r.NewArmedSha)
 	}
 }
 
 func TestLabelAbsentVerdictCheckFailsStaysArmed(t *testing.T) {
-	// Transient comments-fetch failure: keep armed (retry next cycle),
-	// never disarm on an API hiccup.
+	// Transient comments-fetch failure at the CURRENT head: keep armed
+	// (retry next cycle), never disarm on an API hiccup. #633: the verdict
+	// scan runs only for same-head claims now — the moved-head release is
+	// fetch-confirmed and comment-scan-independent (TestQueuedClaim...MovedHead).
 	api := &fakeAPI{pr: openPR("full-pipeline"), required: []string{"a"}, states: map[string]string{"a": "success"},
 		commentsErr: fmt.Errorf("HTTP 503")}
 	p := base
-	p.ArmedSha = "def456" // previously armed at an older head
+	p.ArmedSha = "abc123" // armed at the CURRENT head
 	r := Evaluate(context.Background(), api, p)
-	if r.Decision != DecisionWaiting || r.NewArmedSha != "def456" {
+	if r.Decision != DecisionWaiting || r.NewArmedSha != "abc123" {
 		t.Fatalf("want waiting keeping armed sha, got %s sha=%s", r.Decision, r.NewArmedSha)
 	}
 }
@@ -353,18 +361,35 @@ func TestHorizonExceeded(t *testing.T) {
 	}
 }
 
-func TestHeadMoveRearmsClock(t *testing.T) {
-	// Armed 7h at old sha, head moved → horizon restarts, not expires.
+func TestQueuedClaimMovedHeadReleasesSupersededLabelPresent(t *testing.T) {
+	// #633, label-present shape: armed 7h at old sha, head moved, CI
+	// pending at the new head. OLD semantics: waiting with a fresh horizon
+	// — the wedge (the envelope can never dispatch at the old head, and
+	// the reset clock can never horizon out). NEW: release head-moved; the
+	// sweep re-arms at the new head, which inherits its own fresh clock.
 	p := base
 	p.ArmedSha = "oldsha"
 	p.ArmedAt = base.Now.Add(-7 * time.Hour)
 	api := &fakeAPI{pr: openPR("needs-review"), required: []string{"a"}, states: map[string]string{"a": "pending"}}
 	r := Evaluate(context.Background(), api, p)
-	if r.Decision != DecisionWaiting {
-		t.Fatalf("want waiting after re-arm, got %s (%s)", r.Decision, r.Reason)
+	if r.Decision != DecisionStanddown || r.Code != CodeHeadMoved {
+		t.Fatalf("queued moved-head must release head-moved, got %s code=%s (%s)", r.Decision, r.Code, r.Reason)
 	}
-	if !r.NewArmedAt.Equal(base.Now) {
-		t.Fatalf("re-arm must reset armedAt, got %v", r.NewArmedAt)
+}
+
+func TestDispatchedClaimMovedHeadStillWaitsOnFailedVerdictScan(t *testing.T) {
+	// #633 is queued-only: a DISPATCHED claim keeps the #410 ordering —
+	// the verdict scan runs first, and a FAILED scan stays on the
+	// conservative waiting path (retry next sweep) instead of releasing.
+	api := &fakeAPI{pr: openPR("needs-review"), required: []string{"a"}, states: map[string]string{"a": "pending"},
+		commentsErr: fmt.Errorf("HTTP 503")}
+	p := base
+	p.ArmedSha = "oldsha"
+	p.ArmedAt = base.Now.Add(-1 * time.Hour)
+	p.DispatchedAt = base.Now.Add(-30 * time.Minute)
+	r := Evaluate(context.Background(), api, p)
+	if r.Decision != DecisionWaiting || !strings.Contains(r.Reason, "verdict check failed") {
+		t.Fatalf("dispatched moved-head with a failed scan must wait, got %s (%s)", r.Decision, r.Reason)
 	}
 }
 

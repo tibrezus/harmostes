@@ -485,17 +485,23 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 			switch res.Decision {
 			case review.DecisionProceed:
 				if res.Envelope.HeadSHA != r.HeadSHA {
-					// Head moved since the claim armed (r30 F1): dispatching
-					// the stale envelope would review the wrong sha. Release
-					// SUPERSEDED — a terminal reason that burns neither the
-					// churn budget nor a dismissal window — and let the
-					// re-list below re-arm at the new head the same sweep.
+					// Defense-in-depth for the #633 mismatch standdown: a
+					// queued claim should never PROCEED past a moved head
+					// (Evaluate releases it first), but ArmedSha=="" claims
+					// skip that check — this branch keeps their proceed from
+					// dispatching a stale envelope. Head moved since the
+					// claim armed (r30 F1): dispatching the stale envelope
+					// would review the wrong sha. Release SUPERSEDED — a
+					// terminal reason that burns neither the churn budget
+					// nor a dismissal window — clear the pointer and let
+					// section C re-arm at the new head the same sweep.
 					// (A synchronize wake is NOT request-shaped and section C
 					// skips non-request candidates for claimed pointers, so
 					// "hold and wait for the push wake" strands the claim on
 					// poll sweeps — the strand this branch shipped with.)
 					releaseClaim(ctx, deps, c, v1alpha1.ReleaseReasonSuperseded, log)
 					releasedInA[c.Name] = true
+					liveOn[r.PR] = false
 					emitGate(ctx, deps.TL, liveAgg, res, repo, pr)
 					break
 				}
@@ -536,6 +542,15 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 			case review.DecisionStanddown:
 				releaseClaim(ctx, deps, c, classifyRelease(res.Evaluation), log)
 				releasedInA[c.Name] = true
+				if res.Evaluation.Code == review.CodeHeadMoved {
+					// #633: this release exists to hand the pointer to the
+					// new head — clear it so section C's labeled scan re-arms
+					// the new head THIS sweep. Other standdowns keep the
+					// pointer seeded: a horizon release that re-armed same
+					// sweep would just restart its own clock, defeating the
+					// horizon as a backstop.
+					liveOn[r.PR] = false
+				}
 				emitGate(ctx, deps.TL, liveAgg, res, repo, pr)
 			default: // waiting: the armed state is doing its job — shield it
 				keepArmed[r.PR] = true

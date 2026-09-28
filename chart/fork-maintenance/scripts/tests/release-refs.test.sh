@@ -101,10 +101,20 @@ fi
 source "$ROOT/scripts/derive-release-version.sh"
 cd "$MC"
 derive_upstream_identity "HEAD" "$UP"
+
+assert_eq "$(next_rezus_ordinal v1.18.4 "$FORK")" "1" "ordinal resets at the upstream change (pre-mint)"
+
+echo "── second sync on the converged fork: the release cut must fire"
+OUT2=$(cd "$WORK" && timeout 240 bash "$FM/scripts/sync-fork.sh" dapr all 2>&1)
+if echo "$OUT2" | grep -q "tagging rezus/master as v1.18.4-rezus.1"; then
+  ok "converged second sync minted v1.18.4-rezus.1 (exact identity, ordinal reset)"
+else
+  fail "the converged second sync never cut v1.18.4-rezus.1"
+  echo "$OUT2" | tail -20
+fi
 derive_upstream_identity "HEAD" "$UP"
 assert_eq "$IDENTITY" "v1.18.4" "identity = the release line's tag"
 assert_eq "$IDENTITY_STATE" "exact" "exact mapping once the line is merged"
-assert_eq "$(next_rezus_ordinal v1.18.4 "$FORK")" "1" "ordinal resets at the upstream change"
 
 echo ""
 echo "passed=$PASS failed=$FAIL"

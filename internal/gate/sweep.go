@@ -542,7 +542,7 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 			case review.DecisionStanddown:
 				releaseClaim(ctx, deps, c, classifyRelease(res.Evaluation), log)
 				releasedInA[c.Name] = true
-				if res.Evaluation.Code == review.CodeHeadMoved {
+				if res.Code == review.CodeHeadMoved {
 					// #633: this release exists to hand the pointer to the
 					// new head — clear it so section C's labeled scan re-arms
 					// the new head THIS sweep. Other standdowns keep the

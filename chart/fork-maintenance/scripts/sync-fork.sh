@@ -244,14 +244,42 @@ phase_merge() {
   fi
   UPSTREAM_HEAD=$(git rev-parse "upstream/$UPSTREAM_BRANCH")
 
+  # ── Release-line coverage (#627 exact identity mapping) ────────────────
+  # upstream.release_refs (def-declared, e.g. dapr's release-1.18): release
+  # lines upstream cuts OFF the synced branch — their tags are never
+  # reachable from it, so without merging them here the release identity
+  # anchors at the last line ever merged (observed: v1.18.0-forever while
+  # upstream shipped 1.18.1..1.18.4). A pending ref BLOCKS the up-to-date
+  # skip: a converged master still owes the release line a merge.
+  RELEASE_REFS=$(read_yaml '.upstream.release_refs // []' 2>/dev/null | sed 's/[][]//g' | tr -d '"' | tr ',' ' ')
+  REFS_PENDING=""
+  MASTER_UPTODATE=0
+  for rel_ref in $RELEASE_REFS; do
+    [ -z "$rel_ref" ] && continue
+    if git fetch --quiet upstream "+refs/heads/$rel_ref:refs/remotes/upstream/$rel_ref" 2>/dev/null; then
+      if ! git merge-base --is-ancestor "upstream/$rel_ref" "HEAD" 2>/dev/null; then
+        REFS_PENDING="$REFS_PENDING $rel_ref"
+      fi
+    else
+      echo "WARNING: release ref $rel_ref not found on the upstream host — identity may anchor stale" >&2
+    fi
+  done
+
   if git merge-base --is-ancestor "upstream/$UPSTREAM_BRANCH" "HEAD" 2>/dev/null; then
+    MASTER_UPTODATE=1
+  fi
+
+  if [ "$MASTER_UPTODATE" = 1 ] && [ -z "${REFS_PENDING// /}" ]; then
     echo ""
-    echo "=== Already up to date — mirror has no new commits ==="
+    echo "=== Already up to date — mirror has no new commits, release lines contained ==="
     if [ "$PHASED" = "1" ]; then
       result_json false "fork-sync-$FORK_NAME" merge "up to date — nothing to merge"
       exit 0
     fi
     exit 0
+  fi
+  if [ "$MASTER_UPTODATE" = 1 ]; then
+    echo "=== master already contained — syncing the pending release line(s):$REFS_PENDING ==="
   fi
 
   NEW_COMMITS=$(git rev-list --count "${MERGE_BASE}..upstream/${UPSTREAM_BRANCH}" 2>/dev/null || echo "?")
@@ -275,10 +303,38 @@ phase_merge() {
   # result is release + upstream-delta — a clean superset that PRs back.
   git checkout -b "$SYNC_BRANCH" "$FORK_DEFAULT_BRANCH"
 
+  # The merge sources: the synced branch (unless already contained) + every
+  # pending release line (#627). Each merges --no-ff; a conflict anywhere
+  # routes to the resolver path below (one PR per sync, as before).
+  MERGE_SRCS=""
+  [ "$MASTER_UPTODATE" = 0 ] && MERGE_SRCS="$MERGE_SRCS upstream/${UPSTREAM_BRANCH}"
+  for rel_ref in $REFS_PENDING; do
+    MERGE_SRCS="$MERGE_SRCS upstream/$rel_ref"
+  done
+  [ -z "${MERGE_SRCS// /}" ] && { echo "ERROR: nothing queued to merge" >&2; exit 1; }
+
+  for merge_src in $MERGE_SRCS; do
   # --no-ff guarantees an explicit, auditable merge commit (revertible via -m 1).
+  # Shallow-graph guard (#566 class): a release ref fetched at --depth shares
+  # no visible ancestor with the fork clone — on "unrelated histories" pull
+  # the ref's full history and retry once; a REAL unrelated history still
+  # fails loudly on the retry.
   if ! git merge --no-ff --no-edit \
-       -m "RZ/sync: merge upstream ${UPSTREAM_BRANCH} into ${FORK_DEFAULT_BRANCH} (${SYNC_DATE})" \
-       "upstream/${UPSTREAM_BRANCH}"; then
+       -m "RZ/sync: merge $merge_src into ${FORK_DEFAULT_BRANCH} (${SYNC_DATE})" \
+       "$merge_src"; then
+    if git merge-base "$merge_src" HEAD >/dev/null 2>&1; then
+      true   # real conflict — resolver path below
+    else
+      echo "=== no common ancestor with $merge_src — unshallowing and retrying ==="
+      git merge --abort 2>/dev/null || true
+      git fetch --unshallow upstream 2>/dev/null \
+        || git fetch --deepen=5000 upstream 2>/dev/null || true
+      if git merge --no-ff --no-edit \
+           -m "RZ/sync: merge $merge_src into ${FORK_DEFAULT_BRANCH} (${SYNC_DATE})" \
+           "$merge_src"; then
+        continue   # merged on the retry — next source
+      fi
+    fi
     # The merge stopped on conflicts (localized 3-way regions). Conclude it WITH
     # markers on the sync branch, open a needs-conflict-resolution PR for the LLM
     # resolver, and emit fork.conflict.needs-resolution. The resolver re-creates
@@ -300,6 +356,7 @@ phase_merge() {
     emit_conflict_event "$CONFLICT_FILES"
     exit 2
   fi
+  done # merge sources
 
   # ── Permanent divergences (deletions from fork definition) ──────────────
   DELETIONS=$(read_yaml '.deletions[]' 2>/dev/null || true)
@@ -559,23 +616,25 @@ phase_tag() {
   RELEASE_REFS=$(read_yaml '.upstream.release_refs // []' 2>/dev/null | sed 's/[][]//g' | tr -d '"' | tr ',' ' ')
   for rel_ref in $RELEASE_REFS; do
     [ -z "$rel_ref" ] && continue
-    if ! git fetch --quiet origin "+refs/heads/$rel_ref:refs/heads/release-$rel_ref" 2>/dev/null; then
-      echo "WARNING: release ref $rel_ref not found on origin — identity may anchor stale" >&2
+    # Merge-phase coverage: the refs were already merged into the tree (the
+    # #627 phase_merge loop). This pass only VERIFIES — a ref that is still
+    # missing means the merge phase didn't run it (all-mode up-to-date exit
+    # before the release-refs loop landed) — surface, never mint.
+    if ! git fetch --quiet "$UPSTREAM_URL" "+refs/heads/$rel_ref:refs/remotes/upstream-rel-$rel_ref" 2>/dev/null; then
+      echo "WARNING: release ref $rel_ref not found on the upstream host" >&2
       continue
     fi
-    if ! git merge-base --is-ancestor "refs/heads/release-$rel_ref" HEAD 2>/dev/null; then
-      echo "=== Merging release ref $rel_ref (content coverage for exact identity mapping) ==="
-      if git merge --no-ff --no-edit -m "RZ/sync: merge release line $rel_ref ($(date +%F))" "refs/heads/release-$rel_ref"; then
-        git push --quiet origin "HEAD:$FORK_DEFAULT_BRANCH"
-      else
-        echo "ERROR: release ref $rel_ref merge conflicted — skipping auto-release this run (resolve manually)" >&2
-        if [ "$PHASED" = "1" ]; then
-          result_json false "fork-sync-$FORK_NAME" tag "release ref $rel_ref conflicted"
-        fi
-        return 0
-      fi
+    if ! git merge-base --is-ancestor "refs/remotes/upstream-rel-$rel_ref" HEAD 2>/dev/null; then
+      echo "WARNING: release ref $rel_ref is NOT contained in HEAD — identity cannot map exactly; run a sync to merge the line first" >&2
+      REL_REF_UNMERGED=1
     fi
   done
+  if [ "${REL_REF_UNMERGED:-0}" = 1 ]; then
+    if [ "$PHASED" = "1" ]; then
+      result_json false "fork-sync-$FORK_NAME" tag "release line not merged — sync first"
+    fi
+    return 0
+  fi
 
   UPSTREAM_PATTERN=$(read_yaml '.versioning.upstream_pattern // "auto"' 2>/dev/null || echo auto)
   if ! derive_upstream_identity "HEAD" "$UPSTREAM_URL" "$UPSTREAM_PATTERN"; then

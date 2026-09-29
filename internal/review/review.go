@@ -876,6 +876,29 @@ func Evaluate(ctx context.Context, api API, p Params) Result {
 		return withPresence(standdown(code, "pull request "+stateWord(pr.State)), "", time.Time{})
 	}
 
+	// #633: an ARMED-QUEUED claim parked on a head the PR has abandoned is
+	// wedged, not waiting. Its envelope can never dispatch (the proceed
+	// path releases it as superseded the moment CI at the new head turns
+	// green — the review would be at the wrong sha), and the head-mismatch
+	// horizon resets below push armedAt to now on EVERY poll, so the
+	// horizon can never fire either: rhesadox#2479 armed at fe70b18e, the
+	// head moved twice, and the claim held the PR for ~3h of "already
+	// claimed" drops while green statuses stood on the new head — invisible
+	// from the PR surface, diagnosable only from worker logs. The dispatched
+	// analogue is #410 below (verdict can never land → superseded); the
+	// queued analogue is this: release SUPERSEDED (no breaker strike, no
+	// churn budget) and let the caller's re-arm bring the new head in. A
+	// standing verdict at the new head is checked at RE-ARM time (#567),
+	// where it belongs — a queued claim has no run, so no verdict can
+	// belong to it. Ordered BEFORE the label branch: the mismatch is
+	// label-independent (a label removed after a rebase leaves the same
+	// zombie). A failed PR fetch never reaches here (conservative wait,
+	// retry next sweep). Dispatched claims keep the #410 ordering (verdict
+	// scan first — a landed verdict consumes) via their own block below.
+	if p.DispatchedAt.IsZero() && p.ArmedSha != "" && p.ArmedSha != pr.HeadSHA {
+		return withPresence(standdown(CodeHeadMoved, fmt.Sprintf("head moved since arming (armed at %s, PR now at %s) — queued claim released for re-arm at the new head", p.ArmedSha, pr.HeadSHA)), "", time.Time{})
+	}
+
 	if !pr.HasLabel(p.Label) {
 		// Label absent is a real stand-down ONLY once a verdict exists: the
 		// deploy plugin removes the label after posting the verdict trailer

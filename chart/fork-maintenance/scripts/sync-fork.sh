@@ -62,15 +62,15 @@ echo "=== [$PHASE] fork: $FORK_NAME ==="
 # Parse YAML definition into shell variables
 read_yaml() { yq -r "$1" "$DEF_FILE"; }
 
-# Mode dispatch (schema v2): merge (default, whole-repo forks) vs subtree
-# (vendored upstream trees) vs mapping (the forgejo self-sync — sync.yml's
-# mapping-table walk in the plugin). The subtree/mapping machinery lives at
-# the END of this script — dispatching there and exiting; every merge-mode
-# path below is unreachable for those defs, keeping the merge-mode code
-# byte-untouched.
+# Mode dispatch: merge (default, whole-repo forks) vs mapping (the forgejo
+# self-sync — sync.yml's mapping-table walk in the plugin). Mapping machinery
+# dispatches at the END of this script; merge-mode code below is unreachable
+# for mapping defs. (subtree mode retired: no def ever shipped with it —
+# vendored-tree forks are served by merge mode; history holds the old file.)
 MODE="$(read_yaml '.mode // "merge"' 2>/dev/null || echo merge)"
 case "$MODE" in
-  merge|subtree|mapping) ;;
+  merge|mapping) ;;
+  subtree) echo "ERROR: mode 'subtree' retired from the payload — use merge mode" >&2; exit 1 ;;
   *) echo "ERROR: unknown mode '$MODE' for fork '$FORK_NAME'" >&2; exit 1 ;;
 esac
 
@@ -761,17 +761,6 @@ if [ "$MODE" = "mapping" ]; then
   # shellcheck disable=SC1091
   source "$SCRIPT_DIR/mapping-mode.sh"
   mapping_dispatch
-  exit 0
-fi
-
-if [ "$MODE" = "subtree" ]; then
-  # Vendored-tree mode: everything lives in scripts/subtree-mode.sh (sourced
-  # here so the phases see this script's helpers: read_yaml, result_json,
-  # push_sync_branch). Merge-mode code below is never reached for subtree defs.
-  # shellcheck source=scripts/subtree-mode.sh
-  # shellcheck disable=SC1091
-  source "$SCRIPT_DIR/subtree-mode.sh"
-  subtree_dispatch
   exit 0
 fi
 

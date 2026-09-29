@@ -55,8 +55,7 @@ Scripts and definitions are delivered as **ConfigMaps** (via kustomize `configMa
 | Shape | Example | What the plugin merges | Gate | Release |
 |-------|---------|----------------------|------|---------|
 | **merge fork** (fork repo, whole-tree) | dapr, signoz, llama-cpp | upstream branch → our release branch (immutable patches as commits) | centralized checks + patch signatures | plugin tags `v*-rezus.*` (opt-in auto) |
-| **subtree** (pristine vendored tree) | `runner/` in the forgejo monorepo | delegate re-vendors at the new pin | pristine: byte-diff vs upstream archive | target repo's tag cycle (plugin reports unreleased-pending) |
-| **subtree + patches** (patch-carrying vendored tree) | `charts/forgejo/` in the forgejo monorepo | delegate re-vendors + re-applies the declared patch contract | patch-accounting: diff must be exactly `preserve:` + signed `patches:` (contract lives in the target repo, read by plugin AND its CI guard) | target repo's tag cycle |
+| ~~subtree (vendored tree)~~ | *retired from the payload — no def ever shipped with it; vendored-tree forks are served by merge mode (history holds the old machinery)* | | | |
 | **merge into monorepo** (mapping table, self-hosted transport) | forgejo itself (codeberg `v16.0/forgejo` → `rezus/forgejo-16`) | upstream release branch → monorepo release branch; regen + repo-local validation before push | repo-local `sync-validate.sh` (regen output committed) | deliberate tags only — a sync never mints a version |
 
 One plugin, one severity model across all shapes: RED = automation should

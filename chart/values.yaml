@@ -115,7 +115,7 @@ workerPool:
   topic: harmostes-triggers  # topic the controller publishes to
 
 # forkMaintenance: the fork-maintenance sync engine (ADR-0011). The engine —
-# sync/subtree/mapping scripts, checks, post-merge hooks, resolver skill — is
+# sync/mapping scripts, checks, post-merge hooks, resolver skill — is
 # CODE and ships inside this chart (chart/fork-maintenance/); the chart renders
 # the ConfigMaps the worker pod mounts at /workspace/*. Only the fork
 # DEFINITIONS (declarative per-fork sync config consumed by sync-fork.sh) and

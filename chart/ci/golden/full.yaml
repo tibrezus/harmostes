@@ -1365,7 +1365,7 @@ data:
       # upstream release tag whose CONTENT is in the tree, cross-checked against
       # the upstream HOST (a shallow clone's tag window never decides — the
       # #601/#603 lesson class). Pattern: versioning.upstream_pattern (def-
-      # declared, e.g. "b[0-9]*" for llama.cpp revision tags) or "auto" (pure
+      # declared, e.g. "b[0-9]*" for a revision-tag upstream) or "auto" (pure
       # vX.Y.Z). upstream.release_refs (def-declared, e.g. dapr's release-1.18):
       # release lines upstream cuts OFF the synced branch — merged here so their
       # content and tags become claimable; without this the identity would stick
@@ -3715,12 +3715,6 @@ data:
     go mod tidy 2>/dev/null || echo "[dapr-hook] WARNING: go mod tidy had issues"
     echo "[dapr-hook] done"
     
-  llama-cpp.sh: |
-    #!/usr/bin/env bash
-    # llama.cpp post-merge hook: no post-merge operations needed currently
-    set -euo pipefail
-    echo "[llama-cpp-hook] no post-merge operations needed"
-    
   signoz.sh: |
     #!/usr/bin/env bash
     # SigNoz post-merge hook: strip ee/ directory (permanent divergence)
@@ -3833,7 +3827,7 @@ data:
     - **forgejo**: self-hosted — `.github/workflows/sync.yml` in the fork
       repo walks the table daily; dev-build + Flux ImagePolicy roll prod.
       Engine politely declines mapping defs (`sync-fork.sh forgejo` → exit 0).
-    - **dapr / signoz / llama-cpp**: plugin transport (phase mode below).
+    - **dapr / signoz**: plugin transport (phase mode below).
     
     ## Version identity (upstream-identity versioning)
     
@@ -4226,7 +4220,7 @@ data:
     
     | Shape | Example | What the plugin merges | Gate | Release |
     |-------|---------|----------------------|------|---------|
-    | **merge fork** (fork repo, whole-tree) | dapr, signoz, llama-cpp | upstream branch → our release branch (immutable patches as commits) | centralized checks + patch signatures | plugin tags `v*-rezus.*` (opt-in auto) |
+    | **merge fork** (fork repo, whole-tree) | dapr, signoz | upstream branch → our release branch (immutable patches as commits) | centralized checks + patch signatures | plugin tags `v*-rezus.*` (opt-in auto) |
     | ~~subtree (vendored tree)~~ | *retired from the payload — no def ever shipped with it; vendored-tree forks are served by merge mode (history holds the old machinery)* | | | |
     | **merge into monorepo** (mapping table, self-hosted transport) | forgejo itself (codeberg `v16.0/forgejo` → `rezus/forgejo-16`) | upstream release branch → monorepo release branch; regen + repo-local validation before push | repo-local `sync-validate.sh` (regen output committed) | deliberate tags only — a sync never mints a version |
     
@@ -4360,7 +4354,7 @@ data:
     
     ## Reference implementation
     
-    `k8s-config/platform/harmostes/fork-maintenance/` is the production instance (forks: forgejo, signoz, dapr, llama.cpp). It demonstrates all four cases: a Go monorepo with codegen + integration (forgejo), a Go single-module with permanent divergence (signoz — strips `ee/`), a Go single-module (dapr), and a non-Go project with no validation (llama.cpp).
+    `platform/harmostes/` in k8s-config is the production instance (forks: forgejo, signoz, dapr — defs live in the HelmRelease values at `platform/harmostes/gitrepository.yaml`, ADR-0011). It demonstrates the cases: a Go monorepo with codegen + integration (forgejo), a Go single-module with permanent divergence (signoz — strips `ee/`), and a Go single-module (dapr). llama.cpp was retired from tracking (k8s-config !286); the derive-release-version test keeps its b-revision fixture purely as the non-`vX.Y.Z` pattern example.
     
   conflict-resolution.md: |
     # Conflict Resolution — Mechanical and Agentic
@@ -5166,7 +5160,7 @@ spec:
         # (stale-pod-wins; #368-1). Checksums cover everything the pod mounts:
         # the fork-maintenance.yaml template output (scripts/checks/defs/
         # hooks/skill CMs) and the litellm extension payload.
-        checksum/fork-maintenance: d5fd30acba063ac22261fb291900b45597bf46622caec05029874502e95d80ab
+        checksum/fork-maintenance: 4102c7b5e36b7d89ec401afe3e737121fb08c51f823a1b4202a49304e2229946
         checksum/litellm-extension: 883d76f7ef3dcce17099fbf3c7b7aea0e7d7d16003ca83cfb465a7422078b4e1
     spec:
       imagePullSecrets:

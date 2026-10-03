@@ -55,6 +55,42 @@ FORK_DEFAULT_BRANCH=$(read_yaml '.fork.default_branch')
 UPSTREAM_URL=$(read_yaml '.upstream.url')
 UPSTREAM_BRANCH=$(read_yaml '.upstream.branch')
 
+# Row context (#637): the event payload carries the row (theirs/ours) + the
+# stable conflict branch for mapping-table defs; legacy single-row events
+# carry empty fields — fall back to the def's top-level (the degenerate
+# one-row table) and the dated rezus/sync-<date> branch. One contract, every
+# def shape.
+# shellcheck source=scripts/conflict-event.sh
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/conflict-event.sh"
+EVENT_THEIRS=""; EVENT_OURS=""; EVENT_CONFLICT_BRANCH=""
+if [ -n "${EVENT_PAYLOAD:-}" ]; then
+  IFS='|' read -r EVENT_THEIRS EVENT_OURS EVENT_CONFLICT_BRANCH <<<"$(event_row_context "$EVENT_PAYLOAD")"
+fi
+# The payload is EXTERNAL INPUT (the resolver's /events endpoint forwards
+# whatever was POSTed) — the row context is validated against the def before
+# it becomes a git argument: (theirs, ours) must be a declared row (exact
+# string match — payload values never interpolate into any query) and the
+# branch must be exactly the row's conflict branch. Mismatch → warn + def
+# fallback. (#637 review finding 3.)
+if [ -n "$EVENT_THEIRS" ] || [ -n "$EVENT_OURS" ] || [ -n "$EVENT_CONFLICT_BRANCH" ]; then
+  ROW_DECLARED=false
+  while read -r rt ro; do
+    { [ -n "$rt" ] && [ "$rt" = "$EVENT_THEIRS" ] && [ "$ro" = "$EVENT_OURS" ]; } && ROW_DECLARED=true
+  done <<< "$(read_yaml '.mappings[] | .theirs + " " + .ours' 2>/dev/null || true)"
+  # legacy payload shape: the def's own top-level pair is a valid "row"
+  { [ "$EVENT_THEIRS" = "$UPSTREAM_BRANCH" ] && [ "$EVENT_OURS" = "$FORK_DEFAULT_BRANCH" ]; } && ROW_DECLARED=true
+  BRANCH_DECLARED=false
+  [ -z "$EVENT_CONFLICT_BRANCH" ] && BRANCH_DECLARED=true
+  [ "$EVENT_CONFLICT_BRANCH" = "$(conflict_branch_for "$EVENT_THEIRS")" ] && BRANCH_DECLARED=true
+  if [ "$ROW_DECLARED" != true ] || [ "$BRANCH_DECLARED" != true ]; then
+    echo "WARNING: event row context does not match the def (theirs='$EVENT_THEIRS' ours='$EVENT_OURS' branch='$EVENT_CONFLICT_BRANCH') — discarding, falling back to the def" >&2
+    EVENT_THEIRS=""; EVENT_OURS=""; EVENT_CONFLICT_BRANCH=""
+  fi
+fi
+THEIRS="${EVENT_THEIRS:-$UPSTREAM_BRANCH}"
+OURS="${EVENT_OURS:-$FORK_DEFAULT_BRANCH}"
+
 echo "=== resolve-conflict: $FORK_NAME (merge + harmostes) ==="
 source "$SCRIPT_DIR/git-host.sh"
 host_setup
@@ -69,16 +105,23 @@ echo "=== Cloning fork + upstream ==="
 git clone --depth 100 "$FORK_URL" "$WORKDIR"
 cd "$WORKDIR"
 git remote add upstream "$UPSTREAM_URL"
-git fetch --depth 100 upstream "$UPSTREAM_BRANCH" --tags
+# Fetch THE ROW's branch — for a mapping row THEIRS is NOT the def's
+# top-level upstream.branch, and an unfetched row ref made the redo-merge die
+# as "not something we can merge"; the agent then ran on a markerless tree
+# and the gate passed vacuously (#637 review finding 1). Legacy: THEIRS ==
+# UPSTREAM_BRANCH — same line.
+git fetch --depth 100 upstream "$THEIRS" --tags
 
-MERGE_BASE=$(git merge-base "HEAD" "upstream/$UPSTREAM_BRANCH" 2>/dev/null || echo "")
+MERGE_BASE=$(git merge-base "HEAD" "upstream/$THEIRS" 2>/dev/null || echo "")
 SYNC_DATE=$(date +%Y-%m-%d)
-SYNC_BRANCH="rezus/sync-${SYNC_DATE}"
+SYNC_BRANCH="${EVENT_CONFLICT_BRANCH:-rezus/sync-${SYNC_DATE}}"
 
 # Merge model: branch off the RELEASE line and merge upstream into it (not
 # cherry-pick onto fresh upstream). This re-creates the exact conflict the plugin
-# hit, so the agent resolves the real 3-way regions.
-git checkout -b "$SYNC_BRANCH" "$FORK_DEFAULT_BRANCH"
+# hit, so the agent resolves the real 3-way regions. With the stable per-row
+# conflict branch (#637) this REPLAYS onto the branch the plugin pushed — the
+# existing PR stays the single thread and gets merged, never orphaned.
+git checkout -B "$SYNC_BRANCH" "$OURS"
 
 # Clone the org wiki for the fork's intent (the "Fork Maintenance" chapter).
 WIKI_PAGE=""
@@ -89,11 +132,11 @@ if git clone --depth 1 "$WIKI_REPO" "$WIKI_DIR" 2>/dev/null; then
 fi
 
 echo ""
-echo "=== Merging upstream/$UPSTREAM_BRANCH into $SYNC_BRANCH ==="
+echo "=== Merging upstream/$THEIRS into $SYNC_BRANCH ==="
 NEEDS_LLM=0
 if ! git merge --no-ff --no-edit \
-     -m "RZ/sync: merge upstream ${UPSTREAM_BRANCH} into ${FORK_DEFAULT_BRANCH} (${SYNC_DATE})" \
-     "upstream/${UPSTREAM_BRANCH}"; then
+     -m "RZ/sync: merge upstream ${THEIRS} into ${OURS} (${SYNC_DATE})" \
+     "upstream/${THEIRS}"; then
   NEEDS_LLM=1
   echo "  merge stopped on a conflict — harmostes will drive it"
 else
@@ -111,7 +154,7 @@ if [ "$NEEDS_LLM" = "1" ]; then
 You are resolving a git merge conflict.
 
 Working directory: $WORKDIR  (clone of the '$FORK_NAME' fork; on branch $SYNC_BRANCH,
-mid-merge — merging upstream $UPSTREAM_BRANCH into the release line. The merge
+mid-merge — merging upstream $THEIRS into the release line. The merge
 brought upstream's delta ON TOP of our customizations; only the regions where
 upstream AND our patches both changed are in conflict.)
 
@@ -173,24 +216,50 @@ git push --quiet origin "$SYNC_BRANCH" 2>&1 || true
 echo ""
 echo "=== Conflicts resolved — opening PR + triggering merge ==="
 host_label_create "auto-merge" 0E8A16 2>/dev/null || true
-PR_URL=$(host_pr_create "$FORK_DEFAULT_BRANCH" "$SYNC_BRANCH" \
+PR_URL=$(host_pr_create "$OURS" "$SYNC_BRANCH" \
   "RZ/resolve: $FORK_NAME — merge conflicts resolved by agent ($SYNC_DATE)" \
   "Upstream merge conflicts (localized 3-way regions) resolved via harmostes (pi RPC + skill + wiki intent + gate-feedback loop)." \
   "auto-merge" 2>/dev/null || echo "")
-echo "  PR: ${PR_URL:-<none>}"
+echo "  PR: ${PR_URL:-<none>} (existing conflict PR reused when open — stable branch, #637)"
 
-MERGE_SHA=$(host_pr_merge "$SYNC_BRANCH" 2>&1) || echo "WARNING: merge failed: $MERGE_SHA"
-AUTO_RELEASE=$(read_yaml '.auto.release // false')
-if [ -n "$MERGE_SHA" ] && [ "$AUTO_RELEASE" = "true" ]; then
-  UPSTREAM_VER=$(git describe --tags --abbrev=0 "upstream/$UPSTREAM_BRANCH" 2>/dev/null | sed -E 's/(-rc\.[0-9]+|-rezus\.[0-9]+).*$//')
-  if [ -n "$UPSTREAM_VER" ]; then
-    LAST_N=$(git tag -l "${UPSTREAM_VER}-rezus.*" | sort -V | tail -1 | sed -nE 's/.*-rezus\.([0-9]+).*/\1/p'); [ -z "$LAST_N" ] && LAST_N=0
-    REL="${UPSTREAM_VER}-rezus.$((LAST_N + 1))"
-    git fetch --quiet origin "$FORK_DEFAULT_BRANCH"; git checkout --quiet "$FORK_DEFAULT_BRANCH" 2>/dev/null || true; git reset --hard --quiet "origin/$FORK_DEFAULT_BRANCH"
-    [ -z "$(git tag --points-at HEAD | grep -E "${UPSTREAM_VER}-rezus\.")" ] && {
-      git tag "$REL" && git push --quiet origin "$REL" 2>&1 && echo "=== Released $REL → image build → Flux deploys ==="
-    }
+host_pr_merge "$SYNC_BRANCH" >/dev/null 2>&1 || echo "WARNING: PR merge failed for $SYNC_BRANCH"
+
+# Supersession + release mint — only when the merge actually landed, i.e. the
+# release line now CONTAINS the upstream row head (ours ⊇ theirs). The
+# containment check is the truth; host_pr_merge's echo is not.
+git fetch --quiet origin "$OURS" 2>/dev/null || true
+if git merge-base --is-ancestor "upstream/$THEIRS" "origin/$OURS" 2>/dev/null; then
+  host_pr_close_conflicts "$OURS" "$SYNC_BRANCH" || true
+
+  AUTO_RELEASE=$(read_yaml '.auto.release // false')
+  if [ "$AUTO_RELEASE" = "true" ]; then
+    # Mint through the #627 shared derivation — the SAME helpers phase_tag and
+    # mapping_maybe_cut use (exact/behind checked against the upstream HOST,
+    # ordinal reset on identity change). No private describe/ordinal math.
+    git checkout --quiet "$OURS" 2>/dev/null || true
+    git reset --hard --quiet "origin/$OURS"
+    # shellcheck source=scripts/derive-release-version.sh
+    # shellcheck disable=SC1091
+    source "$SCRIPT_DIR/derive-release-version.sh"
+    UPSTREAM_PATTERN=$(read_yaml '.versioning.upstream_pattern // "auto"' 2>/dev/null || echo auto)
+    if derive_upstream_identity "HEAD" "$UPSTREAM_URL" "$UPSTREAM_PATTERN"; then
+      if [ "$IDENTITY_STATE" = "behind" ]; then
+        echo "=== NOT minting: upstream $REMOTE_LATEST content is not in $OURS (#627 exact mapping — declare upstream.release_refs or sync the release line first) ===" >&2
+      elif REL=$(mint_release_tag "HEAD" "$IDENTITY" "$FORK_URL") && [ -n "${REL:-}" ]; then
+        echo "=== Released $REL (identity $IDENTITY — ordinal resets on upstream change) → image build → Flux deploys ==="
+      fi
+    else
+      echo "=== NOT minting: no upstream release derivable (#627: never mint blind) ===" >&2
+    fi
   fi
+else
+  # The resolution did NOT reach the release line (host_pr_merge failed, or a
+  # re-entrant walk force-push raced the resolver's non-forced push). This is
+  # NOT success: exit 1 so the subscriber/graph node sees red and the next
+  # event re-escalates — green here would re-introduce the green-on-conflict
+  # pattern this contract removes (#637 review round 2).
+  echo "ERROR: release line does not contain upstream/$THEIRS after merge — resolution did NOT land (supersession + mint skipped)" >&2
+  exit 1
 fi
 
 echo ""

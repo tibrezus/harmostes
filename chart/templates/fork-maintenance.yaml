@@ -17,7 +17,7 @@ metadata:
     app.kubernetes.io/name: harmostes
     app.kubernetes.io/managed-by: {{ $.Release.Service }}
 data:
-  {{- range $script := list "sync-fork.sh" "mapping-mode.sh" "derive-release-version.sh" "backport.sh" "git-host.sh" "resolve-conflict.sh" "conflict-subscriber.py" "generate-manifest.sh" "verify-patches.sh" "divergence-track.sh" }}
+  {{- range $script := list "sync-fork.sh" "mapping-mode.sh" "conflict-event.sh" "derive-release-version.sh" "backport.sh" "git-host.sh" "resolve-conflict.sh" "conflict-subscriber.py" "generate-manifest.sh" "verify-patches.sh" "divergence-track.sh" }}
   {{- $content := $.Files.Get (printf "fork-maintenance/scripts/%s" $script) }}
   {{- if not $content }}{{- fail (printf "engine payload missing or empty: fork-maintenance/scripts/%s (render-time guard, #368-3)" $script) }}{{- end }}
   {{ $script }}: |

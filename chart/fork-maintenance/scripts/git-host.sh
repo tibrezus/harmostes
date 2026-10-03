@@ -224,6 +224,47 @@ host_pr_merge() {
   git rev-parse "origin/$FORK_DEFAULT_BRANCH" 2>/dev/null || git rev-parse HEAD
 }
 
+# ---- PR close (stale-conflict supersession, #637) ----------------------------
+# Closes open conflict/* PRs into <base> other than <keep_head>. The stable
+# per-row conflict branch means exactly ONE live conflict PR per row; once it
+# merges, stray conflict PRs (pre-#637 date-stamped ones) are superseded.
+host_pr_close_conflicts() {
+  local base="$1" keep_head="$2"
+  local platform owner_repo nums n
+  platform=$(host_platform)
+  owner_repo=$(host_owner_repo)
+
+  case "$platform" in
+    github)
+      # Pipe through local jq with --arg — gh's --jq has no --arg, and
+      # interpolating $keep_head into the program widens the filter under
+      # crafted values (destructive action: closes PRs — #637 review finding 2).
+      nums=$(gh pr list --repo "$FORK_URL" --state open --base "$base" \
+              --json number,headRefName 2>/dev/null \
+              | jq -r --arg keep "$keep_head" \
+                '.[] | select((.headRefName | startswith("conflict/")) and .headRefName != $keep) | .number' \
+              2>/dev/null || true)
+      for n in $nums; do
+        gh pr close "$n" --repo "$FORK_URL" \
+          --comment "superseded — conflict resolution for this row merged via $keep_head" >/dev/null 2>&1 || true
+      done
+      ;;
+    forgejo)
+      nums=$(curl -sf "${FORGEJO_API}/repos/${owner_repo}/pulls?state=open" \
+              -H "Authorization: token ${FORK_TOKEN}" 2>/dev/null \
+              | jq -r --arg b "$base" --arg keep "$keep_head" \
+                '.[] | select(.base.ref==$b and .head.ref != $keep and (.head.ref | startswith("conflict/"))) | .number' \
+              2>/dev/null || true)
+      for n in $nums; do
+        curl -sf -X PATCH "${FORGEJO_API}/repos/${owner_repo}/issues/${n}" \
+          -H "Authorization: token ${FORK_TOKEN}" -H "Content-Type: application/json" \
+          -d '{"state":"closed"}' >/dev/null 2>&1 || true
+      done
+      ;;
+    local) ;;   # nothing to supersede on a file:// repo
+  esac
+}
+
 # ---- PR CI watch (subtree auto-merge guard — never merge red) ----------------
 
 host_pr_watch() {

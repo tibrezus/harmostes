@@ -118,6 +118,48 @@ assert_eq "${T}${O}${B}" "xxx" "garbage payload → empty context, no crash"
 echo ""
 echo "unit: passed $PASS  failed $FAIL"
 
+# ── mint gate def-key chain (#639) — REAL yq, no shim ───────────────────────
+echo "# mint gate: auto-release def-key fallback (real yq)"
+# $TD lives under $WORK — ONE EXIT trap (a second trap REPLACES the file's
+# line-27 cleanup and litters /tmp with the e2e fixture, #639 finding 2).
+TD="$WORK/mint"; mkdir -p "$TD"
+printf 'release:\n  auto_cut: true\n' > "$TD/mapping.yaml"
+printf 'auto:\n  release: true\n' > "$TD/merge.yaml"
+printf 'release:\n  auto_cut: label-pr\n' > "$TD/labelpr.yaml"
+printf 'release:\n  auto_cut: false\n' > "$TD/explicitoff.yaml"
+printf 'foo: bar\n' > "$TD/none.yaml"
+# Tri-state chain: // + "off" sentinel (runs on every yq v4 — the if/elif
+# form needs a newer lexer than the CI runner's preinstalled yq ships).
+# label-pr passes through untouched (#639 finding 1); an explicit
+# auto_cut:false lands on "off" — exactly its meaning.
+CHAIN='(.auto.release // .release.auto_cut // "off")'
+# Pin the SCRIPT, not just the chain: extract the expression resolve-conflict.sh
+# actually uses (the yq shim elsewhere is expression-keyed and would mask a
+# regression — #639 probe 2). grep -F '.auto' skips the upstream_pattern expr.
+SCRIPT_EXPR=$(sed -n "s/.*read_yaml '\([^']*\)'.*/\1/p" "$SCRIPT_DIR/resolve-conflict.sh" \
+  | grep -F '.auto' | head -1)
+[ "$SCRIPT_EXPR" = "$CHAIN" ] \
+  && ok "resolve-conflict.sh reads the tri-state chain (script pinned)" \
+  || fail "resolve-conflict.sh mint gate drifted: '$SCRIPT_EXPR'"
+yq -r "$CHAIN" "$TD/mapping.yaml" | grep -qx true \
+  && ok "mapping def (release.auto_cut) gates the mint on" \
+  || fail "mapping def release.auto_cut not honored — resolved conflicts never mint (#639)"
+yq -r "$CHAIN" "$TD/merge.yaml" | grep -qx true \
+  && ok "merge def (auto.release) still gates the mint on" \
+  || fail "merge-mode key regressed"
+yq -r "$CHAIN" "$TD/labelpr.yaml" | grep -qx 'label-pr' \
+  && ok "tri-state: label-pr passes through (never booleanized to silence)" \
+  || fail "label-pr def swallowed — silent deferral (#639 finding 1)"
+grep -qF 'auto_cut=label-pr — tag deferred' "$SCRIPT_DIR/resolve-conflict.sh" \
+  && ok "label-pr resolves loudly (explicit deferral line, never silent)" \
+  || fail "label-pr branch silent again — silent deferral regression"
+yq -r "$CHAIN" "$TD/explicitoff.yaml" | grep -qx off \
+  && ok "explicit auto_cut:false resolves to off (≡ false)" \
+  || fail "explicit false did not resolve to off"
+yq -r "$CHAIN" "$TD/none.yaml" | grep -qx off \
+  && ok "defs with no release policy keep the mint off" \
+  || fail "mint default must stay off"
+
 # ══════════════════════════════════════════════════════════════════════════════
 # END-TO-END: resolve-conflict.sh against a two-branch mapping fixture (#637
 # review finding 1: the row ref must be fetched; finding 3: payload row context
@@ -162,8 +204,11 @@ fork:
 mappings:
   - theirs: v16.0/forgejo
     ours: rezus/forgejo-16
-auto:
-  release: true
+# MAPPING-schema release policy (#639): forgejo-class defs carry
+# release.auto_cut, NOT the merge-mode auto.release — the resolver mint
+# gate must honor this shape or a resolved conflict never mints.
+release:
+  auto_cut: true
 YAML
 sed -i "s|PLACEHOLDER_UP|file://$UP|; s|PLACEHOLDER_FORK|file://$FORKG|" "$E2E/maint/forks/forgejo-e2e.yaml"
 ln -sfn "$SCRIPT_DIR" "$E2E/maint/scripts"          # real engine scripts
@@ -182,7 +227,7 @@ case "\$EXPR" in
   ".fork.default_branch") echo "rezus/forgejo-16" ;;
   ".upstream.url") echo "file://$UP" ;;
   ".upstream.branch") echo "master" ;;
-  ".auto.release // false") echo "true" ;;
+  '(.auto.release // .release.auto_cut // "off")') echo "true" ;;
   '.versioning.upstream_pattern // "auto"') echo "auto" ;;
   ".mappings[] | .theirs + \" \" + .ours") echo "v16.0/forgejo rezus/forgejo-16" ;;
   ".patches | length") echo 0 ;;
@@ -257,6 +302,9 @@ grep -q "does not match the def.*falling back" "$E2E/run2.out" \
 grep -qE "Merging upstream/master into" "$E2E/run2.out" \
   && ok "fell back to the def's top-level branch after discarding" \
   || fail "did not fall back to def values"
+grep -q "NOT minting: upstream" "$E2E/run2.out" \
+  && ok "mint gate evaluates under the mapping-schema def (behind-refusal decision line, #639)" \
+  || fail "mint gate never evaluated — no decision line in resolver output"
 
 # ── host_pr_close_conflicts (github): --arg-safe jq (finding 2) ──────────────
 echo "# host_pr_close_conflicts (github, injection probe)"

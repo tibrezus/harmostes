@@ -44,7 +44,7 @@ of the old ours + green proof), edit, delete. The registry defs in
 - **forgejo**: self-hosted — `.github/workflows/sync.yml` in the fork
   repo walks the table daily; dev-build + Flux ImagePolicy roll prod.
   Engine politely declines mapping defs (`sync-fork.sh forgejo` → exit 0).
-- **dapr / signoz / llama-cpp**: plugin transport (phase mode below).
+- **dapr / signoz**: plugin transport (phase mode below).
 
 ## Version identity (upstream-identity versioning)
 

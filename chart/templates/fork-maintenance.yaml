@@ -49,7 +49,7 @@ metadata:
     app.kubernetes.io/name: harmostes
     app.kubernetes.io/managed-by: {{ $.Release.Service }}
 data:
-  {{- range $hook := list "dapr.sh" "llama-cpp.sh" "signoz.sh" }}
+  {{- range $hook := list "dapr.sh" "signoz.sh" }}
   {{- $content := $.Files.Get (printf "fork-maintenance/hooks/%s" $hook) }}
   {{- if not $content }}{{- fail (printf "engine payload missing or empty: fork-maintenance/hooks/%s (render-time guard, #368-3)" $hook) }}{{- end }}
   {{ $hook }}: |

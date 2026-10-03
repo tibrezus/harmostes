@@ -587,7 +587,7 @@ phase_tag() {
   # upstream release tag whose CONTENT is in the tree, cross-checked against
   # the upstream HOST (a shallow clone's tag window never decides — the
   # #601/#603 lesson class). Pattern: versioning.upstream_pattern (def-
-  # declared, e.g. "b[0-9]*" for llama.cpp revision tags) or "auto" (pure
+  # declared, e.g. "b[0-9]*" for a revision-tag upstream) or "auto" (pure
   # vX.Y.Z). upstream.release_refs (def-declared, e.g. dapr's release-1.18):
   # release lines upstream cuts OFF the synced branch — merged here so their
   # content and tags become claimable; without this the identity would stick

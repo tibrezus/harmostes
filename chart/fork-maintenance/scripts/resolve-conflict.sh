@@ -231,27 +231,42 @@ git fetch --quiet origin "$OURS" 2>/dev/null || true
 if git merge-base --is-ancestor "upstream/$THEIRS" "origin/$OURS" 2>/dev/null; then
   host_pr_close_conflicts "$OURS" "$SYNC_BRANCH" || true
 
-  AUTO_RELEASE=$(read_yaml '.auto.release // false')
-  if [ "$AUTO_RELEASE" = "true" ]; then
-    # Mint through the #627 shared derivation — the SAME helpers phase_tag and
-    # mapping_maybe_cut use (exact/behind checked against the upstream HOST,
-    # ordinal reset on identity change). No private describe/ordinal math.
-    git checkout --quiet "$OURS" 2>/dev/null || true
-    git reset --hard --quiet "origin/$OURS"
-    # shellcheck source=scripts/derive-release-version.sh
-    # shellcheck disable=SC1091
-    source "$SCRIPT_DIR/derive-release-version.sh"
-    UPSTREAM_PATTERN=$(read_yaml '.versioning.upstream_pattern // "auto"' 2>/dev/null || echo auto)
-    if derive_upstream_identity "HEAD" "$UPSTREAM_URL" "$UPSTREAM_PATTERN"; then
-      if [ "$IDENTITY_STATE" = "behind" ]; then
-        echo "=== NOT minting: upstream $REMOTE_LATEST content is not in $OURS (#627 exact mapping — declare upstream.release_refs or sync the release line first) ===" >&2
-      elif REL=$(mint_release_tag "HEAD" "$IDENTITY" "$FORK_URL") && [ -n "${REL:-}" ]; then
-        echo "=== Released $REL (identity $IDENTITY — ordinal resets on upstream change) → image build → Flux deploys ==="
+  # #627 shared derivation — the SAME helpers phase_tag and
+  # mapping_maybe_cut use (exact/behind checked against the upstream HOST,
+  # ordinal reset on identity change). No private describe/ordinal math.
+  # auto.release is the merge-mode key, release.auto_cut the mapping key —
+  # tri-state there (true / "label-pr" / false|"none", #639). Plain // chain +
+  # "off" sentinel: works on every yq v4 (the if/elif form needs a newer lexer
+  # than the CI runner ships); explicit auto_cut:false lands on "off", which is
+  # exactly its meaning. The case below never booleanizes "label-pr" away.
+  git checkout --quiet "$OURS" 2>/dev/null || true
+  git reset --hard --quiet "origin/$OURS"
+  # shellcheck source=scripts/derive-release-version.sh
+  # shellcheck disable=SC1091
+  source "$SCRIPT_DIR/derive-release-version.sh"
+  AUTO_RELEASE=$(read_yaml '(.auto.release // .release.auto_cut // "off")')
+  UPSTREAM_PATTERN=$(read_yaml '.versioning.upstream_pattern // "auto"' 2>/dev/null || echo auto)
+  case "$AUTO_RELEASE" in
+    true)
+      if derive_upstream_identity "HEAD" "$UPSTREAM_URL" "$UPSTREAM_PATTERN"; then
+        if [ "$IDENTITY_STATE" = "behind" ]; then
+          echo "=== NOT minting: upstream $REMOTE_LATEST content is not in $OURS (#627 exact mapping — declare upstream.release_refs or sync the release line first) ===" >&2
+        elif REL=$(mint_release_tag "HEAD" "$IDENTITY" "$FORK_URL") && [ -n "${REL:-}" ]; then
+          echo "=== Released $REL (identity $IDENTITY — ordinal resets on upstream change) → image build → Flux deploys ==="
+        fi
+      else
+        echo "=== NOT minting: no upstream release derivable (#627: never mint blind) ===" >&2
       fi
-    else
-      echo "=== NOT minting: no upstream release derivable (#627: never mint blind) ===" >&2
-    fi
-  fi
+      ;;
+    label-pr)
+      # The cut-request PR flow belongs to the mapping walk (mapping_maybe_cut);
+      # say so instead of silently deferring a declared release preference.
+      echo "=== No release (auto_cut=label-pr — tag deferred to the next green walk, which opens the cut-request PR) ===" >&2
+      ;;
+    *)
+      echo "=== No release (auto_release=$AUTO_RELEASE) ===" >&2
+      ;;
+  esac
 else
   # The resolution did NOT reach the release line (host_pr_merge failed, or a
   # re-entrant walk force-push raced the resolver's non-forced push). This is

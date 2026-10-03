@@ -215,9 +215,15 @@ export PATH="$E2E/bin:$PATH"
 export MAINT_DIR="$E2E/maint" HOME="$E2E/home" GIT_CONFIG_GLOBAL="$E2E/home/.gitconfig" ZAI_API_KEY=dummy
 
 PAYLOAD='{"fork":"forgejo-e2e","row":{"theirs":"v16.0/forgejo","ours":"rezus/forgejo-16"},"conflict_branch":"conflict/v16.0-forgejo"}'
+# platform=local: host_pr_merge merges INSIDE the resolver clone and never
+# pushes, so the REMOTE release line does not advance — the containment guard
+# correctly refuses to claim success and the resolver exits 1 (round-2 review:
+# a resolution that did not land must not report green).
 EVENT_PAYLOAD="$PAYLOAD" bash "$E2E/maint/scripts/resolve-conflict.sh" forgejo-e2e > "$E2E/run.out" 2>&1 \
-  && ok "resolver exits 0 on a mapping-row conflict" \
-  || { fail "resolver e2e failed"; sed -n '1,40p' "$E2E/run.out" >&2; }
+  && { fail "resolver must exit 1 when the resolution did not land (green-on-failure)"; } \
+  || { grep -q "resolution did NOT land" "$E2E/run.out" \
+        && ok "non-landing resolution: exit 1 + explicit ERROR (no green-on-failure)" \
+        || { fail "exit 1 for the wrong reason"; sed -n '1,40p' "$E2E/run.out" >&2; }; }
 
 git -C "$FORKG" rev-parse --verify -q refs/heads/conflict/v16.0-forgejo >/dev/null \
   && ok "resolution pushed to the STABLE row conflict branch" \
@@ -236,8 +242,8 @@ CONTENT=$(git -C "$FORKG" show refs/heads/conflict/v16.0-forgejo:f.txt)
   || fail "unexpected resolved content: $CONTENT"
 grep -q "shim-agent" "$E2E/agent.log" && ok "harmostes agent phase ran (shim)" || fail "agent phase never ran"
 grep -q "GATES GREEN" "$E2E/agent.log" && ok "REAL gate-resolved.sh green on the resolution" || fail "gate not green"
-grep -q "release line does not contain upstream/v16.0/forgejo after merge" "$E2E/run.out" \
-  && ok "containment guard: supersession+mint skipped when the release line lacks the row (local-merge platform)" \
+grep -q "supersession + mint skipped" "$E2E/run.out" \
+  && ok "containment guard: supersession+mint skipped when the release line lacks the row" \
   || fail "containment guard did not fire"
 
 # Negative: a FORGED payload row (not in the def) must be discarded → def

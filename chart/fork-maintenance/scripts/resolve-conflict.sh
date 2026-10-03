@@ -253,7 +253,13 @@ if git merge-base --is-ancestor "upstream/$THEIRS" "origin/$OURS" 2>/dev/null; t
     fi
   fi
 else
-  echo "WARNING: release line does not contain upstream/$THEIRS after merge — skipping supersession + mint" >&2
+  # The resolution did NOT reach the release line (host_pr_merge failed, or a
+  # re-entrant walk force-push raced the resolver's non-forced push). This is
+  # NOT success: exit 1 so the subscriber/graph node sees red and the next
+  # event re-escalates — green here would re-introduce the green-on-conflict
+  # pattern this contract removes (#637 review round 2).
+  echo "ERROR: release line does not contain upstream/$THEIRS after merge — resolution did NOT land (supersession + mint skipped)" >&2
+  exit 1
 fi
 
 echo ""

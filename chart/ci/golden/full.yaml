@@ -2709,7 +2709,13 @@ data:
         fi
       fi
     else
-      echo "WARNING: release line does not contain upstream/$THEIRS after merge — skipping supersession + mint" >&2
+      # The resolution did NOT reach the release line (host_pr_merge failed, or a
+      # re-entrant walk force-push raced the resolver's non-forced push). This is
+      # NOT success: exit 1 so the subscriber/graph node sees red and the next
+      # event re-escalates — green here would re-introduce the green-on-conflict
+      # pattern this contract removes (#637 review round 2).
+      echo "ERROR: release line does not contain upstream/$THEIRS after merge — resolution did NOT land (supersession + mint skipped)" >&2
+      exit 1
     fi
     
     echo ""
@@ -5145,7 +5151,7 @@ spec:
         # (stale-pod-wins; #368-1). Checksums cover everything the pod mounts:
         # the fork-maintenance.yaml template output (scripts/checks/defs/
         # hooks/skill CMs) and the litellm extension payload.
-        checksum/fork-maintenance: eeb5ca4c42fbc2b32f9e0a0d7b981e040eda964c421c9af9ad83f6004d792797
+        checksum/fork-maintenance: 44eb3b658a299d38dc8706caac2d4f00bbb069755352a6761a3192f47e965107
         checksum/litellm-extension: 883d76f7ef3dcce17099fbf3c7b7aea0e7d7d16003ca83cfb465a7422078b4e1
     spec:
       imagePullSecrets:

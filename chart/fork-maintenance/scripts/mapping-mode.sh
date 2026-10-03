@@ -125,23 +125,27 @@ mapping_walk() {
     else
       echo "  conflicts — concluding with markers for resolution"
       conflicted=1
+      local row_conflict_files
+      row_conflict_files=$(git diff --name-only --diff-filter=U 2>/dev/null | grep -v '^$' || true)
       git add -A 2>/dev/null || true
       git commit --no-edit --quiet 2>/dev/null || true
-      local conflict_branch="conflict/$(echo "$theirs" | tr '/' '-')-$sync_date"
+      local conflict_branch
+      conflict_branch="$(conflict_branch_for "$theirs")"   # stable per row — one PR, force-updated
       git push --force-with-lease origin "HEAD:$conflict_branch"
       local pr_url
       pr_url=$(host_pr_create "$ours" "$conflict_branch" \
-        "sync: $theirs → $ours needs conflict resolution ($sync_date)" \
-        "Upstream moved into files our delta touches. Resolve the 3-way regions on this branch (the rezus intent lives in our side of each marker); merging this PR restores \`ours ⊇ theirs\`." \
+        "sync: $theirs → $ours needs conflict resolution" \
+        "Upstream moved into files our delta touches. Resolve the 3-way regions on this branch (the rezus intent lives in our side of each marker); merging this PR restores \`ours ⊇ theirs\`. The conflict-resolver resolves this automatically." \
         needs-conflict-resolution) || echo "  (PR may already exist)"
       echo "  conflict PR: ${pr_url:-<none>} (label: needs-conflict-resolution)"
+      emit_conflict_event "$row_conflict_files" "$theirs" "$ours" "$conflict_branch"
     fi
   done <<< "$rows"
 
   if [ "$conflicted" = "1" ]; then
-    echo "::notice::one or more rows await conflict resolution (PRs above)"
-    [ "$PHASED" = "1" ] && result_json false "fork-sync-$FORK_NAME" merge "conflicts — PRs open for resolution"
-    return 0
+    echo "::notice::one or more rows await conflict resolution (PRs above) — resolver escalated"
+    [ "$PHASED" = "1" ] && result_json false "fork-sync-$FORK_NAME" merge "conflicts — resolver escalated"
+    return 2   # same escalation code as legacy merge mode's conflict path (#637)
   fi
   if [ "$changed" = "1" ]; then
     [ "$PHASED" = "1" ] && result_json true "fork-sync-$FORK_NAME" merge "row(s) merged+validated+pushed"
@@ -172,7 +176,12 @@ mapping_dispatch() {
       source "$SCRIPT_DIR/git-host.sh"
       host_setup
       git remote add upstream "$UPSTREAM_URL" 2>/dev/null || true
-      mapping_walk
+      local walk_rc=0
+      mapping_walk || walk_rc=$?
+      # Propagate the walk's verdict: 2 = conflict (resolver escalated), 1 =
+      # validation failure — both must reach the plugin (set -e would have
+      # killed the bare call; an explicit exit keeps that contract visible).
+      [ "$walk_rc" -eq 0 ] || exit "$walk_rc"
       ;;
     gates|validate)
       echo "=== [$PHASE] mapping mode: validation is repo-local and runs inside the row walk — structural no-op"

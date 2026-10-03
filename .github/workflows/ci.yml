@@ -423,10 +423,11 @@ jobs:
               if not cond:
                   fail.append(msg)
 
-          # Engine payload: every script key non-empty. (10 since subtree-mode retired:
+          # Engine payload: every script key non-empty. (11 since conflict-event.sh —
+          # the unified conflict-escalation lib, #637; 10 since subtree-mode retired:
           # derive-release-version.sh — the shared identity-mapping helper.)
           scripts = cms.get("fork-maintenance-scripts", {})
-          check(len(scripts) == 10, f"fork-maintenance-scripts: want 10 keys, got {len(scripts)}")
+          check(len(scripts) == 11, f"fork-maintenance-scripts: want 11 keys, got {len(scripts)}")
           check(all(scripts.values()), "fork-maintenance-scripts has an empty key (silent .Files.Get?)")
 
           # litellm extension: relative imports must resolve to rendered keys

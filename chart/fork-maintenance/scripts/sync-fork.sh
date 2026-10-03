@@ -88,50 +88,18 @@ FORK_URL=$(read_yaml '.fork.url')
 FORK_DEFAULT_BRANCH=$(read_yaml '.fork.default_branch')
 FORK_MIRROR_BRANCH=$(read_yaml '.fork.mirror_branch' 2>/dev/null || echo "")
 
-# Deliver a fork.conflict.needs-resolution event (structured needs-fix payload) to
-# the conflict-resolver. Delivered by direct HTTP POST to the resolver's /events
-# endpoint (conflict-subscriber.py), with retries. We previously routed this
-# through Dapr pub/sub (pubsub.redis), but Redis pub/sub is fire-and-forget —
-# events published while the resolver was restarting were silently lost, AND
-# the daprd sidecar in the sync Job never terminated so the Job hung and re-emission
-# (every 30m) never happened. Direct HTTP fixes both. The payload is ALWAYS
-# written to manifests/<fork>-needs-fix.json first (audit / manual-runs fallback).
-# See skill/references/conflict-resolution.md "Agentic integration shape".
-emit_conflict_event() {
-  local cfiles="${1:-}" payload patches_json pcount i
-  patches_json="[]"
-  pcount=$(read_yaml '.patches | length' 2>/dev/null || true)
-  for i in $(seq 0 $((pcount - 1))); do
-    local pf ps pd st="LOST"
-    pf=$(read_yaml ".patches[$i].file"); ps=$(read_yaml ".patches[$i].signature"); pd=$(read_yaml ".patches[$i].description")
-    if [ -f "$pf" ]; then { [ "$(grep -cF "$ps" "$pf" 2>/dev/null || true)" -gt 0 ] && st="OK"; } || st="LOST"; else st="MISSING"; fi
-    patches_json=$(echo "$patches_json" | jq --arg f "$pf" --arg s "$ps" --arg d "$pd" --arg st "$st" '. += [{file:$f,signature:$s,description:$d,status:$st}]')
-  done
-  payload=$(jq -n \
-    --arg fork "$FORK_NAME" \
-    --arg upstream_url "$UPSTREAM_URL" --arg upstream_branch "$UPSTREAM_BRANCH" \
-    --arg upstream_range "${MERGE_BASE:0:12}..${UPSTREAM_HEAD:0:12}" \
-    --argjson patches "$patches_json" \
-    --arg conflict_files "$cfiles" \
-    '{fork:$fork, upstream_url:$upstream_url, upstream_branch:$upstream_branch,
-      upstream_range:$upstream_range, patches_at_risk:$patches,
-      conflict_files: ($conflict_files | split("\n") | map(select(length>0)))}')
-  mkdir -p "$MAINT_DIR/manifests" 2>/dev/null || true
-  echo "$payload" > "$MAINT_DIR/manifests/${FORK_NAME}-needs-fix.json"
-  # Direct HTTP delivery to the resolver (replaces Dapr pub/sub — see header).
-  RESOLVER_URL="${RESOLVER_URL:-http://fork-conflict-resolver.harmostes.svc.cluster.local/events}"
-  ce=$(echo "$payload" | jq -c '{source:"fork-sync", type:"fork.conflict.needs-resolution", data:.}')
-  delivered=false
-  for attempt in 1 2 3 4 5; do
-    if curl -sf -m 5 -X POST "$RESOLVER_URL" -H "Content-Type: application/json" -d "$ce" >/dev/null 2>&1; then
-      echo "  delivered fork.conflict.needs-resolution → resolver"
-      delivered=true; break
-    fi
-    echo "  resolver unreachable (attempt $attempt); retrying in ${attempt}s"
-    sleep "$attempt"
-  done
-  $delivered || echo "  WARNING: resolver unreachable after retries — needs-fix payload at manifests/${FORK_NAME}-needs-fix.json"
-}
+# The conflict-escalation contract lives in scripts/conflict-event.sh (#637):
+# emit_conflict_event (structured needs-fix payload → manifest + direct HTTP
+# POST to the resolver's /events endpoint, with retries — routed there because
+# Dapr pub/sub is fire-and-forget: events published while the resolver was
+# restarting were silently lost, AND the daprd sidecar in the sync Job never
+# terminated so the Job hung and re-emission (every 30m) never happened).
+# Row context (theirs/ours/conflict branch) rides the payload so the resolver
+# is def-shape-agnostic. See skill/references/conflict-resolution.md
+# "Agentic integration shape".
+# shellcheck source=scripts/conflict-event.sh
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/conflict-event.sh"
 
 # ── Phase-mode plumbing ──────────────────────────────────────────────────────
 # The clone lives under HARMOSTES_WORKDIR (the graph executor shares one workdir

@@ -62,6 +62,10 @@ def spawn_resolution(fork: str, payload: dict) -> None:
                 stdin=subprocess.DEVNULL,
                 start_new_session=True,
                 cwd="/workspace",
+                # Row context rides to the resolver (#637): mapping-mode events
+                # carry row {theirs, ours} + the stable conflict branch; legacy
+                # single-row events carry empty strings (def fallback).
+                env=dict(os.environ, EVENT_PAYLOAD=json.dumps(payload)),
             )
         with _inflight_lock:
             _inflight.add(fork)   # mark in-flight ONLY after a successful spawn

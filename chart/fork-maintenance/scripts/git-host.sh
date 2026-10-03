@@ -236,9 +236,13 @@ host_pr_close_conflicts() {
 
   case "$platform" in
     github)
+      # Pipe through local jq with --arg — gh's --jq has no --arg, and
+      # interpolating $keep_head into the program widens the filter under
+      # crafted values (destructive action: closes PRs — #637 review finding 2).
       nums=$(gh pr list --repo "$FORK_URL" --state open --base "$base" \
-              --json number,headRefName \
-              -q ".[] | select((.headRefName | startswith(\"conflict/\")) and .headRefName != \"$keep_head\") | .number" \
+              --json number,headRefName 2>/dev/null \
+              | jq -r --arg keep "$keep_head" \
+                '.[] | select((.headRefName | startswith("conflict/")) and .headRefName != $keep) | .number' \
               2>/dev/null || true)
       for n in $nums; do
         gh pr close "$n" --repo "$FORK_URL" \

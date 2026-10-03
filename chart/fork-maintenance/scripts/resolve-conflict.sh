@@ -67,6 +67,27 @@ EVENT_THEIRS=""; EVENT_OURS=""; EVENT_CONFLICT_BRANCH=""
 if [ -n "${EVENT_PAYLOAD:-}" ]; then
   IFS='|' read -r EVENT_THEIRS EVENT_OURS EVENT_CONFLICT_BRANCH <<<"$(event_row_context "$EVENT_PAYLOAD")"
 fi
+# The payload is EXTERNAL INPUT (the resolver's /events endpoint forwards
+# whatever was POSTed) — the row context is validated against the def before
+# it becomes a git argument: (theirs, ours) must be a declared row (exact
+# string match — payload values never interpolate into any query) and the
+# branch must be exactly the row's conflict branch. Mismatch → warn + def
+# fallback. (#637 review finding 3.)
+if [ -n "$EVENT_THEIRS" ] || [ -n "$EVENT_OURS" ] || [ -n "$EVENT_CONFLICT_BRANCH" ]; then
+  ROW_DECLARED=false
+  while read -r rt ro; do
+    { [ -n "$rt" ] && [ "$rt" = "$EVENT_THEIRS" ] && [ "$ro" = "$EVENT_OURS" ]; } && ROW_DECLARED=true
+  done <<< "$(read_yaml '.mappings[] | .theirs + " " + .ours' 2>/dev/null || true)"
+  # legacy payload shape: the def's own top-level pair is a valid "row"
+  { [ "$EVENT_THEIRS" = "$UPSTREAM_BRANCH" ] && [ "$EVENT_OURS" = "$FORK_DEFAULT_BRANCH" ]; } && ROW_DECLARED=true
+  BRANCH_DECLARED=false
+  [ -z "$EVENT_CONFLICT_BRANCH" ] && BRANCH_DECLARED=true
+  [ "$EVENT_CONFLICT_BRANCH" = "$(conflict_branch_for "$EVENT_THEIRS")" ] && BRANCH_DECLARED=true
+  if [ "$ROW_DECLARED" != true ] || [ "$BRANCH_DECLARED" != true ]; then
+    echo "WARNING: event row context does not match the def (theirs='$EVENT_THEIRS' ours='$EVENT_OURS' branch='$EVENT_CONFLICT_BRANCH') — discarding, falling back to the def" >&2
+    EVENT_THEIRS=""; EVENT_OURS=""; EVENT_CONFLICT_BRANCH=""
+  fi
+fi
 THEIRS="${EVENT_THEIRS:-$UPSTREAM_BRANCH}"
 OURS="${EVENT_OURS:-$FORK_DEFAULT_BRANCH}"
 
@@ -84,7 +105,12 @@ echo "=== Cloning fork + upstream ==="
 git clone --depth 100 "$FORK_URL" "$WORKDIR"
 cd "$WORKDIR"
 git remote add upstream "$UPSTREAM_URL"
-git fetch --depth 100 upstream "$UPSTREAM_BRANCH" --tags
+# Fetch THE ROW's branch — for a mapping row THEIRS is NOT the def's
+# top-level upstream.branch, and an unfetched row ref made the redo-merge die
+# as "not something we can merge"; the agent then ran on a markerless tree
+# and the gate passed vacuously (#637 review finding 1). Legacy: THEIRS ==
+# UPSTREAM_BRANCH — same line.
+git fetch --depth 100 upstream "$THEIRS" --tags
 
 MERGE_BASE=$(git merge-base "HEAD" "upstream/$THEIRS" 2>/dev/null || echo "")
 SYNC_DATE=$(date +%Y-%m-%d)

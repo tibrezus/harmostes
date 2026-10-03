@@ -116,5 +116,177 @@ IFS='|' read -r T O B <<<"$(event_row_context 'not json at all')" ; T=${T:-x}; O
 assert_eq "${T}${O}${B}" "xxx" "garbage payload → empty context, no crash"
 
 echo ""
+echo "unit: passed $PASS  failed $FAIL"
+
+# ══════════════════════════════════════════════════════════════════════════════
+# END-TO-END: resolve-conflict.sh against a two-branch mapping fixture (#637
+# review finding 1: the row ref must be fetched; finding 3: payload row context
+# validated against the def). Hermetic: file:// remotes, yq/gh/harmostes shims,
+# platform=local (no auth, real git merges).
+# ══════════════════════════════════════════════════════════════════════════════
+echo "# resolve-conflict e2e (mapping row, platform=local)"
+E2E="$WORK/e2e"; mkdir -p "$E2E/maint/forks" "$E2E/bin" "$E2E/home"
+UP="$E2E/upstream.git"; FORKG="$E2E/fork.git"
+git init -q --bare "$UP"; git init -q --bare "$FORKG"
+
+# upstream: row branch v16.0/forgejo carries v16.0.5 (tagged); master is a decoy
+# ancestor (the def's top-level branch — what the OLD code fetched by mistake).
+UWT="$E2E/u"; git init -q "$UWT"; cd "$UWT"
+git remote add origin "$UP"
+echo base > f.txt; git add f.txt; git commit -qm base
+git branch -m master
+git push -q origin master
+git checkout -qb v16.0/forgejo
+echo upstream-v2 > f.txt; git commit -qam "upstream moves f.txt"
+git tag v16.0.5
+git push -q origin v16.0/forgejo refs/tags/v16.0.5
+
+# fork: rezus/forgejo-16 = base + our delta on the SAME line → real conflict.
+FWT="$E2E/f"; git init -q "$FWT"; cd "$FWT"
+git remote add origin "$FORKG"
+echo base > f.txt; git add f.txt; git commit -qm base; git branch -m rezus/forgejo-16
+echo our-delta > f.txt; git commit -qam "our delta"
+git push -q origin rezus/forgejo-16
+git -C "$FORKG" symbolic-ref HEAD refs/heads/rezus/forgejo-16
+
+# fork def: top-level branch = master (decoy) — the ROW overrides it.
+cat > "$E2E/maint/forks/forgejo-e2e.yaml" <<'YAML'
+name: forgejo-e2e
+upstream:
+  url: PLACEHOLDER_UP
+  branch: master
+fork:
+  url: PLACEHOLDER_FORK
+  default_branch: rezus/forgejo-16
+  platform: local
+mappings:
+  - theirs: v16.0/forgejo
+    ours: rezus/forgejo-16
+auto:
+  release: true
+YAML
+sed -i "s|PLACEHOLDER_UP|file://$UP|; s|PLACEHOLDER_FORK|file://$FORKG|" "$E2E/maint/forks/forgejo-e2e.yaml"
+ln -sfn "$SCRIPT_DIR" "$E2E/maint/scripts"          # real engine scripts
+ln -sfn "$SCRIPT_DIR/../checks" "$E2E/maint/checks" # real gates
+
+# yq shim: expression-keyed answers for the e2e def (skips CLI flags first —
+# callers invoke `yq -r "expr" file`).
+cat > "$E2E/bin/yq" <<SHIM
+#!/usr/bin/env bash
+EXPR=""
+for a in "\$@"; do case "\$a" in -*) ;; *) [ -z "\$EXPR" ] && EXPR="\$a" ;; esac; done
+case "\$EXPR" in
+  ".fork.url // .subtree.url") echo "file://$FORKG" ;;
+  ".fork.url") echo "file://$FORKG" ;;
+  '.fork.platform // .subtree.platform // "github"') echo "\${E2E_PLATFORM:-local}" ;;
+  ".fork.default_branch") echo "rezus/forgejo-16" ;;
+  ".upstream.url") echo "file://$UP" ;;
+  ".upstream.branch") echo "master" ;;
+  ".auto.release // false") echo "true" ;;
+  '.versioning.upstream_pattern // "auto"') echo "auto" ;;
+  ".mappings[] | .theirs + \" \" + .ours") echo "v16.0/forgejo rezus/forgejo-16" ;;
+  ".patches | length") echo 0 ;;
+  *) echo "" ;;
+esac
+SHIM
+# harmostes shim: plays the agent (resolve deterministically, push) then runs
+# the REAL gate command.
+cat > "$E2E/bin/harmostes" <<SHIM
+#!/usr/bin/env bash
+wd=""; gate=""; prev=""
+for a in "\$@"; do
+  case "\$prev" in
+    --workdir) wd="\$a" ;;
+    --gate) gate="\$a" ;;
+  esac
+  prev="\$a"
+done
+cd "\$wd"
+printf 'resolved-upstream+delta\n' > f.txt
+git add -A && git commit -qm "RZ/resolve: fixture resolution" && git push -q origin HEAD
+echo "[shim-agent] resolved + pushed \$(git rev-parse --abbrev-ref HEAD)" >> "$E2E/agent.log"
+eval "\$gate" >> "$E2E/agent.log" 2>&1
+SHIM
+chmod +x "$E2E/bin/yq" "$E2E/bin/harmostes"
+# The resolver gates on credentials + the pi binary at startup even though the
+# shimmed harmostes never invokes either — satisfy the checks.
+printf '#!/usr/bin/env bash\nexit 0\n' > "$E2E/bin/pi" && chmod +x "$E2E/bin/pi"
+export PATH="$E2E/bin:$PATH"
+export MAINT_DIR="$E2E/maint" HOME="$E2E/home" GIT_CONFIG_GLOBAL="$E2E/home/.gitconfig" ZAI_API_KEY=dummy
+
+PAYLOAD='{"fork":"forgejo-e2e","row":{"theirs":"v16.0/forgejo","ours":"rezus/forgejo-16"},"conflict_branch":"conflict/v16.0-forgejo"}'
+EVENT_PAYLOAD="$PAYLOAD" bash "$E2E/maint/scripts/resolve-conflict.sh" forgejo-e2e > "$E2E/run.out" 2>&1 \
+  && ok "resolver exits 0 on a mapping-row conflict" \
+  || { fail "resolver e2e failed"; sed -n '1,40p' "$E2E/run.out" >&2; }
+
+git -C "$FORKG" rev-parse --verify -q refs/heads/conflict/v16.0-forgejo >/dev/null \
+  && ok "resolution pushed to the STABLE row conflict branch" \
+  || fail "conflict/v16.0-forgejo missing on the fork remote"
+ROW_TIP=$(git -C "$UWT" rev-parse v16.0/forgejo)
+if git -C "$FORKG" merge-base --is-ancestor "$ROW_TIP" refs/heads/conflict/v16.0-forgejo; then
+  ok "redo-merge used THE ROW ref — upstream row tip contained (fetch-theirs fix)"
+else
+  fail "upstream row tip NOT contained in the resolution branch (fetch-theirs fix broken)"
+fi
+PC=$(git -C "$FORKG" rev-list --parents -n1 refs/heads/conflict/v16.0-forgejo | wc -w)
+[ "$PC" = "3" ] && ok "resolution is a true two-parent merge commit" || fail "tip is not a merge commit (parents=$PC)"
+CONTENT=$(git -C "$FORKG" show refs/heads/conflict/v16.0-forgejo:f.txt)
+[ "$CONTENT" = "resolved-upstream+delta" ] \
+  && ok "resolved content on the branch (real gate ran green)" \
+  || fail "unexpected resolved content: $CONTENT"
+grep -q "shim-agent" "$E2E/agent.log" && ok "harmostes agent phase ran (shim)" || fail "agent phase never ran"
+grep -q "GATES GREEN" "$E2E/agent.log" && ok "REAL gate-resolved.sh green on the resolution" || fail "gate not green"
+grep -q "release line does not contain upstream/v16.0/forgejo after merge" "$E2E/run.out" \
+  && ok "containment guard: supersession+mint skipped when the release line lacks the row (local-merge platform)" \
+  || fail "containment guard did not fire"
+
+# Negative: a FORGED payload row (not in the def) must be discarded → def
+# fallback (upstream.branch=master, an ancestor → clean no-op merge, no agent).
+PAYLOAD2='{"fork":"forgejo-e2e","row":{"theirs":"main","ours":"rezus/forgejo-16"},"conflict_branch":"conflict/main"}'
+EVENT_PAYLOAD="$PAYLOAD2" bash "$E2E/maint/scripts/resolve-conflict.sh" forgejo-e2e > "$E2E/run2.out" 2>&1 \
+  && ok "forged row: resolver exits 0 (def fallback)" || fail "forged row crashed the resolver"
+grep -q "does not match the def.*falling back" "$E2E/run2.out" \
+  && ok "forged row context discarded with a warning (finding 3)" \
+  || fail "forged row context was trusted"
+grep -qE "Merging upstream/master into" "$E2E/run2.out" \
+  && ok "fell back to the def's top-level branch after discarding" \
+  || fail "did not fall back to def values"
+
+# ── host_pr_close_conflicts (github): --arg-safe jq (finding 2) ──────────────
+echo "# host_pr_close_conflicts (github, injection probe)"
+test_close_conflicts() {
+  export E2E_PLATFORM=github
+  # shellcheck source=../git-host.sh
+  source "$SCRIPT_DIR/git-host.sh"
+  DEF_FILE="$E2E/maint/forks/forgejo-e2e.yaml"
+  cat > "$E2E/bin/gh" <<SHIM
+#!/usr/bin/env bash
+echo "\$*" >> "$E2E/gh.log"
+if [ "\$1 \$2" = "pr list" ]; then
+  printf '%s\\n' '[{"number":148,"headRefName":"conflict/v16.0-forgejo-old"},{"number":149,"headRefName":"conflict/v16.0-forgejo"},{"number":200,"headRefName":"feature/x"}]'
+fi
+exit 0
+SHIM
+chmod +x "$E2E/bin/gh"
+export FORK_URL="https://github.com/rezuscloud/forgejo-e2e"
+: > "$E2E/gh.log"
+host_pr_close_conflicts "rezus/forgejo-16" "conflict/v16.0-forgejo"
+grep -q "pr close 148" "$E2E/gh.log" && ok "stale conflict PR 148 closed" || fail "stale PR 148 not closed"
+grep -qE "pr close (149|200)" "$E2E/gh.log" && fail "close filter widened (149/200 touched)" || ok "keep_head + non-conflict PRs untouched"
+# Injection probe: the breakout value from the review must NOT widen the filter.
+: > "$E2E/gh.log"
+host_pr_close_conflicts "rezus/forgejo-16" 'x" or "y"=="y'
+# With a bogus keep BOTH conflict/* PRs are legitimately selected (neither
+# equals the keep) — the property under test is that the filter can never
+# reach non-conflict PRs.
+grep -qE "pr close 200" "$E2E/gh.log" && fail "injection widened the filter to non-conflict PRs" \
+  || ok "injection probe: filter confined to conflict/* (200 untouched)"
+}
+test_close_conflicts
+
+# cleanup the e2e PATH shims so later assertions see the real tools
+cd "$WORK"
+
+echo ""
 echo "passed: $PASS  failed: $FAIL"
 [ "$FAIL" -eq 0 ]

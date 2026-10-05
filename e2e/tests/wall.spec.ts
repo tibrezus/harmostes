@@ -19,10 +19,10 @@ test('the wall renders every fixture subject with review marks and direct links'
   // Review subjects are marked on their row; the deterministic subject is one row too.
   await expect(page.locator('[data-testid="wall-card"][data-review="true"]')).toHaveCount(4);
   // Every surviving subject is a review — titles render bold, not .ids.
-  await expect(page.getByTestId('wall-card-title').locator('strong')).toHaveCount(3);
+  await expect(page.getByTestId('wall-card-title').locator('strong')).toHaveCount(4);
 
   // Every card links directly to its latest run — no clicks to find it.
-  const subjects = ['demo-rezuscloud/harmostes#42', 'demo-rezuscloud/harmostes#43', 'demo-rezuscloud/harmostes#44'];
+  const subjects = ['demo-rezuscloud/harmostes#42', 'demo-rezuscloud/harmostes#43', 'demo-rezuscloud/harmostes#44', 'demo-rezuscloud/harmostes#45'];
   for (const subject of subjects) {
     await expect(page.locator(`[data-testid="wall-card"][data-subject="${subject}"]`)).toHaveCount(1);
   }

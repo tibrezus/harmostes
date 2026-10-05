@@ -24,7 +24,7 @@ test('the wall sections by template and each workflow carries a step-timing stri
 
   const otherSec = page.locator('[data-testid="wall-section"][data-template="other workflows"]');
   // Live selection: the superseded merge-sync subject never renders.
-  await expect(otherSec.getByTestId('wall-card')).toHaveCount(2);
+  await expect(otherSec.getByTestId('wall-card')).toHaveCount(3); // #42 verdict + #43 in flight + #45 parked
 
   // Subject rows fold under their workflow: pr-review-demo tracks two
   // live PRs → its block cell spans both rows and names the workflow.

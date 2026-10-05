@@ -180,6 +180,12 @@ pluginConfigMaps: []
 # operator's UI alive through identity drift).
 ui:
   enabled: true
+  # Fixture mode (review environments): serve the deterministic in-memory
+  # world instead of reading the cluster — a preview env for UI changes has
+  # no fleet, and the fixture world IS the review data (parked rows, hold
+  # notes, per-PR tokens). The image carries the chart it was built from
+  # (chartfs embed), so the fixture world loads anywhere. false in prod.
+  fixture: false
   adminGroups: "harmostes-admins"
   image: ghcr.io/tibrezus/harmostes-ui:dev
   serviceAccount: harmostes-ui

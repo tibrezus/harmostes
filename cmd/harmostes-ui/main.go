@@ -23,16 +23,19 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"k8s.io/client-go/kubernetes"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/tibrezus/harmostes"
 	"github.com/tibrezus/harmostes/internal/dapr"
 	"github.com/tibrezus/harmostes/internal/k8s"
 	"github.com/tibrezus/harmostes/internal/timeline"
@@ -75,6 +78,11 @@ func main() {
 	// path production uses — the -fixture contract is that page behavior is
 	// identical, only the data source differs.
 	if fixtureMode {
+		chartDir, err := resolveChartDir(chartDir, logger)
+		if err != nil {
+			logger.Error("resolve fixture chart", "err", err)
+			os.Exit(1)
+		}
 		fixtureServer, err := fixture.NewWorld(namespace, logger, chartDir)
 		if err != nil {
 			logger.Error("seed fixture world", "err", err)
@@ -189,6 +197,28 @@ func resolveDaprEndpoint() string {
 		return "http://127.0.0.1:" + p
 	}
 	return "http://127.0.0.1:3500"
+}
+
+// resolveChartDir prefers an on-disk chart (the dev loop: -chart ../../chart
+// beside a real checkout). In a container the image is distroless — no chart
+// directory exists — so fixture mode falls back to the chart EMBEDDED in
+// this binary (chartfs: the same tree the build compiled), extracted to a
+// temp dir the disk-based loader reads. The temp dir lives as long as the
+// process; a pod's filesystem dies with it.
+func resolveChartDir(dir string, logger *slog.Logger) (string, error) {
+	if _, err := os.Stat(filepath.Join(dir, "values.yaml")); err == nil {
+		return dir, nil
+	}
+	dst, err := os.MkdirTemp("", "harmostes-chart-")
+	if err != nil {
+		return "", fmt.Errorf("temp dir for the embedded chart: %w", err)
+	}
+	if err := harmostes.ExtractChart(dst); err != nil {
+		_ = os.RemoveAll(dst)
+		return "", fmt.Errorf("extract embedded chart: %w", err)
+	}
+	logger.Info("fixture chart: extracted embedded chart (no on-disk chart found)", "requested", dir, "dir", dst)
+	return dst, nil
 }
 
 // fixtureListenAddr narrows the fixture default to loopback (#436): the

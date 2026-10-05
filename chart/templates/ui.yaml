@@ -60,6 +60,14 @@ spec:
           args:
             - --namespace={{ .Values.namespace }}
             - --platforms-config=/etc/harmostes-platforms/platforms.json
+            {{- if .Values.ui.fixture }}
+            # Fixture mode serves the review world; the platforms config is
+            # still loaded (display metadata only). The loopback default
+            # (#436) is wrong for a pod — the explicit addr is the
+            # documented override.
+            - --fixture
+            - --addr=0.0.0.0:8083
+            {{- end }}
           env:
             - name: HARMOSTES_NAMESPACE
               value: {{ .Values.namespace }}

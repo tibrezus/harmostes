@@ -225,6 +225,16 @@ type attemptGroup struct {
 	TokensIn  int
 	TokensOut int
 	Model     string
+
+	// HoldNote is WHY the review is parked queued — the gate's last
+	// waiting evaluation, verbatim (persisted on the claim by the
+	// armed-poll). The wall renders it under the state chip: "queued · ci
+	// pending at head … — dispatch on green". Empty on in-flight/verdict
+	// rows (dispatch clears it; the release reason owns released claims).
+	HoldNote string
+	// WaitingSince is when the current claim armed (the hold's start);
+	// the wall renders "waiting Xm" so "is it stuck?" reads off the row.
+	WaitingSince *metav1.Time
 	// Live is the executing run's in-flight usage (fresh Progress window);
 	// rendered instead of the post-hoc envelope numbers on in-flight rows.
 	Live *wallLiveTokens
@@ -293,6 +303,12 @@ func groupAttempts(attempts []v1alpha1.Attempt, cutoff time.Time) []attemptGroup
 			if isReview && a.Status.Review != nil {
 				g.ClaimState = claimState(a.Status.Review)
 				g.HeadSHA = a.Status.Review.HeadSHA
+				if a.Status.Review.DispatchedAt == nil && !a.Status.Review.Released {
+					// A parked claim carries its own why + since; a
+					// dispatched or released claim renders neither.
+					g.HoldNote = a.Status.Review.HoldNote
+					g.WaitingSince = a.Status.Review.ArmedSince
+				}
 			}
 		}
 	}

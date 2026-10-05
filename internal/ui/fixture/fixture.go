@@ -93,6 +93,15 @@ func envelope(nodeID, status string, at metav1.Time, durationSec int64) v1alpha1
 	}
 }
 
+// withUsage stamps the structured usage payload the agent executor writes
+// into agent envelopes (#586) — the wall's per-subject token column reads
+// exactly this.
+func withUsage(env v1alpha1.NodeResultEnvelope, in, out int, model string) v1alpha1.NodeResultEnvelope {
+	env.Payload = json.RawMessage(fmt.Sprintf(
+		`{"usage":{"input":%d,"output":%d},"model":%q,"turns":4}`, in, out, model))
+	return env
+}
+
 // prReviewAttempt builds a review-class attempt skeleton against the
 // pr-review-demo workflow.
 func prReviewAttempt(namespace, name, pr string, created metav1.Time) *v1alpha1.Attempt {
@@ -172,7 +181,7 @@ func Attempts(namespace string) ([]ctrlclient.Object, error) {
 	gateEnv.Summary = "[pr-review] verdict REQUEST_CHANGES posted to demo-rezuscloud/harmostes#42 as harmostes-bot — image ghcr.io/rezuscloud/forgejo-16@sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08 failed digest pinning; 2 blocking findings, 8 non-blocking notes, 2 inline threads opened"
 	terminal.Status.NodeResults = []v1alpha1.NodeResultEnvelope{
 		envelope("prepare", "ok", t(0, 15), 5),
-		envelope("agent", "ok", t(13, 25), 780), // the 13m agent node
+		withUsage(envelope("agent", "ok", t(13, 25), 780), 45703, 26154, "demo/llm/fixture-flash"), // the 13m agent node
 		gateEnv,
 		envelope("deploy", "skipped", t(14, 15), 0),
 	}
@@ -221,6 +230,26 @@ func Attempts(namespace string) ([]ctrlclient.Object, error) {
 		Label: "needs-review", ArmedSince: &armT2, DispatchedAt: &dispT2,
 	}
 
+	// --- 2.5 parked (queued) review attempt ------------------------------
+	// The wall's hold line needs a claim the gate is HOLDING: armed, never
+	// dispatched, not released — with the waiting reason the armed-poll
+	// persists (#HoldNote). ArmedSince pins to fixture CONSTRUCTION time
+	// (metav1.Now()), NOT the t() clock: the hold age renders from wall
+	// clock, and the e2e tier asserts only the "waiting " prefix — but the
+	// same freshness trap wallVerdictGrace dodged applies to any gate
+	// keyed off this timestamp, so construction-time is the only
+	// deterministic choice.
+	parked := prReviewAttempt(namespace, "attempt-pr-review-demo-45b7", "demo-rezuscloud/harmostes#45", t(45, 0))
+	parked.Status.Phase = v1alpha1.AttemptPhaseReconciling
+	// No NodeResults/Runs: the parked attempt has not run — its Tokens
+	// cell renders the honest em-dash (no workflow-cache fallback).
+	armT3 := metav1.Now()
+	parked.Status.Review = &v1alpha1.ReviewClaimStatus{
+		PR: "demo-rezuscloud/harmostes#45", HeadSHA: "f00dfeed1234567",
+		Label: "needs-review", ArmedSince: &armT3,
+		HoldNote: "ci pending at head f00dfeed1234567 (running: ci / build-test (push), integration / integration (cuda) (pull_request)) — dispatch on green",
+	}
+
 	// --- 3. superseded merge-sync attempt -------------------------------
 	superseded := mergeSyncAttempt(namespace, "attempt-merge-sync-demo-e5f6", t(60, 0))
 	superseded.Status.Phase = v1alpha1.AttemptPhaseSuperseded
@@ -242,7 +271,7 @@ func Attempts(namespace string) ([]ctrlclient.Object, error) {
 	// stored thin CR.
 	inst.Status.NodeResults = []v1alpha1.NodeResultEnvelope{
 		envelope("prepare", "ok", t(90, 10), 6),
-		envelope("agent", "ok", t(95, 20), 300),
+		withUsage(envelope("agent", "ok", t(95, 20), 300), 31473, 14967, "demo/llm/fixture-flash"),
 		envelope("deploy", "ok", t(95, 40), 12),
 	}
 	inst.Status.Runs = []v1alpha1.RunRecord{
@@ -256,7 +285,7 @@ func Attempts(namespace string) ([]ctrlclient.Object, error) {
 		Released: true, ReleaseReason: "consumed",
 	}
 
-	return []ctrlclient.Object{terminal, running, superseded, inst}, nil
+	return []ctrlclient.Object{terminal, running, parked, superseded, inst}, nil
 }
 
 // Scheme returns the full API scheme (v1alpha1 + core types) the fake

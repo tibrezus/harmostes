@@ -214,7 +214,6 @@ func (s *Server) handleDaprEvent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.hub.Publish(ce.Data)
-	s.noteWallEvent(ce.Data)
 	w.WriteHeader(http.StatusOK)
 }
 

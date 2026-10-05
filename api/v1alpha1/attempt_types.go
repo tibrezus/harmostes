@@ -305,6 +305,18 @@ type ReviewClaimStatus struct {
 	// the human's own arm — the next automatic arm within the window is
 	// still refused), and expires after HorizonDuration: time-bounded.
 	DismissedAt *metav1.Time `json:"dismissedAt,omitempty"`
+
+	// HoldNote is WHY the gate is holding this claim queued — the last
+	// waiting evaluation's reason, verbatim ("ci pending at head abc1234
+	// (running: ci/build) — dispatch on green", "the review label is
+	// absent, so nothing can dispatch; re-apply it"). The wall renders it
+	// as the queued row's second line: a bare "queued" chip left
+	// operators asking "in what status ARE they?" while the gate knew the
+	// answer all along. Written by the armed-poll when the note CHANGES
+	// (a poll runs ~5min; the write skips identical notes), cleared on
+	// dispatch. Not set on released claims — the release reason owns the
+	// story then.
+	HoldNote string `json:"holdNote,omitempty"`
 }
 
 // RunRecord is one Workflow Run (job) executed inside an attempt.

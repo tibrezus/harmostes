@@ -83,12 +83,13 @@ func TestComponent_Wall_RendersAllFixtureSubjects(t *testing.T) {
 	doc := getAsFixtureUser(t, ts, "/")
 
 	cards := testIDSelection(t, doc, "wall-card")
-	if got := cards.Length(); got != 3 {
+	if got := cards.Length(); got != 4 {
 		// The wall is LIVE (live is not history): the superseded
 		// merge-sync subject never shows; validated verdicts linger only
 		// for wallVerdictGrace. Fixture: #42 (fresh verdict) + #43
-		// (in flight) + #44 (fresh verdict).
-		t.Errorf("wall cards = %d, want 3 (three review PRs — superseded dropped)", got)
+		// (in flight) + #44 (fresh verdict) + #45 (parked queued, the
+		// hold-line fixture).
+		t.Errorf("wall cards = %d, want 4 (three review PRs + the parked one — superseded dropped)", got)
 	}
 	cards.Each(func(_ int, s *goquery.Selection) {
 		if s.AttrOr("data-subject", "") == "" {
@@ -96,7 +97,7 @@ func TestComponent_Wall_RendersAllFixtureSubjects(t *testing.T) {
 		}
 	})
 	reviewMarked := doc.Find(`[data-testid="wall-card"][data-review="true"]`).Length()
-	if reviewMarked != 3 {
+	if reviewMarked != 4 {
 		t.Errorf("review-marked rows = %d, want 3", reviewMarked)
 	}
 
@@ -115,8 +116,8 @@ func TestComponent_Wall_RendersAllFixtureSubjects(t *testing.T) {
 		t.Errorf("pr-review section cards = %d, want 1 (the template-backed instance)", got)
 	}
 	otherSec := doc.Find(`[data-testid="wall-section"][data-template="other workflows"]`)
-	if got := otherSec.Find(`[data-testid="wall-card"]`).Length(); got != 2 {
-		t.Errorf("other-workflows section cards = %d, want 2 (two PRs on pr-review-demo — superseded merge-sync dropped)", got)
+	if got := otherSec.Find(`[data-testid="wall-card"]`).Length(); got != 3 {
+		t.Errorf("other-workflows section cards = %d, want 3 (three PRs on pr-review-demo — superseded merge-sync dropped)", got)
 	}
 	// The graph-native workflow tracks two subjects → its block cell
 	// spans both rows.
@@ -126,9 +127,33 @@ func TestComponent_Wall_RendersAllFixtureSubjects(t *testing.T) {
 	if demoCell.Length() != 1 {
 		t.Fatalf("pr-review-demo workflow cell missing")
 	}
-	if got, _ := demoCell.Attr("rowspan"); got != "2" {
-		t.Errorf("pr-review-demo cell rowspan = %q, want 2 (two live PRs)", got)
+	if got, _ := demoCell.Attr("rowspan"); got != "3" {
+		t.Errorf("pr-review-demo cell rowspan = %q, want 3 (three live PRs)", got)
 	}
+	// The parked claim's WHY (#user wall refactor): the queued row (#45)
+	// renders the gate's waiting reason verbatim under its chip + the hold
+	// age, and its token cell is the honest em-dash — no workflow-cache
+	// numbers on rows that ran nothing.
+	hold := testIDSelection(t, doc, "wall-hold")
+	if hold.Length() != 1 {
+		t.Fatalf("wall hold lines = %d, want 1 (the parked #45)", hold.Length())
+	}
+	if txt := hold.Text(); !strings.Contains(txt, "ci pending at head f00dfeed") || !strings.Contains(txt, "dispatch on green") || !strings.Contains(txt, "waiting ") {
+		t.Errorf("hold line must carry the gate's verbatim reason + waiting age, got %q", txt)
+	}
+	parkedRow := doc.Find(`[data-testid="wall-card"][data-subject="demo-rezuscloud/harmostes#45"]`)
+	if parkedRow.Length() != 1 {
+		t.Fatalf("parked row missing")
+	}
+	if parkedRow.Find(`[data-testid="wall-tokens-none"]`).Length() != 1 {
+		t.Error("the parked row ran nothing — its token cell must be the honest em-dash")
+	}
+	// In-flight and verdict rows still render their own numbers (#43 live,
+	// #42/#44 envelopes): the em-dash is parked-only.
+	if got := doc.Find(`[data-testid="wall-tokens-none"]`).Length(); got != 1 {
+		t.Errorf("em-dash token cells = %d, want 1 (only the parked row)", got)
+	}
+
 	// Every workflow with envelopes carries a strip; the strips paint with
 	// the run-detail waterfall's own state classes.
 	strips := testIDSelection(t, doc, "wall-steps")
@@ -479,8 +504,8 @@ func TestComponent_DevIdentity_ZeroSetup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if got := doc.Find(`[data-testid="wall-card"]`).Length(); got != 3 {
-		t.Errorf("wall cards visible to the injected dev user = %d, want 3 (live selection)", got)
+	if got := doc.Find(`[data-testid="wall-card"]`).Length(); got != 4 {
+		t.Errorf("wall cards visible to the injected dev user = %d, want 4 (live selection, incl. the parked hold-line fixture)", got)
 	}
 }
 

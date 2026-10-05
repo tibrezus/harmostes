@@ -24,7 +24,7 @@ test('the wall sections by template and each workflow carries a step-timing stri
 
   const otherSec = page.locator('[data-testid="wall-section"][data-template="other workflows"]');
   // Live selection: the superseded merge-sync subject never renders.
-  await expect(otherSec.getByTestId('wall-card')).toHaveCount(2);
+  await expect(otherSec.getByTestId('wall-card')).toHaveCount(3); // #42 verdict + #43 in flight + #45 parked
 
   // Subject rows fold under their workflow: pr-review-demo tracks two
   // live PRs → its block cell spans both rows and names the workflow.
@@ -32,7 +32,8 @@ test('the wall sections by template and each workflow carries a step-timing stri
     .locator('[data-testid="wall-workflow-cell"]')
     .filter({ has: page.getByTestId('wall-workflow-link').filter({ hasText: 'pr-review-demo' }) });
   await expect(demoCell).toHaveCount(1);
-  await expect(demoCell).toHaveAttribute('rowspan', '2');
+  // Three live pr-review-demo subjects: #42 verdict, #43 in flight, #45 parked.
+  await expect(demoCell).toHaveAttribute('rowspan', '3');
 
   // Every live workflow shows its step-timing strip; segments paint with
   // the same state classes as the run-detail waterfall.

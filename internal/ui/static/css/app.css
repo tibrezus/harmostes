@@ -1988,6 +1988,33 @@ code, pre {
 .wall-steps {
 	display: block;
 }
+/* The parked claim's why (#user wall refactor): the queued row's second
+   line under the state chip — the gate's waiting reason + hold age. Small,
+   muted, wrapping — the row stays one glance readable while "why" is no
+   longer a click or a kubectl away. */
+.wall-hold {
+	margin-top: 0.25rem;
+	max-width: 26rem;
+	font-size: 0.72rem;
+	line-height: 1.35;
+	color: var(--fg-muted);
+	/* Prose, not a table cell: dense tables nowrap their cells, which
+	   would clip the reason to one line — the exit ("dispatch on green")
+	   is the part operators need. */
+	white-space: normal;
+	overflow-wrap: anywhere;
+}
+.wall-hold-note {
+	display: -webkit-box;
+	-webkit-line-clamp: 3;
+	line-clamp: 3;
+	-webkit-box-orient: vertical;
+	overflow: hidden;
+}
+.wall-hold .ids {
+	font-size: 0.7rem;
+	white-space: nowrap;
+}
 .rg-timing-bar.rg-state-pending {
 	fill: var(--ds-border);
 }

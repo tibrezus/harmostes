@@ -607,18 +607,6 @@ func (s *Server) handleWallSSE(w http.ResponseWriter, r *http.Request) {
 	s.streamFragments(w, r, sub, cancel, wallEventName, render, nil, wallRerender)
 }
 
-// jsonInt extracts an int from a JSON-roundtripped value (numbers decode as
-// float64 into any).
-func jsonInt(v any) int {
-	switch n := v.(type) {
-	case int:
-		return n
-	case float64:
-		return int(n)
-	}
-	return 0
-}
-
 // shortSHA truncates a head SHA for display.
 func shortSHA(sha string) string {
 	if len(sha) > 7 {

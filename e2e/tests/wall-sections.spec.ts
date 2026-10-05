@@ -32,7 +32,8 @@ test('the wall sections by template and each workflow carries a step-timing stri
     .locator('[data-testid="wall-workflow-cell"]')
     .filter({ has: page.getByTestId('wall-workflow-link').filter({ hasText: 'pr-review-demo' }) });
   await expect(demoCell).toHaveCount(1);
-  await expect(demoCell).toHaveAttribute('rowspan', '3' // three live pr-review-demo subjects (#42 verdict, #43 in flight, #45 parked));
+  // Three live pr-review-demo subjects: #42 verdict, #43 in flight, #45 parked.
+  await expect(demoCell).toHaveAttribute('rowspan', '3');
 
   // Every live workflow shows its step-timing strip; segments paint with
   // the same state classes as the run-detail waterfall.

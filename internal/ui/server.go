@@ -15,7 +15,6 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/tibrezus/harmostes/version"
@@ -53,8 +52,6 @@ type Server struct {
 	hub       *EventHub
 	platforms *platformRegistry // display config for git platforms (plug-and-play)
 	dapr      DaprClient        // optional: reads session transcripts + usage from worker state store
-	wallMu    sync.Mutex
-	wallMeta  map[string]*wallUsage // workflow → cached agent metadata (live wall)
 	// schemaMemo caches the two CRD halves for GET /api/schema (#436) —
 	// bounded by schemaMemoTTL; the request path locks it per call.
 	schemaMemo schemaMemoCache
@@ -200,7 +197,6 @@ func New(k8sClient client.Client, namespace string, logger *slog.Logger, kubeCli
 		templates: tmpl,
 		hub:       NewEventHub(),
 		platforms: newPlatformRegistry(platformConfigs),
-		wallMeta:  make(map[string]*wallUsage),
 		now:       time.Now,
 	}
 

@@ -539,6 +539,9 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 				keepArmed[r.PR] = true
 				emitGate(ctx, deps.TL, liveAgg, res, repo, pr)
 				log("review-ready: re-dispatching queued claim %s at %s (CI green since arm)", c.Name, r.HeadSHA)
+				if _, nerr := attempt.SetClaimHoldNote(ctx, deps.Client, c.Namespace, c.Name, ""); nerr != nil {
+					log("review-ready: hold-note clear on %s failed: %v", c.Name, nerr)
+				}
 			case review.DecisionStanddown:
 				releaseClaim(ctx, deps, c, classifyRelease(res.Evaluation), log)
 				releasedInA[c.Name] = true
@@ -555,6 +558,14 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 			default: // waiting: the armed state is doing its job — shield it
 				keepArmed[r.PR] = true
 				emitGate(ctx, deps.TL, liveAgg, res, repo, pr)
+				// Persist WHY the claim is parked (#user wall refactor): the
+				// wall renders HoldNote as the queued row's second line. A
+				// bare "queued" chip left operators asking "in what status
+				// ARE they?" while the poll knew the answer every sweep.
+				// SetClaimHoldNote writes only on change.
+				if _, nerr := attempt.SetClaimHoldNote(ctx, deps.Client, c.Namespace, c.Name, res.Reason); nerr != nil {
+					log("review-ready: hold-note write on %s failed: %v", c.Name, nerr)
+				}
 			}
 			continue
 		}

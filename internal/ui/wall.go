@@ -41,12 +41,11 @@ const (
 // (graph-native instances defined entirely in their CR).
 const wallUngrouped = "other workflows"
 
-// wallUsage is the cached agent metadata for one workflow. Populated from
-// node.completed lifecycle events (which carry usage/model/turns since the
-// agent executor publishes them); when the cache is cold it is partially
-// hydrated from the durable `<workflow>:usage:last` state-store record —
-// that record carries token totals and attempts but NOT model/turns, so
-// those stay unknown until the next agent node completes.
+// wallUsage is one subject's own agent usage, read from its latest
+// attempt's envelope payload (#586 — the Attempt CR is the per-PR source of
+// record). The old workflow-level cache (usage:last hydration) is gone: it
+// painted one session's numbers onto every payload-less row of the
+// workflow — six queued PRs showing identical tokens (user-reported).
 type wallUsage struct {
 	Model        string
 	InputTokens  int
@@ -73,9 +72,23 @@ type wallGroup struct {
 	// and since when — the wall answers "where is it" without a click.
 	CurrentNode string
 	Elapsed     string
-	// LiveTokens is the executing run's in-flight usage (the attempt's
-	// Progress window), shown instead of the post-hoc envelope numbers.
+	// Live is the executing run's in-flight usage (the attempt's Progress
+	// window), shown instead of the post-hoc envelope numbers.
 	Live *wallLiveTokens
+	// Hold is the parked claim's why + since (#user wall refactor): the
+	// wall renders it as the queued row's second line — "ci pending at
+	// head … — dispatch on green · waiting 26m". A bare "queued" chip
+	// answered nothing; the gate knew the reason every sweep.
+	Hold *wallHold
+}
+
+// wallHold is the parked state's explanation.
+type wallHold struct {
+	// Note is the gate's waiting reason, verbatim (CSS clamps the line;
+	// server-side truncation ate the exit behind an ellipsis).
+	Note string
+	// Since is how long the claim has been parked ("26m", "3h", "2d").
+	Since string
 }
 
 // wallLiveTokens is one in-flight usage sample for the wall's token column.
@@ -219,64 +232,6 @@ func usageFromAttempt(att *v1alpha1.Attempt) *wallUsage {
 	return &wallUsage{Model: p.Model, InputTokens: p.Usage.Input, OutputTokens: p.Usage.Output, Turns: p.Turns}
 }
 
-// noteWallEvent updates the per-workflow agent metadata cache from a
-// lifecycle event. Called from the Dapr event ingress; cheap and best-effort.
-func (s *Server) noteWallEvent(ev Event) {
-	if ev.Pipeline == "" || len(ev.Outputs) == 0 {
-		return
-	}
-	usageRaw, ok := ev.Outputs["usage"]
-	if !ok {
-		return
-	}
-	u := &wallUsage{
-		Attempts: jsonInt(ev.Outputs["attempts"]),
-		Turns:    jsonInt(ev.Outputs["turns"]),
-	}
-	if m, ok := ev.Outputs["model"].(string); ok {
-		u.Model = m
-	}
-	// The event bus JSON-roundtrips Outputs, so usage arrives as a generic map
-	// keyed by agent.Usage's json tags.
-	if m, ok := usageRaw.(map[string]any); ok {
-		u.InputTokens = jsonInt(m["input_tokens"])
-		u.OutputTokens = jsonInt(m["output_tokens"])
-	}
-	if u.InputTokens == 0 && u.OutputTokens == 0 {
-		return
-	}
-	s.wallMu.Lock()
-	s.wallMeta[ev.Pipeline] = u
-	s.wallMu.Unlock()
-}
-
-// usageFor returns cached agent metadata for a workflow. When the event cache
-// is cold (UI restart), hydrates once from the durable usage:last record —
-// model/turns are event-only and stay unknown until the next agent node runs.
-// hydrate=false (SSE re-renders) is cache-only, never touches the state store.
-func (s *Server) usageFor(r *http.Request, workflow string, hydrate bool) *wallUsage {
-	s.wallMu.Lock()
-	u := s.wallMeta[workflow]
-	s.wallMu.Unlock()
-	if u != nil || !hydrate || s.dapr == nil {
-		return u
-	}
-	var last struct {
-		Input    int `json:"input"`
-		Output   int `json:"output"`
-		Attempts int `json:"attempts"`
-	}
-	found, err := s.dapr.GetStateFromStore(r.Context(), "statestore", workflow+":usage:last", &last)
-	if err != nil || !found || (last.Input == 0 && last.Output == 0) {
-		return nil
-	}
-	u = &wallUsage{InputTokens: last.Input, OutputTokens: last.Output, Attempts: last.Attempts}
-	s.wallMu.Lock()
-	s.wallMeta[workflow] = u
-	s.wallMu.Unlock()
-	return u
-}
-
 // handleWall renders the live wall page (the `/` surface).
 func (s *Server) handleWall(w http.ResponseWriter, r *http.Request) {
 	// Only match exact "/" — Go 1.22 mux matches subtree for "/", and the
@@ -286,7 +241,7 @@ func (s *Server) handleWall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	owner := s.visibleOwner(identityFromContext(r.Context()))
-	sections, overflow, counts, err := s.wallSections(r, owner, true)
+	sections, overflow, counts, err := s.wallSections(r, owner)
 	if err != nil {
 		s.renderError(w, r, "Failed to load wall: "+err.Error())
 		return
@@ -307,7 +262,7 @@ func attemptActivity(a *v1alpha1.Attempt) time.Time {
 // rollups; they fold under their workflow, which carries the step-timing
 // strip of its newest attempt. Row budget: wallMaxGroups subject rows
 // across all sections — the overflow count feeds a single "+N more" line.
-func (s *Server) wallSections(r *http.Request, owner string, hydrate bool) ([]wallSection, int, wallCounts, error) {
+func (s *Server) wallSections(r *http.Request, owner string) ([]wallSection, int, wallCounts, error) {
 	attempts, err := s.listAttempts(r, owner)
 	if err != nil {
 		return nil, 0, wallCounts{}, fmt.Errorf("list attempts: %w", err)
@@ -317,8 +272,13 @@ func (s *Server) wallSections(r *http.Request, owner string, hydrate bool) ([]wa
 		return groups[i].LastActivity > groups[j].LastActivity
 	})
 
-	// Newest full attempt per workflow: the strip's envelope source.
+	// Newest attempt WITH activity per workflow: the strip's source. A
+	// parked (armed-queued) attempt is newer by creation but has run
+	// nothing — its strip would paint an empty lane and blank the
+	// workflow's live timing (the parked #45 eclipsing the running #43,
+	// caught by the component tier).
 	newest := map[string]*v1alpha1.Attempt{}
+	hasRuns := func(a *v1alpha1.Attempt) bool { return len(a.Status.Runs) > 0 }
 	// Attempt index by CR name: per-subject usage reads the SUBJECT's own
 	// latest attempt — the workflow-level usage cache (usage:last) aggregates
 	// across subjects and sessions, which read as identical numbers on every
@@ -329,7 +289,9 @@ func (s *Server) wallSections(r *http.Request, owner string, hydrate bool) ([]wa
 		a := &attempts[i]
 		byName[a.Name] = a
 		name := workflowCRName(a.Spec.WorkflowRef)
-		if cur, ok := newest[name]; !ok || attemptActivity(a).After(attemptActivity(cur)) {
+		if cur, ok := newest[name]; !ok ||
+			(hasRuns(a) && !hasRuns(cur)) ||
+			(hasRuns(a) == hasRuns(cur) && attemptActivity(a).After(attemptActivity(cur))) {
 			newest[name] = a
 		}
 	}
@@ -397,15 +359,30 @@ func (s *Server) wallSections(r *http.Request, owner string, hydrate bool) ([]wa
 			Count:        g.Count,
 			LastActivity: relTime(g.LastActivity, time.Now()),
 		}
+		if g.Subject == "" {
+			// Attempts that never recorded their subject (torn writes, the
+			// pre-#629 debris classes): the row stays honest — "unattributed"
+			// — instead of a blank cell that reads as a rendering bug.
+			wg.Subject = "unattributed"
+		}
 		if g.LatestAttempt != "" {
 			wg.LastRunURL = "/runs/" + g.LatestAttempt
 		}
-		// Per-subject usage first (the subject's own latest attempt's agent
-		// envelope); the workflow-level cache is the fallback for attempts
-		// that predate envelope payloads.
+		// Per-subject usage: the subject's OWN latest attempt's agent
+		// envelope — full stop. The workflow-level cache is a fallback NO
+		// MORE: it carried the workflow's LAST SESSION to every payload-less
+		// row, so six queued PRs showed one PR's numbers (user-reported
+		// identical tokens). A queued row with no payload of its own shows
+		// an em-dash — honest, and the hold line below tells the real story.
 		wg.Usage = usageFromAttempt(byName[g.LatestAttempt])
-		if wg.Usage == nil {
-			wg.Usage = s.usageFor(r, name, hydrate)
+		// The parked claim's why: chip + note + waiting age. The note
+		// rides VERBATIM — CSS line-clamps the row; truncating server-side
+		// ate the reason's exit ("dispatch on green") behind an ellipsis.
+		if state == "queued" && g.HoldNote != "" {
+			wg.Hold = &wallHold{Note: g.HoldNote}
+			if g.WaitingSince != nil && !g.WaitingSince.IsZero() {
+				wg.Hold.Since = relDuration(time.Since(g.WaitingSince.Time))
+			}
 		}
 		// Live columns: what is executing on this subject right now.
 		if state == "in flight" || state == "reconciling" {
@@ -459,7 +436,7 @@ func (s *Server) wallSections(r *http.Request, owner string, hydrate bool) ([]wa
 
 // renderWallFragment renders the wall grid to a string for SSE delivery.
 func (s *Server) renderWallFragment(r *http.Request, owner string) (string, error) {
-	sections, overflow, counts, err := s.wallSections(r, owner, false)
+	sections, overflow, counts, err := s.wallSections(r, owner)
 	if err != nil {
 		return "", err
 	}
@@ -670,6 +647,22 @@ func relTime(rfc3339 string, now time.Time) string {
 		return fmt.Sprintf("%dh ago", int(d.Hours()))
 	default:
 		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+	}
+}
+
+// relDuration renders a coarse duration for the hold line: "4m", "3h",
+// "2d". Under a minute reads "now" — the hold is fresh, the poll will
+// refine it.
+func relDuration(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return "now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
 	}
 }
 

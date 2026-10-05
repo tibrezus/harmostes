@@ -47,7 +47,6 @@ func newAttemptTestServer(t *testing.T, objs ...runtime.Object) *Server {
 		hub:       NewEventHub(),
 		k8sClient: fakeClient,
 		platforms: newPlatformRegistry(nil),
-		wallMeta:  make(map[string]*wallUsage),
 	}
 }
 

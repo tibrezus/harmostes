@@ -1999,24 +1999,30 @@ code, pre {
 	gap: 0.2rem;
 	margin-top: 0.3rem;
 }
-.wall-states-bar {
+/* One cell per subject, row order — the strip is an INDEX of the rows
+   below (first cell = first row), not an aggregate that loses them. */
+.wall-states-cells {
 	display: flex;
-	height: 6px;
-	border-radius: 3px;
-	overflow: hidden;
+	gap: 2px;
+	flex-wrap: wrap;
+}
+.wall-states-cell {
+	display: block;
+	width: 14px;
+	height: 8px;
+	border-radius: 2px;
 	background: var(--ds-border);
 }
-.wall-states-seg {
-	display: block;
-	height: 100%;
+a.wall-states-cell:hover {
+	outline: 1px solid var(--accent);
 }
-.wall-states-seg.st-in-flight,
-.wall-states-seg.st-reconciling { background: var(--chip-run-bg); }
-.wall-states-seg.st-queued { background: var(--chip-warn-bg); }
-.wall-states-seg.st-verdict,
-.wall-states-seg.st-validated { background: var(--chip-ok-bg); }
-.wall-states-seg.st-failed,
-.wall-states-seg.st-dispatch-lost { background: var(--chip-fail-bg); }
+.wall-states-cell.st-in-flight,
+.wall-states-cell.st-reconciling { background: var(--chip-run-bg); }
+.wall-states-cell.st-queued { background: var(--chip-warn-bg); }
+.wall-states-cell.st-verdict,
+.wall-states-cell.st-validated { background: var(--chip-ok-bg); }
+.wall-states-cell.st-failed,
+.wall-states-cell.st-dispatch-lost { background: var(--chip-fail-bg); }
 .wall-states-counts {
 	font-size: 0.72rem;
 	color: var(--fg-muted);

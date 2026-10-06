@@ -47,12 +47,12 @@
 						{{- if eq $gi 0}}
 						<td rowspan="{{len $w.Groups}}" class="wall-wf-cell" data-testid="wall-workflow-cell">
 							<a class="wall-wf" href="{{$w.URL}}" data-testid="wall-workflow-link"><span class="ids">{{$w.Name}}</span></a>
-							{{- if $w.Shares}}
-							<div class="wall-states" data-testid="wall-state-summary" role="img" aria-label="subjects: {{range $w.Shares}}{{.Count}} {{.State}}, {{end}}">
-								<div class="wall-states-bar">
-									{{- range $w.Shares}}<span class="wall-states-seg st-{{.Class}}" style="width:{{.Pct}}%"></span>{{end}}
+							{{- if $w.Cells}}
+							<div class="wall-states" data-testid="wall-state-summary" role="img" aria-label="{{len $w.Cells}} subjects: {{range $w.Cells}}{{.Subject}} {{.State}}, {{end}}">
+								<div class="wall-states-cells">
+									{{- range $w.Cells}}{{if .URL}}<a class="wall-states-cell st-{{.Class}}" href="{{.URL}}" title="{{.Subject}} — {{.State}}"></a>{{else}}<span class="wall-states-cell st-{{.Class}}" title="{{.Subject}} — {{.State}}"></span>{{end}}{{end}}
 								</div>
-								<div class="wall-states-counts">{{range $i, $s := $w.Shares}}{{if $i}}<span class="sep">·</span>{{end}}<span class="st-text-{{.Class}}">{{$s.Count}} {{.State}}</span>{{end}}</div>
+								<div class="wall-states-counts">{{range $st, $n := stateTally $w.Cells}}{{if $n}}<span class="st-text-{{replaceWithDash $st}}">{{$n}} {{$st}}</span> {{end}}{{end}}</div>
 							</div>
 							{{- end}}
 							{{- if $w.Strip}}

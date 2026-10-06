@@ -173,8 +173,16 @@ func TestComponent_Wall_RendersAllFixtureSubjects(t *testing.T) {
 	if !strings.Contains(counts, "1 in flight") || !strings.Contains(counts, "1 queued") || !strings.Contains(counts, "1 verdict") {
 		t.Errorf("pr-review-demo summary must aggregate its subjects, got %q", counts)
 	}
-	if got := demoSummary.Find(".wall-states-seg").Length(); got != 3 {
-		t.Errorf("summary segments = %d, want 3 (one per distinct state)", got)
+	// One CELL per subject, row order — the strip is an index of the rows,
+	// not a proportional blur: 3 subjects → 3 cells, and the first cell
+	// corresponds to the first row.
+	cells := demoSummary.Find(".wall-states-cell")
+	if got := cells.Length(); got != 3 {
+		t.Fatalf("summary cells = %d, want 3 (one per subject)", got)
+	}
+	firstTitle, _ := cells.First().Attr("title")
+	if !strings.Contains(firstTitle, "demo-rezuscloud/harmostes#") || !strings.Contains(firstTitle, "— ") {
+		t.Errorf("each cell names its subject + state on hover, got %q", firstTitle)
 	}
 
 	// Every workflow with envelopes carries a strip; the strips paint with

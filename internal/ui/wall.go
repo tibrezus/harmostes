@@ -87,16 +87,22 @@ type wallGroup struct {
 	Cause string
 }
 
-// wallStateShare is one segment of the workflow-level state summary —
-// kestra's per-flow statistics adapted to counts: the aggregate answer to
-// "what is pr-review-rhesadox doing" without reading a single row.
-type wallStateShare struct {
+// wallStateCell is ONE subject's state in the workflow-level summary —
+// a discrete cell per subject, ordered exactly like the rows below the
+// block. The first summary design was a proportional bar (segments ∝
+// counts); it answered "how many" but not "which" — a monochrome state
+// rendered it a colored line duplicating the counts text. A cell per
+// subject makes the summary an INDEX: the distribution is visible AND
+// every cell corresponds to a row (first cell = first row), with the
+// subject on hover.
+type wallStateCell struct {
 	State string
 	// Class is the CSS-safe state name (spaces → dashes).
 	Class string
-	Count int
-	// Pct is the bar segment width (share of the workflow's subjects).
-	Pct int
+	// Subject + URL identify the row the cell stands for (hover title,
+	// click-through).
+	Subject string
+	URL     string
 }
 
 // wallState collapses a wall row
@@ -154,11 +160,12 @@ type wallWorkflow struct {
 	StripW int
 	Groups []wallGroup
 	Last   string // newest subject activity (RFC3339, for ordering)
-	// Shares is the workflow-level STATE summary (kestra's per-flow
-	// statistics): per-state segments ∝ subject counts. The bar under the
-	// workflow name answers "what is this workflow doing" — the step strip
-	// beneath it is the last attempt's SHAPE/timing, a different question.
-	Shares []wallStateShare
+	// Cells is the workflow-level STATE summary: one cell per subject,
+	// row order, colored by that subject's state. The strip under the
+	// workflow name answers "what is this workflow doing" AND "which one"
+	// — the step strip beneath it is the last attempt's SHAPE/timing, a
+	// different question.
+	Cells []wallStateCell
 }
 
 // wallSection groups the wall by the workflow's owning template — the
@@ -436,22 +443,20 @@ func (s *Server) wallSections(r *http.Request, owner string) ([]wallSection, int
 	secs := map[string]*wallSection{}
 	for _, name := range wfOrder {
 		ww := wallWorkflow{Name: name, URL: "/workflows/" + name, Groups: wfGroups[name], Last: wfGroups[name][0].LastActivity}
-		// The state summary: count the workflow's subjects per wall state,
-		// widest-first, width ∝ share. Kestra renders a state time-series
-		// here; we are state-based (a PR review's lifecycle is a handful
-		// of states, not a stream) so the counts ARE the statistics.
-		tally := map[string]int{}
+		// The state summary: one cell per subject, row order. Kestra
+		// renders a state time-series here; we are subject-based (a PR
+		// review's subject IS a row on this very block) so the summary is
+		// an index of the rows, not an aggregate that loses them.
 		for _, g := range wfGroups[name] {
-			tally[wallState(g)]++
-		}
-		total := len(wfGroups[name])
-		for _, st := range []string{"in flight", "reconciling", "queued", "dispatch lost", "failed", "verdict", "validated"} {
-			if n := tally[st]; n > 0 {
-				ww.Shares = append(ww.Shares, wallStateShare{
-					State: st, Class: strings.ReplaceAll(st, " ", "-"),
-					Count: n, Pct: n * 100 / total,
-				})
+			st := wallState(g)
+			cell := wallStateCell{
+				State: st, Class: strings.ReplaceAll(st, " ", "-"),
+				Subject: g.Subject,
 			}
+			if g.LastRunURL != "" {
+				cell.URL = g.LastRunURL
+			}
+			ww.Cells = append(ww.Cells, cell)
 		}
 		if att := newest[name]; att != nil {
 			if wf, ok := wfByName[name]; ok {
@@ -719,6 +724,22 @@ func wallChipLabel(g wallGroup) string {
 		return "queued · forge unreachable"
 	}
 	return base
+}
+
+// stateTally counts cells per state, canonical order first — the counts
+// line under the state strip (a text mirror of the cells, for the
+// color-averse and the screen readers).
+func stateTally(cells []wallStateCell) map[string]int {
+	tally := map[string]int{}
+	for _, c := range cells {
+		tally[c.State]++
+	}
+	return tally
+}
+
+// replaceWithDash is the CSS-safe state name for template use.
+func replaceWithDash(s string) string {
+	return strings.ReplaceAll(s, " ", "-")
 }
 
 // wallState collapses a wall row to the shared console state vocabulary —

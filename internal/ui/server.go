@@ -337,12 +337,14 @@ func parseTemplates() (*template.Template, error) {
 		// assetVersion cache-busts static assets: browsers may otherwise serve a
 		// stale map.js/styles across releases (no cache headers are set), and a
 		// new chart must ship its fixed assets to every client.
-		"assetVersion":  func() string { return version.String() },
-		"groupState":    groupState,
-		"chipState":     chipState,
-		"shortName":     shortAttemptName,
-		"wallState":     wallState,
-		"wallChipLabel": wallChipLabel,
+		"assetVersion":    func() string { return version.String() },
+		"groupState":      groupState,
+		"chipState":       chipState,
+		"shortName":       shortAttemptName,
+		"wallState":       wallState,
+		"wallChipLabel":   wallChipLabel,
+		"stateTally":      stateTally,
+		"replaceWithDash": replaceWithDash,
 		// etStateClass maps the shared chip vocabulary onto the Event
 		// Timeline's marker-class suffix — the SAME vocabulary the state-chip
 		// template arms, so a row's color and its chip can never disagree.

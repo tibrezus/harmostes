@@ -51,13 +51,15 @@ test('queued row carries its hold reason, waiting age, and no borrowed tokens', 
   // waits for) — "queued" alone answers nothing.
   await expect(parked.locator('.chip')).toContainText('queued · waiting ci');
 
-  // The workflow block carries the STATE summary (kestra's per-flow
-  // statistics): segments + counts over its subjects.
+  // The workflow block carries the STATE summary: one cell per subject
+  // (row order — an index, not a blur) + the counts mirror.
   const summary = page
     .locator('[data-testid="wall-workflow-cell"]')
     .filter({ hasText: 'pr-review-demo' })
     .locator('[data-testid="wall-state-summary"]');
   await expect(summary).toBeVisible();
+  await expect(summary.locator('.wall-states-cell')).toHaveCount(3);
+  await expect(summary.locator('.wall-states-cell').first()).toHaveAttribute('title', /demo-rezuscloud\/harmostes#\d+ — /);
   await expect(summary.locator('.wall-states-counts')).toContainText('1 in flight');
   await expect(summary.locator('.wall-states-counts')).toContainText('1 queued');
   await expect(summary.locator('.wall-states-counts')).toContainText('1 verdict');

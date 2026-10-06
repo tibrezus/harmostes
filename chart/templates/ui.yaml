@@ -58,12 +58,14 @@ spec:
           image: {{ .Values.ui.image }}
           imagePullPolicy: Always
           args:
-            # viewNamespace: the UI reads ANOTHER namespace's live data
-            # (review environments). Everything else (the controller, the
-            # worker pool, RBAC ownership) stays in the chart namespace.
+            {{- /* viewNamespace: the UI reads ANOTHER namespace's live data
+            (review environments). Everything else (the controller, the
+            worker pool, RBAC ownership) stays in the chart namespace. */}}
             - --namespace={{ .Values.ui.viewNamespace | default .Values.namespace }}
             - --platforms-config=/etc/harmostes-platforms/platforms.json
             {{- if .Values.ui.readOnly }}
+            {{- /* the loopback default (#436) is wrong for a pod only in
+            fixture mode; readOnly changes nothing about the listener */}}
             - --read-only
             {{- with .Values.ui.readOnlyAs }}
             - --read-only-as={{ . }}

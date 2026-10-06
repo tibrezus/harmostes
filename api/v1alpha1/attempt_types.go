@@ -337,6 +337,15 @@ type RunRecord struct {
 	Phase string `json:"phase,omitempty"`
 }
 
+// RunTerminalPhase reports whether a RunRecord phase is terminal — the
+// kernel's own consume-on-completion fact (#647): a run that will not
+// run again. Single-sourced here because the controller's terminal-run
+// trigger and the attempt ledger's finalize paths must not drift on what
+// counts as "ended".
+func RunTerminalPhase(phase string) bool {
+	return phase == "succeeded" || phase == "failed"
+}
+
 // TotalRuns is runs ever executed on this attempt: the live tail plus every
 // compacted-away record (#289).
 func (s *AttemptStatus) TotalRuns() int {

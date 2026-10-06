@@ -102,6 +102,45 @@ const (
 	CodeVerdictStanding ReleaseCode = "verdict-standing"
 )
 
+// HoldCause vocabulary — the SHORT cause behind a waiting evaluation.
+// The wall's state chip renders it as a qualification ("queued · waiting
+// ci"); HoldNote carries the prose, this carries the classification. The
+// mapping is centralized here because this package OWNS the waiting
+// reason strings — drift between a reason and its cause is a compile-
+// adjacent miss caught by TestHoldCauseOf, not a runtime mystery.
+type HoldCause string
+
+const (
+	HoldCauseCIPending    HoldCause = "ci-pending"
+	HoldCauseCIRed        HoldCause = "ci-red"
+	HoldCauseLabelAbsent  HoldCause = "label-absent"
+	HoldCauseAPIError     HoldCause = "api-error"
+	HoldCauseVerdictCheck HoldCause = "verdict-check"
+	HoldCauseDispatched   HoldCause = "dispatched" // review in flight — not a hold, the chip still qualifies
+)
+
+// HoldCauseOf classifies a waiting evaluation's reason into the short
+// cause vocabulary. Reasons are OUR strings (review.go writes them); the
+// prefixes are pinned by TestHoldCauseOf. Unknown → "" (the chip renders
+// unqualified rather than guessing).
+func HoldCauseOf(reason string) HoldCause {
+	switch {
+	case strings.Contains(reason, "ci pending at head"):
+		return HoldCauseCIPending
+	case strings.Contains(reason, "ci red at head"):
+		return HoldCauseCIRed
+	case strings.Contains(reason, "the review label is absent"):
+		return HoldCauseLabelAbsent
+	case strings.Contains(reason, "verdict check failed"):
+		return HoldCauseVerdictCheck
+	case strings.Contains(reason, "pr fetch failed"):
+		return HoldCauseAPIError
+	case strings.Contains(reason, "review in flight"):
+		return HoldCauseDispatched
+	}
+	return ""
+}
+
 // API is the per-host API surface the gate reads. It exists so tests can
 // stub the transport.
 type API interface {

@@ -40,12 +40,33 @@ test('queued row carries its hold reason, waiting age, and no borrowed tokens', 
 
   const parked = page.locator('[data-testid="wall-card"][data-subject="demo-rezuscloud/harmostes#45"]');
   await expect(parked).toBeVisible();
-  await expect(parked.locator('.chip')).toHaveText('queued');
+  await expect(parked.locator('.chip')).toHaveText('queued · waiting ci');
 
   const hold = parked.locator('[data-testid="wall-hold"]');
   await expect(hold).toContainText('ci pending at head f00dfeed1234567');
   await expect(hold).toContainText('dispatch on green');
   await expect(hold).toContainText(/waiting (now|\d+[mhd])/);
+
+  // The CHIP itself qualifies (kestra/windmill: the status names what it
+  // waits for) — "queued" alone answers nothing.
+  await expect(parked.locator('.chip')).toContainText('queued · waiting ci');
+
+  // The workflow block's rollup is TEXT ONLY; the progress strip lives on
+  // each ROW (state column — "state is the better spot").
+  await expect(page.locator('[data-testid="wall-state-summary"]')).toHaveCount(0);
+  const demoCounts = page
+    .locator('[data-testid="wall-workflow-cell"]')
+    .filter({ hasText: 'pr-review-demo' })
+    .locator('[data-testid="wall-state-counts"]');
+  await expect(demoCounts).toContainText('1 in flight');
+  await expect(demoCounts).toContainText('1 queued');
+  await expect(demoCounts).toContainText('1 verdict');
+
+  // Every subject row carries ITS OWN progress strip beside its chip.
+  await expect(page.locator('[data-testid="wall-row-steps"]')).toHaveCount(4);
+  await expect(
+    page.locator('[data-testid="wall-card"][data-subject="demo-rezuscloud/harmostes#43"] [data-testid="wall-row-steps"]')
+  ).toBeVisible();
 
   await expect(parked.locator('[data-testid="wall-tokens-none"]')).toHaveText('—');
 

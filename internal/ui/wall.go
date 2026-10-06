@@ -11,6 +11,7 @@ import (
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
 	"github.com/tibrezus/harmostes/internal/graph"
+	"github.com/tibrezus/harmostes/internal/review"
 )
 
 // ---------------------------------------------------------------------------
@@ -80,9 +81,18 @@ type wallGroup struct {
 	// head … — dispatch on green · waiting 26m". A bare "queued" chip
 	// answered nothing; the gate knew the reason every sweep.
 	Hold *wallHold
+	// Cause qualifies the CHIP itself ("queued · waiting ci") — the
+	// short gate vocabulary, first-glance; Hold.Note is the detail line.
+	Cause string
+	// Strip is THIS subject's own attempt progress (its steps, per-step
+	// states, widths ∝ wall clock) — the progress bar lives on the row
+	// whose progress it describes (owner direction: "state is the better
+	// spot"), not aggregated at the workflow block.
+	Strip  []wallStep
+	StripW int
 }
 
-// wallHold is the parked state's explanation.
+// wallState collapses a wall row
 type wallHold struct {
 	// Note is the gate's waiting reason, verbatim (CSS clamps the line;
 	// server-side truncation ate the exit behind an ellipsis).
@@ -133,10 +143,18 @@ type wallStep struct {
 type wallWorkflow struct {
 	Name   string
 	URL    string
-	Strip  []wallStep
-	StripW int
 	Groups []wallGroup
 	Last   string // newest subject activity (RFC3339, for ordering)
+	// Counts is the workflow-level state rollup, TEXT ONLY ("8 queued · 1
+	// verdict") — the aggregate answer lives in words; every bar lives on
+	// the row whose progress it describes.
+	Counts []wallStateCount
+}
+
+// wallStateCount is one state's count in the workflow rollup line.
+type wallStateCount struct {
+	State string
+	Count int
 }
 
 // wallSection groups the wall by the workflow's owning template — the
@@ -272,13 +290,6 @@ func (s *Server) wallSections(r *http.Request, owner string) ([]wallSection, int
 		return groups[i].LastActivity > groups[j].LastActivity
 	})
 
-	// Newest attempt WITH activity per workflow: the strip's source. A
-	// parked (armed-queued) attempt is newer by creation but has run
-	// nothing — its strip would paint an empty lane and blank the
-	// workflow's live timing (the parked #45 eclipsing the running #43,
-	// caught by the component tier).
-	newest := map[string]*v1alpha1.Attempt{}
-	hasRuns := func(a *v1alpha1.Attempt) bool { return len(a.Status.Runs) > 0 }
 	// Attempt index by CR name: per-subject usage reads the SUBJECT's own
 	// latest attempt — the workflow-level usage cache (usage:last) aggregates
 	// across subjects and sessions, which read as identical numbers on every
@@ -288,12 +299,6 @@ func (s *Server) wallSections(r *http.Request, owner string) ([]wallSection, int
 	for i := range attempts {
 		a := &attempts[i]
 		byName[a.Name] = a
-		name := workflowCRName(a.Spec.WorkflowRef)
-		if cur, ok := newest[name]; !ok ||
-			(hasRuns(a) && !hasRuns(cur)) ||
-			(hasRuns(a) == hasRuns(cur) && attemptActivity(a).After(attemptActivity(cur))) {
-			newest[name] = a
-		}
 	}
 
 	// Template membership + compiled-shape source. Owner-scoped, same as
@@ -375,6 +380,17 @@ func (s *Server) wallSections(r *http.Request, owner string) ([]wallSection, int
 		// identical tokens). A queued row with no payload of its own shows
 		// an em-dash — honest, and the hold line below tells the real story.
 		wg.Usage = usageFromAttempt(byName[g.LatestAttempt])
+		// The chip qualification (first glance) + the note (the story).
+		wg.Cause = g.HoldCause
+		// THIS row's attempt progress: the strip lives on the subject
+		// (state column), not the workflow block — a bar at the block
+		// described one attempt while standing for many subjects (owner,
+		// twice). The compiled shape resolves per workflow (cached).
+		if att := byName[g.LatestAttempt]; att != nil {
+			if wf, ok := wfByName[name]; ok {
+				wg.Strip, wg.StripW = s.wallStepsFor(r.Context(), &wf, att)
+			}
+		}
 		// The parked claim's why: chip + note + waiting age. The note
 		// rides VERBATIM — CSS line-clamps the row; truncating server-side
 		// ate the reason's exit ("dispatch on green") behind an ellipsis.
@@ -412,9 +428,15 @@ func (s *Server) wallSections(r *http.Request, owner string) ([]wallSection, int
 	secs := map[string]*wallSection{}
 	for _, name := range wfOrder {
 		ww := wallWorkflow{Name: name, URL: "/workflows/" + name, Groups: wfGroups[name], Last: wfGroups[name][0].LastActivity}
-		if att := newest[name]; att != nil {
-			if wf, ok := wfByName[name]; ok {
-				ww.Strip, ww.StripW = s.wallStepsFor(r.Context(), &wf, att)
+		// The rollup line: text, not a bar — the aggregate in words while
+		// every visual lives on the row whose progress it describes.
+		tally := map[string]int{}
+		for _, g := range wfGroups[name] {
+			tally[wallState(g)]++
+		}
+		for _, st := range []string{"in flight", "reconciling", "queued", "dispatch lost", "failed", "verdict", "validated"} {
+			if n := tally[st]; n > 0 {
+				ww.Counts = append(ww.Counts, wallStateCount{State: st, Count: n})
 			}
 		}
 		sec := tmplOf[name]
@@ -652,6 +674,32 @@ func relDuration(d time.Duration) string {
 	default:
 		return fmt.Sprintf("%dd", int(d.Hours()/24))
 	}
+}
+
+// wallChipLabel qualifies the chip text the way windmill names what a flow
+// is waiting for: "queued" alone answers nothing. The gate's short cause
+// rides beside it — "queued · waiting ci", "queued · ci red", "queued ·
+// needs label" — first-glance, before the hold line's prose. In flight and
+// verdict keep their canonical words (the Now column carries the in-flight
+// detail; verdict is terminal).
+func wallChipLabel(g wallGroup) string {
+	base := wallState(g)
+	if base != "queued" || g.Cause == "" {
+		return base
+	}
+	switch review.HoldCause(g.Cause) {
+	case review.HoldCauseCIPending:
+		return "queued · waiting ci"
+	case review.HoldCauseCIRed:
+		return "queued · ci red"
+	case review.HoldCauseLabelAbsent:
+		return "queued · needs label"
+	case review.HoldCauseVerdictCheck:
+		return "queued · checking verdict"
+	case review.HoldCauseAPIError:
+		return "queued · forge unreachable"
+	}
+	return base
 }
 
 // wallState collapses a wall row to the shared console state vocabulary —

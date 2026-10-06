@@ -110,3 +110,52 @@ roleRef:
   name: harmostes-ui
   apiGroup: rbac.authorization.k8s.io
 {{- end }}
+{{- if .Values.ui.viewNamespace }}
+{{- if ne .Values.ui.viewNamespace .Values.namespace }}
+---
+# Read-only review view: the UI reads ANOTHER namespace's live data (the
+# ephemeral-before-merge review flow). This Role is the wall — get/list
+# ONLY, in the VIEWED namespace; the UI's mutating routes refuse on top
+# (ui.readOnly), but the API server enforces regardless. No watch (the UI
+# runs a direct, non-cached client — live updates arrive via the daprd
+# event sidecar), no write verbs, no secrets, no CRD writes.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: harmostes-ui-viewer
+  namespace: {{ .Values.ui.viewNamespace }}
+  labels:
+    app.kubernetes.io/name: harmostes
+    app.kubernetes.io/component: ui
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    harmostes.dev/review-view: "true"
+rules:
+  - apiGroups: ["harmostes.dev"]
+    resources: ["workflows", "attempts", "workflowtemplates"]
+    verbs: ["get", "list"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: harmostes-ui-viewer
+  namespace: {{ .Values.ui.viewNamespace }}
+  labels:
+    app.kubernetes.io/name: harmostes
+    app.kubernetes.io/component: ui
+    app.kubernetes.io/instance: {{ .Release.Name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.ui.serviceAccount }}
+    namespace: {{ .Values.namespace }}
+roleRef:
+  kind: Role
+  name: harmostes-ui-viewer
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}
+{{- end }}

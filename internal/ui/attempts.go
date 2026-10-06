@@ -232,6 +232,10 @@ type attemptGroup struct {
 	// pending at head … — dispatch on green". Empty on in-flight/verdict
 	// rows (dispatch clears it; the release reason owns released claims).
 	HoldNote string
+	// HoldCause is the SHORT cause (closed vocabulary from the gate) the
+	// wall chip qualifies with: "queued · waiting ci". Empty for old
+	// claims armed before the field existed — those render unqualified.
+	HoldCause string
 	// WaitingSince is when the current claim armed (the hold's start);
 	// the wall renders "waiting Xm" so "is it stuck?" reads off the row.
 	WaitingSince *metav1.Time
@@ -307,6 +311,7 @@ func groupAttempts(attempts []v1alpha1.Attempt, cutoff time.Time) []attemptGroup
 					// A parked claim carries its own why + since; a
 					// dispatched or released claim renders neither.
 					g.HoldNote = a.Status.Review.HoldNote
+					g.HoldCause = a.Status.Review.HoldCause
 					g.WaitingSince = a.Status.Review.ArmedSince
 				}
 			}

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -1376,20 +1377,48 @@ var tlWriteTimeout = 5 * time.Second // mutated only by TestSweepTLWriteBoundedN
 // standing-verdict refusal ON THE PR — the surface the author watches
 // (#577). Status + timeline alone read as "no response": rhesadox#2340
 // took four re-arms over four hours against a verdict that had landed
-// before the first re-arm. Deduped by the refusal record (HostNotified):
-// exactly one comment per (pr, head); a failed post leaves the marker
-// false and the next sweep retries — the sweep is idempotent, the host
-// comment is the thing that must not spam.
+// before the first re-arm.
+//
+// Deduped twice (#648). Fast path: the refusal record (HostNotified) —
+// exactly one comment per (pr, head) while the memo survives. Host path:
+// the CONVERSATION itself — the memo rides a sweep-local slice and a
+// last-writer-wins status patch, so overlapping sweeps (a webhook wake
+// racing the fast-poll, two pods) can each pass it; the PR is the one
+// shared state every sweep reads. Before posting a memo-miss, scan for a
+// standing notice at this head (marker match, ShaPrefixMatch semantics;
+// the legacy pre-marker prose as fallback so already-posted notices
+// dedupe too): standing → mark + skip. A failed post leaves HostNotified
+// false and the next sweep's scan finds nothing — the retry contract is
+// unchanged. Scan failed or inconclusive (conversation exceeds the cap):
+// post anyway — one duplicate beats a lost refusal surface (visibility
+// wins, rhesadox#2340), and the degraded case says so.
 func notifyRefusalHost(ctx context.Context, api review.API, ref *v1alpha1.ReviewRefusal, log func(string, ...any)) {
 	if ref.HostNotified {
 		return
+	}
+	// Only the memo-miss path pays the scan: first refusal, memo lost to a
+	// clobber, or a retry after a failed post.
+	comments, truncated, err := api.ListCommentsAll(ctx, ref.Repo, ref.PR)
+	if err != nil {
+		log("review-ready: refusal-notice dedupe scan failed for %s#%d — posting anyway (%v)", ref.Repo, ref.PR, err)
+	} else {
+		if refusalNoticeStanding(comments, ref.HeadSHA) {
+			ref.HostNotified = true // persisted by this sweep's aggregates patch
+			log("review-ready: refusal notice for %s#%d at %s already stands on the PR — host-side dedupe, skipping the post (#648)", ref.Repo, ref.PR, ref.HeadSHA)
+			return
+		}
+		if truncated {
+			// The notice would sit at the newest end of exactly the history we
+			// could not read. Post, and say the dedupe is degraded.
+			log("review-ready: refusal-notice dedupe scan inconclusive for %s#%d (conversation exceeds the scan cap) — posting anyway", ref.Repo, ref.PR)
+		}
 	}
 	link := ""
 	if ref.VerdictURL != "" {
 		link = " The verdict: " + ref.VerdictURL
 	}
-	body := fmt.Sprintf("Review gate (#567): this head (`%s`) was already reviewed — no new review runs at the same SHA.%s %s",
-		ref.HeadSHA, link, ref.Reason)
+	body := fmt.Sprintf("Review gate (#567): this head (`%s`) was already reviewed — no new review runs at the same SHA.%s %s <!-- %s @ %s -->",
+		ref.HeadSHA, link, ref.Reason, refusalNoticeMarkerName, ref.HeadSHA)
 	if err := api.PostComment(ctx, ref.Repo, ref.PR, body); err != nil {
 		log("review-ready: refusal notice post failed for %s#%d — retried next sweep: %v", ref.Repo, ref.PR, err)
 		return
@@ -1402,6 +1431,38 @@ func notifyRefusalHost(ctx context.Context, api review.API, ref *v1alpha1.Review
 		return
 	}
 	log("review-ready: refusal notice posted for %s#%d at %s (#577)", ref.Repo, ref.PR, ref.HeadSHA)
+}
+
+// refusalNoticeMarkerName is the hidden marker's name; refusalNoticeMarker
+// matches the full form the body carries (the verdict-trailer convention:
+// a hidden HTML comment is invisible in the rendered conversation).
+const refusalNoticeMarkerName = "harmostes: review-gate-refusal"
+
+var refusalNoticeMarker = regexp.MustCompile(`<!-- harmostes: review-gate-refusal @ ([0-9a-f]{7,40}) -->`)
+
+// refusalNoticeStanding reports whether a #577 refusal notice already
+// stands at headSHA — the host-side dedupe half (#648). Marker matches go
+// through ShaPrefixMatch (an abbreviated recorded sha covers its head;
+// any OTHER sha does not — a new head earns a fresh notice). The LEGACY
+// prose form (notices posted before the marker existed) matches on the
+// stable body prefix plus the full head sha the body carries verbatim.
+func refusalNoticeStanding(comments []review.IssueComment, headSHA string) bool {
+	head := strings.ToLower(headSHA)
+	for _, c := range comments {
+		if m := refusalNoticeMarker.FindStringSubmatch(c.Body); m != nil {
+			if review.ShaPrefixMatch(headSHA, m[1]) {
+				return true
+			}
+			continue
+		}
+		// Legacy fallback: "Review gate (#567): this head (`<sha>`) ..." — the
+		// prefix is stable since #577; the body carries the full head verbatim.
+		lower := strings.ToLower(c.Body)
+		if strings.Contains(lower, "review gate (#567): this head") && strings.Contains(lower, head) {
+			return true
+		}
+	}
+	return false
 }
 
 func emitGate(ctx context.Context, tl timeline.Writer, agg *v1alpha1.ReviewReadyStatus, result review.Result, repo string, pr int) {

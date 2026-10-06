@@ -109,7 +109,7 @@ func (r *WorkflowReconciler) terminalRunPending(ctx context.Context, wf *v1alpha
 	}
 	for i := range attempts {
 		for _, run := range attempts[i].Status.Runs {
-			if v1alpha1.RunTerminalPhase(run.Phase) && !run.EndedAt.IsZero() && run.EndedAt.Time.After(last) {
+			if v1alpha1.RunTerminalPhase(run.Phase) && !run.EndedAt.IsZero() && run.EndedAt.After(last) {
 				return true
 			}
 		}

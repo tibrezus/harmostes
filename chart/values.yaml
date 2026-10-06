@@ -186,6 +186,15 @@ ui:
   # notes, per-PR tokens). The image carries the chart it was built from
   # (chartfs embed), so the fixture world loads anywhere. false in prod.
   fixture: false
+  # Read-only review view (ephemeral environments): viewNamespace points
+  # the UI at ANOTHER namespace's live data (a get/list-only Role renders
+  # there — the API server is the wall), readOnly refuses every mutating
+  # route and hides CTAs, and readOnlyAs scopes anonymous visitors to that
+  # owner's rows (open the URL, see the data — write nothing). Leave all
+  # three unset in prod.
+  viewNamespace: ""
+  readOnly: false
+  readOnlyAs: ""
   adminGroups: "harmostes-admins"
   image: ghcr.io/tibrezus/harmostes-ui:dev
   serviceAccount: harmostes-ui

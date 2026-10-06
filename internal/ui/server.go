@@ -59,6 +59,8 @@ type Server struct {
 	now            func() time.Time
 	adminGroups    map[string]bool // identities in any of these groups see across all owner labels
 	devWrite       bool            // dev-identity writes enabled — set ONLY for explicit dev/fixture servers
+	readOnly       bool            // review posture: every mutating route refuses, CTAs hidden
+	readOnlyAs     string          // anonymous requests view as this owner (read-only envs; scoping only — writes stay refused)
 	templateSource *TemplateSource // the environment's template git source (nil = propose surface absent, #420)
 	sourceToken    string          // forge token (ExternalSecret → env → server-side only)
 	timeline       timeline.Reader // timeline-store reader (nil = Event Timeline renders an explicit empty-state)
@@ -147,10 +149,34 @@ func (s *Server) SetDevWriteEnabled(v bool) {
 // X-Forwarded-* fallbacks never qualify — a forged forwarded username can
 // browse, but can never create a workflow under someone else's owner label.
 func (s *Server) mayWrite(id *Identity) bool {
+	if s.readOnly {
+		// The review posture (ephemeral environments reading prod data):
+		// observe-only BY CONSTRUCTION — no identity qualifies, CTAs
+		// render hidden, and the API server's Role carries read verbs
+		// only. Belt and suspenders on purpose: the RBAC is the real
+		// wall; this keeps the UI honest about it.
+		return false
+	}
 	if id == nil {
 		return false
 	}
 	return id.Authoritative || (id.Dev && s.devWrite)
+}
+
+// SetReadOnly flips the review posture: every mutating route refuses and
+// the templates render observe-only. The k8s RBAC (chart: the read-only
+// Role in the viewed namespace) is the enforcement; this is the UI
+// agreeing with it.
+func (s *Server) SetReadOnly(v bool) {
+	s.readOnly = v
+}
+
+// SetReadOnlyAs names the owner anonymous requests view data as — a
+// READ-ONLY convenience for review environments behind no identity
+// provider: open the URL, see that owner's rows. The identity is never
+// authoritative and never dev — mayWrite is false twice over.
+func (s *Server) SetReadOnlyAs(owner string) {
+	s.readOnlyAs = owner
 }
 
 // isAdmin reports whether the identity belongs to any configured admin

@@ -58,8 +58,17 @@ spec:
           image: {{ .Values.ui.image }}
           imagePullPolicy: Always
           args:
-            - --namespace={{ .Values.namespace }}
+            # viewNamespace: the UI reads ANOTHER namespace's live data
+            # (review environments). Everything else (the controller, the
+            # worker pool, RBAC ownership) stays in the chart namespace.
+            - --namespace={{ .Values.ui.viewNamespace | default .Values.namespace }}
             - --platforms-config=/etc/harmostes-platforms/platforms.json
+            {{- if .Values.ui.readOnly }}
+            - --read-only
+            {{- with .Values.ui.readOnlyAs }}
+            - --read-only-as={{ . }}
+            {{- end }}
+            {{- end }}
             {{- if .Values.ui.fixture }}
             # Fixture mode serves the review world; the platforms config is
             # still loaded (display metadata only). The loopback default

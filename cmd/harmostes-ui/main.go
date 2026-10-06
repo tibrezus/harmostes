@@ -56,6 +56,10 @@ func main() {
 	flag.StringVar(&namespace, "namespace", envOr("HARMOSTES_NAMESPACE", "harmostes"), "k8s namespace to query")
 	flag.StringVar(&platformsConfig, "platforms-config", envOr("HARMOSTES_PLATFORMS_CONFIG_FILE", ""), "path to JSON platform display config file")
 	flag.BoolVar(&fixtureMode, "fixture", false, "serve the deterministic in-memory fixture world instead of a cluster")
+	readOnly := false
+	readOnlyAs := ""
+	flag.BoolVar(&readOnly, "read-only", false, "review posture: every mutating route refuses, CTAs hidden (ephemeral envs reading another namespace's data)")
+	flag.StringVar(&readOnlyAs, "read-only-as", "", "anonymous requests view data as this owner (read-only environments only)")
 	flag.StringVar(&chartDir, "chart", "chart", "chart directory the fixture world loads its CRDs and pr-review template from (fixture mode only)")
 	flag.Parse()
 
@@ -137,6 +141,22 @@ func main() {
 	// Dev-identity writes (X-Harmostes-Dev-User): OFF unless explicitly
 	// enabled. Production chart values never set this — the invariant lives
 	// here, not in an assumption about network reachability (PR #427 review).
+	// Review posture (ephemeral envs reading prod data, read-only): the
+	// env vars mirror the flags so the chart renders either.
+	if envOr("HARMOSTES_UI_READ_ONLY", "") == "true" || readOnly {
+		server.SetReadOnly(true)
+		logger.Info("read-only review mode: mutating routes refuse")
+	}
+	if as := envOr("HARMOSTES_UI_READ_ONLY_AS", readOnlyAs); as != "" {
+		if readOnly || envOr("HARMOSTES_UI_READ_ONLY", "") == "true" {
+			server.SetReadOnlyAs(as)
+			logger.Info("anonymous requests view data as", "owner", as)
+		} else {
+			logger.Error("read-only-as requires read-only mode — refusing to map anonymous visitors to an owner on a writable server")
+			os.Exit(1)
+		}
+	}
+
 	if envOr("HARMOSTES_UI_DEV_WRITE", "") == "true" {
 		server.SetDevWriteEnabled(true)
 		logger.Warn("dev-identity writes ENABLED — never set in production")

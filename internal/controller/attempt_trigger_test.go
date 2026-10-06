@@ -59,7 +59,7 @@ func triggerFixture647(t *testing.T, runPhase string, runEnded *time.Time, relea
 	at.Name = "wiki-lint-test-5037cf50"
 	at.Namespace = "harmostes"
 	at.Labels = map[string]string{
-		v1alpha1.WorkflowLabel:     "wiki-lint-test",
+		v1alpha1.WorkflowLabel:      "wiki-lint-test",
 		v1alpha1.ObjectiveKindLabel: v1alpha1.ObjectiveKindPRReview,
 		// v1alpha1.ReviewClaimLabel deliberately ABSENT: absence means live.
 	}

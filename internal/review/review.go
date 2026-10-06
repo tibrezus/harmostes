@@ -102,6 +102,45 @@ const (
 	CodeVerdictStanding ReleaseCode = "verdict-standing"
 )
 
+// HoldCause vocabulary — the SHORT cause behind a waiting evaluation.
+// The wall's state chip renders it as a qualification ("queued · waiting
+// ci"); HoldNote carries the prose, this carries the classification. The
+// mapping is centralized here because this package OWNS the waiting
+// reason strings — drift between a reason and its cause is a compile-
+// adjacent miss caught by TestHoldCauseOf, not a runtime mystery.
+type HoldCause string
+
+const (
+	HoldCauseCIPending    HoldCause = "ci-pending"
+	HoldCauseCIRed        HoldCause = "ci-red"
+	HoldCauseLabelAbsent  HoldCause = "label-absent"
+	HoldCauseAPIError     HoldCause = "api-error"
+	HoldCauseVerdictCheck HoldCause = "verdict-check"
+	HoldCauseDispatched   HoldCause = "dispatched" // review in flight — not a hold, the chip still qualifies
+)
+
+// HoldCauseOf classifies a waiting evaluation's reason into the short
+// cause vocabulary. Reasons are OUR strings (review.go writes them); the
+// prefixes are pinned by TestHoldCauseOf. Unknown → "" (the chip renders
+// unqualified rather than guessing).
+func HoldCauseOf(reason string) HoldCause {
+	switch {
+	case strings.Contains(reason, "ci pending at head"):
+		return HoldCauseCIPending
+	case strings.Contains(reason, "ci red at head"):
+		return HoldCauseCIRed
+	case strings.Contains(reason, "the review label is absent"):
+		return HoldCauseLabelAbsent
+	case strings.Contains(reason, "verdict check failed"):
+		return HoldCauseVerdictCheck
+	case strings.Contains(reason, "pr fetch failed"):
+		return HoldCauseAPIError
+	case strings.Contains(reason, "review in flight"):
+		return HoldCauseDispatched
+	}
+	return ""
+}
+
 // API is the per-host API surface the gate reads. It exists so tests can
 // stub the transport.
 type API interface {
@@ -1137,21 +1176,28 @@ func standdown(code ReleaseCode, reason string) Evaluation {
 // refusal (#567).
 var verdictTrailer = regexp.MustCompile(`<!-- pr-review: (APPROVE|REQUEST_CHANGES|COMMENT) @ ([0-9a-f]{7,40}) -->`)
 
+// ShaPrefixMatch reports whether recorded (7-40 hex, possibly abbreviated)
+// identifies head — the ONE abbreviation rule shared by the verdict
+// trailer (#567) and the refusal-notice marker (#648). A recorded sha
+// matches as a case-insensitive prefix of the head — never the reverse: a
+// head shorter than a recorded sha is a fake-world shape, not a real
+// abbreviation. A recorded sha at any OTHER sha does not match — a push
+// (new head) is what re-opens review.
+func ShaPrefixMatch(head, recorded string) bool {
+	return strings.HasPrefix(strings.ToLower(head), strings.ToLower(recorded))
+}
+
 // standingVerdictAt reports whether a verdict trailer stands at exactly
 // headSHA (#567), returning its decision. Trailer shas abbreviate the head
 // (the skill's contract allows 7-40 hex; hosts always report the full
-// head), so a trailer matches as a case-insensitive prefix of the head —
-// never the reverse: a head shorter than a trailer is a fake-world shape,
-// not a real abbreviation. Verdicts at any OTHER sha do not block — a push
-// (new head) is what re-opens review.
+// head), so a trailer matches through ShaPrefixMatch.
 func standingVerdictAt(comments []IssueComment, headSHA string) (decision string, source IssueComment, found bool) {
-	head := strings.ToLower(headSHA)
 	for _, c := range comments {
 		m := verdictTrailer.FindStringSubmatch(c.Body)
 		if m == nil {
 			continue
 		}
-		if strings.HasPrefix(head, strings.ToLower(m[2])) {
+		if ShaPrefixMatch(headSHA, m[2]) {
 			return m[1], c, true
 		}
 	}

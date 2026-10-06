@@ -312,8 +312,8 @@ func TestWallAlertAggregatesDispatchLosses(t *testing.T) {
 		if !strings.Contains(body, "data-testid=\"wall-alert\"") {
 			t.Error("wall missing the dispatch-loss alert line")
 		}
-		if got := strings.Count(body, "dispatch lost"); got != 2 {
-			t.Errorf("dispatch-lost chips = %d, want 2 (one per subject, no more)", got)
+		if got := strings.Count(body, `>dispatch lost</span>`); got != 2 {
+			t.Errorf("dispatch-lost chips = %d, want 2 (one per subject, no more) — the state-summary counts text also says 'dispatch lost' and must not be counted", got)
 		}
 	})
 

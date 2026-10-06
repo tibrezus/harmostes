@@ -23,16 +23,19 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"k8s.io/client-go/kubernetes"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/tibrezus/harmostes"
 	"github.com/tibrezus/harmostes/internal/dapr"
 	"github.com/tibrezus/harmostes/internal/k8s"
 	"github.com/tibrezus/harmostes/internal/timeline"
@@ -53,6 +56,10 @@ func main() {
 	flag.StringVar(&namespace, "namespace", envOr("HARMOSTES_NAMESPACE", "harmostes"), "k8s namespace to query")
 	flag.StringVar(&platformsConfig, "platforms-config", envOr("HARMOSTES_PLATFORMS_CONFIG_FILE", ""), "path to JSON platform display config file")
 	flag.BoolVar(&fixtureMode, "fixture", false, "serve the deterministic in-memory fixture world instead of a cluster")
+	readOnly := false
+	readOnlyAs := ""
+	flag.BoolVar(&readOnly, "read-only", false, "review posture: every mutating route refuses, CTAs hidden (ephemeral envs reading another namespace's data)")
+	flag.StringVar(&readOnlyAs, "read-only-as", "", "anonymous requests view data as this owner (read-only environments only)")
 	flag.StringVar(&chartDir, "chart", "chart", "chart directory the fixture world loads its CRDs and pr-review template from (fixture mode only)")
 	flag.Parse()
 
@@ -75,6 +82,11 @@ func main() {
 	// path production uses — the -fixture contract is that page behavior is
 	// identical, only the data source differs.
 	if fixtureMode {
+		chartDir, err := resolveChartDir(chartDir, logger)
+		if err != nil {
+			logger.Error("resolve fixture chart", "err", err)
+			os.Exit(1)
+		}
 		fixtureServer, err := fixture.NewWorld(namespace, logger, chartDir)
 		if err != nil {
 			logger.Error("seed fixture world", "err", err)
@@ -129,6 +141,22 @@ func main() {
 	// Dev-identity writes (X-Harmostes-Dev-User): OFF unless explicitly
 	// enabled. Production chart values never set this — the invariant lives
 	// here, not in an assumption about network reachability (PR #427 review).
+	// Review posture (ephemeral envs reading prod data, read-only): the
+	// env vars mirror the flags so the chart renders either.
+	if envOr("HARMOSTES_UI_READ_ONLY", "") == "true" || readOnly {
+		server.SetReadOnly(true)
+		logger.Info("read-only review mode: mutating routes refuse")
+	}
+	if as := envOr("HARMOSTES_UI_READ_ONLY_AS", readOnlyAs); as != "" {
+		if readOnly || envOr("HARMOSTES_UI_READ_ONLY", "") == "true" {
+			server.SetReadOnlyAs(as)
+			logger.Info("anonymous requests view data as", "owner", as)
+		} else {
+			logger.Error("read-only-as requires read-only mode — refusing to map anonymous visitors to an owner on a writable server")
+			os.Exit(1)
+		}
+	}
+
 	if envOr("HARMOSTES_UI_DEV_WRITE", "") == "true" {
 		server.SetDevWriteEnabled(true)
 		logger.Warn("dev-identity writes ENABLED — never set in production")
@@ -189,6 +217,28 @@ func resolveDaprEndpoint() string {
 		return "http://127.0.0.1:" + p
 	}
 	return "http://127.0.0.1:3500"
+}
+
+// resolveChartDir prefers an on-disk chart (the dev loop: -chart ../../chart
+// beside a real checkout). In a container the image is distroless — no chart
+// directory exists — so fixture mode falls back to the chart EMBEDDED in
+// this binary (chartfs: the same tree the build compiled), extracted to a
+// temp dir the disk-based loader reads. The temp dir lives as long as the
+// process; a pod's filesystem dies with it.
+func resolveChartDir(dir string, logger *slog.Logger) (string, error) {
+	if _, err := os.Stat(filepath.Join(dir, "values.yaml")); err == nil {
+		return dir, nil
+	}
+	dst, err := os.MkdirTemp("", "harmostes-chart-")
+	if err != nil {
+		return "", fmt.Errorf("temp dir for the embedded chart: %w", err)
+	}
+	if err := harmostes.ExtractChart(dst); err != nil {
+		_ = os.RemoveAll(dst)
+		return "", fmt.Errorf("extract embedded chart: %w", err)
+	}
+	logger.Info("fixture chart: extracted embedded chart (no on-disk chart found)", "requested", dir, "dir", dst)
+	return dst, nil
 }
 
 // fixtureListenAddr narrows the fixture default to loopback (#436): the

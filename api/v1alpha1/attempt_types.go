@@ -317,6 +317,14 @@ type ReviewClaimStatus struct {
 	// dispatch. Not set on released claims — the release reason owns the
 	// story then.
 	HoldNote string `json:"holdNote,omitempty"`
+
+	// HoldCause is the SHORT cause behind the hold — a closed vocabulary
+	// the wall's state chip renders as a qualification ("queued · waiting
+	// ci"): ci-pending | ci-red | label-absent | api-error | verdict-check
+	// | dispatched. Written beside HoldNote by the armed-poll; the wall
+	// never parses prose to derive it (the note is for humans, the cause
+	// for the chip).
+	HoldCause string `json:"holdCause,omitempty"`
 }
 
 // RunRecord is one Workflow Run (job) executed inside an attempt.
@@ -335,6 +343,15 @@ type RunRecord struct {
 	// Phase is the run phase: running | succeeded | failed.
 	// +optional
 	Phase string `json:"phase,omitempty"`
+}
+
+// RunTerminalPhase reports whether a RunRecord phase is terminal — the
+// kernel's own consume-on-completion fact (#647): a run that will not
+// run again. Single-sourced here because the controller's terminal-run
+// trigger and the attempt ledger's finalize paths must not drift on what
+// counts as "ended".
+func RunTerminalPhase(phase string) bool {
+	return phase == "succeeded" || phase == "failed"
 }
 
 // TotalRuns is runs ever executed on this attempt: the live tail plus every

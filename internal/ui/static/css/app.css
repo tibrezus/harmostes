@@ -1988,6 +1988,29 @@ code, pre {
 .wall-steps {
 	display: block;
 }
+/* The workflow-level STATE summary (kestra's per-flow statistics, counts
+   flavor): segments ∝ subject counts, colored by the same state palette —
+   the aggregate answer to "what is this workflow doing" beside the name.
+   The step strip beneath is the last attempt's SHAPE/timing — a different
+   question, deliberately second. */
+.wall-states-counts {
+	margin-top: 0.3rem;
+	font-size: 0.72rem;
+	color: var(--fg-muted);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.wall-states-counts .sep { margin: 0 0.3rem; }
+/* The ROW's own progress: the strip lives in the State column, beside the
+   chip — a bar at the block described one attempt while standing for many
+   subjects (owner, twice). Chip → progress → hold line: the full state
+   story in one place. */
+.wall-row-steps {
+	display: block;
+	margin-top: 0.3rem;
+	max-width: 10rem;
+}
 /* The parked claim's why (#user wall refactor): the queued row's second
    line under the state chip — the gate's waiting reason + hold age. Small,
    muted, wrapping — the row stays one glance readable while "why" is no

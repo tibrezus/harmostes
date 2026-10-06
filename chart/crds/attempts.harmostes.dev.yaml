@@ -159,6 +159,7 @@ spec:
                     dismissedAt: { type: string, format: date-time, description: "When the horizon last dismissed this head — survives revival; time is the only eraser (r11)" }
                     lastDispatchLostAt: { type: string, format: date-time, description: "When this claim last released dispatch-lost (#376) — the churn budget refuses only within the horizon window of this instant; older strikes self-clear on the next automatic arm" }
                     holdNote: { type: string, description: "Why the gate is holding this claim queued — the last waiting evaluation's reason, verbatim; written on change by the armed-poll, cleared on dispatch" }
+                    holdCause: { type: string, description: "The SHORT cause behind the hold — closed vocabulary the wall chip renders as a qualification: ci-pending, ci-red, label-absent, api-error, verdict-check, dispatched" }
                 # NOTE: CRDs under chart/crds/ are installed by `helm install`
                 # but NOT upgraded by `helm upgrade` — re-apply this file with
                 # `kubectl apply -f chart/crds/` on upgrade or the API server

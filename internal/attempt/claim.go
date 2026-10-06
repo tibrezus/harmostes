@@ -636,23 +636,25 @@ func shortSHA(sha string) string {
 	return sha
 }
 
-// SetClaimHoldNote persists WHY the gate is holding a queued claim — the
-// last waiting evaluation's reason, verbatim (#user wall refactor). The wall
-// renders it as the queued row's second line: a bare "queued" chip left the
-// operator asking "in what status ARE they?" while the poll knew the answer
-// every sweep. Idempotent: the note writes only when it CHANGED — the poll
-// runs every few minutes and CI context churns ("running: a, b" → "running:
-// a"), so unconditional writes would storm the API server for no reader
-// value. Returns whether a write happened. An empty note clears (dispatch);
-// callers that dispatch use MarkClaimDispatched, which leaves the note —
-// the row's in-flight state outranks it — but ReleaseClaim + fresh arms
-// overwrite on the next poll.
-func SetClaimHoldNote(ctx context.Context, c client.Client, namespace, attemptName, note string) (bool, error) {
+// SetClaimHold persists WHY the gate is holding a queued claim — the last
+// waiting evaluation's reason VERBATIM (HoldNote) plus its SHORT cause
+// (HoldCause, the closed vocabulary the wall chip qualifies with). The wall
+// renders the cause on the chip ("queued · waiting ci") and the note as the
+// row's second line: a bare "queued" chip left the operator asking "in what
+// status ARE they?" while the poll knew the answer every sweep. Idempotent:
+// the pair writes only when it CHANGED — the poll runs every few minutes
+// and CI context churns ("running: a, b" → "running: a"), so unconditional
+// writes would storm the API server for no reader value. Returns whether a
+// write happened. An empty note clears (dispatch); callers that dispatch
+// use MarkClaimDispatched, which leaves the note — the row's in-flight
+// state outranks it — but ReleaseClaim + fresh arms overwrite on the next
+// poll.
+func SetClaimHold(ctx context.Context, c client.Client, namespace, attemptName, note, cause string) (bool, error) {
 	var at v1alpha1.Attempt
 	if err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: attemptName}, &at); err != nil {
 		return false, fmt.Errorf("get attempt %s: %w", attemptName, err)
 	}
-	if at.Status.Review != nil && at.Status.Review.HoldNote == note {
+	if at.Status.Review != nil && at.Status.Review.HoldNote == note && at.Status.Review.HoldCause == cause {
 		return false, nil
 	}
 	err := patchAttemptStatus(ctx, c, namespace, attemptName, func(s *v1alpha1.AttemptStatus) {
@@ -660,6 +662,7 @@ func SetClaimHoldNote(ctx context.Context, c client.Client, namespace, attemptNa
 			s.Review = &v1alpha1.ReviewClaimStatus{}
 		}
 		s.Review.HoldNote = note
+		s.Review.HoldCause = cause
 	})
 	if err != nil {
 		return false, err

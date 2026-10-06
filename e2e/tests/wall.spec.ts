@@ -40,7 +40,7 @@ test('queued row carries its hold reason, waiting age, and no borrowed tokens', 
 
   const parked = page.locator('[data-testid="wall-card"][data-subject="demo-rezuscloud/harmostes#45"]');
   await expect(parked).toBeVisible();
-  await expect(parked.locator('.chip')).toHaveText('queued');
+  await expect(parked.locator('.chip')).toHaveText('queued · waiting ci');
 
   const hold = parked.locator('[data-testid="wall-hold"]');
   await expect(hold).toContainText('ci pending at head f00dfeed1234567');

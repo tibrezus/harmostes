@@ -101,10 +101,6 @@ type GateDeps struct {
 	// FleetMaxConcurrent is the chart default; spec.reviewReady.maxConcurrent
 	// overrides per workflow.
 	FleetMaxConcurrent int
-	// AttemptRetention is the GC horizon for terminal/statusless attempts
-	// (#385); 0 means the 720h default (chart: worker.job.attemptRetention;
-	// GC cannot be disabled).
-	AttemptRetention time.Duration
 	// DisableCancelOnSupersede turns the #402 cancellation pass OFF
 	// (the pass deletes the review Job of a claim the gate released as
 	// superseded/closed): the dead-head review otherwise burns the
@@ -116,14 +112,6 @@ type GateDeps struct {
 	DisableCancelOnSupersede bool
 	Log                      func(format string, args ...any)
 	TL                       timeline.Writer
-	// JanitorDue gates the sweep's janitor pass (reap + retention GC,
-	// #629): the passes List EVERY attempt of the workflow twice — with a
-	// 30d retention on a fleet doing ~50 reviews a day that is ~1500
-	// objects per sweep on the uncached client, its own share of the
-	// client-rate-limiter weather. The gate returns whether the janitor
-	// should run THIS sweep; a 30m cadence keeps the same cleanup latency
-	// at a fraction of the traffic. Nil = always due (tests, one-shot).
-	JanitorDue func() bool
 	// NewReviewAPI overrides the review REST API construction — the
 	// worker's dispatch tests pin the API through it (C3 moved the sweep
 	// here; the injection point moved with it). Nil = the default.
@@ -1171,40 +1159,13 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 		log("review-ready: aggregates patch failed: %v", err)
 	}
 
-	// Janitor (r30, #376): attempts frozen in reconciling for days are
-	// worker-loss debris — they hold claim slots and clutter the fleet
-	// view. Best-effort, bounded, on the uncancellable ctx (a sweep abort
-	// must not abort the reap halfway is fine — ReapStuckAttempts is
-	// per-attempt best-effort and the NEXT sweep reaps the rest).
-	// Cadence-gated (#629 JanitorDue): the passes' full Lists are the
-	// sweep's largest API cost; a 30m cadence bounds it without changing
-	// cleanup latency meaningfully.
-	if deps.JanitorDue != nil && !deps.JanitorDue() {
-		// skip: another sweep ran the janitor recently
-	} else if reapCtx, rcancel := context.WithTimeout(recordCtx, 30*time.Second); rcancel != nil {
-		defer rcancel()
-		if n, err := attempt.ReapStuckAttempts(reapCtx, deps.Client, wf.Namespace, wf.Name, 7*24*time.Hour); err != nil {
-			log("review-ready: reap stuck attempts failed: %v", err)
-		} else if n > 0 {
-			log("review-ready: reaped %d attempt(s) stuck reconciling >7d", n)
-		}
-		// Retention GC (#385): terminal and statusless attempts past the
-		// horizon are pure CR accumulation (2,495 on one workflow and
-		// climbing) — delete them the same best-effort way. Terminal
-		// phase = finished work; statusless = never reconciled. Live work
-		// (reconciling, claim-bearing) is excluded by construction.
-		// Horizon is a chart value (HARMOSTES_ATTEMPT_RETENTION); 0
-		// means the 30d default — GC cannot be disabled.
-		retention := deps.AttemptRetention
-		if retention == 0 {
-			retention = 720 * time.Hour
-		}
-		if n, err := attempt.GCAttempts(reapCtx, deps.Client, wf.Namespace, wf.Name, retention); err != nil {
-			log("review-ready: attempt GC failed: %v", err)
-		} else if n > 0 {
-			log("review-ready: GC'd %d attempt(s) older than %s", n, retention)
-		}
-	}
+	// The janitor (stuck-attempt reap + retention GC) does NOT run here
+	// anymore (#651): it was scoped to THIS workflow — the exact blind spot
+	// that let 27 fork-maintenance claims sit reconciling 13–15 days, since
+	// fork-maintenance templates never enter the swept population. The pass
+	// is namespace-wide kernel machinery now, carried by the controller's
+	// janitor runnable — cleanup must not depend on whether some pr-review
+	// sweep happens to fire.
 
 	return out, nil
 }

@@ -1,6 +1,7 @@
 package k8s
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -12,6 +13,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	sigsyaml "sigs.k8s.io/yaml"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
@@ -675,5 +679,36 @@ func TestSkillsRevPinIsFullShaOrEmpty(t *testing.T) {
 		if !isHex(r) {
 			t.Fatalf("values.skills.rev = %q — not hex", rev)
 		}
+	}
+}
+
+// #651 AC 3: DeleteJob must request FOREGROUND propagation — the delete
+// does not return until the runner pod is gone. Background propagation
+// relies on the async pod-GC controller, which demonstrably misses (two
+// Completed pods outlived their deleted Job by 4 days on the live fleet).
+// The SIGTERM cascade (#402 cancellation mechanism) rides dependent-pod
+// deletion either way; foreground adds deterministic ordering.
+func TestDeleteJobForegroundPropagation(t *testing.T) {
+	ctx := context.Background()
+	var gotPolicy *metav1.DeletionPropagation
+	cl := fake.NewClientBuilder().
+		WithScheme(Scheme()).
+		WithObjects(&batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: "attempt-job", Namespace: "harmostes"}}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+				do := client.DeleteOptions{}
+				for _, o := range opts {
+					o.ApplyToDelete(&do)
+				}
+				gotPolicy = do.PropagationPolicy
+				return c.Delete(ctx, obj, opts...)
+			},
+		}).
+		Build()
+	if err := DeleteJob(ctx, cl, "harmostes", "attempt-job"); err != nil {
+		t.Fatal(err)
+	}
+	if gotPolicy == nil || *gotPolicy != metav1.DeletePropagationForeground {
+		t.Fatalf("DeleteJob must pass DeletePropagationForeground, got %v", gotPolicy)
 	}
 }

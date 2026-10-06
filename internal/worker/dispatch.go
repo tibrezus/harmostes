@@ -48,13 +48,9 @@ type Dispatcher struct {
 	// per-field copies this struct replaced are exactly where #314 hid.
 	cfg DispatchConfig
 
-	// janitorLast backs the gate sweep's JanitorDue cadence (#629): the
-	// reap + retention GC passes List every attempt of the workflow — the
-	// sweep's largest API cost — so they run at most once per janitorEvery
-	// instead of on every wake/fast-poll tick.
-	janitorMu    sync.Mutex
-	janitorLast  time.Time
-	janitorEvery time.Duration
+	// janitorEvery removed (#651): the janitor moved to the controller as
+	// a namespace-wide runnable — cleanup must not depend on the gate sweep
+	// firing, and the worker no longer carries janitor cadence state.
 }
 
 // DispatchConfig is the fleet-level half of the Worker Job shape: every
@@ -68,10 +64,6 @@ type Dispatcher struct {
 // copied it into this struct) were all the same failure mode at this seam.
 type DispatchConfig struct {
 	FleetMaxConcurrent int
-	// AttemptRetention GCs terminal/statusless attempts past this age
-	// (#385). 0 means the 720h default; GC cannot be disabled — the knob
-	// tunes the horizon, it does not turn accumulation back on.
-	AttemptRetention time.Duration
 	// DisableCancelOnSupersede turns the #402 cancellation pass off
 	// superseded/closed (#402) — the dead-head review otherwise burns the
 	// full run bound before the moved-head guard discards its verdict.
@@ -148,18 +140,6 @@ func DispatchConfigFromEnv(logf func(string, ...any)) (DispatchConfig, error) {
 			return cfg, fmt.Errorf("HARMOSTES_MAX_CONCURRENT=%q: must be a positive integer", v)
 		}
 		cfg.FleetMaxConcurrent = n
-	}
-	// Retention GC horizon (#385): Go duration; 0/empty/unset → the 720h
-	// default. GC cannot be disabled (the knob tunes the horizon).
-	cfg.AttemptRetention = 720 * time.Hour
-	if v := os.Getenv("HARMOSTES_ATTEMPT_RETENTION"); v != "" {
-		d, err := time.ParseDuration(v)
-		if err != nil || d < 0 {
-			return cfg, fmt.Errorf("HARMOSTES_ATTEMPT_RETENTION=%q: must be a non-negative duration", v)
-		}
-		if d > 0 {
-			cfg.AttemptRetention = d
-		}
 	}
 	// Cancel-on-supersede (#402): default ON — the waste is pure loss. A
 	// malformed value is an error, not a silent default (#311 convention).
@@ -271,31 +251,12 @@ func NewDispatcher(ctx context.Context, cfg DispatchConfig, logf func(string, ..
 		ns = "harmostes"
 	}
 	return &Dispatcher{
-		cl:           cl,
-		scheme:       scheme,
-		namespace:    ns,
-		logf:         logf,
-		cfg:          cfg,
-		janitorEvery: 30 * time.Minute,
+		cl:        cl,
+		scheme:    scheme,
+		namespace: ns,
+		logf:      logf,
+		cfg:       cfg,
 	}, nil
-}
-
-// janitorDue is the sweep's JanitorDue gate: true at most once per
-// janitorEvery, and true on the very first call (a fresh dispatcher must
-// not skip the first janitor window). Zero janitorEvery (tests building
-// Dispatcher{} directly) = always due.
-func (d *Dispatcher) janitorDue() bool {
-	if d.janitorEvery <= 0 {
-		return true
-	}
-	d.janitorMu.Lock()
-	defer d.janitorMu.Unlock()
-	now := time.Now()
-	if d.janitorLast.IsZero() || now.Sub(d.janitorLast) >= d.janitorEvery {
-		d.janitorLast = now
-		return true
-	}
-	return false
 }
 
 // Namespace is the namespace this dispatcher works in (the fast-poll loop
@@ -384,10 +345,8 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req RunRequest) error {
 		Client:                   d.cl,
 		Scheme:                   d.scheme,
 		FleetMaxConcurrent:       d.cfg.FleetMaxConcurrent,
-		AttemptRetention:         d.cfg.AttemptRetention,
 		DisableCancelOnSupersede: d.cfg.DisableCancelOnSupersede,
 		NewReviewAPI:             d.cfg.NewReviewAPI,
-		JanitorDue:               d.janitorDue,
 		Log:                      d.logf,
 		Wake:                     gate.GateWake{PR: req.Pr, Action: req.Action, Revision: req.Revision, Repo: req.Repo},
 		TL: timeline.NewGateWriter(dapr.Tracing(dapr.New(os.Getenv("DAPR_HTTP_ENDPOINT"))),

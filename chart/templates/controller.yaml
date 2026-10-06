@@ -49,6 +49,8 @@ spec:
             - --poll-interval={{ .Values.controller.pollInterval }}
             - --trigger-topic={{ .Values.workerPool.topic | default "harmostes-triggers" }}
           env:
+            - name: HARMOSTES_ATTEMPT_RETENTION
+              value: {{ .Values.controller.attemptRetention | default "720h" | quote }}
             - name: HARMOSTES_WORKER_IMAGE
               value: {{ .Values.image.worker }}
             # #613: arms the controller's dapr sidecar startup guard (outside

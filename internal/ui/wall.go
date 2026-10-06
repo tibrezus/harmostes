@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
-	"strings"
 	"time"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
@@ -85,24 +84,12 @@ type wallGroup struct {
 	// Cause qualifies the CHIP itself ("queued · waiting ci") — the
 	// short gate vocabulary, first-glance; Hold.Note is the detail line.
 	Cause string
-}
-
-// wallStateCell is ONE subject's state in the workflow-level summary —
-// a discrete cell per subject, ordered exactly like the rows below the
-// block. The first summary design was a proportional bar (segments ∝
-// counts); it answered "how many" but not "which" — a monochrome state
-// rendered it a colored line duplicating the counts text. A cell per
-// subject makes the summary an INDEX: the distribution is visible AND
-// every cell corresponds to a row (first cell = first row), with the
-// subject on hover.
-type wallStateCell struct {
-	State string
-	// Class is the CSS-safe state name (spaces → dashes).
-	Class string
-	// Subject + URL identify the row the cell stands for (hover title,
-	// click-through).
-	Subject string
-	URL     string
+	// Strip is THIS subject's own attempt progress (its steps, per-step
+	// states, widths ∝ wall clock) — the progress bar lives on the row
+	// whose progress it describes (owner direction: "state is the better
+	// spot"), not aggregated at the workflow block.
+	Strip  []wallStep
+	StripW int
 }
 
 // wallState collapses a wall row
@@ -156,16 +143,18 @@ type wallStep struct {
 type wallWorkflow struct {
 	Name   string
 	URL    string
-	Strip  []wallStep
-	StripW int
 	Groups []wallGroup
 	Last   string // newest subject activity (RFC3339, for ordering)
-	// Cells is the workflow-level STATE summary: one cell per subject,
-	// row order, colored by that subject's state. The strip under the
-	// workflow name answers "what is this workflow doing" AND "which one"
-	// — the step strip beneath it is the last attempt's SHAPE/timing, a
-	// different question.
-	Cells []wallStateCell
+	// Counts is the workflow-level state rollup, TEXT ONLY ("8 queued · 1
+	// verdict") — the aggregate answer lives in words; every bar lives on
+	// the row whose progress it describes.
+	Counts []wallStateCount
+}
+
+// wallStateCount is one state's count in the workflow rollup line.
+type wallStateCount struct {
+	State string
+	Count int
 }
 
 // wallSection groups the wall by the workflow's owning template — the
@@ -301,13 +290,6 @@ func (s *Server) wallSections(r *http.Request, owner string) ([]wallSection, int
 		return groups[i].LastActivity > groups[j].LastActivity
 	})
 
-	// Newest attempt WITH activity per workflow: the strip's source. A
-	// parked (armed-queued) attempt is newer by creation but has run
-	// nothing — its strip would paint an empty lane and blank the
-	// workflow's live timing (the parked #45 eclipsing the running #43,
-	// caught by the component tier).
-	newest := map[string]*v1alpha1.Attempt{}
-	hasRuns := func(a *v1alpha1.Attempt) bool { return len(a.Status.Runs) > 0 }
 	// Attempt index by CR name: per-subject usage reads the SUBJECT's own
 	// latest attempt — the workflow-level usage cache (usage:last) aggregates
 	// across subjects and sessions, which read as identical numbers on every
@@ -317,12 +299,6 @@ func (s *Server) wallSections(r *http.Request, owner string) ([]wallSection, int
 	for i := range attempts {
 		a := &attempts[i]
 		byName[a.Name] = a
-		name := workflowCRName(a.Spec.WorkflowRef)
-		if cur, ok := newest[name]; !ok ||
-			(hasRuns(a) && !hasRuns(cur)) ||
-			(hasRuns(a) == hasRuns(cur) && attemptActivity(a).After(attemptActivity(cur))) {
-			newest[name] = a
-		}
 	}
 
 	// Template membership + compiled-shape source. Owner-scoped, same as
@@ -406,6 +382,15 @@ func (s *Server) wallSections(r *http.Request, owner string) ([]wallSection, int
 		wg.Usage = usageFromAttempt(byName[g.LatestAttempt])
 		// The chip qualification (first glance) + the note (the story).
 		wg.Cause = g.HoldCause
+		// THIS row's attempt progress: the strip lives on the subject
+		// (state column), not the workflow block — a bar at the block
+		// described one attempt while standing for many subjects (owner,
+		// twice). The compiled shape resolves per workflow (cached).
+		if att := byName[g.LatestAttempt]; att != nil {
+			if wf, ok := wfByName[name]; ok {
+				wg.Strip, wg.StripW = s.wallStepsFor(r.Context(), &wf, att)
+			}
+		}
 		// The parked claim's why: chip + note + waiting age. The note
 		// rides VERBATIM — CSS line-clamps the row; truncating server-side
 		// ate the reason's exit ("dispatch on green") behind an ellipsis.
@@ -443,24 +428,15 @@ func (s *Server) wallSections(r *http.Request, owner string) ([]wallSection, int
 	secs := map[string]*wallSection{}
 	for _, name := range wfOrder {
 		ww := wallWorkflow{Name: name, URL: "/workflows/" + name, Groups: wfGroups[name], Last: wfGroups[name][0].LastActivity}
-		// The state summary: one cell per subject, row order. Kestra
-		// renders a state time-series here; we are subject-based (a PR
-		// review's subject IS a row on this very block) so the summary is
-		// an index of the rows, not an aggregate that loses them.
+		// The rollup line: text, not a bar — the aggregate in words while
+		// every visual lives on the row whose progress it describes.
+		tally := map[string]int{}
 		for _, g := range wfGroups[name] {
-			st := wallState(g)
-			cell := wallStateCell{
-				State: st, Class: strings.ReplaceAll(st, " ", "-"),
-				Subject: g.Subject,
-			}
-			if g.LastRunURL != "" {
-				cell.URL = g.LastRunURL
-			}
-			ww.Cells = append(ww.Cells, cell)
+			tally[wallState(g)]++
 		}
-		if att := newest[name]; att != nil {
-			if wf, ok := wfByName[name]; ok {
-				ww.Strip, ww.StripW = s.wallStepsFor(r.Context(), &wf, att)
+		for _, st := range []string{"in flight", "reconciling", "queued", "dispatch lost", "failed", "verdict", "validated"} {
+			if n := tally[st]; n > 0 {
+				ww.Counts = append(ww.Counts, wallStateCount{State: st, Count: n})
 			}
 		}
 		sec := tmplOf[name]
@@ -724,22 +700,6 @@ func wallChipLabel(g wallGroup) string {
 		return "queued · forge unreachable"
 	}
 	return base
-}
-
-// stateTally counts cells per state, canonical order first — the counts
-// line under the state strip (a text mirror of the cells, for the
-// color-averse and the screen readers).
-func stateTally(cells []wallStateCell) map[string]int {
-	tally := map[string]int{}
-	for _, c := range cells {
-		tally[c.State]++
-	}
-	return tally
-}
-
-// replaceWithDash is the CSS-safe state name for template use.
-func replaceWithDash(s string) string {
-	return strings.ReplaceAll(s, " ", "-")
 }
 
 // wallState collapses a wall row to the shared console state vocabulary —

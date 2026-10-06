@@ -51,18 +51,22 @@ test('queued row carries its hold reason, waiting age, and no borrowed tokens', 
   // waits for) — "queued" alone answers nothing.
   await expect(parked.locator('.chip')).toContainText('queued · waiting ci');
 
-  // The workflow block carries the STATE summary: one cell per subject
-  // (row order — an index, not a blur) + the counts mirror.
-  const summary = page
+  // The workflow block's rollup is TEXT ONLY; the progress strip lives on
+  // each ROW (state column — "state is the better spot").
+  await expect(page.locator('[data-testid="wall-state-summary"]')).toHaveCount(0);
+  const demoCounts = page
     .locator('[data-testid="wall-workflow-cell"]')
     .filter({ hasText: 'pr-review-demo' })
-    .locator('[data-testid="wall-state-summary"]');
-  await expect(summary).toBeVisible();
-  await expect(summary.locator('.wall-states-cell')).toHaveCount(3);
-  await expect(summary.locator('.wall-states-cell').first()).toHaveAttribute('title', /demo-rezuscloud\/harmostes#\d+ — /);
-  await expect(summary.locator('.wall-states-counts')).toContainText('1 in flight');
-  await expect(summary.locator('.wall-states-counts')).toContainText('1 queued');
-  await expect(summary.locator('.wall-states-counts')).toContainText('1 verdict');
+    .locator('[data-testid="wall-state-counts"]');
+  await expect(demoCounts).toContainText('1 in flight');
+  await expect(demoCounts).toContainText('1 queued');
+  await expect(demoCounts).toContainText('1 verdict');
+
+  // Every subject row carries ITS OWN progress strip beside its chip.
+  await expect(page.locator('[data-testid="wall-row-steps"]')).toHaveCount(4);
+  await expect(
+    page.locator('[data-testid="wall-card"][data-subject="demo-rezuscloud/harmostes#43"] [data-testid="wall-row-steps"]')
+  ).toBeVisible();
 
   await expect(parked.locator('[data-testid="wall-tokens-none"]')).toHaveText('—');
 

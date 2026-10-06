@@ -1988,6 +1988,49 @@ code, pre {
 .wall-steps {
 	display: block;
 }
+/* The workflow-level STATE summary (kestra's per-flow statistics, counts
+   flavor): segments ∝ subject counts, colored by the same state palette —
+   the aggregate answer to "what is this workflow doing" beside the name.
+   The step strip beneath is the last attempt's SHAPE/timing — a different
+   question, deliberately second. */
+.wall-states {
+	display: flex;
+	flex-direction: column;
+	gap: 0.2rem;
+	margin-top: 0.3rem;
+}
+.wall-states-bar {
+	display: flex;
+	height: 6px;
+	border-radius: 3px;
+	overflow: hidden;
+	background: var(--ds-border);
+}
+.wall-states-seg {
+	display: block;
+	height: 100%;
+}
+.wall-states-seg.st-in-flight,
+.wall-states-seg.st-reconciling { background: var(--chip-run-bg); }
+.wall-states-seg.st-queued { background: var(--chip-warn-bg); }
+.wall-states-seg.st-verdict,
+.wall-states-seg.st-validated { background: var(--chip-ok-bg); }
+.wall-states-seg.st-failed,
+.wall-states-seg.st-dispatch-lost { background: var(--chip-fail-bg); }
+.wall-states-counts {
+	font-size: 0.72rem;
+	color: var(--fg-muted);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.wall-states-counts .sep { margin: 0 0.3rem; }
+.wall-states-counts .st-text-in-flight,
+.wall-states-counts .st-text-reconciling { color: var(--accent); }
+.wall-states-counts .st-text-verdict,
+.wall-states-counts .st-text-validated { color: oklch(0.72 0.15 152); }
+.wall-states-counts .st-text-failed,
+.wall-states-counts .st-text-dispatch-lost { color: oklch(0.68 0.18 25); }
 /* The parked claim's why (#user wall refactor): the queued row's second
    line under the state chip — the gate's waiting reason + hold age. Small,
    muted, wrapping — the row stays one glance readable while "why" is no

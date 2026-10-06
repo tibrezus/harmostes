@@ -247,7 +247,8 @@ func Attempts(namespace string) ([]ctrlclient.Object, error) {
 	parked.Status.Review = &v1alpha1.ReviewClaimStatus{
 		PR: "demo-rezuscloud/harmostes#45", HeadSHA: "f00dfeed1234567",
 		Label: "needs-review", ArmedSince: &armT3,
-		HoldNote: "ci pending at head f00dfeed1234567 (running: ci / build-test (push), integration / integration (cuda) (pull_request)) — dispatch on green",
+		HoldNote:  "ci pending at head f00dfeed1234567 (running: ci / build-test (push), integration / integration (cuda) (pull_request)) — dispatch on green",
+		HoldCause: "ci-pending",
 	}
 
 	// --- 3. superseded merge-sync attempt -------------------------------

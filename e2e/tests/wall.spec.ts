@@ -47,6 +47,21 @@ test('queued row carries its hold reason, waiting age, and no borrowed tokens', 
   await expect(hold).toContainText('dispatch on green');
   await expect(hold).toContainText(/waiting (now|\d+[mhd])/);
 
+  // The CHIP itself qualifies (kestra/windmill: the status names what it
+  // waits for) — "queued" alone answers nothing.
+  await expect(parked.locator('.chip')).toContainText('queued · waiting ci');
+
+  // The workflow block carries the STATE summary (kestra's per-flow
+  // statistics): segments + counts over its subjects.
+  const summary = page
+    .locator('[data-testid="wall-workflow-cell"]')
+    .filter({ hasText: 'pr-review-demo' })
+    .locator('[data-testid="wall-state-summary"]');
+  await expect(summary).toBeVisible();
+  await expect(summary.locator('.wall-states-counts')).toContainText('1 in flight');
+  await expect(summary.locator('.wall-states-counts')).toContainText('1 queued');
+  await expect(summary.locator('.wall-states-counts')).toContainText('1 verdict');
+
   await expect(parked.locator('[data-testid="wall-tokens-none"]')).toHaveText('—');
 
   // Rows that DID run carry their own numbers — no identical repeated

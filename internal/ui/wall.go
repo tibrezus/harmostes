@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
 	"github.com/tibrezus/harmostes/internal/graph"
+	"github.com/tibrezus/harmostes/internal/review"
 )
 
 // ---------------------------------------------------------------------------
@@ -80,9 +82,24 @@ type wallGroup struct {
 	// head … — dispatch on green · waiting 26m". A bare "queued" chip
 	// answered nothing; the gate knew the reason every sweep.
 	Hold *wallHold
+	// Cause qualifies the CHIP itself ("queued · waiting ci") — the
+	// short gate vocabulary, first-glance; Hold.Note is the detail line.
+	Cause string
 }
 
-// wallHold is the parked state's explanation.
+// wallStateShare is one segment of the workflow-level state summary —
+// kestra's per-flow statistics adapted to counts: the aggregate answer to
+// "what is pr-review-rhesadox doing" without reading a single row.
+type wallStateShare struct {
+	State string
+	// Class is the CSS-safe state name (spaces → dashes).
+	Class string
+	Count int
+	// Pct is the bar segment width (share of the workflow's subjects).
+	Pct int
+}
+
+// wallState collapses a wall row
 type wallHold struct {
 	// Note is the gate's waiting reason, verbatim (CSS clamps the line;
 	// server-side truncation ate the exit behind an ellipsis).
@@ -137,6 +154,11 @@ type wallWorkflow struct {
 	StripW int
 	Groups []wallGroup
 	Last   string // newest subject activity (RFC3339, for ordering)
+	// Shares is the workflow-level STATE summary (kestra's per-flow
+	// statistics): per-state segments ∝ subject counts. The bar under the
+	// workflow name answers "what is this workflow doing" — the step strip
+	// beneath it is the last attempt's SHAPE/timing, a different question.
+	Shares []wallStateShare
 }
 
 // wallSection groups the wall by the workflow's owning template — the
@@ -375,6 +397,8 @@ func (s *Server) wallSections(r *http.Request, owner string) ([]wallSection, int
 		// identical tokens). A queued row with no payload of its own shows
 		// an em-dash — honest, and the hold line below tells the real story.
 		wg.Usage = usageFromAttempt(byName[g.LatestAttempt])
+		// The chip qualification (first glance) + the note (the story).
+		wg.Cause = g.HoldCause
 		// The parked claim's why: chip + note + waiting age. The note
 		// rides VERBATIM — CSS line-clamps the row; truncating server-side
 		// ate the reason's exit ("dispatch on green") behind an ellipsis.
@@ -412,6 +436,23 @@ func (s *Server) wallSections(r *http.Request, owner string) ([]wallSection, int
 	secs := map[string]*wallSection{}
 	for _, name := range wfOrder {
 		ww := wallWorkflow{Name: name, URL: "/workflows/" + name, Groups: wfGroups[name], Last: wfGroups[name][0].LastActivity}
+		// The state summary: count the workflow's subjects per wall state,
+		// widest-first, width ∝ share. Kestra renders a state time-series
+		// here; we are state-based (a PR review's lifecycle is a handful
+		// of states, not a stream) so the counts ARE the statistics.
+		tally := map[string]int{}
+		for _, g := range wfGroups[name] {
+			tally[wallState(g)]++
+		}
+		total := len(wfGroups[name])
+		for _, st := range []string{"in flight", "reconciling", "queued", "dispatch lost", "failed", "verdict", "validated"} {
+			if n := tally[st]; n > 0 {
+				ww.Shares = append(ww.Shares, wallStateShare{
+					State: st, Class: strings.ReplaceAll(st, " ", "-"),
+					Count: n, Pct: n * 100 / total,
+				})
+			}
+		}
 		if att := newest[name]; att != nil {
 			if wf, ok := wfByName[name]; ok {
 				ww.Strip, ww.StripW = s.wallStepsFor(r.Context(), &wf, att)
@@ -652,6 +693,32 @@ func relDuration(d time.Duration) string {
 	default:
 		return fmt.Sprintf("%dd", int(d.Hours()/24))
 	}
+}
+
+// wallChipLabel qualifies the chip text the way windmill names what a flow
+// is waiting for: "queued" alone answers nothing. The gate's short cause
+// rides beside it — "queued · waiting ci", "queued · ci red", "queued ·
+// needs label" — first-glance, before the hold line's prose. In flight and
+// verdict keep their canonical words (the Now column carries the in-flight
+// detail; verdict is terminal).
+func wallChipLabel(g wallGroup) string {
+	base := wallState(g)
+	if base != "queued" || g.Cause == "" {
+		return base
+	}
+	switch review.HoldCause(g.Cause) {
+	case review.HoldCauseCIPending:
+		return "queued · waiting ci"
+	case review.HoldCauseCIRed:
+		return "queued · ci red"
+	case review.HoldCauseLabelAbsent:
+		return "queued · needs label"
+	case review.HoldCauseVerdictCheck:
+		return "queued · checking verdict"
+	case review.HoldCauseAPIError:
+		return "queued · forge unreachable"
+	}
+	return base
 }
 
 // wallState collapses a wall row to the shared console state vocabulary —

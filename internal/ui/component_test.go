@@ -154,6 +154,29 @@ func TestComponent_Wall_RendersAllFixtureSubjects(t *testing.T) {
 		t.Errorf("em-dash token cells = %d, want 1 (only the parked row)", got)
 	}
 
+	// The chip QUALIFIES itself (windmill names what a flow waits for):
+	// the parked row's chip is not bare "queued" but the gate's short
+	// cause beside it.
+	parkedChip := parkedRow.Find(".chip")
+	if txt := parkedChip.Text(); !strings.Contains(txt, "queued") || !strings.Contains(txt, "waiting ci") {
+		t.Errorf("the parked chip must qualify the state, got %q", txt)
+	}
+	// The workflow-level STATE summary (kestra's per-flow statistics,
+	// counts flavor): the pr-review-demo block aggregates its three
+	// subjects — one bar + one counts line, in-flight first.
+	summary := doc.Find(`[data-testid="wall-state-summary"]`)
+	if summary.Length() != 2 {
+		t.Fatalf("state summaries = %d, want 2 (one per workflow block)", summary.Length())
+	}
+	demoSummary := otherSec.Find(`[data-testid="wall-state-summary"]`)
+	counts := demoSummary.Find(".wall-states-counts").Text()
+	if !strings.Contains(counts, "1 in flight") || !strings.Contains(counts, "1 queued") || !strings.Contains(counts, "1 verdict") {
+		t.Errorf("pr-review-demo summary must aggregate its subjects, got %q", counts)
+	}
+	if got := demoSummary.Find(".wall-states-seg").Length(); got != 3 {
+		t.Errorf("summary segments = %d, want 3 (one per distinct state)", got)
+	}
+
 	// Every workflow with envelopes carries a strip; the strips paint with
 	// the run-detail waterfall's own state classes.
 	strips := testIDSelection(t, doc, "wall-steps")

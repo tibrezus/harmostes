@@ -47,6 +47,14 @@
 						{{- if eq $gi 0}}
 						<td rowspan="{{len $w.Groups}}" class="wall-wf-cell" data-testid="wall-workflow-cell">
 							<a class="wall-wf" href="{{$w.URL}}" data-testid="wall-workflow-link"><span class="ids">{{$w.Name}}</span></a>
+							{{- if $w.Shares}}
+							<div class="wall-states" data-testid="wall-state-summary" role="img" aria-label="subjects: {{range $w.Shares}}{{.Count}} {{.State}}, {{end}}">
+								<div class="wall-states-bar">
+									{{- range $w.Shares}}<span class="wall-states-seg st-{{.Class}}" style="width:{{.Pct}}%"></span>{{end}}
+								</div>
+								<div class="wall-states-counts">{{range $i, $s := $w.Shares}}{{if $i}}<span class="sep">·</span>{{end}}<span class="st-text-{{.Class}}">{{$s.Count}} {{.State}}</span>{{end}}</div>
+							</div>
+							{{- end}}
 							{{- if $w.Strip}}
 							<svg class="wall-steps" width="{{$w.StripW}}" height="12" role="img" aria-label="step timing: {{$w.Name}}" data-testid="wall-steps">
 								{{- range $w.Strip}}<rect class="rg-timing-bar rg-state-{{.Status}}" x="{{.X}}" y="1" width="{{.Width}}" height="10" rx="2"><title>{{.Title}}</title></rect>{{end}}
@@ -55,7 +63,7 @@
 						</td>
 						{{- end}}
 						<td>
-							{{template "state-chip" $st}}
+							{{template "state-chip" (wallChipLabel $g)}}
 							{{if $g.Hold}}<div class="wall-hold" data-testid="wall-hold" title="{{$g.Hold.Note}}"><span class="wall-hold-note">{{$g.Hold.Note}}</span>{{if $g.Hold.Since}} <span class="ids" style="color:var(--fg-muted)">· waiting {{$g.Hold.Since}}</span>{{end}}</div>{{end}}
 						</td>
 						<td>

@@ -251,11 +251,11 @@ func NewDispatcher(ctx context.Context, cfg DispatchConfig, logf func(string, ..
 		ns = "harmostes"
 	}
 	return &Dispatcher{
-		cl:           cl,
-		scheme:       scheme,
-		namespace:    ns,
-		logf:         logf,
-		cfg:          cfg,
+		cl:        cl,
+		scheme:    scheme,
+		namespace: ns,
+		logf:      logf,
+		cfg:       cfg,
 	}, nil
 }
 

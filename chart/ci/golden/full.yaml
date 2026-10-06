@@ -4911,7 +4911,9 @@ rules:
   # delete is only ever invoked with POD_NAME/HOSTNAME = this process's pod.
   - apiGroups: [""]
     resources: ["pods"]
-    verbs: ["get", "delete"]
+    # list: the janitor's orphaned-runner-pod leg (#651) lists terminal
+    # attempt-runner pods whose Job is gone; delete was the #613 self-heal.
+    verbs: ["get", "list", "delete"]
   - apiGroups: [""]
     resources: ["configmaps", "events"]
     verbs: ["get", "list", "watch", "create", "update", "patch"]
@@ -5107,6 +5109,8 @@ spec:
             - --poll-interval=5m
             - --trigger-topic=harmostes-triggers
           env:
+            - name: HARMOSTES_ATTEMPT_RETENTION
+              value: "720h"
             - name: HARMOSTES_WORKER_IMAGE
               value: ghcr.io/tibrezus/harmostes-worker:0.4.2
             # #613: arms the controller's dapr sidecar startup guard (outside
@@ -5459,8 +5463,6 @@ spec:
             # ── Dispatcher knobs (ADR-0007 phase 3) ──
             - name: HARMOSTES_MAX_CONCURRENT
               value: "3"
-            - name: HARMOSTES_ATTEMPT_RETENTION
-              value: "720h"
             # Leg-2 fast path: sweep cadence for ARMED-not-dispatched
             # claims — CI-green dispatches within one tick. "0" = off.
             - name: HARMOSTES_GATE_FASTPOLL

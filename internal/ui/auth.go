@@ -51,6 +51,13 @@ type Identity struct {
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id := extractIdentity(r)
+		if id == nil && s.readOnly && s.readOnlyAs != "" {
+			// Review posture: anonymous visitors view data AS the named
+			// owner. The identity grants nothing but scoping — writes are
+			// refused by the readOnly mayWrite short-circuit and the
+			// read-only RBAC both.
+			id = &Identity{Username: s.readOnlyAs}
+		}
 		if id == nil {
 			// Browsers get a real page with a re-auth link — a bare-text 401
 			// reads as 'the UI is broken'. API/SSE consumers keep plain text.

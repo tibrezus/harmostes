@@ -1162,3 +1162,23 @@ func TestContextStatesSameSecondTieBreak(t *testing.T) {
 		t.Fatalf("newer pending must win over older success: %+v", states2)
 	}
 }
+
+// The cause vocabulary is the wall chip's qualification — the mapping from
+// waiting reasons to short causes is pinned so reason-drift breaks HERE,
+// not as a bare chip in production.
+func TestHoldCauseOf(t *testing.T) {
+	cases := map[string]HoldCause{
+		"label absent, no verdict — ci pending at head abc1234 (running: ci/build) — dispatch on green, staying armed":                          HoldCauseCIPending,
+		"label absent, no verdict — ci red at head abc1234 (b) — dispatch on green, staying armed":                                              HoldCauseCIRed,
+		"label absent, no verdict — ci green at head abc1234 — the review label is absent, so nothing can dispatch; re-apply it, staying armed": HoldCauseLabelAbsent,
+		"label absent; verdict check failed: HTTP 503":                                                                                          HoldCauseVerdictCheck,
+		"pr fetch failed: HTTP 502":                      HoldCauseAPIError,
+		"review in flight — dispatched, verdict pending": HoldCauseDispatched,
+		"some future wording we did not anticipate":      "",
+	}
+	for reason, want := range cases {
+		if got := HoldCauseOf(reason); got != want {
+			t.Errorf("HoldCauseOf(%q) = %q, want %q", reason, got, want)
+		}
+	}
+}

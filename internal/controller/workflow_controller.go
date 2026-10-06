@@ -21,7 +21,9 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"strings"
 
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
@@ -67,10 +69,33 @@ func (r *WorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{RequeueAfter: r.PollInterval}, nil
 	}
 
+	// Consume-on-completion (#647): a live claim's attempt recorded a
+	// terminal run since the last dispatch — the workflow is due NOW, at
+	// event time (the watch below carries the wake), not at the armed
+	// carve-out's next poll. Beside the armed carve-out, same trigger
+	// layer, no gate vocabulary: the ledger read is Attempts+RunRecords.
+	// Evaluated UNCONDITIONALLY (not only when isDue says not-due): the
+	// armed carve-out already claims due-ness for most live-claim
+	// workflows, and the flag must survive that to (a) requeue losers at
+	// the webhook floor, not the poll anchor, and (b) tell the truth in
+	// the published reason. Cost: one cache-backed, server-side-bounded
+	// List per reconcile of a gate-armed workflow.
+	terminalWake := r.terminalRunPending(ctx, &wf)
 	due, requeueAfter := r.isDue(&wf)
+	if terminalWake {
+		due, requeueAfter = true, 0
+	}
+	// The reason tells the truth about WHY (the wall tells the truth): the
+	// completion wake must not masquerade as "schedule" in the run's
+	// timeline and traces — that is exactly the ambiguity the #646
+	// investigation had to cut through.
+	reason := dueReason(&wf)
+	if terminalWake {
+		reason = "run-terminal"
+	}
 	span.SetAttributes(
 		attribute.Bool("harmostes.due", due),
-		attribute.String("harmostes.reason", dueReason(&wf)),
+		attribute.String("harmostes.reason", reason),
 	)
 	if !due {
 		return ctrl.Result{RequeueAfter: requeueAfter}, nil
@@ -125,7 +150,7 @@ func (r *WorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		}
 		return ctrl.Result{RequeueAfter: requeueAfter}, nil
 	}
-	logger.Info("scheduling worker", "workflow", wf.Name, "reason", dueReason(&wf))
+	logger.Info("scheduling worker", "workflow", wf.Name, "reason", reason)
 	// Canonical Orchestration History (ADR-0005): resolve or create the Attempt
 	// this run belongs to, so its history is recorded. Best-effort — an empty
 	// attemptName means the worker records nothing (CRD absent / error).
@@ -142,7 +167,7 @@ func (r *WorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	if wakeRev == "" {
 		wakeRev = wf.Status.LastProcessedRevision
 	}
-	if err := r.publishTrigger(ctx, &wf, dueReason(&wf), wakeRev, tp, attemptName); err != nil {
+	if err := r.publishTrigger(ctx, &wf, reason, wakeRev, tp, attemptName); err != nil {
 		logger.Error(err, "publish trigger to pub/sub")
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
@@ -262,6 +287,17 @@ func (r *WorkflowReconciler) claimTriggerSlot(ctx context.Context, wf *v1alpha1.
 		// drift; dueReason(&fresh) == "webhook" is the same test.
 		minInterval := scheduleInterval
 		if ann := fresh.Annotations[v1alpha1.TriggerRevisionAnnotation]; ann != "" && ann != fresh.Status.LastProcessedRevision {
+			minInterval = webhookInterval
+		}
+		// Consume-on-completion (#647): a terminal run standing on a live
+		// claim is an event wake — held only to the webhook floor, never to
+		// the full poll anchor an armed sweep stamped seconds ago (the #646
+		// evidence-4 shape: Job Completed 00:20, sweep swallowed to ~00:32 by
+		// the 5m anchor). terminalRunPending re-derives on the FRESH object
+		// and is the SAME function the due leg calls — the r11 no-drift rule
+		// holds by construction. The watermark de-arms the condition after
+		// one win: no storm from a single completion.
+		if minInterval == scheduleInterval && r.terminalRunPending(ctx, &fresh) {
 			minInterval = webhookInterval
 		}
 		if !fresh.Status.LastRunAt.IsZero() && time.Since(fresh.Status.LastRunAt.Time) < minInterval {
@@ -408,6 +444,17 @@ func (r *WorkflowReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	r.registerActiveJobsGauge()
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&v1alpha1.Workflow{}).
+		// Consume-on-completion (#647): attempt run terminal → the owning
+		// workflow's reconcile fires at event time. The predicate admits ONLY
+		// run-terminal transitions (attempt trigger.go); the reconcile's
+		// terminalRunPending watermark + the trigger-slot CAS decide whether
+		// the wake actually publishes — the watch is the wake, not the
+		// authority.
+		Watches(
+			&v1alpha1.Attempt{},
+			handler.EnqueueRequestsFromMapFunc(r.attemptTerminalToWorkflow),
+			builder.WithPredicates(runTerminalPredicate{}),
+		).
 		Complete(r)
 }
 

@@ -1176,21 +1176,28 @@ func standdown(code ReleaseCode, reason string) Evaluation {
 // refusal (#567).
 var verdictTrailer = regexp.MustCompile(`<!-- pr-review: (APPROVE|REQUEST_CHANGES|COMMENT) @ ([0-9a-f]{7,40}) -->`)
 
+// ShaPrefixMatch reports whether recorded (7-40 hex, possibly abbreviated)
+// identifies head — the ONE abbreviation rule shared by the verdict
+// trailer (#567) and the refusal-notice marker (#648). A recorded sha
+// matches as a case-insensitive prefix of the head — never the reverse: a
+// head shorter than a recorded sha is a fake-world shape, not a real
+// abbreviation. A recorded sha at any OTHER sha does not match — a push
+// (new head) is what re-opens review.
+func ShaPrefixMatch(head, recorded string) bool {
+	return strings.HasPrefix(strings.ToLower(head), strings.ToLower(recorded))
+}
+
 // standingVerdictAt reports whether a verdict trailer stands at exactly
 // headSHA (#567), returning its decision. Trailer shas abbreviate the head
 // (the skill's contract allows 7-40 hex; hosts always report the full
-// head), so a trailer matches as a case-insensitive prefix of the head —
-// never the reverse: a head shorter than a trailer is a fake-world shape,
-// not a real abbreviation. Verdicts at any OTHER sha do not block — a push
-// (new head) is what re-opens review.
+// head), so a trailer matches through ShaPrefixMatch.
 func standingVerdictAt(comments []IssueComment, headSHA string) (decision string, source IssueComment, found bool) {
-	head := strings.ToLower(headSHA)
 	for _, c := range comments {
 		m := verdictTrailer.FindStringSubmatch(c.Body)
 		if m == nil {
 			continue
 		}
-		if strings.HasPrefix(head, strings.ToLower(m[2])) {
+		if ShaPrefixMatch(headSHA, m[2]) {
 			return m[1], c, true
 		}
 	}

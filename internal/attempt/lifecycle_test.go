@@ -2,12 +2,18 @@ package attempt
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
@@ -318,7 +324,7 @@ func TestGCAttempts(t *testing.T) {
 		}
 	}
 
-	n, err := GCAttempts(ctx, c, ns, "pr-review-rhesadox", 30*24*time.Hour)
+	n, err := GCAttempts(ctx, c, ns, 30*24*time.Hour)
 	if err != nil {
 		t.Fatalf("gc: %v", err)
 	}
@@ -354,32 +360,53 @@ func TestGCAttempts(t *testing.T) {
 
 // Coverage gap closed alongside #385: the r30 janitor shipped untested.
 // Old stuck reconciling → released+failed; young and unknown-age → kept.
+// #651: the pass is NAMESPACE-wide — a fork-maintenance-shaped wedge (the
+// live blind spot: 27 such claims sat reconciling 13–15 days because the
+// reap used to ride the review-gate sweep, which fork-maintenance never
+// enters) must reap exactly like a review-gate one. AC 2: reconciling >7d
+// is impossible for ALL templates.
 func TestReapStuckAttempts(t *testing.T) {
 	ctx := context.Background()
 	c := newFakeClient(t)
 	old := metav1.NewTime(time.Now().Add(-8 * 24 * time.Hour))
 	const ns = "default"
-	mk := func(name string, ts metav1.Time) *v1alpha1.Attempt {
-		return &v1alpha1.Attempt{ObjectMeta: metav1.ObjectMeta{
+	mk := func(name, wf string, ts metav1.Time, claim *v1alpha1.ReviewClaimStatus) *v1alpha1.Attempt {
+		at := &v1alpha1.Attempt{ObjectMeta: metav1.ObjectMeta{
 			Name: name, Namespace: ns, CreationTimestamp: ts,
-			Labels: map[string]string{"harmostes.dev/workflow": "wf"},
+			Labels: map[string]string{"harmostes.dev/workflow": wf},
 		}, Status: v1alpha1.AttemptStatus{Phase: v1alpha1.AttemptPhaseReconciling}}
+		if claim != nil {
+			at.Status.Review = claim
+		}
+		return at
 	}
-	for _, at := range []*v1alpha1.Attempt{mk("stuck", old), mk("young", metav1.NewTime(time.Now())), mk("zero-ts", metav1.Time{})} {
+	for _, at := range []*v1alpha1.Attempt{
+		mk("stuck", "wf", old, nil),
+		// the #651 fleet shape: different template, unreleased claim, wedged
+		mk("fork-maintenance-wedge", "fork-maintenance-signoz", old,
+			&v1alpha1.ReviewClaimStatus{Released: false}),
+		mk("young", "wf", metav1.NewTime(time.Now()), nil),
+		mk("zero-ts", "wf", metav1.Time{}, nil),
+	} {
 		if err := c.Create(ctx, at); err != nil {
 			t.Fatal(err)
 		}
 	}
-	n, err := ReapStuckAttempts(ctx, c, ns, "wf", 7*24*time.Hour)
-	if err != nil || n != 1 {
-		t.Fatalf("reaped %d (err %v), want 1", n, err)
+	n, err := ReapStuckAttempts(ctx, c, ns, 7*24*time.Hour)
+	if err != nil || n != 2 {
+		t.Fatalf("reaped %d (err %v), want 2 (review-gate wedge + fork-maintenance wedge)", n, err)
 	}
-	var after v1alpha1.Attempt
-	if err := c.Get(ctx, client.ObjectKey{Namespace: ns, Name: "stuck"}, &after); err != nil {
-		t.Fatal(err)
-	}
-	if after.Status.Phase != v1alpha1.AttemptPhaseFailed || !strings.Contains(after.Status.Message, "reaped") {
-		t.Fatalf("stuck attempt must land failed with a reap message, got phase=%s msg=%q", after.Status.Phase, after.Status.Message)
+	for _, name := range []string{"stuck", "fork-maintenance-wedge"} {
+		var after v1alpha1.Attempt
+		if err := c.Get(ctx, client.ObjectKey{Namespace: ns, Name: name}, &after); err != nil {
+			t.Fatal(err)
+		}
+		if after.Status.Phase != v1alpha1.AttemptPhaseFailed || !strings.Contains(after.Status.Message, "reaped") {
+			t.Fatalf("stuck attempt %s must land failed with a reap message, got phase=%s msg=%q", name, after.Status.Phase, after.Status.Message)
+		}
+		if name == "fork-maintenance-wedge" && (after.Status.Review == nil || !after.Status.Review.Released) {
+			t.Fatalf("fork-maintenance wedge must have its claim released, got %+v", after.Status.Review)
+		}
 	}
 }
 
@@ -491,5 +518,52 @@ func TestSupersedePriorAttempts(t *testing.T) {
 	rolling := mk("cur-head", v1alpha1.ObjectiveKindPRReview, "tibrez/rhesadox", "head", v1alpha1.AttemptPhaseReconciling, nil)
 	if n, err := SupersedePriorAttempts(ctx, c, ns, "pr-review-rhesadox", rolling); err != nil || n != 0 {
 		t.Fatalf("head-targeted current: n=%d err=%v, want 0/nil", n, err)
+	}
+}
+
+// #651: a permanently-failing claim MARKER (label patch — e.g. endless
+// conflicts) must not keep the attempt reconciling. The old code
+// `continue`d on release error, so a wedge whose marker leg failed stayed
+// reconciling forever — the phase leg the function's own doctrine promises
+// ("the phase leg runs regardless") was unreachable. The claim rides the
+// FAILED attempt unreleased (the GC-visible stranding shape), never a
+// reconciling wedge.
+func TestReapStuckAttemptsReleaseFailureStillLandsPhase(t *testing.T) {
+	ctx := context.Background()
+	old := metav1.NewTime(time.Now().Add(-8 * 24 * time.Hour))
+	const ns = "default"
+	at := &v1alpha1.Attempt{ObjectMeta: metav1.ObjectMeta{
+		Name: "wedge", Namespace: ns, CreationTimestamp: old,
+		Labels: map[string]string{"harmostes.dev/workflow": "fork-maintenance-signoz"},
+	}, Status: v1alpha1.AttemptStatus{Phase: v1alpha1.AttemptPhaseReconciling,
+		Review: &v1alpha1.ReviewClaimStatus{Released: false}}}
+	scheme := runtime.NewScheme()
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("AddToScheme: %v", err)
+	}
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&v1alpha1.Attempt{}).
+		WithObjects(at).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, p client.Patch, opts ...client.PatchOption) error {
+				if _, ok := obj.(*v1alpha1.Attempt); ok {
+					return apierrors.NewConflict(schema.GroupResource{Group: "harmostes.dev", Resource: "attempts"}, obj.GetName(), errors.New("endless conflict"))
+				}
+				return c.Patch(ctx, obj, p, opts...)
+			},
+		}).
+		Build()
+
+	n, err := ReapStuckAttempts(ctx, cl, ns, 7*24*time.Hour)
+	if err != nil || n != 1 {
+		t.Fatalf("reaped %d (err %v), want 1 — the phase leg must land despite the marker failing", n, err)
+	}
+	var after v1alpha1.Attempt
+	if err := cl.Get(ctx, client.ObjectKey{Namespace: ns, Name: "wedge"}, &after); err != nil {
+		t.Fatal(err)
+	}
+	if after.Status.Phase != v1alpha1.AttemptPhaseFailed || !strings.Contains(after.Status.Message, "reaped") {
+		t.Fatalf("wedge must land failed with a reap message, got phase=%s msg=%q", after.Status.Phase, after.Status.Message)
 	}
 }

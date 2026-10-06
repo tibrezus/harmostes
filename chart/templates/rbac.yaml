@@ -48,7 +48,9 @@ rules:
   # delete is only ever invoked with POD_NAME/HOSTNAME = this process's pod.
   - apiGroups: [""]
     resources: ["pods"]
-    verbs: ["get", "delete"]
+    # list: the janitor's orphaned-runner-pod leg (#651) lists terminal
+    # attempt-runner pods whose Job is gone; delete was the #613 self-heal.
+    verbs: ["get", "list", "delete"]
   - apiGroups: [""]
     resources: ["configmaps", "events"]
     verbs: ["get", "list", "watch", "create", "update", "patch"]

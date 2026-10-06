@@ -43,6 +43,10 @@ controller:
                           # churn-budget note: MaxDispatchLostReleases=3 ≈ 3 sweeps
                           # at THIS interval (~15m) before a never-dispatching head
                           # is refused (api/v1alpha1.MaxDispatchLostReleases)
+  # GC horizon for terminal/statusless attempts (#385, #651); 0 means the
+  # default — GC cannot be disabled. Bounds the per-attempt audit ledger.
+  # Consumed by the controller's janitor (HARMOSTES_ATTEMPT_RETENTION).
+  attemptRetention: 720h
   resources:
     requests: { cpu: 100m, memory: 128Mi }
     limits:   { cpu: 1, memory: 512Mi }
@@ -83,7 +87,6 @@ worker:
   gateFastPoll: "30s"
   job:                     # per-Attempt Job pods (ADR-0007)
     maxConcurrent: 3       # fleet default; spec.reviewReady.maxConcurrent overrides per Workflow
-    attemptRetention: 720h # GC attempts terminal/statusless older than this (#385); 0 means the default — GC cannot be disabled. Bounds the per-attempt audit ledger.
     cancelOnSupersede: true # delete the review Job of a claim released superseded/closed (#402); false = let dead-head reviews burn the run bound (pre-#402 behavior)
     ttlSecondsAfterFinished: 3600
 

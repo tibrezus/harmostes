@@ -74,8 +74,6 @@ spec:
             # ── Dispatcher knobs (ADR-0007 phase 3) ──
             - name: HARMOSTES_MAX_CONCURRENT
               value: {{ .Values.worker.job.maxConcurrent | default 3 | quote }}
-            - name: HARMOSTES_ATTEMPT_RETENTION
-              value: {{ .Values.worker.job.attemptRetention | default "720h" | quote }}
             # Leg-2 fast path: sweep cadence for ARMED-not-dispatched
             # claims — CI-green dispatches within one tick. "0" = off.
             - name: HARMOSTES_GATE_FASTPOLL

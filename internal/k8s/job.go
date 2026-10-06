@@ -415,20 +415,22 @@ func ListActiveJobs(ctx context.Context, cl client.Client, namespace, workflow s
 	return live, nil
 }
 
-// DeleteJob deletes a per-attempt review Job by name (#402). Used by the
-// gate's cancel-on-supersede pass: a claim released as superseded/closed
-// leaves its Job running — nothing else deletes it, so the dead-head review
-// would burn the full run bound before the moved-head guard discards the
-// verdict. Deleting uses default (foreground-adjacent) propagation: the
-// running pod is SIGTERMed, which IS the mechanism — the ctx-cancelled run
-// never reaches post-review, so no verdict can land for the dead head.
-// DeleteJob removes the attempt's review Job. Default propagation cascades
-// to the running pod — and that cascade IS the cancellation mechanism
-// (#402): SIGTERM → context cancel → the graph aborts before post-review
-// ever runs, so a cancelled claim leaves no verdict behind.
+// DeleteJob removes the attempt's review Job. FOREGROUND propagation: the
+// delete does not return until dependents (the runner pod) are gone — the
+// default background propagation relies on the async pod-GC controller,
+// which demonstrably misses (two Completed pods outlived their deleted Job
+// by 4 days on the live fleet, 2026-10-06; #651). Used by the gate's
+// cancel-on-supersede pass: a claim released as superseded/closed leaves
+// its Job running — nothing else deletes it, so the dead-head review would
+// burn the full run bound before the moved-head guard discards the
+// verdict. The cascade is also the cancellation mechanism (#402):
+// dependent-pod deletion SIGTERMs the runner → context cancel → the graph
+// aborts before post-review ever runs, so a cancelled claim leaves no
+// verdict behind. Foreground preserves exactly that (dependents are
+// deleted, SIGTERM included), with deterministic ordering on top.
 func DeleteJob(ctx context.Context, cl client.Client, namespace, name string) error {
 	j := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name}}
-	return cl.Delete(ctx, j)
+	return cl.Delete(ctx, j, client.PropagationPolicy(metav1.DeletePropagationForeground))
 }
 
 // jobFailed reports whether the Job reached its failed condition

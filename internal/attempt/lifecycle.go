@@ -471,13 +471,12 @@ func lastSlash(s string) int {
 // superseded by this horizon).
 //
 // Best-effort per attempt; if nothing was GC'd, the first per-object error
-// is returned (an RBAC-forbidden sweep must not read as a clean 0). The
-// List is label-scoped, same as ReapStuckAttempts: CRD status is not
-// server-side selectable.
-func GCAttempts(ctx context.Context, c client.Client, namespace, workflowName string, olderThan time.Duration) (int, error) {
+// is returned (an RBAC-forbidden pass must not read as a clean 0). The
+// List is NAMESPACE-wide, same as ReapStuckAttempts: CRD status is not
+// server-side selectable. Carried by the controller's janitor (#651).
+func GCAttempts(ctx context.Context, c client.Client, namespace string, olderThan time.Duration) (int, error) {
 	var list v1alpha1.AttemptList
-	if err := c.List(ctx, &list, client.InNamespace(namespace),
-		client.MatchingLabels{"harmostes.dev/workflow": workflowName}); err != nil {
+	if err := c.List(ctx, &list, client.InNamespace(namespace)); err != nil {
 		return 0, fmt.Errorf("list attempts: %w", err)
 	}
 	// Statusless debris gets its own, much shorter bound (#629): a
@@ -537,15 +536,18 @@ func GCAttempts(ctx context.Context, c client.Client, namespace, workflowName st
 //
 // The release-then-patch is INTENTIONALLY non-atomic (#390 finding 3): a
 // crash between the two writes leaves a released-but-reconciling attempt
-// that the next sweep reaps (the phase leg runs regardless) — do not
-// "fix" this into a transaction. The List is label-scoped, not
+// that the next pass reaps (the phase leg runs regardless) — do not
+// "fix" this into a transaction. The List is NAMESPACE-wide, not
 // phase-scoped: CRD status fields are not server-side selectable, so the
-// per-sweep cost is all attempts of one workflow — bounded by live
-// attempts per workflow, fine at fleet width.
-func ReapStuckAttempts(ctx context.Context, c client.Client, namespace, workflowName string, olderThan time.Duration) (int, error) {
+// per-pass cost is all attempts in the namespace — bounded by the
+// retention horizon (#385/#651), fine at fleet width. The pass is carried
+// by the controller's janitor (#651), never by the gate sweep: a template
+// without a review gate must be bounded by the same kernel machinery, not
+// by whether some pr-review sweep happens to run (the exact blind spot
+// that let 27 fork-maintenance claims sit reconciling for 13–15 days).
+func ReapStuckAttempts(ctx context.Context, c client.Client, namespace string, olderThan time.Duration) (int, error) {
 	var list v1alpha1.AttemptList
-	if err := c.List(ctx, &list, client.InNamespace(namespace),
-		client.MatchingLabels{"harmostes.dev/workflow": workflowName}); err != nil {
+	if err := c.List(ctx, &list, client.InNamespace(namespace)); err != nil {
 		return 0, fmt.Errorf("list attempts: %w", err)
 	}
 	cutoff := time.Now().Add(-olderThan)
@@ -559,9 +561,16 @@ func ReapStuckAttempts(ctx context.Context, c client.Client, namespace, workflow
 		}
 		r := at.Status.Review
 		if r != nil && !r.Released {
-			if err := ReleaseClaim(ctx, c, namespace, at.Name, v1alpha1.ReleaseReasonReaped); err != nil {
-				continue // still reap the phase below if the release object survived
-			}
+			// Release first ("reaped" — terminal, no churn strike). A FAILED
+			// release must not block the phase leg: the workflow-side marker
+			// can fail permanently (workflow gone → marker unresolvable), and
+			// the old `continue` here is the exact bug that let 27
+			// fork-maintenance claims sit reconciling for 13–15 days (#651) —
+			// the comment below promised "the phase leg runs regardless" while
+			// the code skipped it. The phase leg lands unconditionally; a claim
+			// still unreleased under a FAILED attempt is the GC-visible
+			// stranding shape (kept, auditable), never a reconciling wedge.
+			_ = ReleaseClaim(ctx, c, namespace, at.Name, v1alpha1.ReleaseReasonReaped)
 		}
 		if err := patchAttemptStatus(ctx, c, namespace, at.Name, func(s *v1alpha1.AttemptStatus) {
 			s.Phase = v1alpha1.AttemptPhaseFailed

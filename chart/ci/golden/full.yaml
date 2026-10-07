@@ -637,6 +637,7 @@ data:
      */
     import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
     import { applyChains, resolveFallbackChains, wiringSummary } from "./fallbacks.ts";
+    import { FLEET_SAMPLING_BY_THINKING_LEVEL } from "./sampling.ts";
     
     export default async function (_pi: ExtensionAPI) {
       const rawUrl = process.env.LITELLM_URL;
@@ -720,6 +721,14 @@ data:
           // override proxy-configured fallbacks with "none", fleet-wide
           // (r17-review P4.1: observed live via a stubbed /v1/models).
           samplingParams: model.samplingParams,
+          // Fleet sampling policy (#657, pi 1.0.2+): mechanical tiers get
+          // deterministic-lean sampling; medium+ inherit model defaults (the
+          // key is absent there). Applied UNIFORMLY at registration — the
+          // models are discovered dynamically from the proxy, so per-id
+          // entries in a baked models.json would drift with the routing
+          // table; the one choke point every litellm model crosses is here.
+          // OpenAI-completions-class only (pi ignores it elsewhere).
+          samplingParamsByThinkingLevel: FLEET_SAMPLING_BY_THINKING_LEVEL,
           compat: {
             // LiteLLM proxies upstream providers; use the broadest-compatible flags.
             supportsDeveloperRole: false,
@@ -762,6 +771,41 @@ data:
         ]
       }
     }
+    
+  sampling.test.ts: |
+    import assert from "node:assert/strict";
+    import { test } from "node:test";
+    import { FLEET_SAMPLING_BY_THINKING_LEVEL } from "./sampling.ts";
+    
+    // #657: mechanical tiers are deterministic-lean; reasoning tiers inherit.
+    test("fleet sampling policy pins low tiers and leaves reasoning tiers to model defaults", () => {
+    	assert.deepEqual(
+    		Object.keys(FLEET_SAMPLING_BY_THINKING_LEVEL).sort(),
+    		["low", "minimal", "off"],
+    	);
+    	for (const level of ["off", "minimal", "low"] as const) {
+    		assert.deepEqual(FLEET_SAMPLING_BY_THINKING_LEVEL[level], { temperature: 0.2, top_p: 0.9 });
+    	}
+    	assert.equal("medium" in FLEET_SAMPLING_BY_THINKING_LEVEL, false);
+    	assert.equal("high" in FLEET_SAMPLING_BY_THINKING_LEVEL, false);
+    });
+    
+  sampling.ts: |
+    /**
+     * Fleet sampling policy (#657): pi's `samplingParamsByThinkingLevel`
+     * (1.0.2+) lets a fleet pin sampling per pi thinking level. Harmostes
+     * nodes express intent via thinking level (RPC `set_thinking_level`) —
+     * mechanical tiers (off/minimal/low) must not inherit creative-default
+     * sampling; medium and above keep model defaults (key omitted — pi
+     * merges per key, missing levels inherit). Applied uniformly by
+     * index.ts at model registration: the ONE choke point every litellm
+     * model crosses, immune to proxy routing-table drift.
+     */
+    export const FLEET_SAMPLING_BY_THINKING_LEVEL = {
+    	off: { temperature: 0.2, top_p: 0.9 },
+    	minimal: { temperature: 0.2, top_p: 0.9 },
+    	low: { temperature: 0.2, top_p: 0.9 },
+    } as const;
     
 
 ---
@@ -5165,7 +5209,7 @@ spec:
         # the fork-maintenance.yaml template output (scripts/checks/defs/
         # hooks/skill CMs) and the litellm extension payload.
         checksum/fork-maintenance: 4102c7b5e36b7d89ec401afe3e737121fb08c51f823a1b4202a49304e2229946
-        checksum/litellm-extension: 883d76f7ef3dcce17099fbf3c7b7aea0e7d7d16003ca83cfb465a7422078b4e1
+        checksum/litellm-extension: 3de80377e77cd7b0650a1bb2de0c61fd40cd2fcbcc173a3880f9afec0d637446
     spec:
       imagePullSecrets:
         - name: ghcr-pull

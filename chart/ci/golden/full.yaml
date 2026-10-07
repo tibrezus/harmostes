@@ -4957,7 +4957,11 @@ rules:
     resources: ["pods"]
     # list: the janitor's orphaned-runner-pod leg (#651) lists terminal
     # attempt-runner pods whose Job is gone; delete was the #613 self-heal.
-    verbs: ["get", "list", "delete"]
+    # watch: the controller-runtime pod cache (per-attempt runner tracking,
+    # consume-on-completion #650) — without it the informer's watch is
+    # denied, the cache never syncs, and every attempt wedges in
+    # `reconciling` (observed 2026-10-06: all pr-review gates fleet-wide).
+    verbs: ["get", "list", "watch", "delete"]
   - apiGroups: [""]
     resources: ["configmaps", "events"]
     verbs: ["get", "list", "watch", "create", "update", "patch"]

@@ -111,6 +111,21 @@ export async function executeMutationThenRun<TDetails>({
 		const bash = createBashToolDefinition(ctx.cwd, bashOptions);
 		try {
 			const bashResult = await bash.execute(`${toolCallId}:then_run`, thenRun, signal, undefined, ctx);
+			// pi ≤0.84 threw on non-zero exit; pi 1.0 returns a result with
+			// isError + structuredContent.exit_code instead (the drift the
+			// upstream-suite CI job caught on the 1.0.4 bump, #655). A failed
+			// then_run VALIDATION must still surface as [then_run:failed] —
+			// resolving success here would mask it (this file's own regression
+			// test pins that). The catch below stays as the backstop for
+			// genuine throws (spawn failures, aborts).
+			const structured = bashResult.structuredContent as { exit_code?: number } | undefined;
+			const failed = (bashResult as { isError?: boolean }).isError === true
+				|| (typeof structured?.exit_code === "number" && structured.exit_code !== 0);
+			if (failed) {
+				const failureOutput = resultText(bashResult);
+				const mutationOutput = resultText(mutationResult);
+				throw new Error([mutationOutput, THEN_RUN_FAILED, failureOutput].filter(Boolean).join("\n\n"));
+			}
 			const output = resultText(bashResult);
 			return {
 				...mutationResult,

@@ -20,7 +20,8 @@
 //   with --no-approve → reducer must be FALSE (the shipped profile wins — the
 //     fleet's invariant, since buildPiArgs always emits the flag), and
 //   without it      → reducer must be TRUE  (a .pi/sol-pi.json-only workspace
-//     is auto-trusted by pi 0.84.4 before defaultProjectTrust is consulted —
+//     is auto-trusted by pi before defaultProjectTrust is consulted — probed
+//     on 0.84.4, re-proven by the image build on the pinned 1.0.4 —
 //     this arm proves the probe is sensitive and the flag is load-bearing).
 import { loadSolPiConfig } from "/extensions/sol-pi/src/sol-pi/config.ts";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";

@@ -40,7 +40,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Pinned by hand, deliberately: the rig-query load gate is the version's
 # acceptance test, so an auto-bump that passes CI without rebuilding the
 # image is worse than a conscious bump (#338 r20).
-ARG PI_VERSION=0.84.4
+ARG PI_VERSION=1.0.4
 RUN npm install -g @earendil-works/pi-coding-agent@${PI_VERSION}
 
 # Lint tools — the wiki-lint gate runs the wiki's full ci-lint.sh (markdownlint,
@@ -200,9 +200,10 @@ RUN pi install npm:pi-searxng
 #        arm 1 (--no-approve — the fleet's invariant, emitted by
 #          buildPiArgs on every invocation): a .pi/sol-pi.json-only
 #          workspace must NOT enable the reducer;
-#        arm 2 (no flag): the same workspace MUST enable it — pi 0.84.4
+#        arm 2 (no flag): the same workspace MUST enable it — pi
 #          auto-trusts .pi/sol-pi.json-only workspaces before
-#          defaultProjectTrust is consulted (reviewer-probed), proving the
+#          defaultProjectTrust is consulted (reviewer-probed on 0.84.4;
+#          this build gate re-proves it on the pinned 1.0.4), proving the
 #          probe is sensitive and the flag is load-bearing.
 COPY extensions/sol-pi /extensions/sol-pi
 COPY extensions/sol-pi/sol-pi.json /root/.pi/agent/sol-pi.json

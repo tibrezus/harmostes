@@ -127,9 +127,10 @@ var extensionTools = map[string]string{
 	// for replaced large tool results). The shipped profile
 	// (extensions/sol-pi/sol-pi.json, observationPack=true) is THE effective
 	// runtime config on every agent run because --no-approve (below) is the
-	// ONE control that holds for every workspace class: pi 0.84.4 auto-trusts
+	// ONE control that holds for every workspace class: pi auto-trusts
 	// a .pi/sol-pi.json-only workspace before defaultProjectTrust is ever
-	// consulted (r6, reviewer-probed), so settings.json's
+	// consulted (r6, reviewer-probed on 0.84.4; re-probed on 1.0.4 — the
+	// r6 shape answers get_state over --mode rpc with no trust prompt), so settings.json's
 	// defaultProjectTrust=never is a user-plane belt with no project-plane
 	// brace — the invocation flag is what makes obs_recall always registered
 	// and therefore always allowlist-required: without this

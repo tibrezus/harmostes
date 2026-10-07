@@ -16,9 +16,11 @@ extension (action fusion + observation pack; reducer/compact disabled in the
 shipped profile `extensions/sol-pi/sol-pi.json`). ONE control makes that
 profile effective for every workspace class: `buildPiArgs` emits
 `--no-approve` on every pi invocation — pi documents it as the run-level
-override of project trust (the twin of `--approve`), and pi 0.84.4
+override of project trust (the twin of `--approve`), and pi 1.0.4
 auto-trusts a `.pi/sol-pi.json`-only workspace before `defaultProjectTrust`
-is ever consulted. The shipped `settings.json` (`defaultProjectTrust: never`)
+is ever consulted (re-probed on 1.0.4, 2026-10-07: the r6 shape answers
+`get_state` over `--mode rpc` with no trust prompt; behavior held across
+the 0.84.4 → 1.0.4 bump). The shipped `settings.json` (`defaultProjectTrust: never`)
 is a user-plane belt for the trust-requiring-resource class; the image
 build's two-arm trust gate asserts both the invariant and the probe's
 sensitivity. It is the one extension in

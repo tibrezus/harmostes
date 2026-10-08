@@ -140,6 +140,8 @@ spec:
                           tz: { type: string, description: IANA timezone (default UTC) }                    # litellm/zai/anthropic/glm-5.3-flash
                     skill: { type: string }                    # /skills/…/SKILL.md
                     tools: { type: array, items: { type: string } }
+                    excludeTools: { type: array, items: { type: string } }
+                    noMcp: { type: boolean }
                     taskTemplate:                              # the interpretive task
                       type: object
                       properties:

@@ -584,7 +584,10 @@ func runOneShot() {
 			return spawnEnv(env, piargs.RigGraphPath, logf)
 		},
 		Opts: agent.RPCOptions{
-			Args:        piargs.PiArgs(wf.Spec.Agent.Skill, wf.Spec.Agent.Model, wf.Spec.Agent.Tools),
+			Args: piargs.PiArgsLoadout(wf.Spec.Agent.Skill, wf.Spec.Agent.Model, wf.Spec.Agent.Tools, piargs.Loadout{
+				ExcludeTools: wf.Spec.Agent.ExcludeTools,
+				NoMCP:        wf.Spec.Agent.NoMCPOrDefault(),
+			}),
 			Workdir:     workdir,
 			Env:         piEnv,
 			SessionRoot: piSessions,

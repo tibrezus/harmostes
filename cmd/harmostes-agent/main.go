@@ -43,6 +43,8 @@ func main() {
 	skill := fs.String("skill", "", "path to SKILL.md")
 	model := fs.String("model", "litellm/zai/anthropic/glm-5.3-flash", "model id")
 	tools := fs.String("tools", "read,bash,edit,grep", "comma-separated tool allowlist")
+	excludeTools := fs.String("exclude-tools", "", "comma-separated tool exclusions (#656, pi 1.0.4 patterns)")
+	noMCP := fs.Bool("no-mcp", false, "disable MCP for this run (#656)")
 	workdir := fs.String("workdir", "", "agent working directory (the repo)")
 	taskFile := fs.String("task-file", "", "file with the initial task prompt")
 	gate := fs.String("gate", "", "shell command run after each agent turn; exit 0 = green")
@@ -113,7 +115,10 @@ func main() {
 	hlog("%s", piargs.ExtensionsLogLine())
 	hlog("starting pi --mode rpc (model=%s tools=%s workdir=%s)", *model, *tools, *workdir)
 	rpc, err := agent.NewRPC(ctx, agent.RPCOptions{
-		Args:    piargs.PiArgs(*skill, *model, splitTools(*tools)),
+		Args: piargs.PiArgsLoadout(*skill, *model, splitTools(*tools), piargs.Loadout{
+			ExcludeTools: splitTools(*excludeTools),
+			NoMCP:        *noMCP,
+		}),
 		Workdir: *workdir,
 		Env:     os.Environ(),
 		Log:     logger,

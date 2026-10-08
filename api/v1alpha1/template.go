@@ -52,6 +52,12 @@ func ApplyTemplateDefaults(wf *Workflow, tmpl *WorkflowTemplate) {
 	if len(a.Tools) == 0 {
 		a.Tools = ta.Tools
 	}
+	if len(a.ExcludeTools) == 0 {
+		a.ExcludeTools = ta.ExcludeTools
+	}
+	if a.NoMCP == nil {
+		a.NoMCP = ta.NoMCP
+	}
 	if a.TaskTemplate == (TaskTemplate{}) {
 		a.TaskTemplate = ta.TaskTemplate
 	}

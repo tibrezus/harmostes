@@ -146,7 +146,28 @@ var extensionTools = map[string]string{
 // the "stdlib-only primitive" claim in the package doc is now literally
 // true and TestPiargsIsLeaf enforces the whole invariant.
 func PiArgs(skill, model string, tools []string) []string {
-	return buildPiArgs(skill, model, tools, Extensions, os.Stat)
+	return PiArgsLoadout(skill, model, tools, Loadout{})
+}
+
+// Loadout (#656): the node-declared tool surface beyond the allowlist —
+// pi 1.0.4's --exclude-tools patterns and the --no-mcp kill-switch. The
+// zero Loadout renders BYTE-IDENTICALLY to the historical PiArgs output
+// (undeclared nodes must not drift an existing invocation); exclusions
+// subtract from the final surface, never from the -e extension set.
+type Loadout struct {
+	ExcludeTools []string
+	NoMCP        bool
+}
+
+func PiArgsLoadout(skill, model string, tools []string, lo Loadout) []string {
+	args := buildPiArgs(skill, model, tools, Extensions, os.Stat)
+	if len(lo.ExcludeTools) > 0 {
+		args = append(args, "--exclude-tools", strings.Join(lo.ExcludeTools, ","))
+	}
+	if lo.NoMCP {
+		args = append(args, "--no-mcp")
+	}
+	return args
 }
 
 // buildPiArgs is PiArgs' injectable core: stat lets tests simulate images

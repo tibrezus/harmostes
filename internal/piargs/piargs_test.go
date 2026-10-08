@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -511,4 +512,27 @@ func mustRead(t *testing.T, path string) []byte {
 		t.Fatalf("read %s: %v", path, err)
 	}
 	return b
+}
+
+// #656: the loadout language — node-declared exclusions and the MCP
+// kill-switch render as pi 1.0.4 flags; the ZERO loadout stays byte-identical
+// to the historical PiArgs output (undeclared nodes must not drift).
+func TestPiArgsLoadout(t *testing.T) {
+	base := PiArgs("skill", "model", []string{"read", "bash"})
+	full := PiArgsLoadout("skill", "model", []string{"read", "bash"}, Loadout{
+		ExcludeTools: []string{"mcp__radius__*", "write"},
+		NoMCP:        true,
+	})
+	if len(full) != len(base)+3 ||
+		full[len(base)] != "--exclude-tools" ||
+		full[len(base)+1] != "mcp__radius__*,write" ||
+		full[len(base)+2] != "--no-mcp" {
+		t.Fatalf("loadout flags not rendered: %v", full[len(base):])
+	}
+	if !slices.Equal(base, PiArgsLoadout("skill", "model", []string{"read", "bash"}, Loadout{})) {
+		t.Fatal("zero Loadout must be byte-identical to PiArgs")
+	}
+	if slices.Contains(base, "--no-mcp") || slices.Contains(base, "--exclude-tools") {
+		t.Fatal("base invocation must not grow loadout flags")
+	}
 }

@@ -88,6 +88,21 @@ derive_upstream_identity "origin/b-branch" "$UP" "b[0-9]*"
 assert_eq "$IDENTITY" "b101" "pattern glob maps non-semver identities"
 assert_eq "$IDENTITY_STATE" "exact" "custom-pattern state derives"
 
+echo "── #664: the mint's own -rezus.* output tags never become the identity"
+# A custom pattern like "v16.0.*" is start-anchored only; with a rezus tag on
+# the release line the reachable scan used to pick IT as the identity and mint
+# the nested v16.0.5-rezus.2-rezus.1 (live: forgejo, 2026-10-09).
+git checkout -qb rezus-line
+echo r1 > rf; git add rf; git commit -qm r1
+git tag "v1.18.4-rezus.2"           # an output tag the pattern would prefix-match
+if derive_upstream_identity "HEAD" "$UP" "v1.18.*"; then
+  assert_eq "$IDENTITY" "v1.18.4" "rezus output tag excluded — identity stays the upstream release"
+  assert_eq "$IDENTITY_STATE" "exact" "state still derives (fixture line contains the release)"
+else
+  fail "derive must succeed with the rezus output tag filtered out"
+fi
+git tag -d "v1.18.4-rezus.2" >/dev/null
+
 echo "── no upstream releases at all: refuse to derive"
 BARE="$WORK/empty.git"; git init -q --bare "$BARE"
 git checkout -q --orphan orph 2>/dev/null

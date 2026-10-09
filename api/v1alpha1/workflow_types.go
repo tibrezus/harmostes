@@ -199,17 +199,22 @@ type PrepareSpec struct {
 func (a AgentSpec) EnabledOrDefault() bool { return a.Enabled == nil || *a.Enabled }
 
 type AgentSpec struct {
-	Enabled      *bool         `json:"enabled,omitempty"`  // nil/true = run, false = skip (deterministic-only)
-	Model        string        `json:"model"`              // e.g. litellm/zai/anthropic/glm-5.3-flash
-	Models       []ModelWindow `json:"models,omitempty"`   // time-windowed overrides (#494): first match at run start wins
-	Skill        string        `json:"skill"`              // path to SKILL.md
-	Tools        []string      `json:"tools,omitempty"`    // tool allowlist
-	TaskTemplate TaskTemplate  `json:"taskTemplate"`       // the interpretive task
-	Gate         GateRef       `json:"gate"`               // validation plugin
-	MaxFixes     int           `json:"maxFixes,omitempty"` // default 3
-	Timeout      int           `json:"timeout,omitempty"`  // seconds, default 1800
-	Scope        string        `json:"scope,omitempty"`    // optional task scope override
+	Enabled      *bool         `json:"enabled,omitempty"`      // nil/true = run, false = skip (deterministic-only)
+	Model        string        `json:"model"`                  // e.g. litellm/zai/anthropic/glm-5.3-flash
+	Models       []ModelWindow `json:"models,omitempty"`       // time-windowed overrides (#494): first match at run start wins
+	Skill        string        `json:"skill"`                  // path to SKILL.md
+	Tools        []string      `json:"tools,omitempty"`        // tool allowlist
+	ExcludeTools []string      `json:"excludeTools,omitempty"` // #656: post-allowlist exclusions (pi 1.0.4 patterns, e.g. 'mcp__x__*')
+	NoMCP        *bool         `json:"noMcp,omitempty"`        // #656: kill MCP for this node (nil = fleet default, MCP per image)
+	TaskTemplate TaskTemplate  `json:"taskTemplate"`           // the interpretive task
+	Gate         GateRef       `json:"gate"`                   // validation plugin
+	MaxFixes     int           `json:"maxFixes,omitempty"`     // default 3
+	Timeout      int           `json:"timeout,omitempty"`      // seconds, default 1800
+	Scope        string        `json:"scope,omitempty"`        // optional task scope override
 }
+
+// NoMCPOrDefault: nil means the fleet default (MCP per image). #656.
+func (a AgentSpec) NoMCPOrDefault() bool { return a.NoMCP != nil && *a.NoMCP }
 
 // ModelWindow routes runs in [Start, End) (window's tz, midnight-wrap
 // allowed) to a different model. Malformed windows never match — a bad

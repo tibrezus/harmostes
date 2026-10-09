@@ -24,7 +24,7 @@ test('the wall sections by template and each workflow carries a step-timing stri
 
   const otherSec = page.locator('[data-testid="wall-section"][data-template="other workflows"]');
   // Live selection: the superseded merge-sync subject never renders.
-  await expect(otherSec.getByTestId('wall-card')).toHaveCount(2);
+  await expect(otherSec.getByTestId('wall-card')).toHaveCount(3); // #42 verdict + #43 in flight + #45 parked
 
   // Subject rows fold under their workflow: pr-review-demo tracks two
   // live PRs → its block cell spans both rows and names the workflow.
@@ -32,25 +32,29 @@ test('the wall sections by template and each workflow carries a step-timing stri
     .locator('[data-testid="wall-workflow-cell"]')
     .filter({ has: page.getByTestId('wall-workflow-link').filter({ hasText: 'pr-review-demo' }) });
   await expect(demoCell).toHaveCount(1);
-  await expect(demoCell).toHaveAttribute('rowspan', '2');
+  // Three live pr-review-demo subjects: #42 verdict, #43 in flight, #45 parked.
+  await expect(demoCell).toHaveAttribute('rowspan', '3');
 
-  // Every live workflow shows its step-timing strip; segments paint with
-  // the same state classes as the run-detail waterfall.
-  const strips = page.getByTestId('wall-steps');
-  await expect(strips).toHaveCount(2);
+  // Every SUBJECT ROW carries its own progress strip (state column — the
+  // bar lives on the row whose progress it describes); the workflow block
+  // keeps only the text rollup. 4 subject rows → 4 strips.
+  const strips = page.getByTestId('wall-row-steps');
+  await expect(strips).toHaveCount(4);
   await expect(strips.first().locator('rect')).not.toHaveCount(0);
 
-  // The demo strip's segments sit in dependency order (x is increasing).
-  const xs = await demoCell
-    .getByTestId('wall-steps')
+  // The #43 row's strip segments sit in dependency order (x increasing).
+  const xs = await page
+    .locator('[data-testid="wall-card"][data-subject="demo-rezuscloud/harmostes#43"]')
+    .getByTestId('wall-row-steps')
     .locator('rect')
     .evaluateAll((rects) => rects.map((r) => Number(r.getAttribute('x'))));
   expect(xs).toHaveLength(4); // prepare → agent → gate → deploy
   for (let i = 1; i < xs.length; i++) expect(xs[i]).toBeGreaterThan(xs[i - 1]);
 
   // Segments carry honest titles (label · duration · state glyph).
-  const firstTitle = await demoCell
-    .getByTestId('wall-steps')
+  const firstTitle = await page
+    .locator('[data-testid="wall-card"][data-subject="demo-rezuscloud/harmostes#43"]')
+    .getByTestId('wall-row-steps')
     .locator('rect title')
     .first()
     .textContent();

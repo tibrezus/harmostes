@@ -305,6 +305,26 @@ type ReviewClaimStatus struct {
 	// the human's own arm — the next automatic arm within the window is
 	// still refused), and expires after HorizonDuration: time-bounded.
 	DismissedAt *metav1.Time `json:"dismissedAt,omitempty"`
+
+	// HoldNote is WHY the gate is holding this claim queued — the last
+	// waiting evaluation's reason, verbatim ("ci pending at head abc1234
+	// (running: ci/build) — dispatch on green", "the review label is
+	// absent, so nothing can dispatch; re-apply it"). The wall renders it
+	// as the queued row's second line: a bare "queued" chip left
+	// operators asking "in what status ARE they?" while the gate knew the
+	// answer all along. Written by the armed-poll when the note CHANGES
+	// (a poll runs ~5min; the write skips identical notes), cleared on
+	// dispatch. Not set on released claims — the release reason owns the
+	// story then.
+	HoldNote string `json:"holdNote,omitempty"`
+
+	// HoldCause is the SHORT cause behind the hold — a closed vocabulary
+	// the wall's state chip renders as a qualification ("queued · waiting
+	// ci"): ci-pending | ci-red | label-absent | api-error | verdict-check
+	// | dispatched. Written beside HoldNote by the armed-poll; the wall
+	// never parses prose to derive it (the note is for humans, the cause
+	// for the chip).
+	HoldCause string `json:"holdCause,omitempty"`
 }
 
 // RunRecord is one Workflow Run (job) executed inside an attempt.
@@ -323,6 +343,15 @@ type RunRecord struct {
 	// Phase is the run phase: running | succeeded | failed.
 	// +optional
 	Phase string `json:"phase,omitempty"`
+}
+
+// RunTerminalPhase reports whether a RunRecord phase is terminal — the
+// kernel's own consume-on-completion fact (#647): a run that will not
+// run again. Single-sourced here because the controller's terminal-run
+// trigger and the attempt ledger's finalize paths must not drift on what
+// counts as "ended".
+func RunTerminalPhase(phase string) bool {
+	return phase == "succeeded" || phase == "failed"
 }
 
 // TotalRuns is runs ever executed on this attempt: the live tail plus every

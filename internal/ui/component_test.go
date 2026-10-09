@@ -83,12 +83,13 @@ func TestComponent_Wall_RendersAllFixtureSubjects(t *testing.T) {
 	doc := getAsFixtureUser(t, ts, "/")
 
 	cards := testIDSelection(t, doc, "wall-card")
-	if got := cards.Length(); got != 3 {
+	if got := cards.Length(); got != 4 {
 		// The wall is LIVE (live is not history): the superseded
 		// merge-sync subject never shows; validated verdicts linger only
 		// for wallVerdictGrace. Fixture: #42 (fresh verdict) + #43
-		// (in flight) + #44 (fresh verdict).
-		t.Errorf("wall cards = %d, want 3 (three review PRs — superseded dropped)", got)
+		// (in flight) + #44 (fresh verdict) + #45 (parked queued, the
+		// hold-line fixture).
+		t.Errorf("wall cards = %d, want 4 (three review PRs + the parked one — superseded dropped)", got)
 	}
 	cards.Each(func(_ int, s *goquery.Selection) {
 		if s.AttrOr("data-subject", "") == "" {
@@ -96,7 +97,7 @@ func TestComponent_Wall_RendersAllFixtureSubjects(t *testing.T) {
 		}
 	})
 	reviewMarked := doc.Find(`[data-testid="wall-card"][data-review="true"]`).Length()
-	if reviewMarked != 3 {
+	if reviewMarked != 4 {
 		t.Errorf("review-marked rows = %d, want 3", reviewMarked)
 	}
 
@@ -115,8 +116,8 @@ func TestComponent_Wall_RendersAllFixtureSubjects(t *testing.T) {
 		t.Errorf("pr-review section cards = %d, want 1 (the template-backed instance)", got)
 	}
 	otherSec := doc.Find(`[data-testid="wall-section"][data-template="other workflows"]`)
-	if got := otherSec.Find(`[data-testid="wall-card"]`).Length(); got != 2 {
-		t.Errorf("other-workflows section cards = %d, want 2 (two PRs on pr-review-demo — superseded merge-sync dropped)", got)
+	if got := otherSec.Find(`[data-testid="wall-card"]`).Length(); got != 3 {
+		t.Errorf("other-workflows section cards = %d, want 3 (three PRs on pr-review-demo — superseded merge-sync dropped)", got)
 	}
 	// The graph-native workflow tracks two subjects → its block cell
 	// spans both rows.
@@ -126,30 +127,82 @@ func TestComponent_Wall_RendersAllFixtureSubjects(t *testing.T) {
 	if demoCell.Length() != 1 {
 		t.Fatalf("pr-review-demo workflow cell missing")
 	}
-	if got, _ := demoCell.Attr("rowspan"); got != "2" {
-		t.Errorf("pr-review-demo cell rowspan = %q, want 2 (two live PRs)", got)
+	if got, _ := demoCell.Attr("rowspan"); got != "3" {
+		t.Errorf("pr-review-demo cell rowspan = %q, want 3 (three live PRs)", got)
 	}
-	// Every workflow with envelopes carries a strip; the strips paint with
-	// the run-detail waterfall's own state classes.
-	strips := testIDSelection(t, doc, "wall-steps")
-	if got := strips.Length(); got != 2 {
-		t.Errorf("wall step strips = %d, want 2 (every showing workflow has a latest attempt)", got)
+	// The parked claim's WHY (#user wall refactor): the queued row (#45)
+	// renders the gate's waiting reason verbatim under its chip + the hold
+	// age, and its token cell is the honest em-dash — no workflow-cache
+	// numbers on rows that ran nothing.
+	hold := testIDSelection(t, doc, "wall-hold")
+	if hold.Length() != 1 {
+		t.Fatalf("wall hold lines = %d, want 1 (the parked #45)", hold.Length())
 	}
-	if got := doc.Find(`.wall-steps .rg-timing-bar.rg-state-ok`).Length(); got == 0 {
-		t.Error("no ok-painted segments — strips must reuse the waterfall palette")
+	if txt := hold.Text(); !strings.Contains(txt, "ci pending at head f00dfeed") || !strings.Contains(txt, "dispatch on green") || !strings.Contains(txt, "waiting ") {
+		t.Errorf("hold line must carry the gate's verbatim reason + waiting age, got %q", txt)
 	}
-	if doc.Find(`.wall-steps .rg-timing-bar.rg-state-running`).Length() == 0 {
-		t.Error("no running segment — the in-flight attempt's agent node must paint live")
+	parkedRow := doc.Find(`[data-testid="wall-card"][data-subject="demo-rezuscloud/harmostes#45"]`)
+	if parkedRow.Length() != 1 {
+		t.Fatalf("parked row missing")
 	}
-	// Segments are in dependency order: within the pr-review-demo strip the
-	// prepare segment's x is left of the agent segment's x (4 nodes:
-	// prepare → agent → gate → deploy).
-	demoStrip := demoCell.Find(`[data-testid="wall-steps"]`)
-	if demoStrip.Length() != 1 {
-		t.Fatalf("pr-review-demo strip missing")
+	if parkedRow.Find(`[data-testid="wall-tokens-none"]`).Length() != 1 {
+		t.Error("the parked row ran nothing — its token cell must be the honest em-dash")
+	}
+	// In-flight and verdict rows still render their own numbers (#43 live,
+	// #42/#44 envelopes): the em-dash is parked-only.
+	if got := doc.Find(`[data-testid="wall-tokens-none"]`).Length(); got != 1 {
+		t.Errorf("em-dash token cells = %d, want 1 (only the parked row)", got)
+	}
+
+	// The chip QUALIFIES itself (windmill names what a flow waits for):
+	// the parked row's chip is not bare "queued" but the gate's short
+	// cause beside it.
+	parkedChip := parkedRow.Find(".chip")
+	if txt := parkedChip.Text(); !strings.Contains(txt, "queued") || !strings.Contains(txt, "waiting ci") {
+		t.Errorf("the parked chip must qualify the state, got %q", txt)
+	}
+	// The workflow-level rollup is TEXT ONLY ("1 in flight · 1 queued · 1
+	// verdict") — every BAR lives on the row whose progress it describes
+	// (owner: "state is the better spot").
+	summary := doc.Find(`[data-testid="wall-state-counts"]`)
+	if summary.Length() != 2 {
+		t.Fatalf("workflow rollup lines = %d, want 2 (one per workflow block)", summary.Length())
+	}
+	demoCounts := otherSec.Find(`[data-testid="wall-state-counts"]`).Text()
+	if !strings.Contains(demoCounts, "1 in flight") || !strings.Contains(demoCounts, "1 queued") || !strings.Contains(demoCounts, "1 verdict") {
+		t.Errorf("pr-review-demo rollup must aggregate its subjects, got %q", demoCounts)
+	}
+	// NO bars at the block: neither state cells nor the block step strip —
+	// the strip lives per row now.
+	if doc.Find(`[data-testid="wall-state-summary"]`).Length() != 0 {
+		t.Error("the block-level state summary must be gone")
+	}
+	if doc.Find(`[data-testid="wall-steps"]`).Length() != 0 {
+		t.Error("the block-level step strip must be gone")
+	}
+	// Each row carries ITS OWN progress strip in the State column (12px
+	// tall, subject-labeled) — 4 rows with a runnable shape.
+	rows := doc.Find(`[data-testid="wall-row-steps"]`)
+	if rows.Length() != 4 {
+		t.Errorf("row progress strips = %d, want 4 (one per subject row)", rows.Length())
+	}
+
+	// The row strips reuse the run-detail waterfall's own state classes;
+	// the in-flight row paints its running segment live.
+	if doc.Find(`[data-testid="wall-row-steps"] .rg-timing-bar.rg-state-ok`).Length() == 0 {
+		t.Error("no ok-painted segments — row strips must reuse the waterfall palette")
+	}
+	if doc.Find(`[data-testid="wall-row-steps"] .rg-timing-bar.rg-state-running`).Length() == 0 {
+		t.Error("no running segment — the in-flight row's agent node must paint live")
+	}
+	// The #43 row's strip: segments in dependency order (prepare → agent →
+	// gate → deploy), prepared before agent on the x axis.
+	row43 := doc.Find(`[data-testid="wall-card"][data-subject="demo-rezuscloud/harmostes#43"] [data-testid="wall-row-steps"]`)
+	if row43.Length() != 1 {
+		t.Fatalf("the in-flight row's progress strip missing")
 	}
 	xs := []int{}
-	demoStrip.Find("rect").Each(func(_ int, s *goquery.Selection) {
+	row43.Find("rect").Each(func(_ int, s *goquery.Selection) {
 		x, _ := s.Attr("x")
 		v, err := strconv.Atoi(x)
 		if err != nil {
@@ -157,9 +210,9 @@ func TestComponent_Wall_RendersAllFixtureSubjects(t *testing.T) {
 		}
 		xs = append(xs, v)
 	})
-	sorted := xs[0] < xs[1] && xs[1] < xs[2] && xs[2] < xs[3]
-	if len(xs) != 4 || !sorted {
-		t.Errorf("pr-review-demo strip segments out of dependency order: %v", xs)
+	sorted := len(xs) == 4 && xs[0] < xs[1] && xs[1] < xs[2] && xs[2] < xs[3]
+	if !sorted {
+		t.Errorf("row strip segments out of dependency order: %v", xs)
 	}
 }
 
@@ -479,8 +532,8 @@ func TestComponent_DevIdentity_ZeroSetup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if got := doc.Find(`[data-testid="wall-card"]`).Length(); got != 3 {
-		t.Errorf("wall cards visible to the injected dev user = %d, want 3 (live selection)", got)
+	if got := doc.Find(`[data-testid="wall-card"]`).Length(); got != 4 {
+		t.Errorf("wall cards visible to the injected dev user = %d, want 4 (live selection, incl. the parked hold-line fixture)", got)
 	}
 }
 

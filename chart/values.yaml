@@ -43,6 +43,10 @@ controller:
                           # churn-budget note: MaxDispatchLostReleases=3 ≈ 3 sweeps
                           # at THIS interval (~15m) before a never-dispatching head
                           # is refused (api/v1alpha1.MaxDispatchLostReleases)
+  # GC horizon for terminal/statusless attempts (#385, #651); 0 means the
+  # default — GC cannot be disabled. Bounds the per-attempt audit ledger.
+  # Consumed by the controller's janitor (HARMOSTES_ATTEMPT_RETENTION).
+  attemptRetention: 720h
   resources:
     requests: { cpu: 100m, memory: 128Mi }
     limits:   { cpu: 1, memory: 512Mi }
@@ -83,7 +87,6 @@ worker:
   gateFastPoll: "30s"
   job:                     # per-Attempt Job pods (ADR-0007)
     maxConcurrent: 3       # fleet default; spec.reviewReady.maxConcurrent overrides per Workflow
-    attemptRetention: 720h # GC attempts terminal/statusless older than this (#385); 0 means the default — GC cannot be disabled. Bounds the per-attempt audit ledger.
     cancelOnSupersede: true # delete the review Job of a claim released superseded/closed (#402); false = let dead-head reviews burn the run bound (pre-#402 behavior)
     ttlSecondsAfterFinished: 3600
 
@@ -180,6 +183,21 @@ pluginConfigMaps: []
 # operator's UI alive through identity drift).
 ui:
   enabled: true
+  # Fixture mode (review environments): serve the deterministic in-memory
+  # world instead of reading the cluster — a preview env for UI changes has
+  # no fleet, and the fixture world IS the review data (parked rows, hold
+  # notes, per-PR tokens). The image carries the chart it was built from
+  # (chartfs embed), so the fixture world loads anywhere. false in prod.
+  fixture: false
+  # Read-only review view (ephemeral environments): viewNamespace points
+  # the UI at ANOTHER namespace's live data (a get/list-only Role renders
+  # there — the API server is the wall), readOnly refuses every mutating
+  # route and hides CTAs, and readOnlyAs scopes anonymous visitors to that
+  # owner's rows (open the URL, see the data — write nothing). Leave all
+  # three unset in prod.
+  viewNamespace: ""
+  readOnly: false
+  readOnlyAs: ""
   adminGroups: "harmostes-admins"
   image: ghcr.io/tibrezus/harmostes-ui:dev
   serviceAccount: harmostes-ui

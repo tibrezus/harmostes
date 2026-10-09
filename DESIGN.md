@@ -107,6 +107,7 @@ headers change in one place; `data-island-state="ready"` plus the
 | `topology`, `topology-node`, `topology-edge` | `pages/frag_topology.html` | topology, inspector specs |
 | `wall-card`, `wall-card-title`, `wall-alert` | `pages/frag_wall.html` | wall spec |
 | `wall-current`, `wall-counts`, `wall-live-tokens` | `pages/frag_wall.html` | wall live specs (#594: Now column + header state tally; #604: live token stream) |
+| `wall-hold`, `wall-tokens-none` | `pages/frag_wall.html` | the parked claim's why + the honest empty token cell (queued rows carry no usage of their own; the workflow-cache fallback that painted one session's numbers onto every row is gone) |
 | `code-island`, `inspector`, `inspector-field`, `inspector-apply`, `inspector-status`, `propose-button`, `propose-link`, `propose-panel`, `propose-source`, `propose-status`, `rev-historical`, `revisions-link`, `rev-switch`, `rev-switch-option` | `pages/template_detail.html` | code-island, inspector, propose specs |
 | `rev-option`, `rev-picker`, `rev-graph-diff`, `revisions-empty`, `topology-pane`, `topology-legend`, `yaml-diff`, `yaml-diff-line` | `pages/template_revisions.html` | topology diff assertions |
 | `tpl-table`, `tpl-row-link`, `tpl-new-workflow`, `graph-canvas` | `pages/templates.html`, `frag_run_graph.html`, `frag_topology.html` | workflows spec (library table + CTA), run-detail/topology (canvas) |

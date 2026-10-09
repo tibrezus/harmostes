@@ -49,6 +49,7 @@ func main() {
 		otlpInsecure bool
 		webhookAddr  string
 		triggerTopic string
+		retention    time.Duration
 	)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "metrics server bind address")
 	flag.StringVar(&namespace, "namespace", envOr("HARMOSTES_NAMESPACE", "harmostes"), "namespace the controller watches")
@@ -57,6 +58,20 @@ func main() {
 	flag.BoolVar(&otlpInsecure, "otlp-insecure", false, "set OTEL_EXPORTER_OTLP_INSECURE on workers (plain gRPC for cluster-internal collectors)")
 	flag.StringVar(&webhookAddr, "webhook-bind-address", envOr("HARMOSTES_WEBHOOK_ADDRESS", ":8082"), "webhook server bind address (for git push events)")
 	flag.StringVar(&triggerTopic, "trigger-topic", envOr("HARMOSTES_TRIGGER_TOPIC", "harmostes-triggers"), "Dapr pub/sub topic for trigger events")
+	// Attempt-retention GC horizon (#385/#651): the janitor's retention
+	// leg. Malformed = boot error, not a silent default (the worker's env
+	// parse carried the same discipline; the chart stamps this value).
+	retention = 720 * time.Hour
+	if v := os.Getenv("HARMOSTES_ATTEMPT_RETENTION"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d < 0 {
+			setupLog(fmt.Sprintf("HARMOSTES_ATTEMPT_RETENTION=%q: must be a non-negative duration", v), err)
+			os.Exit(1)
+		}
+		if d > 0 {
+			retention = d
+		}
+	}
 	opts := zap.Options{Development: false}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -190,6 +205,18 @@ func main() {
 		Client: mgr.GetClient(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog("template history setup", err)
+		os.Exit(1)
+	}
+
+	// The janitor (#651): namespace-wide attempt hygiene — stuck-attempt
+	// reap, retention GC, orphaned runner pods. Runs on the manager's
+	// lifecycle; cadence and bounds default in the Janitor.
+	if err := mgr.Add(&controller.Janitor{
+		Client:    mgr.GetClient(),
+		Namespace: namespace,
+		Retention: retention,
+	}); err != nil {
+		setupLog("janitor setup", err)
 		os.Exit(1)
 	}
 

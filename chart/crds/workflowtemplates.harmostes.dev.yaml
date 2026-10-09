@@ -102,6 +102,8 @@ spec:
                       type: array
                       items:
                         type: string
+                    excludeTools: { type: array, items: { type: string } }
+                    noMcp: { type: boolean }
                     taskTemplate:
                       type: object
                       properties:

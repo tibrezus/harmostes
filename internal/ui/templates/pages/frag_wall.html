@@ -47,21 +47,27 @@
 						{{- if eq $gi 0}}
 						<td rowspan="{{len $w.Groups}}" class="wall-wf-cell" data-testid="wall-workflow-cell">
 							<a class="wall-wf" href="{{$w.URL}}" data-testid="wall-workflow-link"><span class="ids">{{$w.Name}}</span></a>
-							{{- if $w.Strip}}
-							<svg class="wall-steps" width="{{$w.StripW}}" height="12" role="img" aria-label="step timing: {{$w.Name}}" data-testid="wall-steps">
-								{{- range $w.Strip}}<rect class="rg-timing-bar rg-state-{{.Status}}" x="{{.X}}" y="1" width="{{.Width}}" height="10" rx="2"><title>{{.Title}}</title></rect>{{end}}
-							</svg>
+							{{- if $w.Counts}}
+							<div class="wall-states-counts" data-testid="wall-state-counts">{{range $i, $c := $w.Counts}}{{if $i}}<span class="sep">·</span>{{end}}{{$c.Count}} {{$c.State}}{{end}}</div>
 							{{- end}}
 						</td>
 						{{- end}}
-						<td>{{template "state-chip" $st}}</td>
+						<td>
+							{{template "state-chip" (wallChipLabel $g)}}
+							{{- if $g.Strip}}
+							<svg class="wall-row-steps" width="{{$g.StripW}}" height="12" role="img" aria-label="progress: {{$g.Subject}}" data-testid="wall-row-steps">
+								{{- range $g.Strip}}<rect class="rg-timing-bar rg-state-{{.Status}}" x="{{.X}}" y="1" width="{{.Width}}" height="10" rx="2"><title>{{.Title}}</title></rect>{{end}}
+							</svg>
+							{{- end}}
+							{{if $g.Hold}}<div class="wall-hold" data-testid="wall-hold" title="{{$g.Hold.Note}}"><span class="wall-hold-note">{{$g.Hold.Note}}</span>{{if $g.Hold.Since}} <span class="ids" style="color:var(--fg-muted)">· waiting {{$g.Hold.Since}}</span>{{end}}</div>{{end}}
+						</td>
 						<td>
 							<a href="{{$g.LastRunURL}}" data-testid="wall-card-title">{{if $g.IsReview}}<strong>{{$g.Subject}}</strong>{{else}}<span class="ids">{{$g.Subject}}</span>{{end}}</a>
 							{{if $g.HeadSHA}} <span class="ids" style="color:var(--fg-muted)">{{$g.HeadSHA}}</span>{{end}}
 						</td>
 						<td data-testid="wall-current">{{if $g.CurrentNode}}<span class="ids">{{$g.CurrentNode}}</span> <span style="color:var(--fg-muted)">{{$g.Elapsed}}</span>{{else}}<span style="color:var(--fg-muted)">—</span>{{end}}</td>
 						<td class="num">{{$g.Count}}</td>
-						<td class="num">{{if $g.Live}}<span class="wall-live-tokens" data-testid="wall-live-tokens" title="live · {{$g.Live.Model}} · {{$g.Live.Turns}} turns">↻ ↑{{$g.Live.In}} ↓{{$g.Live.Out}}</span>{{if $g.Live.Model}} <span class="wall-usage-model ids" style="color:var(--ink-soft)">{{$g.Live.Model}}</span>{{end}}{{else if $g.Usage}}<span {{if $g.Usage.Model}}title="{{$g.Usage.Model}}"{{end}}>↑{{$g.Usage.InputTokens}} ↓{{$g.Usage.OutputTokens}}</span>{{if $g.Usage.Model}} <span class="wall-usage-model ids" style="color:var(--ink-soft)">{{$g.Usage.Model}}</span>{{end}}{{end}}</td>
+						<td class="num">{{if $g.Live}}<span class="wall-live-tokens" data-testid="wall-live-tokens" title="live · {{$g.Live.Model}} · {{$g.Live.Turns}} turns">↻ ↑{{$g.Live.In}} ↓{{$g.Live.Out}}</span>{{if $g.Live.Model}} <span class="wall-usage-model ids" style="color:var(--ink-soft)">{{$g.Live.Model}}</span>{{end}}{{else if $g.Usage}}<span {{if $g.Usage.Model}}title="{{$g.Usage.Model}}"{{end}}>↑{{$g.Usage.InputTokens}} ↓{{$g.Usage.OutputTokens}}</span>{{if $g.Usage.Model}} <span class="wall-usage-model ids" style="color:var(--ink-soft)">{{$g.Usage.Model}}</span>{{end}}{{else}}<span data-testid="wall-tokens-none" style="color:var(--fg-muted)">—</span>{{end}}</td>
 						<td class="time">{{$g.LastActivity}}</td>
 					</tr>
 				{{- end}}

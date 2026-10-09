@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -100,10 +101,6 @@ type GateDeps struct {
 	// FleetMaxConcurrent is the chart default; spec.reviewReady.maxConcurrent
 	// overrides per workflow.
 	FleetMaxConcurrent int
-	// AttemptRetention is the GC horizon for terminal/statusless attempts
-	// (#385); 0 means the 720h default (chart: worker.job.attemptRetention;
-	// GC cannot be disabled).
-	AttemptRetention time.Duration
 	// DisableCancelOnSupersede turns the #402 cancellation pass OFF
 	// (the pass deletes the review Job of a claim the gate released as
 	// superseded/closed): the dead-head review otherwise burns the
@@ -115,14 +112,6 @@ type GateDeps struct {
 	DisableCancelOnSupersede bool
 	Log                      func(format string, args ...any)
 	TL                       timeline.Writer
-	// JanitorDue gates the sweep's janitor pass (reap + retention GC,
-	// #629): the passes List EVERY attempt of the workflow twice — with a
-	// 30d retention on a fleet doing ~50 reviews a day that is ~1500
-	// objects per sweep on the uncached client, its own share of the
-	// client-rate-limiter weather. The gate returns whether the janitor
-	// should run THIS sweep; a 30m cadence keeps the same cleanup latency
-	// at a fraction of the traffic. Nil = always due (tests, one-shot).
-	JanitorDue func() bool
 	// NewReviewAPI overrides the review REST API construction — the
 	// worker's dispatch tests pin the API through it (C3 moved the sweep
 	// here; the injection point moved with it). Nil = the default.
@@ -539,6 +528,9 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 				keepArmed[r.PR] = true
 				emitGate(ctx, deps.TL, liveAgg, res, repo, pr)
 				log("review-ready: re-dispatching queued claim %s at %s (CI green since arm)", c.Name, r.HeadSHA)
+				if _, nerr := attempt.SetClaimHold(ctx, deps.Client, c.Namespace, c.Name, "", string(review.HoldCauseDispatched)); nerr != nil {
+					log("review-ready: hold-note clear on %s failed: %v", c.Name, nerr)
+				}
 			case review.DecisionStanddown:
 				releaseClaim(ctx, deps, c, classifyRelease(res.Evaluation), log)
 				releasedInA[c.Name] = true
@@ -555,6 +547,15 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 			default: // waiting: the armed state is doing its job — shield it
 				keepArmed[r.PR] = true
 				emitGate(ctx, deps.TL, liveAgg, res, repo, pr)
+				// Persist WHY the claim is parked (#user wall refactor): the
+				// wall renders HoldNote as the queued row's second line. A
+				// bare "queued" chip left operators asking "in what status
+				// ARE they?" while the poll knew the answer every sweep.
+				// SetClaimHold writes only on change; the cause qualifies the chip,
+				// the note tells the story.
+				if _, nerr := attempt.SetClaimHold(ctx, deps.Client, c.Namespace, c.Name, res.Reason, string(review.HoldCauseOf(res.Reason))); nerr != nil {
+					log("review-ready: hold-note write on %s failed: %v", c.Name, nerr)
+				}
 			}
 			continue
 		}
@@ -1158,40 +1159,13 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 		log("review-ready: aggregates patch failed: %v", err)
 	}
 
-	// Janitor (r30, #376): attempts frozen in reconciling for days are
-	// worker-loss debris — they hold claim slots and clutter the fleet
-	// view. Best-effort, bounded, on the uncancellable ctx (a sweep abort
-	// must not abort the reap halfway is fine — ReapStuckAttempts is
-	// per-attempt best-effort and the NEXT sweep reaps the rest).
-	// Cadence-gated (#629 JanitorDue): the passes' full Lists are the
-	// sweep's largest API cost; a 30m cadence bounds it without changing
-	// cleanup latency meaningfully.
-	if deps.JanitorDue != nil && !deps.JanitorDue() {
-		// skip: another sweep ran the janitor recently
-	} else if reapCtx, rcancel := context.WithTimeout(recordCtx, 30*time.Second); rcancel != nil {
-		defer rcancel()
-		if n, err := attempt.ReapStuckAttempts(reapCtx, deps.Client, wf.Namespace, wf.Name, 7*24*time.Hour); err != nil {
-			log("review-ready: reap stuck attempts failed: %v", err)
-		} else if n > 0 {
-			log("review-ready: reaped %d attempt(s) stuck reconciling >7d", n)
-		}
-		// Retention GC (#385): terminal and statusless attempts past the
-		// horizon are pure CR accumulation (2,495 on one workflow and
-		// climbing) — delete them the same best-effort way. Terminal
-		// phase = finished work; statusless = never reconciled. Live work
-		// (reconciling, claim-bearing) is excluded by construction.
-		// Horizon is a chart value (HARMOSTES_ATTEMPT_RETENTION); 0
-		// means the 30d default — GC cannot be disabled.
-		retention := deps.AttemptRetention
-		if retention == 0 {
-			retention = 720 * time.Hour
-		}
-		if n, err := attempt.GCAttempts(reapCtx, deps.Client, wf.Namespace, wf.Name, retention); err != nil {
-			log("review-ready: attempt GC failed: %v", err)
-		} else if n > 0 {
-			log("review-ready: GC'd %d attempt(s) older than %s", n, retention)
-		}
-	}
+	// The janitor (stuck-attempt reap + retention GC) does NOT run here
+	// anymore (#651): it was scoped to THIS workflow — the exact blind spot
+	// that let 27 fork-maintenance claims sit reconciling 13–15 days, since
+	// fork-maintenance templates never enter the swept population. The pass
+	// is namespace-wide kernel machinery now, carried by the controller's
+	// janitor runnable — cleanup must not depend on whether some pr-review
+	// sweep happens to fire.
 
 	return out, nil
 }
@@ -1365,20 +1339,48 @@ var tlWriteTimeout = 5 * time.Second // mutated only by TestSweepTLWriteBoundedN
 // standing-verdict refusal ON THE PR — the surface the author watches
 // (#577). Status + timeline alone read as "no response": rhesadox#2340
 // took four re-arms over four hours against a verdict that had landed
-// before the first re-arm. Deduped by the refusal record (HostNotified):
-// exactly one comment per (pr, head); a failed post leaves the marker
-// false and the next sweep retries — the sweep is idempotent, the host
-// comment is the thing that must not spam.
+// before the first re-arm.
+//
+// Deduped twice (#648). Fast path: the refusal record (HostNotified) —
+// exactly one comment per (pr, head) while the memo survives. Host path:
+// the CONVERSATION itself — the memo rides a sweep-local slice and a
+// last-writer-wins status patch, so overlapping sweeps (a webhook wake
+// racing the fast-poll, two pods) can each pass it; the PR is the one
+// shared state every sweep reads. Before posting a memo-miss, scan for a
+// standing notice at this head (marker match, ShaPrefixMatch semantics;
+// the legacy pre-marker prose as fallback so already-posted notices
+// dedupe too): standing → mark + skip. A failed post leaves HostNotified
+// false and the next sweep's scan finds nothing — the retry contract is
+// unchanged. Scan failed or inconclusive (conversation exceeds the cap):
+// post anyway — one duplicate beats a lost refusal surface (visibility
+// wins, rhesadox#2340), and the degraded case says so.
 func notifyRefusalHost(ctx context.Context, api review.API, ref *v1alpha1.ReviewRefusal, log func(string, ...any)) {
 	if ref.HostNotified {
 		return
+	}
+	// Only the memo-miss path pays the scan: first refusal, memo lost to a
+	// clobber, or a retry after a failed post.
+	comments, truncated, err := api.ListCommentsAll(ctx, ref.Repo, ref.PR)
+	if err != nil {
+		log("review-ready: refusal-notice dedupe scan failed for %s#%d — posting anyway (%v)", ref.Repo, ref.PR, err)
+	} else {
+		if refusalNoticeStanding(comments, ref.HeadSHA) {
+			ref.HostNotified = true // persisted by this sweep's aggregates patch
+			log("review-ready: refusal notice for %s#%d at %s already stands on the PR — host-side dedupe, skipping the post (#648)", ref.Repo, ref.PR, ref.HeadSHA)
+			return
+		}
+		if truncated {
+			// The notice would sit at the newest end of exactly the history we
+			// could not read. Post, and say the dedupe is degraded.
+			log("review-ready: refusal-notice dedupe scan inconclusive for %s#%d (conversation exceeds the scan cap) — posting anyway", ref.Repo, ref.PR)
+		}
 	}
 	link := ""
 	if ref.VerdictURL != "" {
 		link = " The verdict: " + ref.VerdictURL
 	}
-	body := fmt.Sprintf("Review gate (#567): this head (`%s`) was already reviewed — no new review runs at the same SHA.%s %s",
-		ref.HeadSHA, link, ref.Reason)
+	body := fmt.Sprintf("Review gate (#567): this head (`%s`) was already reviewed — no new review runs at the same SHA.%s %s <!-- %s @ %s -->",
+		ref.HeadSHA, link, ref.Reason, refusalNoticeMarkerName, ref.HeadSHA)
 	if err := api.PostComment(ctx, ref.Repo, ref.PR, body); err != nil {
 		log("review-ready: refusal notice post failed for %s#%d — retried next sweep: %v", ref.Repo, ref.PR, err)
 		return
@@ -1391,6 +1393,38 @@ func notifyRefusalHost(ctx context.Context, api review.API, ref *v1alpha1.Review
 		return
 	}
 	log("review-ready: refusal notice posted for %s#%d at %s (#577)", ref.Repo, ref.PR, ref.HeadSHA)
+}
+
+// refusalNoticeMarkerName is the hidden marker's name; refusalNoticeMarker
+// matches the full form the body carries (the verdict-trailer convention:
+// a hidden HTML comment is invisible in the rendered conversation).
+const refusalNoticeMarkerName = "harmostes: review-gate-refusal"
+
+var refusalNoticeMarker = regexp.MustCompile(`<!-- harmostes: review-gate-refusal @ ([0-9a-f]{7,40}) -->`)
+
+// refusalNoticeStanding reports whether a #577 refusal notice already
+// stands at headSHA — the host-side dedupe half (#648). Marker matches go
+// through ShaPrefixMatch (an abbreviated recorded sha covers its head;
+// any OTHER sha does not — a new head earns a fresh notice). The LEGACY
+// prose form (notices posted before the marker existed) matches on the
+// stable body prefix plus the full head sha the body carries verbatim.
+func refusalNoticeStanding(comments []review.IssueComment, headSHA string) bool {
+	head := strings.ToLower(headSHA)
+	for _, c := range comments {
+		if m := refusalNoticeMarker.FindStringSubmatch(c.Body); m != nil {
+			if review.ShaPrefixMatch(headSHA, m[1]) {
+				return true
+			}
+			continue
+		}
+		// Legacy fallback: "Review gate (#567): this head (`<sha>`) ..." — the
+		// prefix is stable since #577; the body carries the full head verbatim.
+		lower := strings.ToLower(c.Body)
+		if strings.Contains(lower, "review gate (#567): this head") && strings.Contains(lower, head) {
+			return true
+		}
+	}
+	return false
 }
 
 func emitGate(ctx context.Context, tl timeline.Writer, agg *v1alpha1.ReviewReadyStatus, result review.Result, repo string, pr int) {

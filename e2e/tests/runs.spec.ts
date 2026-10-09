@@ -9,9 +9,9 @@ test('the runs list surfaces all phases and navigates into a run', async ({ page
   // The filter tabs carry the window summary: total, failed, in flight.
   // Fixture world: #42 and #44 completed their reviews (verdicts →
   // history), #43 is the live one, merge-sync is superseded.
-  await expect(page.getByTestId('tab-all')).toHaveText(/All\s*4/);
+  await expect(page.getByTestId('tab-all')).toHaveText(/All\s*5/);
   await expect(page.getByTestId('tab-failed')).toHaveText(/Failed\s*0/);
-  await expect(page.getByTestId('tab-inflight')).toHaveText(/In flight\s*1/);
+  await expect(page.getByTestId('tab-inflight')).toHaveText(/In flight\s*2/); // #43 + the parked #45 (reconciling)
   await expect(page.getByTestId('tab-verdicts')).toHaveText(/Verdicts\s*2/);
 
   const links = page.getByTestId('run-link');
@@ -22,7 +22,7 @@ test('the runs list surfaces all phases and navigates into a run', async ({ page
   // The fourth terminal phase is first-class in the list (phase rides the
   // data-phase attribute; the anchor text is the run name).
   await expect(page.locator('[data-testid="run-link"][data-phase="validated"]')).toHaveCount(2);
-  await expect(page.locator('[data-testid="run-link"][data-phase="reconciling"]')).toHaveCount(1);
+  await expect(page.locator('[data-testid="run-link"][data-phase="reconciling"]')).toHaveCount(2); // #43 + parked #45
   await expect(page.locator('[data-testid="run-link"][data-phase="superseded"]')).toHaveCount(1);
 
   // Navigation: expand the link's own group, then click through.

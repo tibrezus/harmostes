@@ -12,7 +12,9 @@ test('the wall header tallies live states', async ({ page }) => {
   await expect(counts.locator('.chip--run')).toHaveText('in flight 1');
   await expect(counts.locator('.chip--ok')).toHaveText('verdict 2');
   await expect(counts.locator('.chip--fail')).toHaveCount(0);
-  await expect(counts.locator('.chip--warn')).toHaveCount(0);
+  // The parked #45 (queued, hold line) counts too — the tally is the live
+  // selection, pre-budget.
+  await expect(counts.locator('.chip--warn')).toHaveText('queued 1');
 });
 
 // The in-flight row streams the executing run's usage: the attempt's

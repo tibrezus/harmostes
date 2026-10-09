@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -232,8 +233,9 @@ func TestSolPiProfileSingleSource(t *testing.T) {
 	}
 
 	// settings.json: the never-pin gates the trust-requiring-resource class;
-	// projectTrusted is NOT a pi Settings key (0.84.4) — its absence is
-	// asserted so the inert key cannot return and teach a wrong trust model.
+	// projectTrusted is NOT a pi Settings key (verified through pi 1.0.4) — its
+	// absence is asserted so the inert key cannot return and teach a wrong
+	// trust model.
 	settings := string(mustRead(t, "../../extensions/sol-pi/settings.json"))
 	var sc struct {
 		DefaultProjectTrust string `json:"defaultProjectTrust"`
@@ -345,9 +347,11 @@ func TestLoadedExtensions(t *testing.T) {
 }
 
 // TestPiArgsAlwaysCarryNoApprove (#426 r6): --no-approve is the ONE control
-// that holds for every workspace class (pi 0.84.4 auto-trusts a
+// that holds for every workspace class (pi auto-trusts a
 // .pi/sol-pi.json-only workspace before defaultProjectTrust is consulted —
-// probed by the reviewer). It must therefore be on EVERY invocation shape,
+// probed by the reviewer on 0.84.4, re-probed on 1.0.4: the r6 shape answers
+// get_state over --mode rpc with no trust prompt). It must therefore be on
+// EVERY invocation shape,
 // not just the common ones.
 func TestPiArgsAlwaysCarryNoApprove(t *testing.T) {
 	for name, args := range map[string][]string{
@@ -508,4 +512,27 @@ func mustRead(t *testing.T, path string) []byte {
 		t.Fatalf("read %s: %v", path, err)
 	}
 	return b
+}
+
+// #656: the loadout language — node-declared exclusions and the MCP
+// kill-switch render as pi 1.0.4 flags; the ZERO loadout stays byte-identical
+// to the historical PiArgs output (undeclared nodes must not drift).
+func TestPiArgsLoadout(t *testing.T) {
+	base := PiArgs("skill", "model", []string{"read", "bash"})
+	full := PiArgsLoadout("skill", "model", []string{"read", "bash"}, Loadout{
+		ExcludeTools: []string{"mcp__radius__*", "write"},
+		NoMCP:        true,
+	})
+	if len(full) != len(base)+3 ||
+		full[len(base)] != "--exclude-tools" ||
+		full[len(base)+1] != "mcp__radius__*,write" ||
+		full[len(base)+2] != "--no-mcp" {
+		t.Fatalf("loadout flags not rendered: %v", full[len(base):])
+	}
+	if !slices.Equal(base, PiArgsLoadout("skill", "model", []string{"read", "bash"}, Loadout{})) {
+		t.Fatal("zero Loadout must be byte-identical to PiArgs")
+	}
+	if slices.Contains(base, "--no-mcp") || slices.Contains(base, "--exclude-tools") {
+		t.Fatal("base invocation must not grow loadout flags")
+	}
 }

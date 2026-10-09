@@ -11,6 +11,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/selection"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -633,4 +634,38 @@ func shortSHA(sha string) string {
 		return sha[:8]
 	}
 	return sha
+}
+
+// SetClaimHold persists WHY the gate is holding a queued claim — the last
+// waiting evaluation's reason VERBATIM (HoldNote) plus its SHORT cause
+// (HoldCause, the closed vocabulary the wall chip qualifies with). The wall
+// renders the cause on the chip ("queued · waiting ci") and the note as the
+// row's second line: a bare "queued" chip left the operator asking "in what
+// status ARE they?" while the poll knew the answer every sweep. Idempotent:
+// the pair writes only when it CHANGED — the poll runs every few minutes
+// and CI context churns ("running: a, b" → "running: a"), so unconditional
+// writes would storm the API server for no reader value. Returns whether a
+// write happened. An empty note clears (dispatch); callers that dispatch
+// use MarkClaimDispatched, which leaves the note — the row's in-flight
+// state outranks it — but ReleaseClaim + fresh arms overwrite on the next
+// poll.
+func SetClaimHold(ctx context.Context, c client.Client, namespace, attemptName, note, cause string) (bool, error) {
+	var at v1alpha1.Attempt
+	if err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: attemptName}, &at); err != nil {
+		return false, fmt.Errorf("get attempt %s: %w", attemptName, err)
+	}
+	if at.Status.Review != nil && at.Status.Review.HoldNote == note && at.Status.Review.HoldCause == cause {
+		return false, nil
+	}
+	err := patchAttemptStatus(ctx, c, namespace, attemptName, func(s *v1alpha1.AttemptStatus) {
+		if s.Review == nil {
+			s.Review = &v1alpha1.ReviewClaimStatus{}
+		}
+		s.Review.HoldNote = note
+		s.Review.HoldCause = cause
+	})
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }

@@ -15,7 +15,6 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/tibrezus/harmostes/version"
@@ -53,8 +52,6 @@ type Server struct {
 	hub       *EventHub
 	platforms *platformRegistry // display config for git platforms (plug-and-play)
 	dapr      DaprClient        // optional: reads session transcripts + usage from worker state store
-	wallMu    sync.Mutex
-	wallMeta  map[string]*wallUsage // workflow → cached agent metadata (live wall)
 	// schemaMemo caches the two CRD halves for GET /api/schema (#436) —
 	// bounded by schemaMemoTTL; the request path locks it per call.
 	schemaMemo schemaMemoCache
@@ -62,6 +59,8 @@ type Server struct {
 	now            func() time.Time
 	adminGroups    map[string]bool // identities in any of these groups see across all owner labels
 	devWrite       bool            // dev-identity writes enabled — set ONLY for explicit dev/fixture servers
+	readOnly       bool            // review posture: every mutating route refuses, CTAs hidden
+	readOnlyAs     string          // anonymous requests view as this owner (read-only envs; scoping only — writes stay refused)
 	templateSource *TemplateSource // the environment's template git source (nil = propose surface absent, #420)
 	sourceToken    string          // forge token (ExternalSecret → env → server-side only)
 	timeline       timeline.Reader // timeline-store reader (nil = Event Timeline renders an explicit empty-state)
@@ -150,10 +149,34 @@ func (s *Server) SetDevWriteEnabled(v bool) {
 // X-Forwarded-* fallbacks never qualify — a forged forwarded username can
 // browse, but can never create a workflow under someone else's owner label.
 func (s *Server) mayWrite(id *Identity) bool {
+	if s.readOnly {
+		// The review posture (ephemeral environments reading prod data):
+		// observe-only BY CONSTRUCTION — no identity qualifies, CTAs
+		// render hidden, and the API server's Role carries read verbs
+		// only. Belt and suspenders on purpose: the RBAC is the real
+		// wall; this keeps the UI honest about it.
+		return false
+	}
 	if id == nil {
 		return false
 	}
 	return id.Authoritative || (id.Dev && s.devWrite)
+}
+
+// SetReadOnly flips the review posture: every mutating route refuses and
+// the templates render observe-only. The k8s RBAC (chart: the read-only
+// Role in the viewed namespace) is the enforcement; this is the UI
+// agreeing with it.
+func (s *Server) SetReadOnly(v bool) {
+	s.readOnly = v
+}
+
+// SetReadOnlyAs names the owner anonymous requests view data as — a
+// READ-ONLY convenience for review environments behind no identity
+// provider: open the URL, see that owner's rows. The identity is never
+// authoritative and never dev — mayWrite is false twice over.
+func (s *Server) SetReadOnlyAs(owner string) {
+	s.readOnlyAs = owner
 }
 
 // isAdmin reports whether the identity belongs to any configured admin
@@ -200,7 +223,6 @@ func New(k8sClient client.Client, namespace string, logger *slog.Logger, kubeCli
 		templates: tmpl,
 		hub:       NewEventHub(),
 		platforms: newPlatformRegistry(platformConfigs),
-		wallMeta:  make(map[string]*wallUsage),
 		now:       time.Now,
 	}
 
@@ -315,11 +337,12 @@ func parseTemplates() (*template.Template, error) {
 		// assetVersion cache-busts static assets: browsers may otherwise serve a
 		// stale map.js/styles across releases (no cache headers are set), and a
 		// new chart must ship its fixed assets to every client.
-		"assetVersion": func() string { return version.String() },
-		"groupState":   groupState,
-		"chipState":    chipState,
-		"shortName":    shortAttemptName,
-		"wallState":    wallState,
+		"assetVersion":  func() string { return version.String() },
+		"groupState":    groupState,
+		"chipState":     chipState,
+		"shortName":     shortAttemptName,
+		"wallState":     wallState,
+		"wallChipLabel": wallChipLabel,
 		// etStateClass maps the shared chip vocabulary onto the Event
 		// Timeline's marker-class suffix — the SAME vocabulary the state-chip
 		// template arms, so a row's color and its chip can never disagree.

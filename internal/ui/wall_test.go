@@ -100,9 +100,14 @@ func TestWallRendersGroups(t *testing.T) {
 	}
 }
 
-// Agent metadata hydrates from the durable usage:last record when the event
-// cache is cold (UI restart) — one state-store read per workflow, once.
-func TestWallUsageHydratesFromStateStore(t *testing.T) {
+// The workflow-level usage cache is GONE (user-reported defect): it painted
+// the workflow's LAST SESSION onto every payload-less row — six queued PRs
+// showing one PR's numbers. Per-subject usage reads the subject's OWN
+// attempt envelope or shows nothing, and the state store is never consulted
+// for the wall.
+func TestWallUsageIsPerSubjectOrNothing(t *testing.T) {
+	// Payload-less attempt: NO tokens anywhere on its row, zero state-store
+	// reads (the old fallback would have painted ↑100 ↓50 here).
 	att := wallReviewAttempt("attempt-pr-review-x-1", "pr-review-x")
 	s := wallTestServer(t, att)
 	stub := s.dapr.(*usageStubDapr)
@@ -111,50 +116,25 @@ func TestWallUsageHydratesFromStateStore(t *testing.T) {
 	req.Header.Set("X-Authentik-Username", "alice")
 	rec := httptest.NewRecorder()
 	s.Routes().ServeHTTP(rec, req)
-
-	if !strings.Contains(rec.Body.String(), "↑100 ↓50") {
-		t.Errorf("wall missing hydrated usage:\n%s", rec.Body.String())
+	if strings.Contains(rec.Body.String(), "↑100 ↓50") {
+		t.Error("the workflow-cache fallback is back: a payload-less row painted the workflow's last session")
 	}
-	first := stub.reads
+	if stub.reads != 0 {
+		t.Errorf("wall read the usage state store %d time(s) — the wall must not", stub.reads)
+	}
 
-	// Second render: cache warm, no further state-store reads.
+	// With an envelope payload the row renders ITS OWN numbers.
+	payload := json.RawMessage(`{"usage":{"input":1710,"output":42},"model":"demo/m1","turns":3}`)
+	att.Status.NodeResults = []v1alpha1.NodeResultEnvelope{{
+		NodeID: "agent", Status: "ok", Payload: payload,
+	}}
+	s2 := wallTestServer(t, att)
 	rec2 := httptest.NewRecorder()
 	req2 := httptest.NewRequest(http.MethodGet, "/", nil)
 	req2.Header.Set("X-Authentik-Username", "alice")
-	s.Routes().ServeHTTP(rec2, req2)
-	if !strings.Contains(rec2.Body.String(), "↑100 ↓50") {
-		t.Error("cached usage lost on second render")
-	}
-	if stub.reads != first {
-		t.Errorf("usage reads = %d, want %d (cache must serve)", stub.reads, first)
-	}
-}
-
-// noteWallEvent parses the JSON-roundtripped event Outputs into the cache.
-func TestNoteWallEvent(t *testing.T) {
-	s := newAttemptTestServer(t)
-	s.noteWallEvent(Event{
-		Event:    "node.completed",
-		Pipeline: "wf-a",
-		NodeType: "agent",
-		Outputs: map[string]any{
-			"usage":    map[string]any{"input_tokens": float64(42), "output_tokens": float64(7)},
-			"model":    "zai/glm-5.2",
-			"turns":    float64(3),
-			"attempts": float64(1),
-		},
-	})
-	u := s.wallMeta["wf-a"]
-	if u == nil {
-		t.Fatal("wallMeta not populated")
-	}
-	if u.InputTokens != 42 || u.OutputTokens != 7 || u.Model != "zai/glm-5.2" || u.Turns != 3 {
-		t.Errorf("cached usage = %+v", u)
-	}
-	// No usage in Outputs → cache untouched.
-	s.noteWallEvent(Event{Event: "node.started", Pipeline: "wf-b"})
-	if _, ok := s.wallMeta["wf-b"]; ok {
-		t.Error("event without usage must not populate cache")
+	s2.Routes().ServeHTTP(rec2, req2)
+	if !strings.Contains(rec2.Body.String(), "↑1710 ↓42") {
+		t.Error("the subject's own envelope payload must render")
 	}
 }
 
@@ -207,8 +187,10 @@ func TestWallSSEReRendersOnEvent(t *testing.T) {
 	// first paint's fingerprint.)
 	readUntil(`data-testid="wall-section"`)
 
-	// A lifecycle event through the REAL ingress (dapr → hub + wall cache)
-	// must produce a second fragment carrying the fresh agent metadata.
+	// A lifecycle event through the REAL ingress (dapr → hub) must produce
+	// a second fragment. (The old wall-cache population assertion died with
+	// the cache: fragment CONTENT comes from the attempt store — per-subject
+	// usage only.)
 	evBody, _ := json.Marshal(map[string]any{
 		"data": map[string]any{
 			"event":    "node.completed",
@@ -223,7 +205,6 @@ func TestWallSSEReRendersOnEvent(t *testing.T) {
 		},
 	})
 	pre := stub.reads
-	preFrag := buf.Len()
 	post, err := http.Post(srv.URL+"/dapr/events", "application/json", bytes.NewReader(evBody))
 	if err != nil {
 		t.Fatalf("dapr event post: %v", err)
@@ -232,15 +213,9 @@ func TestWallSSEReRendersOnEvent(t *testing.T) {
 	if post.StatusCode != http.StatusOK {
 		t.Fatalf("dapr event status = %d", post.StatusCode)
 	}
-	readUntil("↑42 ↓7")
-	if got := strings.Count(buf.String()[preFrag:], "event: wall"); got < 1 {
-		t.Error("no second fragment after event")
-	}
-	if s.wallMeta["pr-review-x"] == nil {
-		t.Error("wall cache not populated by ingress event")
-	}
+	readUntil("event: wall") // the second fragment (the first painted above)
 	if stub.reads != pre {
-		t.Errorf("sse re-render read the state store %d time(s) — fragments must be cache-only", stub.reads-pre)
+		t.Errorf("sse re-render read the state store %d time(s) — fragments must be attempt-only", stub.reads-pre)
 	}
 }
 
@@ -337,8 +312,8 @@ func TestWallAlertAggregatesDispatchLosses(t *testing.T) {
 		if !strings.Contains(body, "data-testid=\"wall-alert\"") {
 			t.Error("wall missing the dispatch-loss alert line")
 		}
-		if got := strings.Count(body, "dispatch lost"); got != 2 {
-			t.Errorf("dispatch-lost chips = %d, want 2 (one per subject, no more)", got)
+		if got := strings.Count(body, `>dispatch lost</span>`); got != 2 {
+			t.Errorf("dispatch-lost chips = %d, want 2 (one per subject, no more) — the state-summary counts text also says 'dispatch lost' and must not be counted", got)
 		}
 	})
 

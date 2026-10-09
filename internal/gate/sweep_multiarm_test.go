@@ -3377,3 +3377,83 @@ func TestMultiArmMovedHeadWedgeReleasesAndReArmsSameSweep(t *testing.T) {
 		t.Fatalf("green CI must dispatch the NEW claim, got %+v (want attempt=%s head=newhead111)", out, newName)
 	}
 }
+
+// ciFlipServer: PR 99 labeled at head deadbeef123; the merge-rule context's
+// status is whatever ciState holds ("failure"/"success") — the parked-then-
+// green shape the hold-note lifecycle needs (park on red, dispatch + clear
+// on green).
+func ciFlipServer(t *testing.T, ciState *atomic.Value) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(req.URL.Path, "/pulls/"):
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"state": "open", "head": map[string]string{"sha": "deadbeef123"},
+				"base":   map[string]string{"ref": "main"},
+				"labels": []map[string]string{{"name": "needs-review"}},
+			})
+		case strings.Contains(req.URL.Path, "/branch_protections/"):
+			_ = json.NewEncoder(w).Encode(map[string]any{"status_check_contexts": []string{"ci / build-test (push)"}})
+		case strings.HasSuffix(req.URL.Path, "/statuses"):
+			_ = json.NewEncoder(w).Encode([]map[string]string{
+				{"context": "ci / build-test (push)", "status": ciState.Load().(string)},
+			})
+		case strings.Contains(req.URL.Path, "/comments"):
+			_ = json.NewEncoder(w).Encode([]any{})
+		default:
+			http.NotFound(w, req)
+		}
+	}))
+}
+
+// ── #user wall refactor: the parked claim's WHY travels on the claim. The
+// armed-poll persists the waiting evaluation's reason as status.review.holdNote
+// (write-on-change), so the wall's queued rows answer "in what status ARE
+// they?" without a kubectl. Dispatch clears it. ──
+func TestMultiArmWaitingPersistsHoldNoteOnClaim(t *testing.T) {
+	clearTriggerEnv(t)
+	// CI red at the head: the poll's waiting reason names it. The state
+	// flips to success mid-test so the second sweep dispatches.
+	var ciState atomic.Value
+	ciState.Store("failure")
+	srv := ciFlipServer(t, &ciState)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	st := &fakeStatus{}
+	armed := time.Now().Add(-10 * time.Minute)
+	claim := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#99", "deadbeef123", armed, nil)
+
+	deps, ctx := gateEnv(t, wf, st, claim)
+	if _, err := RunReviewGateSweep(ctx, deps, wf); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	var got v1alpha1.Attempt
+	if err := deps.Client.Get(ctx, client.ObjectKey{Namespace: claim.Namespace, Name: claim.Name}, &got); err != nil {
+		t.Fatalf("re-list claim: %v", err)
+	}
+	if got.Status.Review == nil || got.Status.Review.HoldNote == "" {
+		t.Fatalf("the parked claim must carry its why, got %+v", got.Status.Review)
+	}
+	if !strings.Contains(got.Status.Review.HoldNote, "ci red at head") {
+		t.Errorf("hold note must be the gate's verbatim reason, got %q", got.Status.Review.HoldNote)
+	}
+
+	// CI turns green: the claim dispatches and the note clears.
+	ciState.Store("success")
+	outs, err := RunReviewGateSweep(ctx, deps, wf)
+	if err != nil {
+		t.Fatalf("sweep 2: %v", err)
+	}
+	if len(outs) != 1 {
+		t.Fatalf("green CI must dispatch, got %d", len(outs))
+	}
+	var after v1alpha1.Attempt
+	if err := deps.Client.Get(ctx, client.ObjectKey{Namespace: claim.Namespace, Name: claim.Name}, &after); err != nil {
+		t.Fatalf("re-list claim 2: %v", err)
+	}
+	if after.Status.Review.HoldNote != "" {
+		t.Errorf("dispatch must clear the hold note, got %q", after.Status.Review.HoldNote)
+	}
+}

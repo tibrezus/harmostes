@@ -34,20 +34,32 @@ async function injectEvent(request: APIRequestContext): Promise<void> {
 }
 
 test('a lifecycle event reaches the open wall through SSE without reload', async ({ page, request }) => {
+  // The wall renders from ATTEMPTS only (the event-fed usage cache was
+  // retired — it painted one session's numbers onto every payload-less
+  // row). What a bare publish proves is DELIVERY: the wall stream must
+  // hand the page a fresh fragment. The fragment counter hooks the same
+  // named event the wall JS consumes.
+  await page.addInitScript(() => {
+    (window as unknown as { __wallFrames: number }).__wallFrames = 0;
+    const Orig = window.EventSource;
+    window.EventSource = function (this: unknown, url: string | URL, opts?: EventSourceInit) {
+      const es = new Orig(url, opts);
+      es.addEventListener('wall', () => { (window as unknown as { __wallFrames: number }).__wallFrames++; });
+      return es;
+    } as unknown as typeof EventSource;
+  });
   await page.goto('/');
 
-  // The INJECTED usage model is event-only data: absent until the event
-  // arrives. (The fixture's in-flight row carries its own model from the
-  // live Progress window — that one is present at load and is not this
-  // assertion's subject.)
-  const model = page.locator('.wall-usage-model').filter({ hasText: 'e2e-demo-model' });
-  await expect(model).toHaveCount(0);
+  // Initial paint: at least the connect-time fragment arrived.
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __wallFrames: number }).__wallFrames)).toBeGreaterThan(0);
+  const before = await page.evaluate(() => (window as unknown as { __wallFrames: number }).__wallFrames);
 
   await injectEvent(request);
 
-  // The SSE stream re-renders the wall fragment; the injected model name
-  // appears — no navigation happened (the URL never changed, no reload).
-  await expect(model.first()).toBeVisible({ timeout: 10_000 });
+  // The published event pushes another fragment — no navigation happened
+  // (the URL never changed, no reload). Fragment CONTENT is attempt-driven
+  // and covered by the wall specs; this is the live wire.
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __wallFrames: number }).__wallFrames)).toBeGreaterThan(before);
   await expect(page).toHaveURL(/\/$/);
 });
 

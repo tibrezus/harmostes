@@ -70,6 +70,7 @@
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { applyChains, resolveFallbackChains, wiringSummary } from "./fallbacks.ts";
+import { FLEET_SAMPLING_BY_THINKING_LEVEL } from "./sampling.ts";
 
 export default async function (_pi: ExtensionAPI) {
   const rawUrl = process.env.LITELLM_URL;
@@ -153,6 +154,14 @@ export default async function (_pi: ExtensionAPI) {
       // override proxy-configured fallbacks with "none", fleet-wide
       // (r17-review P4.1: observed live via a stubbed /v1/models).
       samplingParams: model.samplingParams,
+      // Fleet sampling policy (#657, pi 1.0.2+): mechanical tiers get
+      // deterministic-lean sampling; medium+ inherit model defaults (the
+      // key is absent there). Applied UNIFORMLY at registration — the
+      // models are discovered dynamically from the proxy, so per-id
+      // entries in a baked models.json would drift with the routing
+      // table; the one choke point every litellm model crosses is here.
+      // OpenAI-completions-class only (pi ignores it elsewhere).
+      samplingParamsByThinkingLevel: FLEET_SAMPLING_BY_THINKING_LEVEL,
       compat: {
         // LiteLLM proxies upstream providers; use the broadest-compatible flags.
         supportsDeveloperRole: false,

@@ -1,0 +1,78 @@
+# Pi runtime freshness (#663): pi releases near-daily; the fleet pins
+# PI_VERSION deliberately (#338 r20 — the image-build gates ARE the
+# version's acceptance test). This workflow owns freshness the skills-bump
+# way: daily it compares the pin against npm latest and opens a PR bumping
+# both Dockerfile pins + the shipped extensions' dev pins. The PR's CI
+# carries the acceptance gates mechanically (image-build rig-query load
+# gate, two-arm sol_pi_trust_probe, sol-pi upstream suite vs PI_VERSION,
+# full Go suite); auto-merge on green makes the gates the only merger.
+# Release cuts the chart, Flux rolls the fleet — each run uses the rolled
+# image: at most ~a day behind upstream, reproducible per image, never
+# mutating mid-run.
+#
+# TOKEN (same CI-carrying caveat as skills-bump): GitHub does not start
+# workflows for PRs created with the default GITHUB_TOKEN, so configure the
+# fine-grained PAT as SKILLS_BUMP_TOKEN (reused — contents:write +
+# pull-requests:write on this repo only). Without it the PR still opens but
+# carries no checks until an operator closes/reopens it.
+name: pi-bump
+
+on:
+  schedule:
+    - cron: "0 4 * * *" # daily 04:00 UTC — ahead of skills-bump, one PR/day at most
+  workflow_dispatch: {} # manual re-run after a failed/merged bump
+
+# Least privilege: bump the pins and open (auto-merge) the PR — nothing else.
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: pi-bump
+  cancel-in-progress: false # a bump must never race itself
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Bump PI_VERSION when npm latest moved
+        env:
+          GH_TOKEN: ${{ secrets.SKILLS_BUMP_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          pinned="$(sed -n 's/^ARG PI_VERSION=//p' .github/Dockerfile.worker.release | head -1)"
+          latest="$(curl -fsSL https://registry.npmjs.org/@earendil-works/pi-coding-agent/latest | python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])')"
+          echo "pinned=$pinned latest=$latest"
+          if [ -z "$latest" ]; then
+            echo "::error::npm registry query returned nothing"
+            exit 1
+          fi
+          if [ "$pinned" = "$latest" ]; then
+            echo "pin is fresh — nothing to do"
+            exit 0
+          fi
+          branch="chore/pi-bump-$latest"
+          if git ls-remote --heads origin "$branch" | grep -q .; then
+            echo "bump branch for $latest already exists — a PR is presumably open"
+            exit 0
+          fi
+          git config user.name "harmostes-bot"
+          git config user.email "harmostes-bot@rezus.cloud"
+          git checkout -b "$branch"
+          sed -i "s/^ARG PI_VERSION=.*/ARG PI_VERSION=$latest/" Dockerfile.worker .github/Dockerfile.worker.release
+          # sol-pi's @earendil-works dev pins ride the same version line — the
+          # typecheck/test pins must match what the fleet runs (#655 coherence).
+          sed -i "s|\"@earendil-works/pi-\([a-z-]*\)\": \"[^\"]*\"|\"@earendil-works/pi-\1\": \"$latest\"|" extensions/sol-pi/package.json
+          (cd extensions/sol-pi && npm install --package-lock-only --no-audit --no-fund)
+          git add Dockerfile.worker .github/Dockerfile.worker.release extensions/sol-pi/package.json extensions/sol-pi/package-lock.json
+          git commit -m "chore(pi): bump pinned pi to $latest"
+          git push origin "$branch"
+          gh pr create \
+            --title "chore(pi): bump pinned pi to $latest" \
+            --body "Automated pi runtime bump (#663): \`$pinned\` → \`$latest\`.
+
+The checks on this PR ARE the version's acceptance test: image-build rig-query load gate + two-arm \`sol_pi_trust_probe\` + sol-pi upstream suite vs \`PI_VERSION\` + full Go suite. Auto-merge on green; Release then cuts the chart and Flux rolls the fleet. Rollback = revert (the previous pin returns on the next chart roll)." \
+            --base main --head "$branch"
+          gh pr merge --auto --squash --delete-branch "$branch"

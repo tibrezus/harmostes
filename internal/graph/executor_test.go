@@ -1160,3 +1160,83 @@ func TestBackgroundNodeMustBeLeaf(t *testing.T) {
 		t.Fatalf("no node may execute on a rejected graph, got %d visits", len(execA.visits))
 	}
 }
+
+// Finding 1a (fleet review of a765a011): capability denial is the
+// LIKELIEST failure mode for exactly the nodes #668 names (wiki emit,
+// evidence pack, arch-sync declare capabilities) — a background node
+// denied by policy must not take the run down.
+func TestBackgroundCapabilityDenialIsNonFatal(t *testing.T) {
+	execA := newRecording("typeA", NodeResult{Status: StatusGreen})
+	graph := v1alpha1.GraphSpec{
+		Nodes: []v1alpha1.NodeSpec{
+			{ID: "a", Type: "typeA"},
+			{ID: "side", Type: "typeA", Background: bgFlag(),
+				Requires: requires("repo", "repository.push")},
+		},
+		Edges: []v1alpha1.EdgeSpec{{From: "a", To: "side"}},
+	}
+	// Binding grants only read; side requires push → denied.
+	exec := NewGraphExecutor(registryWith(map[string]NodeExecutor{"typeA": execA}), nil,
+		WithBindings([]v1alpha1.ExternalSystemBinding{{Name: "repo", Granted: []string{"repository.read"}}}))
+	res, err := exec.Execute(context.Background(), graph, "t")
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if res.Status != StatusGreen {
+		t.Fatalf("denied background node must not fail the run, got %s (%s)", res.Status, res.Message)
+	}
+	if res.NodeResults["side"].Status != StatusFailed {
+		t.Fatalf("the denial itself must be recorded honestly, got %s", res.NodeResults["side"].Status)
+	}
+}
+
+// Finding 1b: an unregistered node type on a background node must not
+// fail the run either (and, foreground: the registry miss now routes
+// through the unified failure path instead of break-ing into a green
+// pipeline.completed on a failed run).
+func TestBackgroundRegistryMissIsNonFatal(t *testing.T) {
+	execA := newRecording("typeA", NodeResult{Status: StatusGreen})
+	graph := v1alpha1.GraphSpec{
+		Nodes: []v1alpha1.NodeSpec{
+			{ID: "a", Type: "typeA"},
+			{ID: "side", Type: "nope", Background: bgFlag()},
+		},
+		Edges: []v1alpha1.EdgeSpec{{From: "a", To: "side"}},
+	}
+	exec := NewGraphExecutor(registryWith(map[string]NodeExecutor{"typeA": execA}), nil)
+	res, err := exec.Execute(context.Background(), graph, "t")
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if res.Status != StatusGreen {
+		t.Fatalf("registry-miss background node must not fail the run, got %s (%s)", res.Status, res.Message)
+	}
+	if res.NodeResults["side"].Status != StatusFailed {
+		t.Fatalf("the miss must be recorded honestly, got %s", res.NodeResults["side"].Status)
+	}
+}
+
+// Finding 2: side work drawn toward the external system it touches
+// (side→wiki on the map) is the MOTIVATING shape — display-only edges
+// must not trip the leaf guard.
+func TestBackgroundEdgeToExternalIsAccepted(t *testing.T) {
+	execSide := newRecording("typeA", NodeResult{Status: StatusFailed, Feedback: "side work exploded"})
+	graph := v1alpha1.GraphSpec{
+		Nodes: []v1alpha1.NodeSpec{
+			{ID: "side", Type: "typeA", Background: bgFlag()},
+			{ID: "wiki", Type: "external", Label: "wiki"},
+		},
+		Edges: []v1alpha1.EdgeSpec{{From: "side", To: "wiki"}},
+	}
+	exec := NewGraphExecutor(registryWith(map[string]NodeExecutor{"typeA": execSide}), nil)
+	res, err := exec.Execute(context.Background(), graph, "t")
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if res.Status != StatusGreen {
+		t.Fatalf("display-only edge to external must not trip the guard nor fail the run, got %s (%s)", res.Status, res.Message)
+	}
+	if len(execSide.visits) != 1 {
+		t.Fatalf("side must have executed, got %d visits", len(execSide.visits))
+	}
+}

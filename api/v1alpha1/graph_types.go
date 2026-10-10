@@ -92,6 +92,12 @@ type NodeSpec struct {
 	Retry *RetryPolicy `json:"retry,omitempty"`
 }
 
+// IsBackground reports whether this node is side work (#668): its
+// failure is recorded but never fatal to the run. The single predicate
+// every run-outcome site consumes — a new failure path cannot forget
+// the class by branching on the raw field.
+func (n NodeSpec) IsBackground() bool { return n.Background != nil && *n.Background }
+
 // RetryPolicy bounds the in-run retry of a transient node failure.
 // Backoff doubles from InitialDelay up to MaxDelay. Budgets are
 // seconds-capped on purpose: long waits belong to the cross-run re-arm

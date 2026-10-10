@@ -287,6 +287,32 @@ func NewGraphExecutor(registry *Registry, client dapr.Client, opts ...GraphExecu
 // The whole run is one OTel trace: a root `graph.pipeline.run` span with a
 // child span per node execution (the node executor creates its own span; this
 // method creates a wrapper span for the graph walk).
+// unhandledNodeFailure decides the run's outcome for a node failure no
+// when:failed edge handles (#668): a FOREGROUND failure fails the run
+// (pipeline.failed + dead-letter — the retry-UI contract); a BACKGROUND
+// failure is recorded (envelope via onNodeResult, node.failed lifecycle
+// — both already published by the caller) and never fatal. ONE predicate,
+// ONE decision point: every failure site routes through here, so a path
+// added later cannot forget the class. Returns true when the run failed.
+func (e *GraphExecutor) unhandledNodeFailure(ctx context.Context, pipelineName string, node v1alpha1.NodeSpec, result *ExecutionResult, message string) bool {
+	if node.IsBackground() {
+		e.log("node %s: background failure recorded (non-fatal) — re-runs when the workflow next runs", node.ID)
+		return false
+	}
+	result.Status = StatusFailed
+	result.Message = message
+	e.publishLifecycle(ctx, LifecycleEvent{
+		Event:    "pipeline.failed",
+		Pipeline: pipelineName,
+		Status:   string(StatusFailed),
+		Feedback: message,
+	})
+	// Dead-letter (G8): FATAL failures only — the topic's contract is the
+	// failed-pipelines retry view; a green run must never appear there.
+	e.publishDeadLetter(ctx, pipelineName, node.ID, message, result.NodeResults)
+	return true
+}
+
 func (e *GraphExecutor) Execute(ctx context.Context, graph v1alpha1.GraphSpec, pipelineName string) (ExecutionResult, error) {
 	ctx, rootSpan := observability.Tracer().Start(ctx, "graph.pipeline.run",
 		trace.WithAttributes(
@@ -335,10 +361,19 @@ func (e *GraphExecutor) Execute(ctx context.Context, graph v1alpha1.GraphSpec, p
 	// work. An outgoing edge from a background node is an authoring
 	// contradiction; refuse it before any node executes.
 	for _, n := range graph.Nodes {
-		if n.Background != nil && *n.Background && len(outEdges[n.ID]) > 0 {
-			result.Status = StatusFailed
-			result.Message = fmt.Sprintf("node %s: background nodes must be leaves (has outgoing edges)", n.ID)
-			return result, fmt.Errorf("%s", result.Message)
+		if !n.IsBackground() {
+			continue
+		}
+		// Execution topology, not drawing topology: an edge to an EXTERNAL
+		// node is display-only (never traversed) — side work drawn toward
+		// the system it touches (side→wiki on the map) is the motivating
+		// shape of #668 and must not trip the guard.
+		for _, edge := range outEdges[n.ID] {
+			if !isExternalNode(nodeMap, edge.To) {
+				result.Status = StatusFailed
+				result.Message = fmt.Sprintf("node %s: background nodes must be leaves (has outgoing edges)", n.ID)
+				return result, fmt.Errorf("%s", result.Message)
+			}
 		}
 	}
 
@@ -438,16 +473,11 @@ func (e *GraphExecutor) Execute(ctx context.Context, graph v1alpha1.GraphSpec, p
 				}
 			}
 			if !handled {
-				result.Status = StatusFailed
-				result.Message = fmt.Sprintf("node %s denied by capability policy: %s", nodeID, feedback)
-				e.publishLifecycle(ctx, LifecycleEvent{
-					Event:    "pipeline.failed",
-					Pipeline: pipelineName,
-					Status:   string(StatusFailed),
-					Feedback: result.Message,
-				})
-				e.publishDeadLetter(ctx, pipelineName, nodeID, result.Message, result.NodeResults)
-				return result, nil
+				if e.unhandledNodeFailure(ctx, pipelineName, node, &result,
+					fmt.Sprintf("node %s denied by capability policy: %s", nodeID, feedback)) {
+					return result, nil
+				}
+				continue
 			}
 			continue
 		}
@@ -464,8 +494,8 @@ func (e *GraphExecutor) Execute(ctx context.Context, graph v1alpha1.GraphSpec, p
 		// Execute via registry.
 		exec, err := e.registry.Get(node.Type)
 		if err != nil {
-			result.Status = StatusFailed
-			result.Message = fmt.Sprintf("node %s: %v", nodeID, err)
+			// Fatality is the seam's call (#668) — a background miss is
+			// recorded, never fatal; do not pre-set the run status here.
 			errResult := NodeResult{Status: StatusFailed, Feedback: err.Error()}
 			result.NodeResults[nodeID] = errResult
 			result.NodeEnvelopes[nodeID] = e.synthesizeEnvelope(nodeID, node.Type, errResult, time.Since(startTime).Milliseconds())
@@ -483,7 +513,11 @@ func (e *GraphExecutor) Execute(ctx context.Context, graph v1alpha1.GraphSpec, p
 				DurationMs: time.Since(startTime).Milliseconds(),
 				Envelope:   &errEnv,
 			})
-			break
+			if e.unhandledNodeFailure(ctx, pipelineName, node, &result,
+				fmt.Sprintf("node %s: %v", nodeID, err)) {
+				return result, nil
+			}
+			continue
 		}
 
 		// Per-node timeout (G8 circuit breaker): if the node has a timeout,
@@ -634,29 +668,14 @@ func (e *GraphExecutor) Execute(ctx context.Context, graph v1alpha1.GraphSpec, p
 				}
 			}
 			if !handled {
-				// #668 background class: side work never fails the run. The
-				// failure is fully recorded — envelope (already persisted via
-				// onNodeResult), node.failed lifecycle event (already
-				// published), and a dead-letter for the retry UI — but the
-				// run's outcome stays with the foreground nodes; the node
-				// re-runs on the next workflow run.
-				if node.Background != nil && *node.Background {
-					e.log("node %s: background failure recorded (non-fatal) — retried on the next run", nodeID)
-					e.publishDeadLetter(ctx, pipelineName, nodeID,
-						fmt.Sprintf("background node %s failed (non-fatal): %s", nodeID, nodeResult.Feedback), result.NodeResults)
-					continue
+				// #668: fatality is decided in ONE place — background (side
+				// work) failures are recorded, never fatal; the envelope and
+				// node.failed lifecycle above already carry the signal.
+				if e.unhandledNodeFailure(ctx, pipelineName, node, &result,
+					fmt.Sprintf("node %s failed: %s", nodeID, nodeResult.Feedback)) {
+					return result, nil
 				}
-				result.Status = StatusFailed
-				result.Message = fmt.Sprintf("node %s failed: %s", nodeID, nodeResult.Feedback)
-				e.publishLifecycle(ctx, LifecycleEvent{
-					Event:    "pipeline.failed",
-					Pipeline: pipelineName,
-					Status:   string(StatusFailed),
-					Feedback: result.Message,
-				})
-				// Dead-letter (G8): publish failure context for the retry UI.
-				e.publishDeadLetter(ctx, pipelineName, nodeID, result.Message, result.NodeResults)
-				return result, nil
+				continue
 			}
 			continue
 		}

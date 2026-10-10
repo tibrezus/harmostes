@@ -409,15 +409,29 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req RunRequest) error {
 		job := k8s.BuildJob(d.cfg.JobParams(&at, req.Workflow, req.Namespace, runBound, cache, wf.Spec.Sessions,
 			wf.Spec.Attachments, triggerRepo,
 			append(jobCredentialEnv(), dispatchEnv(req, &at, g.Envelope)...)))
+		// #666 intent-before-side-effect: the INTENT is committed BEFORE
+		// the Job exists (record-then-act; a failed record aborts dispatch
+		// so no side effect can precede its ledger entry). The Job's NAME
+		// is server-assigned (GenerateName), so it is not knowable at
+		// intent time — the ownership EDGE (#667) lands in a second patch
+		// after the spawn. A crash or Create failure after intent leaves
+		// the honest, distinguishable state: DispatchedAt set, no edge,
+		// no artifact.
+		if err := attempt.MarkDispatchIntent(ctx, d.cl, req.Namespace, at.Name); err != nil {
+			return fmt.Errorf("record dispatch intent %s: %w", at.Name, err)
+		}
 		if err := d.cl.Create(ctx, job); err != nil {
 			if errors.IsAlreadyExists(err) {
 				d.logf("dispatch: job for attempt %s already exists — deduped", at.Name)
 				continue
 			}
-			return fmt.Errorf("create job: %w", err)
+			// Intent recorded, spawn failed — the distinguishable state #666
+			// exists for. The claim breaker owns liveness from here.
+			return fmt.Errorf("create job (intent recorded, artifact absent): %w", err)
 		}
+		// The edge: the spawned Job's name, recorded the instant it exists.
 		if err := attempt.MarkClaimDispatched(ctx, d.cl, req.Namespace, at.Name, job.Name); err != nil {
-			return fmt.Errorf("mark dispatched %s: %w", at.Name, err)
+			return fmt.Errorf("record dispatch edge %s: %w", at.Name, err)
 		}
 		d.logf("dispatch: job %s created for attempt %s (workflow %s)", job.Name, at.Name, req.Workflow)
 	}

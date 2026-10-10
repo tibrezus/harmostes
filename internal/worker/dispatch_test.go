@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,9 +14,12 @@ import (
 	"github.com/tibrezus/harmostes/internal/review"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
 )
@@ -512,5 +516,78 @@ func TestDispatchCacheFlowsFromTemplateDefaults(t *testing.T) {
 	}
 	if env["HARMOSTES_WALL_SECONDS"] == "" {
 		t.Fatal("HARMOSTES_WALL_SECONDS must be visible to the run")
+	}
+}
+
+// #666 intent-before-side-effect: when Job creation FAILS (here: forced),
+// the dispatch INTENT (DispatchedAt) must already be on the attempt —
+// record-then-act, never act-without-record. The ownership EDGE stays
+// empty: GenerateName assigns the Job's name at Create, so no artifact
+// name ever existed — "intent without artifact" is the honest state.
+// Under the pre-#666 order (Create-then-record) this test fails: a
+// failed Create left NO record at all.
+func TestDispatchIntentPrecedesJobCreation(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := greenPRServer(t)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gatedDispatchWorkflow()
+
+	scheme := dispatchScheme(t)
+	cl := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&v1alpha1.Attempt{}, &v1alpha1.Workflow{}).
+		WithRuntimeObjects(wf).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+				if _, isJob := obj.(*batchv1.Job); isJob {
+					return apierrors.NewInternalError(fmt.Errorf("forced spawn failure"))
+				}
+				return c.Create(ctx, obj, opts...)
+			},
+		}).Build()
+	d := &Dispatcher{
+		cl:        cl,
+		scheme:    scheme,
+		namespace: "default",
+		logf:      t.Logf,
+		cfg: DispatchConfig{
+			FleetMaxConcurrent: 3,
+			JobImage:           "harmostes-worker:test",
+			NewReviewAPI: func() review.API {
+				if testReviewAPI != nil {
+					return testReviewAPI
+				}
+				return nil
+			},
+		},
+	}
+	ctx := context.Background()
+	if err := d.Dispatch(ctx, dispatchRequest()); err == nil {
+		t.Fatal("forced Create failure must surface as a dispatch error")
+	}
+	var attempts v1alpha1.AttemptList
+	if err := cl.List(ctx, &attempts); err != nil {
+		t.Fatal(err)
+	}
+	var intent int
+	for _, at := range attempts.Items {
+		r := at.Status.Review
+		if r == nil || r.DispatchedAt == nil {
+			t.Fatalf("intent (DispatchedAt) must be recorded BEFORE the spawn attempt: %+v", r)
+		}
+		if r.DispatchedJob != "" {
+			t.Fatalf("edge must stay empty when no artifact name ever existed (GenerateName assigns it at Create): %+v", r)
+		}
+		intent++
+	}
+	if intent != 1 {
+		t.Fatalf("exactly one attempt must carry the intent record, got %d", intent)
+	}
+	var jobs batchv1.JobList
+	if err := cl.List(ctx, &jobs); err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs.Items) != 0 {
+		t.Fatalf("no Job may exist after forced spawn failure, got %d", len(jobs.Items))
 	}
 }

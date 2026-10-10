@@ -320,8 +320,36 @@ func armAbandon(ctx context.Context, c client.Client, wf *v1alpha1.Workflow, at 
 	return armErr
 }
 
-// MarkClaimDispatched stamps the dispatch liveness marker (#248): the
-// DispatchTimeout bound runs from this instant.
+// MarkDispatchIntent stamps the dispatch INTENT BEFORE the Job exists
+// (#666, pi-durable lesson 1: record-then-act — no side effect may
+// precede its ledger record). It records what is KNOWABLE at intent time:
+// the liveness marker (#248: the DispatchTimeout bound runs from this
+// instant) — the Job's own name is NOT knowable yet (GenerateName
+// assigns it at Create), so the ownership EDGE (#667) lands in a second
+// patch after the spawn. The two-phase record yields three
+// distinguishable states: intent-without-spawn (DispatchedAt set, no
+// edge), spawned-unrecorded (edge missing but Job live — recoverable via
+// job labels, bounded by DispatchTimeout), and the steady state (edge +
+// Job). A failure here aborts dispatch before any side effect.
+func MarkDispatchIntent(ctx context.Context, c client.Client, namespace, attemptName string) error {
+	return patchAttemptStatus(ctx, c, namespace, attemptName, func(s *v1alpha1.AttemptStatus) {
+		if s.Review == nil {
+			s.Review = &v1alpha1.ReviewClaimStatus{}
+		}
+		t := metav1.NewTime(time.Now())
+		s.Review.DispatchedAt = &t
+		// r6 P1: a dispatch intent breaks the "consecutive
+		// never-dispatched releases" chain — without this the counter is
+		// monotonic-since-last-human and the field's own contract is false.
+		s.Review.DispatchLostReleases = 0
+	})
+}
+
+// MarkClaimDispatched records the ownership EDGE (#667): the spawned
+// Job's name, in its own patch immediately after a successful Create —
+// the earliest moment the name exists (GenerateName). Kept writing
+// DispatchedAt too for direct callers (tests, re-stamps); the dispatch
+// path itself pairs MarkDispatchIntent (pre-spawn) with this (post-spawn).
 func MarkClaimDispatched(ctx context.Context, c client.Client, namespace, attemptName, jobName string) error {
 	return patchAttemptStatus(ctx, c, namespace, attemptName, func(s *v1alpha1.AttemptStatus) {
 		if s.Review == nil {
@@ -329,13 +357,7 @@ func MarkClaimDispatched(ctx context.Context, c client.Client, namespace, attemp
 		}
 		t := metav1.NewTime(time.Now())
 		s.Review.DispatchedAt = &t
-		// #667: the ownership edge rides the SAME patch — dispatch and its
-		// artifact record commit atomically, so a crash between them is
-		// impossible by construction.
 		s.Review.DispatchedJob = jobName
-		// r6 P1: a successful dispatch breaks the "consecutive
-		// never-dispatched releases" chain — without this the counter is
-		// monotonic-since-last-human and the field's own contract is false.
 		s.Review.DispatchLostReleases = 0
 	})
 }

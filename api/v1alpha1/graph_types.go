@@ -73,6 +73,15 @@ type NodeSpec struct {
 	//+optional
 	Requires []CapabilityRequirement `json:"requires,omitempty"`
 
+	// Background marks this node as SIDE WORK (#668, pi-durable lesson 3):
+	// its failure is recorded (envelope, lifecycle, dead-letter) but never
+	// fails the run — the run's outcome is decided by foreground nodes
+	// alone, and the node re-runs on the next workflow run. A background
+	// node must be a LEAF (no outgoing edges): nothing may depend on side
+	// work. Authoring error otherwise, rejected before execution.
+	//+optional
+	Background *bool `json:"background,omitempty"`
+
 	// Retry is the transient-fault retry policy for this node (ADR-0012 §9).
 	// A failed node is retried ONLY when its executor classified the failure
 	// transient — for plugin nodes, exit code 75 (EX_TEMPFAIL) or 69
@@ -82,6 +91,12 @@ type NodeSpec struct {
 	//+optional
 	Retry *RetryPolicy `json:"retry,omitempty"`
 }
+
+// IsBackground reports whether this node is side work (#668): its
+// failure is recorded but never fatal to the run. The single predicate
+// every run-outcome site consumes — a new failure path cannot forget
+// the class by branching on the raw field.
+func (n NodeSpec) IsBackground() bool { return n.Background != nil && *n.Background }
 
 // RetryPolicy bounds the in-run retry of a transient node failure.
 // Backoff doubles from InitialDelay up to MaxDelay. Budgets are

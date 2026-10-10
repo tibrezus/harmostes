@@ -305,6 +305,7 @@ spec:
                           outputs: { type: array, items: { type: string } }
                           when: { type: string }
                           timeout: { type: string }
+                          background: { type: boolean, description: "#668 side work: failure recorded, never fatal; must be a leaf" }
                           requires:                                  # ADR-0003: Surface Capabilities this node needs
                             type: array
                             items:

@@ -158,7 +158,7 @@ func TestConcurrentDeadDispatchAccounting(t *testing.T) {
 			return
 		}
 		disp1 = true
-		if err := attempt.MarkClaimDispatched(ctx, c, "default", name); err != nil {
+		if err := attempt.MarkClaimDispatched(ctx, c, "default", name, "job-int"); err != nil {
 			t.Errorf("competing dispatch: %v", err)
 		}
 		if _, _, err := attempt.ReleaseClaimDead(ctx, c, "default", name, "dispatch-lost"); err != nil {
@@ -178,7 +178,7 @@ func TestConcurrentDeadDispatchAccounting(t *testing.T) {
 
 	// Death #2 lands on the re-armed claim: the count accumulates across
 	// full arm→dispatch→death cycles.
-	if err := attempt.MarkClaimDispatched(ctx, c, "default", name); err != nil {
+	if err := attempt.MarkClaimDispatched(ctx, c, "default", name, "job-int"); err != nil {
 		t.Fatalf("dispatch 2: %v", err)
 	}
 	if _, _, err := attempt.ReleaseClaimDead(ctx, c, "default", name, "dispatch-timeout"); err != nil {

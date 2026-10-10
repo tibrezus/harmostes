@@ -52,11 +52,16 @@ derive_upstream_identity() {
     echo "WARNING: could not fetch upstream tags from $upstream_url — reachable identity may under-report" >&2
 
   # ── Reachable set: releases whose content is in the tree ────────────────
+  # -rezus.* tags are the mint's OUTPUT — never identity inputs (#664): a
+  # custom pattern like "v16.0.*" is start-anchored only and matches the
+  # fork's own output tags on the release line, feeding an output back in as
+  # the identity (observed live: identity became v16.0.5-rezus.2 and the walk
+  # minted the nested v16.0.5-rezus.2-rezus.1). Filtered in BOTH branches.
   local reachable=""
   if [ "$is_custom" = 1 ]; then
-    reachable=$( { git tag --merged "$head" 2>/dev/null | grep -E "^${pattern}" || true; } | sed 's/\^{}$//' | sort -V | tail -1)
+    reachable=$( { git tag --merged "$head" 2>/dev/null | grep -E "^${pattern}" || true; } | { grep -v -- '-rezus\.' || true; } | sed 's/\^{}$//' | sort -V | tail -1)
   else
-    reachable=$( { git tag --merged "$head" 2>/dev/null | grep -E "$pure_re" || true; } | sed 's/\^{}$//' | sort -V | tail -1)
+    reachable=$( { git tag --merged "$head" 2>/dev/null | grep -E "$pure_re" || true; } | { grep -v -- '-rezus\.' || true; } | sed 's/\^{}$//' | sort -V | tail -1)
   fi
 
   # ── Remote set: the authoritative upstream release line ─────────────────

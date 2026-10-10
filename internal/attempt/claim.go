@@ -322,13 +322,17 @@ func armAbandon(ctx context.Context, c client.Client, wf *v1alpha1.Workflow, at 
 
 // MarkClaimDispatched stamps the dispatch liveness marker (#248): the
 // DispatchTimeout bound runs from this instant.
-func MarkClaimDispatched(ctx context.Context, c client.Client, namespace, attemptName string) error {
+func MarkClaimDispatched(ctx context.Context, c client.Client, namespace, attemptName, jobName string) error {
 	return patchAttemptStatus(ctx, c, namespace, attemptName, func(s *v1alpha1.AttemptStatus) {
 		if s.Review == nil {
 			s.Review = &v1alpha1.ReviewClaimStatus{}
 		}
 		t := metav1.NewTime(time.Now())
 		s.Review.DispatchedAt = &t
+		// #667: the ownership edge rides the SAME patch — dispatch and its
+		// artifact record commit atomically, so a crash between them is
+		// impossible by construction.
+		s.Review.DispatchedJob = jobName
 		// r6 P1: a successful dispatch breaks the "consecutive
 		// never-dispatched releases" chain — without this the counter is
 		// monotonic-since-last-human and the field's own contract is false.

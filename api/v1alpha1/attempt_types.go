@@ -265,6 +265,12 @@ type ReviewClaimStatus struct {
 	// DispatchTimeout liveness bound runs from here (#248).
 	DispatchedAt *metav1.Time `json:"dispatchedAt,omitempty"`
 
+	// DispatchedJob is the spawned Job's name — the ownership EDGE (#667,
+	// pi-durable lesson 2): the artifact record is DATA on the attempt, not
+	// ambient k8s ownerRef hope. The janitor reconciles the edge against
+	// live state (a terminal attempt's recorded Job must not outlive it).
+	DispatchedJob string `json:"dispatchedJob,omitempty"`
+
 	// Released frees the claim's capacity slot: the PR may re-arm on a
 	// later sweep.
 	Released bool `json:"released,omitempty"`

@@ -775,7 +775,7 @@ func TestSweepBreakerBlocksReDispatch(t *testing.T) {
 		if err != nil {
 			t.Fatalf("arm %d: %v", i+1, err)
 		}
-		if err := attempt.MarkClaimDispatched(ctx, deps.Client, wf.Namespace, at.Name); err != nil {
+		if err := attempt.MarkClaimDispatched(ctx, deps.Client, wf.Namespace, at.Name, "job-x"); err != nil {
 			t.Fatalf("dispatch %d: %v", i+1, err)
 		}
 		if _, _, err := attempt.ReleaseClaimDead(ctx, deps.Client, wf.Namespace, at.Name, "dispatch-lost"); err != nil {
@@ -857,7 +857,7 @@ func TestSweepBreakerHumanOverrideDispatches(t *testing.T) {
 		if err != nil {
 			t.Fatalf("arm %d: %v", i+1, err)
 		}
-		_ = attempt.MarkClaimDispatched(ctx, deps.Client, wf.Namespace, at.Name)
+		_ = attempt.MarkClaimDispatched(ctx, deps.Client, wf.Namespace, at.Name, "job-x")
 		_, _, _ = attempt.ReleaseClaimDead(ctx, deps.Client, wf.Namespace, at.Name, "dispatch-lost")
 	}
 
@@ -896,7 +896,7 @@ func TestSweepBreakerOverrideViaForgejoLabelUpdated(t *testing.T) {
 		if err != nil {
 			t.Fatalf("arm %d: %v", i+1, err)
 		}
-		_ = attempt.MarkClaimDispatched(ctx, deps.Client, wf.Namespace, at.Name)
+		_ = attempt.MarkClaimDispatched(ctx, deps.Client, wf.Namespace, at.Name, "job-x")
 		_, _, _ = attempt.ReleaseClaimDead(ctx, deps.Client, wf.Namespace, at.Name, "dispatch-lost")
 	}
 
@@ -935,7 +935,7 @@ func TestSweepBreakerOverrideViaForgejoLabelUpdatedThroughLiveClaim(t *testing.T
 		if err != nil {
 			t.Fatalf("arm %d: %v", i+1, err)
 		}
-		_ = attempt.MarkClaimDispatched(ctx, deps.Client, wf.Namespace, at.Name)
+		_ = attempt.MarkClaimDispatched(ctx, deps.Client, wf.Namespace, at.Name, "job-x")
 		_, _, _ = attempt.ReleaseClaimDead(ctx, deps.Client, wf.Namespace, at.Name, "dispatch-lost")
 	}
 	if _, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf,
@@ -980,7 +980,7 @@ func TestSweepForgejoLabelUpdatedRemovalNoLiveClaimKeepsBreaker(t *testing.T) {
 		if err != nil {
 			t.Fatalf("arm %d: %v", i+1, err)
 		}
-		_ = attempt.MarkClaimDispatched(ctx, deps.Client, wf.Namespace, at.Name)
+		_ = attempt.MarkClaimDispatched(ctx, deps.Client, wf.Namespace, at.Name, "job-x")
 		_, _, _ = attempt.ReleaseClaimDead(ctx, deps.Client, wf.Namespace, at.Name, "dispatch-lost")
 	}
 
@@ -1037,14 +1037,14 @@ func TestSweepForgejoLabelUpdatedRemovalIsNotOverride(t *testing.T) {
 	if err != nil {
 		t.Fatalf("arm 1: %v", err)
 	}
-	_ = attempt.MarkClaimDispatched(ctx, deps.Client, wf.Namespace, at.Name)
+	_ = attempt.MarkClaimDispatched(ctx, deps.Client, wf.Namespace, at.Name, "job-x")
 	_, _, _ = attempt.ReleaseClaimDead(ctx, deps.Client, wf.Namespace, at.Name, "dispatch-lost")
 	at, err = attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf,
 		"git.rezus.cloud/tibrez/rhesadox#99", "deadbeef123", "needs-review", false)
 	if err != nil {
 		t.Fatalf("re-arm: %v", err)
 	}
-	_ = attempt.MarkClaimDispatched(ctx, deps.Client, wf.Namespace, at.Name)
+	_ = attempt.MarkClaimDispatched(ctx, deps.Client, wf.Namespace, at.Name, "job-x")
 
 	out, err := RunReviewGateWake(ctx, deps, wf)
 	if err != nil {
@@ -1124,14 +1124,14 @@ func TestSweepForgejoOverrideFailsClosedOnFetchError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("arm 1: %v", err)
 	}
-	_ = attempt.MarkClaimDispatched(ctx, deps.Client, wf.Namespace, at.Name)
+	_ = attempt.MarkClaimDispatched(ctx, deps.Client, wf.Namespace, at.Name, "job-x")
 	_, _, _ = attempt.ReleaseClaimDead(ctx, deps.Client, wf.Namespace, at.Name, "dispatch-lost")
 	at, err = attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf,
 		"git.rezus.cloud/tibrez/rhesadox#99", "deadbeef123", "needs-review", false)
 	if err != nil {
 		t.Fatalf("re-arm: %v", err)
 	}
-	_ = attempt.MarkClaimDispatched(ctx, deps.Client, wf.Namespace, at.Name)
+	_ = attempt.MarkClaimDispatched(ctx, deps.Client, wf.Namespace, at.Name, "job-x")
 
 	out, err := RunReviewGateWake(ctx, deps, wf)
 	if err != nil {
@@ -1174,7 +1174,7 @@ func TestSweepUnlabeledWakeNeverOverridesBreaker(t *testing.T) {
 		if err != nil {
 			t.Fatalf("arm %d: %v", i+1, err)
 		}
-		_ = attempt.MarkClaimDispatched(ctx, deps.Client, wf.Namespace, at.Name)
+		_ = attempt.MarkClaimDispatched(ctx, deps.Client, wf.Namespace, at.Name, "job-x")
 		_, _, _ = attempt.ReleaseClaimDead(ctx, deps.Client, wf.Namespace, at.Name, "dispatch-lost")
 	}
 	if _, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf,
@@ -1217,7 +1217,7 @@ func TestSweepForgejoOverrideOnUnrelatedLabelTouch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("arm 1: %v", err)
 	}
-	_ = attempt.MarkClaimDispatched(ctx, deps.Client, wf.Namespace, at.Name)
+	_ = attempt.MarkClaimDispatched(ctx, deps.Client, wf.Namespace, at.Name, "job-x")
 	_, _, _ = attempt.ReleaseClaimDead(ctx, deps.Client, wf.Namespace, at.Name, "dispatch-lost")
 
 	out, err := RunReviewGateWake(ctx, deps, wf)
@@ -1285,7 +1285,7 @@ func TestSweepForgejoOverrideCarriedResolutionBeatsFetchFailure(t *testing.T) {
 		if err != nil {
 			t.Fatalf("arm %d: %v", i+1, err)
 		}
-		_ = attempt.MarkClaimDispatched(ctx, deps.Client, wf.Namespace, at.Name)
+		_ = attempt.MarkClaimDispatched(ctx, deps.Client, wf.Namespace, at.Name, "job-x")
 		_, _, _ = attempt.ReleaseClaimDead(ctx, deps.Client, wf.Namespace, at.Name, "dispatch-lost")
 	}
 	if _, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf,
@@ -1370,7 +1370,7 @@ func TestSweepBreakerOverrideThroughLiveClaim(t *testing.T) {
 		if err != nil {
 			t.Fatalf("arm %d: %v", i+1, err)
 		}
-		_ = attempt.MarkClaimDispatched(ctx, deps.Client, wf.Namespace, at.Name)
+		_ = attempt.MarkClaimDispatched(ctx, deps.Client, wf.Namespace, at.Name, "job-x")
 		_, _, _ = attempt.ReleaseClaimDead(ctx, deps.Client, wf.Namespace, at.Name, "dispatch-lost")
 	}
 	if _, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf,
@@ -1724,7 +1724,7 @@ func TestRunGate_DispatchClearsChurnBudget(t *testing.T) {
 		t.Fatalf("counter under max must dispatch, got %d dispatches err=%v", len(out), err)
 	}
 	// The dispatcher's contract: a created job marks the claim dispatched.
-	if err := attempt.MarkClaimDispatched(ctx, deps.Client, wf.Namespace, out[0].Attempt); err != nil {
+	if err := attempt.MarkClaimDispatched(ctx, deps.Client, wf.Namespace, out[0].Attempt, "job-x"); err != nil {
 		t.Fatalf("mark dispatched: %v", err)
 	}
 
@@ -2115,7 +2115,7 @@ func TestRunGate_StaleAnnotationsDoNotOverride(t *testing.T) {
 		if err != nil {
 			t.Fatalf("arm %d: %v", i+1, err)
 		}
-		_ = attempt.MarkClaimDispatched(ctx, deps.Client, wf.Namespace, at.Name)
+		_ = attempt.MarkClaimDispatched(ctx, deps.Client, wf.Namespace, at.Name, "job-x")
 		_, _, _ = attempt.ReleaseClaimDead(ctx, deps.Client, wf.Namespace, at.Name, "dispatch-lost")
 	}
 
@@ -2908,7 +2908,7 @@ func TestSweepMemoAndBreakerShareOneDirectionRead(t *testing.T) {
 		if err != nil {
 			t.Fatalf("arm %d: %v", i+1, err)
 		}
-		_ = attempt.MarkClaimDispatched(ctx, deps.Client, wf.Namespace, at.Name)
+		_ = attempt.MarkClaimDispatched(ctx, deps.Client, wf.Namespace, at.Name, "job-x")
 		_, _, _ = attempt.ReleaseClaimDead(ctx, deps.Client, wf.Namespace, at.Name, "dispatch-lost")
 	}
 	at, err := attempt.ArmClaim(ctx, deps.Client, deps.Scheme, wf,
@@ -2916,7 +2916,7 @@ func TestSweepMemoAndBreakerShareOneDirectionRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("live arm: %v", err)
 	}
-	_ = attempt.MarkClaimDispatched(ctx, deps.Client, wf.Namespace, at.Name)
+	_ = attempt.MarkClaimDispatched(ctx, deps.Client, wf.Namespace, at.Name, "job-x")
 
 	// Sweep 2: memo hit → direction resolved present (fetch #2, carried) →
 	// breaker supersede on the carried fact (no refetch) → re-arm; the

@@ -175,7 +175,7 @@ func TestReviewClaimLifecycleRoundTrip(t *testing.T) {
 		t.Fatalf("ResolveOrCreate: %v", err)
 	}
 
-	if err := attempt.MarkClaimDispatched(ctx, c, "default", a.Name); err != nil {
+	if err := attempt.MarkClaimDispatched(ctx, c, "default", a.Name, "job-int"); err != nil {
 		t.Fatalf("MarkClaimDispatched: %v", err)
 	}
 	var dispatched v1alpha1.Attempt

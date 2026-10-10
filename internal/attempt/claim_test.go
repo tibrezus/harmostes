@@ -61,7 +61,7 @@ func TestArmClaim_BreakerOpensAndResets(t *testing.T) {
 
 	// Three dispatched deaths (job-death / dispatch-timeout releases).
 	for i := 1; i <= v1alpha1.MaxDeadDispatchesPerHead; i++ {
-		if err := MarkClaimDispatched(ctx, c, "harmostes", name); err != nil {
+		if err := MarkClaimDispatched(ctx, c, "harmostes", name, "job-x"); err != nil {
 			t.Fatalf("dispatch %d: %v", i, err)
 		}
 		if _, _, err := ReleaseClaimDead(ctx, c, "harmostes", name, "dispatch-lost"); err != nil {
@@ -121,7 +121,7 @@ func TestArmClaim_HeadChangeResetsBreaker(t *testing.T) {
 		t.Fatalf("arm v1: %v", err)
 	}
 	for i := 0; i < v1alpha1.MaxDeadDispatchesPerHead; i++ {
-		_ = MarkClaimDispatched(ctx, c, "harmostes", name)
+		_ = MarkClaimDispatched(ctx, c, "harmostes", name, "job-x")
 		_, _, _ = ReleaseClaimDead(ctx, c, "harmostes", name, "dispatch-timeout")
 		_, _ = armFor(t, ctx, c, wf, pr, "sha-v1", "needs-review", false)
 	}
@@ -151,7 +151,7 @@ func TestReleaseClaimDead_LedgerFinalization(t *testing.T) {
 	// The worker records the run start, then is SIGKILLed at the run bound —
 	// the record stays "running" and the phase stays reconciling.
 	_ = RecordRunStarted(ctx, c, "harmostes", name, "run-dead-1")
-	_ = MarkClaimDispatched(ctx, c, "harmostes", name)
+	_ = MarkClaimDispatched(ctx, c, "harmostes", name, "job-x")
 
 	if _, _, err := ReleaseClaimDead(ctx, c, "harmostes", name, "dispatch-lost"); err != nil {
 		t.Fatalf("dead release: %v", err)
@@ -185,7 +185,7 @@ func TestReleaseClaimDead_PreservesWorkerWrittenFailure(t *testing.T) {
 		t.Fatalf("arm: %v", err)
 	}
 	_ = RecordRunStarted(ctx, c, "harmostes", name, "run-dead-2")
-	_ = MarkClaimDispatched(ctx, c, "harmostes", name)
+	_ = MarkClaimDispatched(ctx, c, "harmostes", name, "job-x")
 	// The worker exits gracefully: it writes its own specific outcome.
 	_ = patchAttemptStatus(ctx, c, "harmostes", name, func(s *v1alpha1.AttemptStatus) {
 		s.Phase = v1alpha1.AttemptPhaseFailed
@@ -224,7 +224,7 @@ func TestReleaseClaimDead_TimeoutDeathsCountTowardBreaker(t *testing.T) {
 		t.Fatalf("arm: %v", err)
 	}
 	for i := 0; i < v1alpha1.MaxDeadDispatchesPerHead; i++ {
-		_ = MarkClaimDispatched(ctx, c, "harmostes", name)
+		_ = MarkClaimDispatched(ctx, c, "harmostes", name, "job-x")
 		if _, _, err := ReleaseClaimDead(ctx, c, "harmostes", name, "dispatch-timeout"); err != nil {
 			t.Fatalf("dead release %d: %v", i+1, err)
 		}
@@ -440,7 +440,7 @@ func TestArmClaim_RevivedEraClearsPhantomDispatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first arm: %v", err)
 	}
-	if err := MarkClaimDispatched(ctx, c, "harmostes", name); err != nil {
+	if err := MarkClaimDispatched(ctx, c, "harmostes", name, "job-x"); err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
 	// Backdate the armed clock so "KEPT" is observable.
@@ -1091,5 +1091,27 @@ func TestArmClaim_DeletesCreatedObjectWhenTheStampFails(t *testing.T) {
 	}
 	if len(leftovers.Items) != 0 {
 		t.Fatalf("a failed arm must delete the created-but-unstamped object, %d left: %v", len(leftovers.Items), err)
+	}
+}
+
+// #667: the ownership edge commits in the SAME patch as DispatchedAt —
+// dispatch and its artifact record are atomic; a crash between them is
+// impossible by construction.
+func TestMarkClaimDispatchedRecordsJobEdge(t *testing.T) {
+	ctx := context.Background()
+	c := newFakeClient(t)
+	at := &v1alpha1.Attempt{ObjectMeta: metav1.ObjectMeta{Name: "edge", Namespace: "harmostes"}}
+	if err := c.Create(ctx, at); err != nil {
+		t.Fatal(err)
+	}
+	if err := MarkClaimDispatched(ctx, c, "harmostes", "edge", "job-edge-1"); err != nil {
+		t.Fatal(err)
+	}
+	var after v1alpha1.Attempt
+	if err := c.Get(ctx, client.ObjectKey{Namespace: "harmostes", Name: "edge"}, &after); err != nil {
+		t.Fatal(err)
+	}
+	if after.Status.Review == nil || after.Status.Review.DispatchedJob != "job-edge-1" || after.Status.Review.DispatchedAt == nil {
+		t.Fatalf("edge not committed atomically: %+v", after.Status.Review)
 	}
 }

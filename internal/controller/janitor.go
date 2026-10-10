@@ -6,9 +6,11 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -96,6 +98,11 @@ func (j *Janitor) pass(ctx context.Context, log logr.Logger) {
 	} else if n > 0 {
 		log.Info("GC'd attempts past retention", "count", n, "olderThan", retention.String())
 	}
+	if n, err := j.deleteStrandedDispatchedJobs(ctx); err != nil {
+		log.Error(err, "job-edge reconcile failed")
+	} else if n > 0 {
+		log.Info("deleted Jobs stranded past their terminal attempt", "count", n)
+	}
 	if n, err := j.deleteOrphanedRunnerPods(ctx); err != nil {
 		log.Error(err, "orphaned runner pod sweep failed")
 	} else if n > 0 {
@@ -137,6 +144,55 @@ func (j *Janitor) deleteOrphanedRunnerPods(ctx context.Context) (int, error) {
 			continue
 		}
 		if err := j.Delete(ctx, pod); err != nil && !apierrors.IsNotFound(err) {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		deleted++
+	}
+	return deleted, firstErr
+}
+
+// deleteStrandedDispatchedJobs reconciles the ownership LEDGER (#667,
+// pi-durable lesson 2): a terminal-phase attempt's recorded edge
+// (Review.DispatchedJob) names the Job it spawned — that Job must not
+// outlive its owner. The k8s ownerRef cascade is ambient hope; the edge
+// is data. Attempts with no edge (pre-upgrade, ledger-less) are skipped
+// entirely — back-compat is total, the leg acts only on recorded edges.
+// Non-terminal attempts keep their Jobs regardless: live work is never
+// touched here.
+func (j *Janitor) deleteStrandedDispatchedJobs(ctx context.Context) (int, error) {
+	var attempts v1alpha1.AttemptList
+	if err := j.List(ctx, &attempts, client.InNamespace(j.Namespace)); err != nil {
+		return 0, fmt.Errorf("list attempts for job-edge reconcile: %w", err)
+	}
+	deleted := 0
+	var firstErr error
+	for i := range attempts.Items {
+		at := &attempts.Items[i]
+		if at.Status.Phase != v1alpha1.AttemptPhaseValidated && at.Status.Phase != v1alpha1.AttemptPhaseSuperseded && at.Status.Phase != v1alpha1.AttemptPhaseFailed {
+			continue // live work is never touched
+		}
+		edge := ""
+		if at.Status.Review != nil {
+			edge = at.Status.Review.DispatchedJob
+		}
+		if edge == "" {
+			continue // ledger-less: today's behavior, unchanged
+		}
+		var job batchv1.Job
+		if err := j.Get(ctx, client.ObjectKey{Namespace: j.Namespace, Name: edge}, &job); err != nil {
+			if apierrors.IsNotFound(err) {
+				continue // already gone — edge satisfied
+			}
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		// Foreground: the cascade is part of the deletion, deterministic.
+		if err := j.Delete(ctx, &job, client.PropagationPolicy(metav1.DeletePropagationForeground)); err != nil && !apierrors.IsNotFound(err) {
 			if firstErr == nil {
 				firstErr = err
 			}

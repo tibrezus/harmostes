@@ -416,7 +416,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req RunRequest) error {
 			}
 			return fmt.Errorf("create job: %w", err)
 		}
-		if err := attempt.MarkClaimDispatched(ctx, d.cl, req.Namespace, at.Name); err != nil {
+		if err := attempt.MarkClaimDispatched(ctx, d.cl, req.Namespace, at.Name, job.Name); err != nil {
 			return fmt.Errorf("mark dispatched %s: %w", at.Name, err)
 		}
 		d.logf("dispatch: job %s created for attempt %s (workflow %s)", job.Name, at.Name, req.Workflow)

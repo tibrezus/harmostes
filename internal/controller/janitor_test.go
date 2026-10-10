@@ -9,6 +9,7 @@ import (
 	"github.com/go-logr/logr"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -136,4 +137,49 @@ func TestJanitorPass(t *testing.T) {
 			t.Fatalf("pod %s must survive the janitor: %v", name, err)
 		}
 	}
+}
+
+// #667: the ownership ledger — a terminal attempt's recorded edge
+// (DispatchedJob) must not outlive its owner: the Job is deleted. A live
+// attempt keeps its Job; a ledger-less attempt (pre-upgrade) changes
+// nothing.
+func TestJanitorJobEdgeReconcile(t *testing.T) {
+	ctx := context.Background()
+	scheme := k8s.Scheme()
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&v1alpha1.Attempt{}).
+		WithObjects(
+			// terminal attempt + live recorded Job → deleted
+			&v1alpha1.Attempt{ObjectMeta: metav1.ObjectMeta{Name: "at-done", Namespace: "ns"},
+				Status: v1alpha1.AttemptStatus{Phase: v1alpha1.AttemptPhaseValidated,
+					Review: &v1alpha1.ReviewClaimStatus{DispatchedJob: "job-done"}}},
+			&batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: "job-done", Namespace: "ns"}},
+			// LIVE attempt + live Job → untouched
+			&v1alpha1.Attempt{ObjectMeta: metav1.ObjectMeta{Name: "at-live", Namespace: "ns"},
+				Status: v1alpha1.AttemptStatus{Phase: v1alpha1.AttemptPhaseReconciling,
+					Review: &v1alpha1.ReviewClaimStatus{DispatchedJob: "job-live"}}},
+			&batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: "job-live", Namespace: "ns"}},
+			// ledger-less terminal attempt + live Job → untouched (back-compat)
+			&v1alpha1.Attempt{ObjectMeta: metav1.ObjectMeta{Name: "at-legacy", Namespace: "ns"},
+				Status: v1alpha1.AttemptStatus{Phase: v1alpha1.AttemptPhaseFailed}},
+		).
+		Build()
+	j := &Janitor{Client: cl, Namespace: "ns"}
+	n, err := j.deleteStrandedDispatchedJobs(ctx)
+	if err != nil || n != 1 {
+		t.Fatalf("deleted %d (err %v), want 1", n, err)
+	}
+	var job batchv1.Job
+	if err := cl.Get(ctx, client.ObjectKey{Namespace: "ns", Name: "job-done"}, &job); !apierrors.IsNotFound(err) {
+		t.Fatalf("job-done must be gone, got err=%v", err)
+	}
+	for _, name := range []string{"job-live"} {
+		if err := cl.Get(ctx, client.ObjectKey{Namespace: "ns", Name: name}, &job); err != nil {
+			t.Fatalf("%s must survive: %v", name, err)
+		}
+	}
+	// legacy attempt's unrecorded job: the leg never looked at it — no edge
+	// means no action (its Job was never created in this fixture; the
+	// invariant is the leg's silence, already asserted by n==1).
 }

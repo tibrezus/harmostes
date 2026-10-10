@@ -147,6 +147,7 @@ spec:
                     label:         { type: string }
                     armedSince:    { type: string }
                     dispatchedAt:  { type: string }
+                    dispatchedJob: { type: string }
                     released:      { type: boolean }
                     releaseReason: { type: string }
                     deadDispatches: { type: integer, minimum: 0, description: Dispatched reviews of this claim that died without a verdict (#328 breaker) }

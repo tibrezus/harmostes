@@ -73,6 +73,6 @@ jobs:
             --title "chore(pi): bump pinned pi to $latest" \
             --body "Automated pi runtime bump (#663): \`$pinned\` → \`$latest\`.
 
-The checks on this PR ARE the version's acceptance test: image-build rig-query load gate + two-arm \`sol_pi_trust_probe\` + sol-pi upstream suite vs \`PI_VERSION\` + full Go suite. Auto-merge on green; Release then cuts the chart and Flux rolls the fleet. Rollback = revert (the previous pin returns on the next chart roll)." \
+            The checks on this PR ARE the version's acceptance test: image-build rig-query load gate + two-arm \`sol_pi_trust_probe\` + sol-pi upstream suite vs \`PI_VERSION\` + full Go suite. Auto-merge on green; Release then cuts the chart and Flux rolls the fleet. Rollback = revert (the previous pin returns on the next chart roll)." \
             --base main --head "$branch"
           gh pr merge --auto --squash --delete-branch "$branch"

@@ -331,6 +331,17 @@ func (e *GraphExecutor) Execute(ctx context.Context, graph v1alpha1.GraphSpec, p
 		}
 	}
 
+	// #668: a background node must be a LEAF — nothing may depend on side
+	// work. An outgoing edge from a background node is an authoring
+	// contradiction; refuse it before any node executes.
+	for _, n := range graph.Nodes {
+		if n.Background != nil && *n.Background && len(outEdges[n.ID]) > 0 {
+			result.Status = StatusFailed
+			result.Message = fmt.Sprintf("node %s: background nodes must be leaves (has outgoing edges)", n.ID)
+			return result, fmt.Errorf("%s", result.Message)
+		}
+	}
+
 	// Entry nodes: no incoming edges. External nodes are never entries — they
 	// are display-only topology (the map renders them; the executor ignores them).
 	var queue []string
@@ -623,6 +634,18 @@ func (e *GraphExecutor) Execute(ctx context.Context, graph v1alpha1.GraphSpec, p
 				}
 			}
 			if !handled {
+				// #668 background class: side work never fails the run. The
+				// failure is fully recorded — envelope (already persisted via
+				// onNodeResult), node.failed lifecycle event (already
+				// published), and a dead-letter for the retry UI — but the
+				// run's outcome stays with the foreground nodes; the node
+				// re-runs on the next workflow run.
+				if node.Background != nil && *node.Background {
+					e.log("node %s: background failure recorded (non-fatal) — retried on the next run", nodeID)
+					e.publishDeadLetter(ctx, pipelineName, nodeID,
+						fmt.Sprintf("background node %s failed (non-fatal): %s", nodeID, nodeResult.Feedback), result.NodeResults)
+					continue
+				}
 				result.Status = StatusFailed
 				result.Message = fmt.Sprintf("node %s failed: %s", nodeID, nodeResult.Feedback)
 				e.publishLifecycle(ctx, LifecycleEvent{

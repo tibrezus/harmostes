@@ -1083,3 +1083,80 @@ func TestWorkflowContextExtraEnvForNode(t *testing.T) {
 		t.Errorf("the shared base slice must not be mutated, got %v", base)
 	}
 }
+
+// ===========================================================================
+// #668: background nodes — side work never fails the run
+// ===========================================================================
+
+func bgFlag() *bool { t := true; return &t }
+
+// A failed background leaf is fully recorded but the run stays green:
+// the outcome belongs to the foreground nodes.
+func TestBackgroundNodeFailureIsNonFatal(t *testing.T) {
+	execA := newRecording("typeA", NodeResult{Status: StatusGreen, Outputs: NodeOutputs{"v": "a"}})
+	execBG := newRecording("typeBG", NodeResult{Status: StatusFailed, Feedback: "side work exploded"})
+	graph := v1alpha1.GraphSpec{
+		Nodes: []v1alpha1.NodeSpec{
+			{ID: "a", Type: "typeA"},
+			{ID: "side", Type: "typeBG", Background: bgFlag()},
+		},
+		Edges: []v1alpha1.EdgeSpec{{From: "a", To: "side"}},
+	}
+	exec := NewGraphExecutor(registryWith(map[string]NodeExecutor{"typeA": execA, "typeBG": execBG}), nil)
+	res, err := exec.Execute(context.Background(), graph, "t")
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if res.Status != StatusGreen {
+		t.Fatalf("background failure must not fail the run, got %s (%s)", res.Status, res.Message)
+	}
+	if res.NodeResults["side"].Status != StatusFailed {
+		t.Fatalf("the background node's own failure must be recorded honestly, got %s", res.NodeResults["side"].Status)
+	}
+	if len(execBG.visits) != 1 {
+		t.Fatalf("background node must have executed exactly once, got %d", len(execBG.visits))
+	}
+}
+
+// The discriminator: the IDENTICAL graph with the flag removed fails the
+// run — foreground behavior is byte-identical to pre-#668.
+func TestForegroundIdenticalGraphStillFails(t *testing.T) {
+	execA := newRecording("typeA", NodeResult{Status: StatusGreen, Outputs: NodeOutputs{"v": "a"}})
+	execBG := newRecording("typeBG", NodeResult{Status: StatusFailed, Feedback: "side work exploded"})
+	graph := v1alpha1.GraphSpec{
+		Nodes: []v1alpha1.NodeSpec{
+			{ID: "a", Type: "typeA"},
+			{ID: "side", Type: "typeBG"}, // no flag: foreground
+		},
+		Edges: []v1alpha1.EdgeSpec{{From: "a", To: "side"}},
+	}
+	exec := NewGraphExecutor(registryWith(map[string]NodeExecutor{"typeA": execA, "typeBG": execBG}), nil)
+	res, err := exec.Execute(context.Background(), graph, "t")
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if res.Status != StatusFailed {
+		t.Fatalf("foreground failure must still fail the run, got %s", res.Status)
+	}
+}
+
+// A background node with outgoing edges is an authoring contradiction
+// (something depends on side work) — refused before any node executes.
+func TestBackgroundNodeMustBeLeaf(t *testing.T) {
+	execA := newRecording("typeA", NodeResult{Status: StatusGreen})
+	graph := v1alpha1.GraphSpec{
+		Nodes: []v1alpha1.NodeSpec{
+			{ID: "side", Type: "typeA", Background: bgFlag()},
+			{ID: "downstream", Type: "typeA"},
+		},
+		Edges: []v1alpha1.EdgeSpec{{From: "side", To: "downstream"}},
+	}
+	exec := NewGraphExecutor(registryWith(map[string]NodeExecutor{"typeA": execA}), nil)
+	res, err := exec.Execute(context.Background(), graph, "t")
+	if err == nil || res.Status != StatusFailed {
+		t.Fatalf("background non-leaf must be rejected before execution (err=%v status=%s)", err, res.Status)
+	}
+	if len(execA.visits) != 0 {
+		t.Fatalf("no node may execute on a rejected graph, got %d visits", len(execA.visits))
+	}
+}

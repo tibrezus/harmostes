@@ -36,7 +36,7 @@ jobs:
 
       - name: Bump values.skills.rev when agents main moved
         env:
-          GH_TOKEN: ${{ secrets.SKILLS_BUMP_TOKEN || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.SKILLS_BUMP_TOKEN || secrets.HARMOSTES_GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           pinned="$(sed -n 's/^  rev: "\(.*\)"$/\1/p' chart/values.yaml)"

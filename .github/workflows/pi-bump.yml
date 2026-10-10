@@ -39,7 +39,7 @@ jobs:
 
       - name: Bump PI_VERSION when npm latest moved
         env:
-          GH_TOKEN: ${{ secrets.SKILLS_BUMP_TOKEN || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.SKILLS_BUMP_TOKEN || secrets.HARMOSTES_GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           pinned="$(sed -n 's/^ARG PI_VERSION=//p' .github/Dockerfile.worker.release | head -1)"

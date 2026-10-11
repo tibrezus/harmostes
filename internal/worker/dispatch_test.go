@@ -643,3 +643,28 @@ func TestBudgetPolicy(t *testing.T) {
 		t.Fatal("nil policy must forward the fleet trio")
 	}
 }
+
+// TestPostTokenForwardsOnlyToReviewAttempts (#680 r5 P1): the posting
+// credential's PRESENCE in a session env is the arming signal — it must
+// reach review attempts and review attempts ONLY. A fleet-wide forward
+// would re-bind every workflow's CLI canonicals to a comment-scoped token
+// and strip their real credentials.
+func TestPostTokenForwardsOnlyToReviewAttempts(t *testing.T) {
+	t.Setenv("HARMOSTES_REVIEW_POST_TOKEN", "scoped")
+	mk := func(kind string) []string {
+		at := &v1alpha1.Attempt{}
+		at.Spec.Objective.Kind = kind
+		return jobCredentialEnv(&budgetPolicy{attempt: at})
+	}
+	review := mk(v1alpha1.ObjectiveKindPRReview)
+	if !slices.Contains(review, "HARMOSTES_REVIEW_POST_TOKEN=scoped") {
+		t.Fatal("review attempts must receive the posting credential")
+	}
+	other := mk("fork-maintenance")
+	if slices.Contains(other, "HARMOSTES_REVIEW_POST_TOKEN=scoped") {
+		t.Fatal("non-review attempts must NOT receive the posting credential (arming is review-scoped)")
+	}
+	if len(review) != len(other)+1 {
+		t.Fatalf("the only delta between review and non-review env must be the post token: %d vs %d", len(review), len(other))
+	}
+}

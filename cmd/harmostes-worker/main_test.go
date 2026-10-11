@@ -546,10 +546,15 @@ func (f fakeResolver) Resolve(_ context.Context, ref v1alpha1.PluginRef, _ strin
 // AND the owner/admin-class consumer CLI aliases); unarmed deployments keep
 // the historical env byte-for-byte.
 func TestScopePostToken(t *testing.T) {
-	base := []string{
-		"PATH=/usr/bin",
-		"HARMOSTES_FORGEJO_BOT_TOKEN=bot", "HARMOSTES_FORGEJO_BOT_HOST=h",
-		"GH_TOKEN=owner", "FORGEJO_TOKEN=admin", "HARMOSTES_REVIEW_POST_TOKEN=scoped",
+	// FULL-POPULATION fixture (r5 P2 — a fixture that names only two
+	// credentials went vacuous for the other five): every allowlisted name
+	// rides base with a RICH sentinel value, so each drop leg can fail.
+	base := []string{"PATH=/usr/bin", "HARMOSTES_REVIEW_POST_TOKEN=scoped"}
+	for _, n := range worker.EnvAllowlistNames() {
+		if n == "HARMOSTES_REVIEW_POST_TOKEN" {
+			continue // set explicitly with the armed value below
+		}
+		base = append(base, n+"=rich-"+n)
 	}
 	t.Setenv("HARMOSTES_REVIEW_POST_TOKEN", "scoped")
 	scoped := scopePostToken(base)
@@ -573,8 +578,16 @@ func TestScopePostToken(t *testing.T) {
 				t.Fatalf("safe set must not contain credential-shaped %s — justify or remove", n)
 			}
 		}
-		if !safe && strings.Contains(joined, n+"=owner") || !safe && strings.Contains(joined, n+"=admin") {
-			t.Fatalf("armed scope must drop non-safe allowlisted %s's rich value: %v", n, scoped)
+		if !safe {
+			// may appear ONLY as a re-bind to the scoped value, never with
+			// its rich value (the drop is falsifiable per name — every
+			// non-safe name IS in the fixture with a rich sentinel).
+			for _, kv := range scoped {
+				k, v, _ := strings.Cut(kv, "=")
+				if k == n && v != "scoped" {
+					t.Fatalf("armed scope must drop non-safe %s's rich value (got %q): %v", n, v, scoped)
+				}
+			}
 		}
 	}
 	llm := append(scoped, "LITELLM_API_KEY=llm")

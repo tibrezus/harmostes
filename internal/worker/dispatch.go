@@ -408,7 +408,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req RunRequest) error {
 		}
 		job := k8s.BuildJob(d.cfg.JobParams(&at, req.Workflow, req.Namespace, runBound, cache, wf.Spec.Sessions,
 			wf.Spec.Attachments, triggerRepo,
-			append(jobCredentialEnv(&budgetPolicy{workflow: wf}), dispatchEnv(req, &at, g.Envelope)...)))
+			append(jobCredentialEnv(&budgetPolicy{workflow: wf, attempt: &at}), dispatchEnv(req, &at, g.Envelope)...)))
 		// #666 intent-before-side-effect: the INTENT is committed BEFORE
 		// the Job exists (record-then-act; a failed record aborts dispatch
 		// so no side effect can precede its ledger entry). The Job's NAME
@@ -563,6 +563,15 @@ func jobCredentialEnv(policy budgetPolicyFn) []string {
 			wanted[n] = true
 		}
 	}
+	// The review posting credential is REVIEW-SCOPED (#680 r5 P1): forward it
+	// only to review attempts. Presence in a session's env IS the arming
+	// signal (scopePostToken) — a fleet-wide forward would re-bind every
+	// workflow's CLI canonicals to a comment-scoped token and strip their
+	// real credentials (arch-sync/wiki/fork agents break). The attempt's
+	// objective kind is the truthful discriminator.
+	if !policy.isReviewAttempt() {
+		delete(wanted, "HARMOSTES_REVIEW_POST_TOKEN")
+	}
 	var out []string
 	for _, kv := range os.Environ() {
 		if i := strings.IndexByte(kv, '='); i > 0 && wanted[kv[:i]] {
@@ -594,10 +603,17 @@ type budgetPolicyFn = *budgetPolicy
 //	                 bounded only by the run bound)
 type budgetPolicy struct {
 	workflow *v1alpha1.Workflow
+	attempt  *v1alpha1.Attempt
 }
 
 var budgetTrio = map[string]bool{
 	"PI_TOOL_BUDGET": true, "PI_TOOL_BUDGET_ALLOW": true, "PI_TOOL_BUDGET_NUDGE": true,
+}
+
+// isReviewAttempt: the attempt's objective kind is the arming truth.
+func (p *budgetPolicy) isReviewAttempt() bool {
+	return p != nil && p.attempt != nil &&
+		p.attempt.Spec.Objective.Kind == v1alpha1.ObjectiveKindPRReview
 }
 
 func (p *budgetPolicy) dropFromAllowlist(name string) bool {

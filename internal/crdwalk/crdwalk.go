@@ -149,7 +149,7 @@ func jsonName(f reflect.StructField) (string, bool) {
 }
 
 func deref(t reflect.Type) reflect.Type {
-	for t.Kind() == reflect.Ptr {
+	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	return t
@@ -177,7 +177,7 @@ func walkType(t reflect.Type, schema map[string]interface{}, path string, collec
 	// struct/slice/map cases always hold an addressable value of the deref'd
 	// type. In collect mode a nil pointer IS the finding (nothing stored).
 	if rv.IsValid() {
-		for rv.Kind() == reflect.Ptr {
+		for rv.Kind() == reflect.Pointer {
 			if collect {
 				if rv.IsNil() {
 					record(path, "<nil>")
@@ -362,7 +362,7 @@ func setWellKnown(t reflect.Type, rv reflect.Value) {
 	if !rv.IsValid() {
 		return
 	}
-	if rv.Kind() == reflect.Ptr {
+	if rv.Kind() == reflect.Pointer {
 		p := reflect.New(t)
 		setWellKnown(t, p.Elem())
 		rv.Set(p)
@@ -388,7 +388,7 @@ func leafValue(rv reflect.Value) string {
 	if !rv.IsValid() {
 		return "<none>"
 	}
-	if rv.Kind() == reflect.Ptr {
+	if rv.Kind() == reflect.Pointer {
 		if rv.IsNil() {
 			return "<nil>"
 		}

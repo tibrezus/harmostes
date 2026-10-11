@@ -71,7 +71,7 @@ jobs:
       - name: golangci-lint (zero-baseline)
         uses: golangci/golangci-lint-action@v8
         with:
-          version: v2.6.2
+          version: v2.13.2
           args: --timeout 5m
           # The analysis cache proved UNTRUSTWORTHY on 2026-09-22: warm-cache
           # runs reported zero findings while cold-cache runs of the identical

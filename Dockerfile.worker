@@ -14,7 +14,7 @@
 
 # --- stage 1: build the Go worker binary ---
 # Go 1.25: the OTel SDK (internal/observability, Phase 1) requires it.
-FROM golang:1.25-bookworm AS build
+FROM golang:1.26-bookworm AS build
 WORKDIR /src
 ENV GOTOOLCHAIN=local
 COPY go.mod go.sum ./

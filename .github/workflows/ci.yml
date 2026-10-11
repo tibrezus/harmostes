@@ -530,9 +530,26 @@ jobs:
               ("/workspace/review.json", "prompt lost the ledger path"),
           ):
               check(marker in prompt, f"pr-review.txt missing contract marker: {why}")
-          for stale in ("Architect: (1)", " minute 8", "PI_TOOL_BUDGET"):
+          for stale in ("Architect: (1)", " minute 8"):
               check(stale not in prompt, f"pr-review.txt re-grew methodology/budget doctrine: {stale!r} present")
           check(re.search(r"## The \w+ pillars", prompt) is None, "pr-review.txt re-grew a pillar heading (methodology belongs to the skill)")
+          # Budget COHERENCE (r2 P2 — the guard must not ban the fact): the
+          # prompt may mention the turn cap if and only if the rendered
+          # pr-review template actually enforces one. toolBudget: 0 =
+          # uncapped → the prompt must NOT speak of a cap; a set cap (or the
+          # fleet default, when the knob is absent) → the prompt MUST tell
+          # the agent its wall (an enforced cap the prompt hides is the
+          # #484 failure mode in reverse).
+          _wt = next((w for w in docs
+                      if w.get("kind") == "WorkflowTemplate" and w.get("metadata", {}).get("name") == "pr-review"), None)
+          check(_wt is not None, "rendered pr-review WorkflowTemplate missing — budget coherence cannot run")
+          _tb = (_wt or {}).get("spec", {}).get("agent", {}).get("toolBudget")
+          _capped = _tb is None or int(_tb) != 0
+          _mentions = "PI_TOOL_BUDGET" in prompt
+          if _capped and not _mentions:
+              check(False, "pr-review agent runs under a turn cap (toolBudget unset/set) but pr-review.txt hides it — the prompt must state the wall")
+          if not _capped and _mentions:
+              check(False, "pr-review agent is uncapped (toolBudget: 0) but pr-review.txt still speaks of PI_TOOL_BUDGET — remove the cap doctrine")
           print(f"skill/prompt boundary: SKILL pillars {n_skill} (header {n_skill_header}); prompt defers methodology, ledger contract present")
 
           if fail:

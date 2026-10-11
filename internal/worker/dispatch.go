@@ -522,6 +522,26 @@ var jobEnvAllowlist = []string{
 	"PI_TOOL_BUDGET_NUDGE",
 }
 
+// CredentialClassEnv (#680, review r2 P1): every allowlisted env name that
+// carries a credential (token/password/username semantics — NOT the LLM
+// API key, which sessions need to reach the model). Exported so the
+// worker's spawn filter can scope agent sessions against the REAL
+// forwarded set — a hand-written banned list in the filter is how the
+// owner-class HARMOSTES_GIT_TOKEN stayed reachable while docs claimed
+// otherwise (found live in review).
+func CredentialClassEnv() []string {
+	var out []string
+	for _, n := range jobEnvAllowlist {
+		if strings.Contains(n, "TOKEN") || strings.Contains(n, "PASSWORD") || strings.Contains(n, "USERNAME") {
+			out = append(out, n)
+		}
+	}
+	// Credential-ADJACENT: the bot host travels with the bot token as one
+	// scoped grant — drop the pair together in armed sessions.
+	out = append(out, "HARMOSTES_FORGEJO_BOT_HOST")
+	return out
+}
+
 // jobCredentialEnv forwards the allowlisted deployment-level vars from the
 // dispatcher's own environment to the attempt Job. Later env entries win,
 // so dispatchEnv's per-run vars override any forwarded names.

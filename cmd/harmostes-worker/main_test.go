@@ -562,6 +562,22 @@ func TestScopePostToken(t *testing.T) {
 	if !strings.Contains(joined, "HARMOSTES_REVIEW_POST_TOKEN=scoped") || !strings.Contains(joined, "PATH=") {
 		t.Fatalf("scoped token and neutral env must survive: %v", scoped)
 	}
+	// r2 P1: the closure must hold against the REAL allowlist, not this
+	// test's hand-written list — walk every credential-class forwarded
+	// name; armed sessions must not carry any of them (except the post
+	// token itself), and the LLM key must survive.
+	for _, n := range worker.CredentialClassEnv() {
+		if n == "HARMOSTES_REVIEW_POST_TOKEN" {
+			continue
+		}
+		if strings.Contains(joined, n+"=") {
+			t.Fatalf("armed scope must drop allowlisted credential %s: %v", n, scoped)
+		}
+	}
+	llm := append(scoped, "LITELLM_API_KEY=llm")
+	if !strings.Contains(strings.Join(scopePostToken(llm), "\n"), "LITELLM_API_KEY=llm") {
+		t.Fatal("armed scope must keep the LLM API key (the session needs the model)")
+	}
 
 	t.Setenv("HARMOSTES_REVIEW_POST_TOKEN", "") // unarmed
 	unarmed := scopePostToken([]string{"GH_TOKEN=owner", "PATH=/x"})

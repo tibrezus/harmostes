@@ -158,10 +158,12 @@ spec:
                   optional: true
             # The reviewer's comment-scoped posting credential (#680). When
             # present it BOTH arms agent-side finding posts AND scopes the
-            # pi session env: the spawn filter drops GH_TOKEN/FORGEJO_TOKEN
-            # (owner/admin class) and the bot keys, leaving this token as the
-            # only forge credential an LLM loop holds — comment rights only,
-            # no approvals, no push. OPTIONAL: absent = today's env shape.
+            # pi session env: the spawn filter drops EVERY credential-class
+            # variable the dispatcher forwards (derived from the real
+            # allowlist — consumer CLI tokens, bot pair, basic-auth pairs),
+            # leaving this token as the session's only credential. Comment
+            # rights only: no approvals, no push. The LLM API key survives
+            # (the session needs the model). OPTIONAL: absent = today's env.
             - name: HARMOSTES_REVIEW_POST_TOKEN
               valueFrom:
                 secretKeyRef:

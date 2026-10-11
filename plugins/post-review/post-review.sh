@@ -57,8 +57,10 @@ case "$API_BASE" in
 esac
 DEC=$(python3 -c "import json;print(json.load(open('$REVIEW'))['decision'])")
 
-# ── Inline findings are published HERE, deterministically (#429): the
-# agent's findings ride review.json's comments[] and this plugin posts them
+# ── Inline findings: the agent posts each verified finding itself (#680,
+# comment-scoped token); this plugin publishes ONLY the remainders —
+# ledger entries without thread_ref (session-death resilience) — and
+# composes the verdict from the round's threads on the PR
 # as native anchored threads below. The agent must NOT self-post (the task
 # prompt says so; the dedupe guard in the publisher is the second line of
 # defense for a skill-following agent). This plugin owns: the VERDICT
@@ -402,7 +404,12 @@ VERDICT_COMMENT=$(python3 - << 'PYEOF'
 import json, os
 with open(os.environ["REVIEW"]) as f: review=json.load(f)
 dec=review["decision"]; sha=review.get("reviewed_sha","")
-n=len(review.get("comments",[]) or [])
+# #680: the ledger's canonical key is findings (comments = legacy alias,
+# normalized by the gate before this runs). The blocking count includes
+# findings the agent ALREADY posted itself (thread_ref present) — the
+# threads on the PR are the record, whichever path posted them.
+fs=review.get("findings", review.get("comments",[]) or []) or []
+n=len(fs)
 if os.environ.get("DOWNGRADED"):
     # Deploy-composed downgrade: NOT the reviewer's verdict — the ≥1-finding
     # rule (pr-review.sh validation) governs review.json, not this line. It
@@ -526,7 +533,7 @@ if [ "${IS_GITLAB:-}" = "true" ]; then
   # Unwired dialect — it must SPEAK (r4 P8): a green artifact here is
   # ambiguous between "nothing to post" and "this host cannot be posted to".
   echo '{"posted":0,"rejected":0,"capped":0,"skipped":"gitlab-not-wired"}' > "$THREAD_STATUS_FILE"
-elif [ "$THREADS_ANCHOR" = "1" ] && python3 -c "import json,sys;cs=json.load(open('$REVIEW')).get('comments',[]);sys.exit(0 if cs else 1)" 2>/dev/null; then
+elif [ "$THREADS_ANCHOR" = "1" ] && python3 -c "import json,sys;r=json.load(open('$REVIEW'));cs=r.get('findings',r.get('comments',[]));sys.exit(0 if cs else 1)" 2>/dev/null; then
   # Dedupe guard keyed on the MARKER (r2): already posted at this SHA → skip.
   if [ "${EXISTING:-0}" != "0" ]; then
     log "inline threads already posted at ${REVIEWED_SHA:0:8} — not duplicating"
@@ -535,7 +542,12 @@ elif [ "$THREADS_ANCHOR" = "1" ] && python3 -c "import json,sys;cs=json.load(ope
     python3 - << 'PYTHREADS' || { echo '{"posted":0,"rejected":0,"capped":0,"skipped":"publisher-crashed"}' > "$THREAD_STATUS_FILE"; } && log "WARN: inline thread publish failed — verdict stands, threads skipped"
 import json, os, subprocess, sys
 review=json.load(open(os.environ["REVIEW"]))
-all_cs=review.get("comments",[])
+# #680: the agent posts each finding as it verifies it (thread_ref filled);
+# this publisher handles ONLY the remainders — findings never posted before
+# the session ended (session-death resilience). Carried findings need no
+# publish: their threads are already on the PR and already counted.
+all_cs=[c for c in (review.get("findings", review.get("comments",[])) or [])
+        if not c.get("thread_ref")]
 all_todos=review.get("todos",[])
 # TODO lane (r7-r10): completely-missing pieces anchor as NON-blocking
 # threads after the findings, sharing the 20-thread cap. They never count

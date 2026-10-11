@@ -196,22 +196,27 @@ func spawnEnv(base []string, graphPath string, logf func(string, ...any)) []stri
 }
 
 // ReviewPostTokenEnvKey (#680): the comment-scoped posting credential.
-// When it is armed, it is the ONLY forge credential the pi session holds:
-// the consumer CLI aliases (GH_TOKEN/FORGEJO_TOKEN — owner/admin class on
-// the live fleet) are dropped alongside the bot keys, so an LLM loop fed
-// untrusted PR content can post, reply, and resolve threads but cannot
-// push, merge, or satisfy branch-protection approvals. Unarmed
-// deployments keep the historical env (no behavior change).
+// When it is armed, it is the ONLY credential-class variable the pi
+// session holds: every credential-class name the dispatcher forwards
+// (owner/admin-class consumer tokens, bot keys, basic-auth pairs) is
+// dropped — derived from the REAL allowlist (worker.CredentialClassEnv),
+// never a hand-written banned list, so a new allowlisted credential
+// cannot silently ride into armed sessions. The LLM API key survives
+// (sessions need the model). Unarmed deployments keep the historical env
+// (no behavior change).
 const ReviewPostTokenEnvKey = "HARMOSTES_REVIEW_POST_TOKEN"
 
 func scopePostToken(env []string) []string {
 	if os.Getenv(ReviewPostTokenEnvKey) == "" {
 		return env
 	}
-	return agent.FilterEnv(env,
-		agent.BotTokenEnvKey, agent.BotHostEnvKey,
-		"GH_TOKEN", "GITHUB_TOKEN", "FORGEJO_TOKEN",
-	)
+	var drop []string
+	for _, n := range worker.CredentialClassEnv() {
+		if n != ReviewPostTokenEnvKey {
+			drop = append(drop, n)
+		}
+	}
+	return agent.FilterEnv(env, drop...)
 }
 
 func main() {

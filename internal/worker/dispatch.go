@@ -537,8 +537,10 @@ func CredentialClassEnv() []string {
 		}
 	}
 	// Credential-ADJACENT: the bot host travels with the bot token as one
-	// scoped grant — drop the pair together in armed sessions.
-	out = append(out, "HARMOSTES_FORGEJO_BOT_HOST")
+	// scoped grant — drop the pair together in armed sessions. Referenced
+	// by constant (the boundary scan forbids the literal outside the
+	// sanctioned set — a drift between sites is fail-open).
+	out = append(out, agent.BotHostEnvKey)
 	return out
 }
 

@@ -212,18 +212,18 @@ type AgentSpec struct {
 	// signal — mechanical tiers pin deterministic-lean sampling, medium+
 	// inherit the provider default — so a generative node (the reviewer)
 	// MUST declare high or it silently lands in the cold tier.
-	Thinking     string        `json:"thinking,omitempty"`
+	Thinking string `json:"thinking,omitempty"`
 	// ToolBudget overrides the fleet turn cap for this workflow's agent
 	// sessions (#680): nil = fleet default (forward the pool's cap env);
 	// N>0 = that cap; 0 = UNCAPPED (the cap trio is not forwarded at all).
 	// The reviewer declares 0 — all pillars, all the time needed, bounded
 	// only by the run bound.
-	ToolBudget   *int          `json:"toolBudget,omitempty"`
-	TaskTemplate TaskTemplate  `json:"taskTemplate"`           // the interpretive task
-	Gate         GateRef       `json:"gate"`                   // validation plugin
-	MaxFixes     int           `json:"maxFixes,omitempty"`     // default 3
-	Timeout      int           `json:"timeout,omitempty"`      // seconds, default 1800
-	Scope        string        `json:"scope,omitempty"`        // optional task scope override
+	ToolBudget   *int         `json:"toolBudget,omitempty"`
+	TaskTemplate TaskTemplate `json:"taskTemplate"`       // the interpretive task
+	Gate         GateRef      `json:"gate"`               // validation plugin
+	MaxFixes     int          `json:"maxFixes,omitempty"` // default 3
+	Timeout      int          `json:"timeout,omitempty"`  // seconds, default 1800
+	Scope        string       `json:"scope,omitempty"`    // optional task scope override
 }
 
 // NoMCPOrDefault: nil means the fleet default (MCP per image). #656.

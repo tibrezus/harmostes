@@ -557,6 +557,25 @@ jobs:
               sys.exit(1)
           print(f"declarative layer render assertions: green ({len(docs)} docs)")
           PY
+      - name: skills.rev ↔ .agents pin coherence (blocking, #680 r8)
+        run: |
+          # The SERVED skill (skills.rev, cloned by every attempt) and the
+          # DEV copy (.agents submodule content — what the parity check and
+          # the build read) must be the same commit. The bump bot moving one
+          # without the other is exactly the served-vs-dev split-brain the
+          # boundary check exists to catch; making it BLOCKING is what
+          # forces the two pins to move together.
+          AGENTS_SHA="$(git rev-parse HEAD:.agents)"
+          REV="$(helm template harmostes chart/ --set namespace=harmostes             | grep -A1 'HARMOSTES_SKILLS_REV' | grep -oE '[0-9a-f]{40}' | head -1)"
+          if [ -z "$REV" ]; then
+            # empty rev = track default branch — allowed only if the submodule does too (it cannot; pin it)
+            echo "::error::skills.rev renders empty (track-default) — the served supply chain must be pinned"; exit 1
+          fi
+          if [ "$AGENTS_SHA" != "$REV" ]; then
+            echo "::error::skills.rev ($REV) != .agents pin ($AGENTS_SHA) — served and dev skill copies diverge; bump both together"; exit 1
+          fi
+          echo "skills pins coherent: $REV"
+
       - name: .agents pin freshness (advisory)
         run: |
           # ADVISORY on purpose (#404 r2): the fleet serves agents main, so a

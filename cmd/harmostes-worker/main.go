@@ -181,7 +181,7 @@ func botTokenEnvForNode(node v1alpha1.NodeSpec, base []string, resolver worker.P
 func spawnEnv(base []string, graphPath string, logf func(string, ...any)) []string {
 	sha := os.Getenv("HARMOSTES_TRIGGER_SHA")
 	if sha == "" {
-		return base
+		return scopePostToken(base)
 	}
 	env := append([]string{}, base...)
 	env = append(env, "RIG_EXPECTED_SHA="+sha)
@@ -192,7 +192,26 @@ func spawnEnv(base []string, graphPath string, logf func(string, ...any)) []stri
 	if !degraded {
 		env = append(env, "RIG_REQUIRE_SHA=1")
 	}
-	return env
+	return scopePostToken(env)
+}
+
+// ReviewPostTokenEnvKey (#680): the comment-scoped posting credential.
+// When it is armed, it is the ONLY forge credential the pi session holds:
+// the consumer CLI aliases (GH_TOKEN/FORGEJO_TOKEN — owner/admin class on
+// the live fleet) are dropped alongside the bot keys, so an LLM loop fed
+// untrusted PR content can post, reply, and resolve threads but cannot
+// push, merge, or satisfy branch-protection approvals. Unarmed
+// deployments keep the historical env (no behavior change).
+const ReviewPostTokenEnvKey = "HARMOSTES_REVIEW_POST_TOKEN"
+
+func scopePostToken(env []string) []string {
+	if os.Getenv(ReviewPostTokenEnvKey) == "" {
+		return env
+	}
+	return agent.FilterEnv(env,
+		agent.BotTokenEnvKey, agent.BotHostEnvKey,
+		"GH_TOKEN", "GITHUB_TOKEN", "FORGEJO_TOKEN",
+	)
 }
 
 func main() {
@@ -587,6 +606,7 @@ func runOneShot() {
 			Args: piargs.PiArgsLoadout(wf.Spec.Agent.Skill, wf.Spec.Agent.Model, wf.Spec.Agent.Tools, piargs.Loadout{
 				ExcludeTools: wf.Spec.Agent.ExcludeTools,
 				NoMCP:        wf.Spec.Agent.NoMCPOrDefault(),
+				Thinking:     wf.Spec.Agent.Thinking,
 			}),
 			Workdir:     workdir,
 			Env:         piEnv,

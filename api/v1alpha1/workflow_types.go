@@ -206,6 +206,19 @@ type AgentSpec struct {
 	Tools        []string      `json:"tools,omitempty"`        // tool allowlist
 	ExcludeTools []string      `json:"excludeTools,omitempty"` // #656: post-allowlist exclusions (pi 1.0.4 patterns, e.g. 'mcp__x__*')
 	NoMCP        *bool         `json:"noMcp,omitempty"`        // #656: kill MCP for this node (nil = fleet default, MCP per image)
+	// Thinking declares the session's reasoning intent (#680): off/minimal/
+	// low/medium/high/xhigh/max, forwarded to `pi --thinking`. Empty = the
+	// runtime default. This is ALSO the fleet sampling policy's intent
+	// signal — mechanical tiers pin deterministic-lean sampling, medium+
+	// inherit the provider default — so a generative node (the reviewer)
+	// MUST declare high or it silently lands in the cold tier.
+	Thinking     string        `json:"thinking,omitempty"`
+	// ToolBudget overrides the fleet turn cap for this workflow's agent
+	// sessions (#680): nil = fleet default (forward the pool's cap env);
+	// N>0 = that cap; 0 = UNCAPPED (the cap trio is not forwarded at all).
+	// The reviewer declares 0 — all pillars, all the time needed, bounded
+	// only by the run bound.
+	ToolBudget   *int          `json:"toolBudget,omitempty"`
 	TaskTemplate TaskTemplate  `json:"taskTemplate"`           // the interpretive task
 	Gate         GateRef       `json:"gate"`                   // validation plugin
 	MaxFixes     int           `json:"maxFixes,omitempty"`     // default 3

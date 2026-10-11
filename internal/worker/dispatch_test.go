@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -260,7 +261,7 @@ func TestJobCredentialEnv(t *testing.T) {
 	t.Setenv("POD_NAME", "pool-pod")
 	t.Setenv("HARMOSTES_VALKEY_PORT_6379_TCP_ADDR", "noise")
 
-	got := jobCredentialEnv()
+	got := jobCredentialEnv(nil)
 	joined := strings.Join(got, " ")
 	if !strings.Contains(joined, "HARMOSTES_FORGEJO_TOKEN=fj-token") || !strings.Contains(joined, "LITELLM_API_KEY=llm-key") {
 		t.Fatalf("credential env missing: %q", joined)
@@ -358,7 +359,7 @@ func TestJobEnvAllowlistCarriesCLIAliases(t *testing.T) {
 	t.Setenv("FORGEJO_TOKEN", "probe-forge")
 	t.Setenv("GH_TOKEN", "probe-gh")
 	forwarded := map[string]bool{}
-	for _, kv := range jobCredentialEnv() {
+	for _, kv := range jobCredentialEnv(nil) {
 		for _, name := range []string{"FORGEJO_TOKEN", "GH_TOKEN"} {
 			if kv == name+"=probe-"+map[string]string{"FORGEJO_TOKEN": "forge", "GH_TOKEN": "gh"}[name] {
 				forwarded[name] = true
@@ -375,7 +376,7 @@ func TestJobEnvAllowlistCarriesCLIAliases(t *testing.T) {
 	// chain, which is worse than absent.
 	t.Setenv("FORGEJO_TOKEN", "")
 	forwardedEmpty := false
-	for _, kv := range jobCredentialEnv() {
+	for _, kv := range jobCredentialEnv(nil) {
 		if kv == "FORGEJO_TOKEN=" {
 			forwardedEmpty = true
 		}
@@ -386,7 +387,7 @@ func TestJobEnvAllowlistCarriesCLIAliases(t *testing.T) {
 }
 
 // The seam the allowlist tests cannot see: jobCredentialEnv's output reaches
-// the Job only through append(jobCredentialEnv(), dispatchEnv(...)) at the
+// the Job only through append(jobCredentialEnv(nil), dispatchEnv(...)) at the
 // Dispatch call site. Deleting that append left every allowlist test green
 // (r#406 review pillar 8) while the Job lost the credential — so pin the
 // DELIVERED env through the real dispatch path, with the pool env the chart
@@ -589,5 +590,56 @@ func TestDispatchIntentPrecedesJobCreation(t *testing.T) {
 	}
 	if len(jobs.Items) != 0 {
 		t.Fatalf("no Job may exist after forced spawn failure, got %d", len(jobs.Items))
+	}
+}
+
+// TestBudgetPolicy (#680): AgentSpec.ToolBudget renders the per-workflow
+// turn-budget decision — nil forwards the fleet trio untouched, 0 drops it
+// (uncapped), N>0 overrides the cap. The reviewer declares 0: all pillars,
+// all the time needed, bounded only by the run bound.
+func TestBudgetPolicy(t *testing.T) {
+	fleetEnv := []string{
+		"PI_TOOL_BUDGET=32", "PI_TOOL_BUDGET_ALLOW=/workspace/review.json",
+		"PI_TOOL_BUDGET_NUDGE=16", "LITELLM_URL=http://x",
+	}
+	t.Setenv("PI_TOOL_BUDGET", "32")
+	t.Setenv("PI_TOOL_BUDGET_ALLOW", "/workspace/review.json")
+	t.Setenv("PI_TOOL_BUDGET_NUDGE", "16")
+	t.Setenv("LITELLM_URL", "http://x")
+
+	mk := func(tb *int) []string {
+		wf := &v1alpha1.Workflow{}
+		wf.Spec.Agent.ToolBudget = tb
+		return jobCredentialEnv(&budgetPolicy{workflow: wf})
+	}
+
+	// nil → fleet default: trio forwarded.
+	for _, kv := range [3]string{"PI_TOOL_BUDGET=32", "PI_TOOL_BUDGET_ALLOW=/workspace/review.json", "PI_TOOL_BUDGET_NUDGE=16"} {
+		if !slices.Contains(mk(nil), kv) {
+			t.Fatalf("nil ToolBudget must forward the fleet trio: %v missing", kv)
+		}
+	}
+	// 0 → uncapped: the trio is absent, everything else forwards.
+	zero := mk(new(int)) // *0
+	for _, kv := range fleetEnv[:3] {
+		if slices.Contains(zero, kv) {
+			t.Fatalf("ToolBudget=0 must drop %s (uncapped)", kv)
+		}
+	}
+	if !slices.Contains(zero, "LITELLM_URL=http://x") {
+		t.Fatal("ToolBudget=0 must not touch unrelated allowlisted env")
+	}
+	// N>0 → the cap is overridden, the rest of the trio forwards.
+	five := 5
+	over := mk(&five)
+	if !slices.Contains(over, "PI_TOOL_BUDGET=5") {
+		t.Fatal("ToolBudget=5 must override PI_TOOL_BUDGET=5")
+	}
+	if !slices.Contains(over, "PI_TOOL_BUDGET_NUDGE=16") {
+		t.Fatal("ToolBudget=5 must keep the fleet nudge (cap/2 derivation is the extension's)")
+	}
+	// nil policy (tests calling without a workflow): fleet default intact.
+	if !slices.Contains(jobCredentialEnv(nil), "PI_TOOL_BUDGET=32") {
+		t.Fatal("nil policy must forward the fleet trio")
 	}
 }

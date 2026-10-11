@@ -157,6 +157,10 @@ func PiArgs(skill, model string, tools []string) []string {
 type Loadout struct {
 	ExcludeTools []string
 	NoMCP        bool
+	// Thinking (#680): the session's reasoning intent, forwarded as
+	// `pi --thinking <level>` when non-empty. Empty = the runtime default
+	// (undeclared nodes must not drift an existing invocation).
+	Thinking string
 }
 
 func PiArgsLoadout(skill, model string, tools []string, lo Loadout) []string {
@@ -166,6 +170,9 @@ func PiArgsLoadout(skill, model string, tools []string, lo Loadout) []string {
 	}
 	if lo.NoMCP {
 		args = append(args, "--no-mcp")
+	}
+	if lo.Thinking != "" {
+		args = append(args, "--thinking", lo.Thinking)
 	}
 	return args
 }

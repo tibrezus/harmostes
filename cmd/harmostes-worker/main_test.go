@@ -540,3 +540,32 @@ func (f fakeResolver) Resolve(_ context.Context, ref v1alpha1.PluginRef, _ strin
 	}
 	return "", nil, fmt.Errorf("plugin %q not found", ref.Name)
 }
+
+// TestScopePostToken (#680): when the comment-scoped review posting token
+// is armed, the pi spawn env loses EVERY richer forge credential (bot keys
+// AND the owner/admin-class consumer CLI aliases); unarmed deployments keep
+// the historical env byte-for-byte.
+func TestScopePostToken(t *testing.T) {
+	base := []string{
+		"PATH=/usr/bin",
+		"HARMOSTES_FORGEJO_BOT_TOKEN=bot", "HARMOSTES_FORGEJO_BOT_HOST=h",
+		"GH_TOKEN=owner", "FORGEJO_TOKEN=admin", "HARMOSTES_REVIEW_POST_TOKEN=scoped",
+	}
+	t.Setenv("HARMOSTES_REVIEW_POST_TOKEN", "scoped")
+	scoped := scopePostToken(base)
+	joined := strings.Join(scoped, "\n")
+	for _, banned := range []string{"BOT_TOKEN", "GH_TOKEN=", "FORGEJO_TOKEN=", "BOT_HOST"} {
+		if strings.Contains(joined, banned) {
+			t.Fatalf("armed scope must drop %s: %v", banned, scoped)
+		}
+	}
+	if !strings.Contains(joined, "HARMOSTES_REVIEW_POST_TOKEN=scoped") || !strings.Contains(joined, "PATH=") {
+		t.Fatalf("scoped token and neutral env must survive: %v", scoped)
+	}
+
+	t.Setenv("HARMOSTES_REVIEW_POST_TOKEN", "") // unarmed
+	unarmed := scopePostToken([]string{"GH_TOKEN=owner", "PATH=/x"})
+	if len(unarmed) != 2 || unarmed[0] != "GH_TOKEN=owner" {
+		t.Fatalf("unarmed scope must be identity: %v", unarmed)
+	}
+}

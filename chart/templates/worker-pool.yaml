@@ -156,6 +156,18 @@ spec:
                   # need it out-of-band (ops-managed via ExternalSecret from
                   # BSM); without it review posting on git.rezus.cloud fails.
                   optional: true
+            # The reviewer's comment-scoped posting credential (#680). When
+            # present it BOTH arms agent-side finding posts AND scopes the
+            # pi session env: the spawn filter drops GH_TOKEN/FORGEJO_TOKEN
+            # (owner/admin class) and the bot keys, leaving this token as the
+            # only forge credential an LLM loop holds — comment rights only,
+            # no approvals, no push. OPTIONAL: absent = today's env shape.
+            - name: HARMOSTES_REVIEW_POST_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: harmostes-review-post-token
+                  key: token
+                  optional: true
             # Served-skills single source (#441): passed to the dispatcher so
             # per-Attempt Jobs' sync-skills init containers clone the SAME
             # repo the pool's own init container does. Empty = the Go default

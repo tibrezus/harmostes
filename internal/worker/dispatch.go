@@ -408,7 +408,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req RunRequest) error {
 		}
 		job := k8s.BuildJob(d.cfg.JobParams(&at, req.Workflow, req.Namespace, runBound, cache, wf.Spec.Sessions,
 			wf.Spec.Attachments, triggerRepo,
-			append(jobCredentialEnv(), dispatchEnv(req, &at, g.Envelope)...)))
+			append(jobCredentialEnv(&budgetPolicy{workflow: wf}), dispatchEnv(req, &at, g.Envelope)...)))
 		// #666 intent-before-side-effect: the INTENT is committed BEFORE
 		// the Job exists (record-then-act; a failed record aborts dispatch
 		// so no side effect can precede its ledger entry). The Job's NAME
@@ -495,6 +495,14 @@ var jobEnvAllowlist = []string{
 	// the reviewer's grep caught the first attempt landing on the wrong
 	// branch; this entry IS the fix).
 	"LITELLM_FALLBACKS",
+	// HARMOSTES_REVIEW_POST_TOKEN (#680): the reviewer's scope-limited
+	// posting credential — comment rights only (post/reply/resolve PR
+	// threads), CANNOT satisfy branch-protection approvals. Unlike the
+	// approval-capable bot token (stripped by agent.ChildEnv), this one is
+	// deliberately forwarded to review agent sessions: the reviewer posts
+	// each verified finding as it confirms it. Its scope is enforced by the
+	// forge (a scoped token minted comment-only), not by this codebase.
+	"HARMOSTES_REVIEW_POST_TOKEN",
 	// PI_TOOL_BUDGET: the turn-budget extension's hard tool-call cap
 	// (#484). The 43-minute review round ran 47 calls at ~55s of model
 	// latency each — turn COUNT is the wall clock; the prompt's ~12-call
@@ -517,10 +525,12 @@ var jobEnvAllowlist = []string{
 // jobCredentialEnv forwards the allowlisted deployment-level vars from the
 // dispatcher's own environment to the attempt Job. Later env entries win,
 // so dispatchEnv's per-run vars override any forwarded names.
-func jobCredentialEnv() []string {
+func jobCredentialEnv(policy budgetPolicyFn) []string {
 	wanted := map[string]bool{}
 	for _, n := range jobEnvAllowlist {
-		wanted[n] = true
+		if !policy.dropFromAllowlist(n) {
+			wanted[n] = true
+		}
 	}
 	var out []string
 	for _, kv := range os.Environ() {
@@ -531,7 +541,49 @@ func jobCredentialEnv() []string {
 			out = append(out, kv)
 		}
 	}
+	for kv, v := range policy.overrides() {
+		out = append(out, kv+"="+v)
+	}
 	return out
+}
+
+// budgetPolicyFn renders the per-workflow turn-budget decision (#680) for
+// jobCredentialEnv. The zero value (nil-safe) forwards the fleet default
+// untouched. See budgetPolicy for the semantics.
+type budgetPolicyFn = *budgetPolicy
+
+// budgetPolicy applies AgentSpec.ToolBudget to the attempt Job's env:
+//
+//	nil            → fleet default: forward the pool's cap trio untouched
+//	&N (N > 0)     → override PI_TOOL_BUDGET=N (nudge stays cap/2, allow lane
+//	                 untouched — the extension's own derivation)
+//	&0             → UNCAPPED: the trio is dropped entirely (absent on a
+//	                 deployment the extension is inert — the declared state
+//	                 for the reviewer: all pillars, all the time needed,
+//	                 bounded only by the run bound)
+type budgetPolicy struct {
+	workflow *v1alpha1.Workflow
+}
+
+var budgetTrio = map[string]bool{
+	"PI_TOOL_BUDGET": true, "PI_TOOL_BUDGET_ALLOW": true, "PI_TOOL_BUDGET_NUDGE": true,
+}
+
+func (p *budgetPolicy) dropFromAllowlist(name string) bool {
+	return p != nil && p.workflow != nil &&
+		p.workflow.Spec.Agent.ToolBudget != nil && *p.workflow.Spec.Agent.ToolBudget == 0 &&
+		budgetTrio[name]
+}
+
+func (p *budgetPolicy) overrides() map[string]string {
+	if p == nil || p.workflow == nil {
+		return nil
+	}
+	tb := p.workflow.Spec.Agent.ToolBudget
+	if tb == nil || *tb == 0 {
+		return nil
+	}
+	return map[string]string{"PI_TOOL_BUDGET": strconv.Itoa(*tb)}
 }
 
 // dispatchEnv renders the Job's trigger env: the envelope (gate output) when

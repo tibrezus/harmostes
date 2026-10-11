@@ -536,3 +536,33 @@ func TestPiArgsLoadout(t *testing.T) {
 		t.Fatal("base invocation must not grow loadout flags")
 	}
 }
+
+// TestPiArgsThinkingFlag (#680): a declared thinking level rides the pi
+// invocation as --thinking; an undeclared one must not (zero-Loadout byte
+// identity with the historical output is pinned elsewhere).
+func TestPiArgsThinkingFlag(t *testing.T) {
+	base := PiArgsLoadout("sk.md", "m", nil, Loadout{})
+	if containsPair(base, "--thinking") {
+		t.Fatalf("undeclared thinking must not alter the invocation: %v", base)
+	}
+	hi := PiArgsLoadout("sk.md", "m", nil, Loadout{Thinking: "high"})
+	if !containsPair(hi, "--thinking", "high") {
+		t.Fatalf("--thinking high missing from loadout: %v", hi)
+	}
+}
+
+func containsPair(args []string, flag string, vals ...string) bool {
+	for i, a := range args {
+		if a == flag && i+1 < len(args) {
+			if len(vals) == 0 {
+				return true
+			}
+			for _, v := range vals {
+				if args[i+1] == v {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}

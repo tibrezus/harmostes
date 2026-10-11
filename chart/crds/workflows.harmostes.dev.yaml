@@ -142,6 +142,8 @@ spec:
                     tools: { type: array, items: { type: string } }
                     excludeTools: { type: array, items: { type: string } }
                     noMcp: { type: boolean }
+                    thinking: { type: string, description: "reasoning intent (off..max) → pi --thinking; medium+ also exempts the fleet's deterministic-lean sampling (#680)" }
+                    toolBudget: { type: integer, description: "per-workflow turn cap override; 0 = uncapped (nil = fleet default) (#680)" }
                     taskTemplate:                              # the interpretive task
                       type: object
                       properties:

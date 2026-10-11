@@ -26,6 +26,7 @@ import (
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
 	"github.com/tibrezus/harmostes/internal/attempt"
 	"github.com/tibrezus/harmostes/internal/k8s"
+	"k8s.io/apimachinery/pkg/runtime"
 )
 
 // hookClient fires interfere exactly once, just before the first Status
@@ -53,6 +54,12 @@ func (w *hookStatusWriter) Patch(ctx context.Context, obj client.Object, patch c
 // Create/Update complete SubResourceWriter; the ledger only patches status.
 func (w *hookStatusWriter) Create(ctx context.Context, obj client.Object, subResource client.Object, opts ...client.SubResourceCreateOption) error {
 	return w.delegate.Create(ctx, obj, subResource, opts...)
+}
+
+// Apply completes the interface on newer controller-runtime (server-side
+// apply for subresources); the ledger never applies — plain delegation.
+func (w *hookStatusWriter) Apply(ctx context.Context, apply runtime.ApplyConfiguration, opts ...client.SubResourceApplyOption) error {
+	return w.delegate.Apply(ctx, apply, opts...)
 }
 
 func (w *hookStatusWriter) Update(ctx context.Context, obj client.Object, opts ...client.SubResourceUpdateOption) error {

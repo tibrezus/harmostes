@@ -210,9 +210,13 @@ func scopePostToken(env []string) []string {
 	if os.Getenv(ReviewPostTokenEnvKey) == "" {
 		return env
 	}
+	// FAIL-CLOSED: keep only the explicitly-safe names (worker.SpawnSafeEnv);
+	// drop every OTHER credential-forwarded variable. A future allowlisted
+	// credential is dropped by default — it must be justified into the safe
+	// set, never caught by a heuristic.
 	var drop []string
-	for _, n := range worker.CredentialClassEnv() {
-		if n != ReviewPostTokenEnvKey {
+	for _, n := range worker.EnvAllowlistNames() {
+		if !worker.SpawnSafeEnv(n) {
 			drop = append(drop, n)
 		}
 	}

@@ -562,16 +562,19 @@ func TestScopePostToken(t *testing.T) {
 	if !strings.Contains(joined, "HARMOSTES_REVIEW_POST_TOKEN=scoped") || !strings.Contains(joined, "PATH=") {
 		t.Fatalf("scoped token and neutral env must survive: %v", scoped)
 	}
-	// r2 P1: the closure must hold against the REAL allowlist, not this
-	// test's hand-written list — walk every credential-class forwarded
-	// name; armed sessions must not carry any of them (except the post
-	// token itself), and the LLM key must survive.
-	for _, n := range worker.CredentialClassEnv() {
-		if n == "HARMOSTES_REVIEW_POST_TOKEN" {
-			continue
+	// r3 P3: the closure is FAIL-CLOSED and NON-CIRCULAR — walk the REAL
+	// allowlist; every name either is in the explicit safe set (justified,
+	// non-credential) or must be DROPPED when armed. The safe set is pinned
+	// independently here: no credential-shaped name may be safe.
+	for _, n := range worker.EnvAllowlistNames() {
+		safe := worker.SpawnSafeEnv(n)
+		if safe && (strings.Contains(n, "TOKEN") || strings.Contains(n, "PASSWORD") || strings.Contains(n, "USERNAME") || n == "HARMOSTES_FORGEJO_BOT_HOST") {
+			if n != "HARMOSTES_REVIEW_POST_TOKEN" && n != "LITELLM_API_KEY" {
+				t.Fatalf("safe set must not contain credential-shaped %s — justify or remove", n)
+			}
 		}
-		if strings.Contains(joined, n+"=") {
-			t.Fatalf("armed scope must drop allowlisted credential %s: %v", n, scoped)
+		if !safe && strings.Contains(joined, n+"=") {
+			t.Fatalf("armed scope must drop non-safe allowlisted %s: %v", n, scoped)
 		}
 	}
 	llm := append(scoped, "LITELLM_API_KEY=llm")

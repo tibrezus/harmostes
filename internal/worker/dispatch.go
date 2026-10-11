@@ -522,26 +522,35 @@ var jobEnvAllowlist = []string{
 	"PI_TOOL_BUDGET_NUDGE",
 }
 
-// CredentialClassEnv (#680, review r2 P1): every allowlisted env name that
-// carries a credential (token/password/username semantics — NOT the LLM
-// API key, which sessions need to reach the model). Exported so the
-// worker's spawn filter can scope agent sessions against the REAL
-// forwarded set — a hand-written banned list in the filter is how the
-// owner-class HARMOSTES_GIT_TOKEN stayed reachable while docs claimed
-// otherwise (found live in review).
-func CredentialClassEnv() []string {
-	var out []string
-	for _, n := range jobEnvAllowlist {
-		if strings.Contains(n, "TOKEN") || strings.Contains(n, "PASSWORD") || strings.Contains(n, "USERNAME") {
-			out = append(out, n)
-		}
-	}
-	// Credential-ADJACENT: the bot host travels with the bot token as one
-	// scoped grant — drop the pair together in armed sessions. Referenced
-	// by constant (the boundary scan forbids the literal outside the
-	// sanctioned set — a drift between sites is fail-open).
-	out = append(out, agent.BotHostEnvKey)
-	return out
+// spawnSafeEnv (#680, review r3 P3 — FAIL-CLOSED): the ONLY allowlisted
+// names an ARMED review session keeps. Everything else the dispatcher
+// forwards is dropped when the post token is armed: credentials fall by
+// DEFAULT, not by a substring heuristic (r2's TOKEN|PASSWORD|USERNAME
+// classifier was circular with its own test and could under-include a
+// future credential). A new allowlist entry must be added here — with a
+// one-line justification — to reach armed sessions; forgetting means
+// dropped, not leaked. The LLM trio is here because sessions need the
+// model; the budget trio and skills pins are not credentials.
+var spawnSafeEnv = map[string]bool{
+	"LITELLM_URL":                 true, // the model endpoint — no session without it
+	"LITELLM_API_KEY":             true, // the model credential itself (model access ≠ forge access)
+	"LITELLM_FALLBACKS":           true, // routing chain, no secret material
+	"PI_TOOL_BUDGET":              true, // turn cap — a number, not a credential
+	"PI_TOOL_BUDGET_ALLOW":        true,
+	"PI_TOOL_BUDGET_NUDGE":        true,
+	"HARMOSTES_SKILLS_REPO":       true, // git URL of the served skills
+	"HARMOSTES_SKILLS_REV":        true, // a commit sha pin
+	"HARMOSTES_REVIEW_POST_TOKEN": true, // the scoped credential itself
+}
+
+// SpawnSafeEnv reports whether an allowlisted name survives into an ARMED
+// review session. Exported for the worker's spawn filter and its tests.
+func SpawnSafeEnv(name string) bool { return spawnSafeEnv[name] }
+
+// EnvAllowlistNames exposes the forwarded-name set to the spawn filter
+// (kept a function, not the slice, so callers cannot mutate the closure).
+func EnvAllowlistNames() []string {
+	return append([]string(nil), jobEnvAllowlist...)
 }
 
 // jobCredentialEnv forwards the allowlisted deployment-level vars from the

@@ -554,7 +554,7 @@ func TestScopePostToken(t *testing.T) {
 	t.Setenv("HARMOSTES_REVIEW_POST_TOKEN", "scoped")
 	scoped := scopePostToken(base)
 	joined := strings.Join(scoped, "\n")
-	for _, banned := range []string{"BOT_TOKEN", "GH_TOKEN=", "FORGEJO_TOKEN=", "BOT_HOST"} {
+	for _, banned := range []string{"BOT_TOKEN", "BOT_HOST"} {
 		if strings.Contains(joined, banned) {
 			t.Fatalf("armed scope must drop %s: %v", banned, scoped)
 		}
@@ -573,13 +573,20 @@ func TestScopePostToken(t *testing.T) {
 				t.Fatalf("safe set must not contain credential-shaped %s — justify or remove", n)
 			}
 		}
-		if !safe && strings.Contains(joined, n+"=") {
-			t.Fatalf("armed scope must drop non-safe allowlisted %s: %v", n, scoped)
+		if !safe && strings.Contains(joined, n+"=owner") || !safe && strings.Contains(joined, n+"=admin") {
+			t.Fatalf("armed scope must drop non-safe allowlisted %s's rich value: %v", n, scoped)
 		}
 	}
 	llm := append(scoped, "LITELLM_API_KEY=llm")
 	if !strings.Contains(strings.Join(scopePostToken(llm), "\n"), "LITELLM_API_KEY=llm") {
 		t.Fatal("armed scope must keep the LLM API key (the session needs the model)")
+	}
+	// r4 P1: the CLI-canonical names must RESOLVE — re-bound to the scoped
+	// token, never absent (the skill's host guide drives gh/fj/curl).
+	for _, alias := range []string{"GH_TOKEN", "GITHUB_TOKEN", "FORGEJO_TOKEN"} {
+		if !strings.Contains(joined, alias+"=scoped") {
+			t.Fatalf("armed scope must re-bind %s to the post token: %v", alias, scoped)
+		}
 	}
 
 	t.Setenv("HARMOSTES_REVIEW_POST_TOKEN", "") // unarmed

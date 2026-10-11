@@ -207,7 +207,8 @@ func spawnEnv(base []string, graphPath string, logf func(string, ...any)) []stri
 const ReviewPostTokenEnvKey = "HARMOSTES_REVIEW_POST_TOKEN"
 
 func scopePostToken(env []string) []string {
-	if os.Getenv(ReviewPostTokenEnvKey) == "" {
+	post := os.Getenv(ReviewPostTokenEnvKey)
+	if post == "" {
 		return env
 	}
 	// FAIL-CLOSED: keep only the explicitly-safe names (worker.SpawnSafeEnv);
@@ -220,7 +221,16 @@ func scopePostToken(env []string) []string {
 			drop = append(drop, n)
 		}
 	}
-	return agent.FilterEnv(env, drop...)
+	scoped := agent.FilterEnv(env, drop...)
+	// RE-BIND the CLI-canonical names to the scoped credential (r4 P1):
+	// dropping the rich aliases without re-binding un-authenticates the very
+	// CLI paths the skill's host guide drives. gh reads GH_TOKEN/GITHUB_TOKEN;
+	// fj/curl shapes read FORGEJO_TOKEN — every canonical now resolves to the
+	// comment-scoped token, so the CLIs can do exactly what it allows.
+	for _, alias := range []string{"GH_TOKEN", "GITHUB_TOKEN", "FORGEJO_TOKEN"} {
+		scoped = append(scoped, alias+"="+post)
+	}
+	return scoped
 }
 
 func main() {

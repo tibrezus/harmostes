@@ -181,7 +181,7 @@ func botTokenEnvForNode(node v1alpha1.NodeSpec, base []string, resolver worker.P
 func spawnEnv(base []string, graphPath string, logf func(string, ...any)) []string {
 	sha := os.Getenv("HARMOSTES_TRIGGER_SHA")
 	if sha == "" {
-		return base
+		return scopePostToken(base)
 	}
 	env := append([]string{}, base...)
 	env = append(env, "RIG_EXPECTED_SHA="+sha)
@@ -192,7 +192,46 @@ func spawnEnv(base []string, graphPath string, logf func(string, ...any)) []stri
 	if !degraded {
 		env = append(env, "RIG_REQUIRE_SHA=1")
 	}
-	return env
+	return scopePostToken(env)
+}
+
+// ReviewPostTokenEnvKey (#680): the comment-scoped posting credential.
+// Forwarded to REVIEW attempts only (dispatch drops the name for any other
+// objective kind) — its presence in a session env IS the arming signal.
+// In an armed session the spawn env is FAIL-CLOSED: every allowlisted
+// variable NOT in the explicit safe set (worker.SpawnSafeEnv — the LLM
+// trio, budget numbers, skills pins, this token) is dropped, and the
+// CLI-canonical names (GH_TOKEN/GITHUB_TOKEN/FORGEJO_TOKEN) are RE-BOUND
+// to the scoped value, so the CLIs authenticate but can only do what a
+// comment-scoped token allows. Unarmed deployments keep the historical
+// env (no behavior change).
+const ReviewPostTokenEnvKey = "HARMOSTES_REVIEW_POST_TOKEN"
+
+func scopePostToken(env []string) []string {
+	post := os.Getenv(ReviewPostTokenEnvKey)
+	if post == "" {
+		return env
+	}
+	// FAIL-CLOSED: keep only the explicitly-safe names (worker.SpawnSafeEnv);
+	// drop every OTHER credential-forwarded variable. A future allowlisted
+	// credential is dropped by default — it must be justified into the safe
+	// set, never caught by a heuristic.
+	var drop []string
+	for _, n := range worker.EnvAllowlistNames() {
+		if !worker.SpawnSafeEnv(n) {
+			drop = append(drop, n)
+		}
+	}
+	scoped := agent.FilterEnv(env, drop...)
+	// RE-BIND the CLI-canonical names to the scoped credential (r4 P1):
+	// dropping the rich aliases without re-binding un-authenticates the very
+	// CLI paths the skill's host guide drives. gh reads GH_TOKEN/GITHUB_TOKEN;
+	// fj/curl shapes read FORGEJO_TOKEN — every canonical now resolves to the
+	// comment-scoped token, so the CLIs can do exactly what it allows.
+	for _, alias := range []string{"GH_TOKEN", "GITHUB_TOKEN", "FORGEJO_TOKEN"} {
+		scoped = append(scoped, alias+"="+post)
+	}
+	return scoped
 }
 
 func main() {
@@ -587,6 +626,7 @@ func runOneShot() {
 			Args: piargs.PiArgsLoadout(wf.Spec.Agent.Skill, wf.Spec.Agent.Model, wf.Spec.Agent.Tools, piargs.Loadout{
 				ExcludeTools: wf.Spec.Agent.ExcludeTools,
 				NoMCP:        wf.Spec.Agent.NoMCPOrDefault(),
+				Thinking:     wf.Spec.Agent.Thinking,
 			}),
 			Workdir:     workdir,
 			Env:         piEnv,

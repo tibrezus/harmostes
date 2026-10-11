@@ -59,7 +59,13 @@ jobs:
           git checkout -b "chore/skills-bump-$upstream"
           sed -i "s|^  rev: \".*\"$|  rev: \"$upstream\"|" chart/values.yaml
           git add chart/values.yaml
-          git commit -m "chore(skills): bump pinned skills rev to $upstream"
+          # #680 r9: BOTH pins move together or not at all — the CI
+          # coherence step (skills.rev ↔ .agents gitlink) is required, and a
+          # bump that moves only values.yaml fails it by construction.
+          # update-index moves the gitlink without materializing the
+          # submodule (this checkout has no submodules: recursive).
+          git update-index --cacheinfo "160000,$upstream,.agents"
+          git commit -m "chore(skills): bump pinned skills rev to $upstream (values.yaml + .agents gitlink, kept coherent)"
           git push origin "chore/skills-bump-$upstream"
           gh pr create \
             --title "chore(skills): bump pinned skills rev to ${upstream:0:7}" \

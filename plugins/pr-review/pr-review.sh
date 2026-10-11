@@ -17,21 +17,19 @@ except json.JSONDecodeError as e:
     print('Write VALID JSON: {"decision":"APPROVE|REQUEST_CHANGES","reviewed_sha":"<head sha>","comments":[]}',file=sys.stderr)
     sys.exit(1)
 d=str(review.get("decision","")).upper()
-comments=review.get("comments",[])
-# r7 (owner directive): there is NO body field in the contract — the
-# deploy step builds the one-line verdict (decision + SHA + blocking
-# count) itself. A legacy "body" written by an old-habit agent is
-# tolerated and IGNORED; requiring it here stranded the rhesadox agent in
-# a 4-attempt gate loop against instructions that forbade the body
-# (found live: #2085, "agent failed after 4 attempts" tonight).
+# #680: findings[] is the ledger's canonical key; comments[] is the
+# legacy alias, tolerated one shape at this boundary and normalized away.
+findings=review.get("findings", review.get("comments",[]))
+if "comments" in review:
+    print("WARN: legacy comments[] — normalized to findings[] (update the task contract)",file=sys.stderr)
 if d not in {"APPROVE","REQUEST_CHANGES","COMMENT"}:
     print(f'ERROR: decision must be APPROVE/REQUEST_CHANGES/COMMENT, got "{d}"',file=sys.stderr);sys.exit(1)
-if not isinstance(comments,list): print("ERROR: comments must be a list",file=sys.stderr);sys.exit(1)
-if d=="REQUEST_CHANGES" and not comments:
-    print("ERROR: REQUEST_CHANGES requires at least one blocking finding in comments (threads are the review)",file=sys.stderr);sys.exit(1)
-for i,c in enumerate(comments):
+if not isinstance(findings,list): print("ERROR: findings must be a list",file=sys.stderr);sys.exit(1)
+if d=="REQUEST_CHANGES" and not findings:
+    print("ERROR: REQUEST_CHANGES requires at least one blocking finding in findings (threads are the review)",file=sys.stderr);sys.exit(1)
+for i,c in enumerate(findings):
     if not isinstance(c,dict) or not c.get("path") or not c.get("body"):
-        print(f"ERROR: comments[{i}] must have path+body",file=sys.stderr);sys.exit(1)
+        print(f"ERROR: findings[{i}] must have path+body",file=sys.stderr);sys.exit(1)
 # TODO lane (r7-r10): completely-missing pieces ride todos[] — anchored as
 # non-blocking threads the dev must address; they never change the decision.
 todos=review.get("todos",[])
@@ -42,57 +40,15 @@ for i,t in enumerate(todos):
         print(f"ERROR: todos[{i}] must have path+body",file=sys.stderr);sys.exit(1)
 review["decision"]=d
 # Skill output contract (v2): reviewed_sha must equal the PR head SHA and
-# ── Divergence ledger (r18-r20 lessons) — check the CLASS, every round ──
-# 1. Mutation-probe load-bearing tests (BOGUS the guarded value; red required).
-# 2. One fact, one home: grep every home of any fact a fix touches.
-# 3. Deployment claims must be falsified against job.go/chart/ops manifests,
-#    never accepted from ADR prose (r20: /tmp lineage blocker).
-# 4. Author==ADR-author ⇒ adversarial pass on the premise FIRST.
-# ── Session continuity (ADR-0010): rounds are ONE lineage. If a prior
-# verdict exists at an earlier head: previously-addressed findings stay
-# addressed; review the DELTA between heads; carry this ledger forward. ──
-# ── Inline review protocol — the merge currency, published by post-review:
-# a bullet list is NOT a review. EVERY NEW finding rides review.json's
-# "comments" array (path + line + body) — the DEPLOY step posts them as
-# native anchored threads deterministically. NEVER post NEW findings via
-# the CLI yourself: a self-post duplicates what the deploy publishes.
-# You DO use the CLI dialects below on prior rounds: when the gate lists
-# open prior-round threads, REPLY on each with the fixing SHA and RESOLVE
-# it — that is N round-trips, so budget them alongside the review. An
-# APPROVE over an open prior thread is downgraded by post-review; the
-# reply+resolve is how threads close. Dialects:
-#   gh   (GitHub):  VERIFIED LIVE. Inline: gh api repos/{o}/{r}/pulls/$N/
-#        comments -f commit_id=$SHA -f path=F -F line=N -f body="…"
-#        reply: POST pulls/$N/comments -f body="…" -F in_reply_to=$ID
-#        (the /replies subpath 404s — use in_reply_to)
-#        resolve: gh api graphql -f query='mutation($t:ID!){…' -f t=<id>
-#        (ID! — String! fails); map databaseId → thread id via a
-#        reviewThreads query first
-#   fj   (Forgejo/Codeberg): NATIVE since v16.0.3-rezus.1 — create-pull-
-#        review takes the whole payload as --body JSON:
-#          fj api repo create-pull-review --owner O --repo R --index N \
-#            --body '{"body":"summary","event":"COMMENT","commit_id":"<sha>",
-#                     "comments":[{"path":"F","new_position":N,"body":"finding"}]}'
-#        THE LINE FIELD IS new_position (not new_line — server 500s on
-#        new_line: ReverseLineBlame -L 0). Reply via create-pull-review-
-#        comment --id <comment-id> --body '{"body":"…","new_position":N,
-#        "path":"F"}'. Resolution state is server-side on reviews.
-#   glab (GitLab): positioned discussions — fetch diff_refs from the MR
-#        first, then glab api projects/:id/merge_requests/$N/discussions
-#        -X POST with position{base_sha,start_sha,head_sha,new_path,
-#        old_path,new_line}; reply: …/discussions/$ID/notes;
-#        resolve: PUT …/discussions/$ID {"resolved":true}
-#
-# Rules: comments[] carries ONLY blocking findings (CRITICAL/verified
-# MAJOR — each becomes a thread that must close before merge). MINOR/NIT
-# are dropped, not posted. There is NO long verdict body: the deploy step
-# writes the one-line verdict (decision + SHA + blocking count) itself.
-# On a re-review of an addressed round: verify the fix in the diff, REPLY
-# on the thread with the fixing SHA (the CLI dialects above), then RESOLVE
-# it. An APPROVE is lawful ONLY when zero threads remain unresolved —
-# post-review downgrades an APPROVE issued over open prior threads.
-# r7: review.json has no body and no trailer — the deploy composes the
-# one-line verdict + trailer itself (see below).
+# ── Output contract (#680): the LEDGER. findings[] carries blocking
+# findings, each posted by the agent itself as a native anchored thread
+# as it was verified (thread_ref = the platform reference once posted).
+# The deploy publishes ONLY remainders (entries without thread_ref —
+# session-death resilience) and composes the one-line verdict from the
+# threads actually on the PR. Legacy "comments" is accepted as an alias
+# for findings (one shape at the boundary, normalized here). MINOR/NIT
+# never enter the ledger; todos[] are completely-missing pieces —
+# non-blocking, anchored by the deploy, followed up next round.
 sha=review.get("reviewed_sha","")
 ctx_path=os.path.join(os.path.dirname(path),"pr-context.json")
 head=os.environ.get("HARMOSTES_PR_HEAD_SHA","")
@@ -107,7 +63,9 @@ if head and sha!=head:
 # verdict it builds — the agent does not write prose, so there is no body
 # for it to end with (r7; the old body-trailer check here stranded the
 # rhesadox agent in the 4-attempt gate loop).
+review["findings"]=findings; review.pop("comments",None)
 with open(path,"w") as f: json.dump(review,f,indent=2)
-print(f"review.json valid: decision={d} sha={sha[:12]} comments={len(comments)}")
+posted=sum(1 for c in findings if c.get("thread_ref"))
+print(f"review.json valid: decision={d} sha={sha[:12]} findings={len(findings)} (agent-posted: {posted}, remainders: {len(findings)-posted})")
 PYEOF
 echo '{"status":"ok"}'

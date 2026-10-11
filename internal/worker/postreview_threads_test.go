@@ -319,13 +319,36 @@ func runPluginEnvCtx(t *testing.T, srv *httptest.Server, hostOverride string, fj
 }
 
 func baseReview(comments []any) map[string]any {
-	// r7 shape: NO top-level body field — the deploy builds the verdict line
-	// from decision + sha (the reviewer never writes analysis prose).
+	// #680 LEDGER shape: findings[] canonical (comments = legacy alias,
+	// normalized by the gate). NO top-level body field — the deploy builds
+	// the verdict line from decision + sha.
 	return map[string]any{
 		"decision":     "REQUEST_CHANGES",
 		"reviewed_sha": "deadbeef123",
-		"comments":     comments,
+		"findings":     comments,
 	}
+}
+
+func TestPostReviewSkipsAgentPostedRemainderFilter(t *testing.T) {
+	// #680: findings carrying thread_ref were posted by the agent itself —
+	// the deploy publishes ONLY remainders. Both findings below exist; the
+	// carried one must not be re-published (no duplicate thread), the
+	// remainder must land.
+	f := &fakeForge{}
+	srv := httptest.NewServer(f.mux(t))
+	t.Cleanup(srv.Close)
+
+	review := map[string]any{
+		"decision":     "REQUEST_CHANGES",
+		"reviewed_sha": "deadbeef123",
+		"findings": []any{
+			map[string]any{"path": "carried.go", "line": 1, "body": "Blocking: carried",
+				"thread_ref": "already-on-the-pr"},
+			map[string]any{"path": "remainder.go", "line": 2, "body": "Blocking: remainder"},
+		},
+	}
+	out := runPlugin(t, srv, false, review)
+	assertInlineThreads(t, out, 1, 0, 0) // ONLY the remainder publishes
 }
 
 func TestPostReviewPublishesNativeInlineThreads(t *testing.T) {

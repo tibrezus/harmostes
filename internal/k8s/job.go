@@ -220,9 +220,9 @@ func BuildJob(p AttemptJobParams) *batchv1.Job {
 		{Name: "HARMOSTES_DAPR_REQUIRED", Value: "true"},
 		// The wall the run paces against (#336): the SAME effective bound
 		// ActiveDeadlineSeconds enforces (one source — runBoundSeconds —
-		// so they cannot disagree). The task contract reads this so the
-		// agent can budget depth: "the review is written by minute 8"
-		// needs a visible clock.
+		// so they cannot disagree). The task contract surfaces the clock
+		// so the agent can pace depth against it (#680: the reviewer is
+		// uncapped by turns; the run bound is the only wall).
 		{Name: "HARMOSTES_WALL_SECONDS", Value: strconv.FormatInt(int64(p.runBoundSeconds()/time.Second), 10)},
 	}
 	for _, kv := range p.ExtraEnv {

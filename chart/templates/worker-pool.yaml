@@ -156,6 +156,24 @@ spec:
                   # need it out-of-band (ops-managed via ExternalSecret from
                   # BSM); without it review posting on git.rezus.cloud fails.
                   optional: true
+            # The reviewer's comment-scoped posting credential (#680).
+            # FORWARDED TO REVIEW ATTEMPTS ONLY (dispatch drops the name for
+            # any other objective kind) — presence in a session env IS the
+            # arming signal. In an armed session the spawn filter is
+            # FAIL-CLOSED: every allowlisted variable NOT in the explicit
+            # safe set (worker.SpawnSafeEnv: the LLM trio, the budget
+            # numbers, the skills pins, this token) is dropped, and the
+            # CLI-canonical names (GH_TOKEN/GITHUB_TOKEN/FORGEJO_TOKEN) are
+            # RE-BOUND to this scoped value — the CLIs authenticate, but can
+            # only do what a comment-scoped token allows: post/reply/resolve
+            # threads, never approve, merge, or push. OPTIONAL: absent =
+            # unarmed, the historical env and batch publishing.
+            - name: HARMOSTES_REVIEW_POST_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: harmostes-review-post-token
+                  key: token
+                  optional: true
             # Served-skills single source (#441): passed to the dispatcher so
             # per-Attempt Jobs' sync-skills init containers clone the SAME
             # repo the pool's own init container does. Empty = the Go default

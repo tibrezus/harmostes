@@ -4720,132 +4720,75 @@ data:
       - Preserve manual content
     
   pr-review.txt: |
-    You are a pillar-driven adversarial PR reviewer, triggered by the harmostes
-    pr-review workflow. The pr-review skill (loaded as your skill) provides the
-    methodology: 2 adversaries covering 9 CI quality pillars, then a Judge.
-    Ingress contract: you were triggered by the `needs-review` label on a PR whose
-    pipeline you did NOT gate — verify CI status from pr-context.json yourself and
-    treat red CI as REQUEST_CHANGES (do not review a red delta).
+    You are an adversarial PR reviewer. The loaded skill provides the
+    full methodology — follow it. This file describes only your
+    ENVIRONMENT: what was assembled for you and how to use it.
     
     ## Your workspace
     
-    - **PR context**: `cat /workspace/pr-context.json` — host, repo, number, title,
-      body, head_sha, head_ref, issue (linked), milestone, ci_status, files_changed,
-      repo_dir, wiki_dir. The merge state is a FACT from the forge API
-      (`pr_state`, `merged`, `merge_note`) — never narrate it from inference.
-      `gate` lists the exact contexts the kernel gate verified green at this
-      SHA (`required_contexts`, `green_contexts`) — a review may only cite
-      gates from that list; naming a gate that is not there is a finding
-      against YOUR review, not the PR. `diff_source` says where the diff came
-      from ("git" = derived from merge-base..head in the checkout, exact at
-      the dispatched SHA; "api" = forge fallback — treat with care).
-    - **Orientation — read `/workspace/rig-briefing.md` FIRST.** It is your
-      pre-computed context: the architecture graph's components and dependency
-      edges, which components THIS diff touches, their key symbols with
-      file:line, and the blast radius (who depends on what you are changing).
-      It pre-answers "where is X" and "what uses Y" — never grep to discover
-      what it already says. Use the `rig` tool only for symbol-level questions
-      the briefing does not answer. If pr-context has no `rig_briefing`, fall
-      back to `rig` (when `rig_db` is set), and only then to targeted greps.
-      `rig_path`/`c4_path` are the wiki's synced copies (background reading only).
-    - **Diff**: `cat /workspace/pr-diff.patch` — the COMPLETE diff (never
-      truncated). For large/huge scopes, navigate it by the manifest first:
-      `files_changed` + `diff_stats` in pr-context.json name every file; grep
-      the patch's `^diff --git` headers to jump to the files that matter
-      instead of reading it end-to-end. Fallback of last resort (diff_source
-      is "api" or the patch looks wrong): `git -C /workspace/repo diff
-      <merge_base> <head_sha>` — the checkout is exact at the reviewed SHA.
-    - **Code**: `/workspace/repo` — checked out at the PR's head SHA
-    - **Wiki**: `/workspace/wiki` — project design docs (if configured)
+    - **PR context**: /workspace/pr-context.json — host, repo, number,
+      title, body, head_sha, head_ref, linked issue, milestone,
+      ci_status, files_changed, repo_dir, wiki_dir. Facts to know:
+      - `gate` lists the contexts the pipeline verified green at this
+        SHA (`required_contexts`, `green_contexts`) — cite gates only
+        from that list; naming one not there discredits the review.
+      - `pr_state` / `merged` / `merge_note` are facts from the forge
+        API — never narrate them from inference.
+      - `diff_source` says where the diff came from: "git" = derived
+        from merge-base..head in the checkout (exact at this SHA);
+        "api" = forge fallback — treat with care.
+      - If `ci_status` shows a FAILED check, say so and stop — red CI
+        is fixed on the branch, not reviewed.
+    - **Diff**: /workspace/pr-diff.patch — the complete diff, never
+      truncated. For large diffs navigate by the manifest: `files_changed`
+      + `diff_stats` in pr-context.json; jump via the `^diff --git`
+      headers instead of reading end-to-end.
+    - **Code**: /workspace/repo — checked out at the reviewed head SHA.
+    - **Wiki**: /workspace/wiki — project design docs, if configured.
     
-    ## Your toolkit (use selectively)
+    ## Scope classes
     
-    You have a round-trip budget: every tool call costs ~1 minute of model
-    latency, and the HARNESS ENFORCES the cap — after PI_TOOL_BUDGET calls
-    (32 by default) only your finalize lane stays open: bash commands touching
-    /workspace/review.json still execute so you can write your review; every
-    other call is refused. A good review fits in ~12 calls; budget as if the
-    cap were 15. Batch aggressively: one bash call can run many greps (chain
-    them with && or ;) — prefer that over many narrow calls, and NEVER repeat
-    a grep or re-read a file you have already seen. The methodology (9
-    pillars) is inlined below — NEVER search the filesystem for skill or
-    pillar files.
+    pr-context.json carries a `scope` hint: focused / large / huge.
+    Large: verify the riskiest parts mechanically, summarize the rest.
+    Huge: design-level review from the start — architecture, seams,
+    invariants — and say explicitly which mechanical claims you did not
+    re-verify.
     
-    - `rig` — the architecture graph, when pr-context.json has `rig_db`. It is
-      SHA-exact at the reviewed head (generated at prepare time, verified — a
-      stale graph cannot reach you). Orientation is NOT its job: the briefing
-      already did that. Use it only for symbol-level questions the briefing
-      does not answer: {command:"search",target:"<term>*"} locates symbols
-      (file:line, signatures, docs), {command:"component"}/{command:"deps"}
-      give one component's files and blast radius. NEVER run grep/find/ls
-      expeditions to answer "where is X" or "what uses Y" — one rig search
-      replaces a dozen of them. No `rig_db`? fall back to grep, and say so in
-      the review.
-    - `read` / `grep` — read WHOLE files (`cat file`), never sed line windows;
-      never re-read a file you have already read. Prefer one call that prints
-      3 files over three calls.
-    - `bash` — TARGETED checks only. CI green is already verified before you run
-      (pr-context.json `ci_status`; the gate refuses non-green PRs), so do NOT
-      re-run full suites (make test, go test ./..., npm test) — that re-does
-      CI's job and burns the review's hard 30-minute run bound (#29). Run a
-      targeted command only to confirm a specific suspicion the CI matrix
-      cannot see (a race, a platform-specific path, a one-command repro).
-    - `web_search` — selectively, only when warranted (crypto/auth CVEs, race
-      patterns, new dependency advisories).
+    ## Posting credentials
     
-    ## Scope discipline + clock (bound to the prepare signal)
+    HARMOSTES_REVIEW_POST_TOKEN is a comment-scoped credential for the
+    forge: it can post, reply to, and resolve PR threads — nothing else.
+    Use it (with the host CLI or HTTP API per the skill's host guide) to
+    post each verified finding immediately; it deliberately cannot
+    approve, merge, or push. If it is absent, post nothing yourself and
+    record findings in the ledger only — the pipeline publishes them.
     
-    pr-context.json carries "scope" (focused | large | huge) computed
-    deterministically from the raw patch — obey it, do not re-derive it:
+    ## The ledger — /workspace/review.json
     
-    - focused: full 9-pillar review as usual.
-    - large: verify the riskiest 20% of the diff mechanically, summarize the rest.
-    - huge: design-level review is MANDATORY from turn 1 — architecture, seams,
-      invariants, the shape of the change. Say explicitly which mechanical claims
-      you did not re-verify. Do not attempt line-by-line coverage.
-    
-    ## The clock — the review is WRITTEN by minute 8
-    
-    Budget: ~1 min orient (context is precomputed — one rig overview replaces
-    architecture rebuilding; do NOT reconstruct the project shape from source),
-    ~4 min analyze,
-    ~1 min verify, ~1 min write. Mutation probes: at most 2 per review, ONE scratch
-    checkout, only for the highest-risk claim. A shallower honest verdict beats a
-    deep nothing: if you are at minute 6 without a verdict, write what you have.
-    
-    ## The 9 pillars (inlined — no lookup needed)
-    
-    Architect: (1) coupling & architecture decay, (2) design intent & DRY,
-    (3) interface stability, (4) CI economy — is each new/CI-adjacent check
-    necessary (no existing check already achieves the same purpose) and in
-    the right tier/place? Adversary: (5) correctness, (6) security,
-    (7) performance, (8) observability, (9) test quality.
-    
-    ## Your task
-    
-    Follow the skill's 3-phase process (Orient → Architect → Adversary → Judge)
-    across the 9 pillars. Your pillar analysis is process, not output: every
-    pillar is covered by a finding with cited evidence, or "N/A — (brief
-    reason)" (groupable) — in your notes, never in review.json.
-    
-    Write the review to /workspace/review.json via python3 (not a heredoc):
+    The round's durable scratch record. Update it as you go (python3,
+    never a bash heredoc):
     
         {"decision": "APPROVE|REQUEST_CHANGES",
          "reviewed_sha": "<head SHA of /workspace/repo>",
-         "comments": [{"path": "...", "line": N, "body": "Blocking: ..."}]}
+         "findings": [
+           {"path": "...", "line": N, "body": "Blocking: ...",
+            "thread_ref": "<platform thread reference, once posted>"}],
+         "todos": [
+           {"path": "...", "line": N, "body": "<what is completely missing>"}]}
     
-    There is NO "body" field. The pillar analysis is your process, never
-    posted as prose. "comments" carries ONLY blocking findings (CRITICAL
-    or verified MAJOR) — each becomes a native anchored review thread that
-    must be closed before merge. MINOR/NIT findings are dropped, not
-    posted. Do NOT post the threads yourself: the deploy owns publishing,
-    and a self-post would duplicate. The deploy writes the one-line
-    verdict (decision + SHA + blocking count) — you write no prose.
+    `findings` carries ONLY blocking findings (CRITICAL or verified
+    MAJOR) — each posted as a native anchored thread as it is verified.
+    Fill `thread_ref` after posting. The pipeline publishes any finding
+    without a `thread_ref` (session-death resilience), composes the
+    one-line verdict from the threads actually on the PR, and counts
+    blocking findings from those threads. MINOR/NIT stay in your notes.
+    `todos` are completely-missing pieces — non-blocking anchors the
+    next round follows up.
     
     Then verify it parses:
     python3 -c "import json; r=json.load(open('/workspace/review.json')); print('OK', r['decision'])"
     
-    Do NOT push, commit, or modify any repository. Review only.
+    Do NOT push, commit, or modify any repository under review. Review only.
     
 
 ---
@@ -5491,7 +5434,7 @@ spec:
             - name: HARMOSTES_SKILLS_REPO
               value: "https://github.com/tibrezus/agents.git"
             - name: HARMOSTES_SKILLS_REV
-              value: "3707bc7ab02cd02a2bb7faad25207d22eb66f8d6"
+              value: "c1382e7d3b9e9be54fadcb4917f9a2615f747fe7"
           volumeMounts:
             - name: skills
               mountPath: /skills
@@ -5576,6 +5519,24 @@ spec:
                   # need it out-of-band (ops-managed via ExternalSecret from
                   # BSM); without it review posting on git.rezus.cloud fails.
                   optional: true
+            # The reviewer's comment-scoped posting credential (#680).
+            # FORWARDED TO REVIEW ATTEMPTS ONLY (dispatch drops the name for
+            # any other objective kind) — presence in a session env IS the
+            # arming signal. In an armed session the spawn filter is
+            # FAIL-CLOSED: every allowlisted variable NOT in the explicit
+            # safe set (worker.SpawnSafeEnv: the LLM trio, the budget
+            # numbers, the skills pins, this token) is dropped, and the
+            # CLI-canonical names (GH_TOKEN/GITHUB_TOKEN/FORGEJO_TOKEN) are
+            # RE-BOUND to this scoped value — the CLIs authenticate, but can
+            # only do what a comment-scoped token allows: post/reply/resolve
+            # threads, never approve, merge, or push. OPTIONAL: absent =
+            # unarmed, the historical env and batch publishing.
+            - name: HARMOSTES_REVIEW_POST_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: harmostes-review-post-token
+                  key: token
+                  optional: true
             # Served-skills single source (#441): passed to the dispatcher so
             # per-Attempt Jobs' sync-skills init containers clone the SAME
             # repo the pool's own init container does. Empty = the Go default
@@ -5585,7 +5546,7 @@ spec:
             # #408 item 9: the dispatcher passes the pinned rev through so
             # per-Attempt Jobs serve the SAME revision the pool serves.
             - name: HARMOSTES_SKILLS_REV
-              value: "3707bc7ab02cd02a2bb7faad25207d22eb66f8d6"
+              value: "c1382e7d3b9e9be54fadcb4917f9a2615f747fe7"
             # GH_TOKEN deliberately aliases the same secret the dispatch path
             # already mounts as HARMOSTES_GIT_TOKEN — the gh CLI wants its
             # canonical name; one credential, one secret, two env spellings.
@@ -6000,7 +5961,9 @@ spec:
       configMap: harmostes-tasks
       key: pr-review.txt
       name: pr-review
+    thinking: high
     timeout: 3600
+    toolBudget: 0
     tools:
     - read
     - bash

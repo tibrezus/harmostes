@@ -68,8 +68,24 @@ func exitCode(err error) int {
 const sha40 = "deadbeef1234567890deadbeef1234567890dead"
 
 func TestReviewGateAcceptsNewContract(t *testing.T) {
-	// The r7 contract: NO body field. The old gate required one and looped
-	// the rhesadox agent 4 attempts against instructions that forbade it.
+	// The #680 LEDGER contract: findings[] canonical (thread_ref optional —
+	// absent = the deploy publishes the remainder). NO body field.
+	out, code := runReviewGate(t, map[string]any{
+		"decision":     "REQUEST_CHANGES",
+		"reviewed_sha": sha40,
+		"findings": []any{
+			map[string]any{"path": "a.go", "line": 7, "body": "Blocking: MAJOR evidence"},
+			map[string]any{"path": "b.go", "line": 9, "body": "Blocking: CRITICAL evidence",
+				"thread_ref": "4242449509"},
+		},
+	}, sha40)
+	if code != 0 {
+		t.Fatalf("ledger review.json must pass the gate, rc=%d out=%s", code, out)
+	}
+}
+
+func TestReviewGateAcceptsLegacyCommentsAlias(t *testing.T) {
+	// comments[] = the pre-#680 alias; the gate normalizes it to findings.
 	out, code := runReviewGate(t, map[string]any{
 		"decision":     "REQUEST_CHANGES",
 		"reviewed_sha": sha40,
@@ -78,7 +94,10 @@ func TestReviewGateAcceptsNewContract(t *testing.T) {
 		},
 	}, sha40)
 	if code != 0 {
-		t.Fatalf("new-contract review.json must pass the gate, rc=%d out=%s", code, out)
+		t.Fatalf("legacy alias must pass, rc=%d out=%s", code, out)
+	}
+	if !strings.Contains(out, "legacy comments") {
+		t.Fatalf("legacy alias must WARN: %s", out)
 	}
 }
 
@@ -86,7 +105,7 @@ func TestReviewGateApproveWithoutCommentsPasses(t *testing.T) {
 	out, code := runReviewGate(t, map[string]any{
 		"decision":     "APPROVE",
 		"reviewed_sha": sha40,
-		"comments":     []any{},
+		"findings":     []any{},
 	}, sha40)
 	if code != 0 {
 		t.Fatalf("clean APPROVE must pass, rc=%d out=%s", code, out)

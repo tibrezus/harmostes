@@ -540,3 +540,71 @@ func (f fakeResolver) Resolve(_ context.Context, ref v1alpha1.PluginRef, _ strin
 	}
 	return "", nil, fmt.Errorf("plugin %q not found", ref.Name)
 }
+
+// TestScopePostToken (#680): when the comment-scoped review posting token
+// is armed, the pi spawn env loses EVERY richer forge credential (bot keys
+// AND the owner/admin-class consumer CLI aliases); unarmed deployments keep
+// the historical env byte-for-byte.
+func TestScopePostToken(t *testing.T) {
+	// FULL-POPULATION fixture (r5 P2 — a fixture that names only two
+	// credentials went vacuous for the other five): every allowlisted name
+	// rides base with a RICH sentinel value, so each drop leg can fail.
+	base := []string{"PATH=/usr/bin", "HARMOSTES_REVIEW_POST_TOKEN=scoped"}
+	for _, n := range worker.EnvAllowlistNames() {
+		if n == "HARMOSTES_REVIEW_POST_TOKEN" {
+			continue // set explicitly with the armed value below
+		}
+		base = append(base, n+"=rich-"+n)
+	}
+	t.Setenv("HARMOSTES_REVIEW_POST_TOKEN", "scoped")
+	scoped := scopePostToken(base)
+	joined := strings.Join(scoped, "\n")
+	for _, banned := range []string{"BOT_TOKEN", "BOT_HOST"} {
+		if strings.Contains(joined, banned) {
+			t.Fatalf("armed scope must drop %s: %v", banned, scoped)
+		}
+	}
+	if !strings.Contains(joined, "HARMOSTES_REVIEW_POST_TOKEN=scoped") || !strings.Contains(joined, "PATH=") {
+		t.Fatalf("scoped token and neutral env must survive: %v", scoped)
+	}
+	// r3 P3: the closure is FAIL-CLOSED and NON-CIRCULAR — walk the REAL
+	// allowlist; every name either is in the explicit safe set (justified,
+	// non-credential) or must be DROPPED when armed. The safe set is pinned
+	// independently here: no credential-shaped name may be safe.
+	for _, n := range worker.EnvAllowlistNames() {
+		safe := worker.SpawnSafeEnv(n)
+		if safe && (strings.Contains(n, "TOKEN") || strings.Contains(n, "PASSWORD") || strings.Contains(n, "USERNAME") || n == "HARMOSTES_FORGEJO_BOT_HOST") {
+			if n != "HARMOSTES_REVIEW_POST_TOKEN" && n != "LITELLM_API_KEY" {
+				t.Fatalf("safe set must not contain credential-shaped %s — justify or remove", n)
+			}
+		}
+		if !safe {
+			// may appear ONLY as a re-bind to the scoped value, never with
+			// its rich value (the drop is falsifiable per name — every
+			// non-safe name IS in the fixture with a rich sentinel).
+			for _, kv := range scoped {
+				k, v, _ := strings.Cut(kv, "=")
+				if k == n && v != "scoped" {
+					t.Fatalf("armed scope must drop non-safe %s's rich value (got %q): %v", n, v, scoped)
+				}
+			}
+		}
+	}
+	llm := append(scoped, "LITELLM_API_KEY=llm")
+	if !strings.Contains(strings.Join(scopePostToken(llm), "\n"), "LITELLM_API_KEY=llm") {
+		t.Fatal("armed scope must keep the LLM API key (the session needs the model)")
+	}
+	// r4 P1: the CLI-canonical names must RESOLVE — re-bound to the scoped
+	// token, never absent (the skill's host guide drives gh/fj/curl).
+	for _, alias := range []string{"GH_TOKEN", "GITHUB_TOKEN", "FORGEJO_TOKEN"} {
+		if !strings.Contains(joined, alias+"=scoped") {
+			t.Fatalf("armed scope must re-bind %s to the post token: %v", alias, scoped)
+		}
+	}
+
+	t.Setenv("HARMOSTES_REVIEW_POST_TOKEN", "") // unarmed
+	unarmed := scopePostToken([]string{"GH_TOKEN=owner", "PATH=/x"})
+	if len(unarmed) != 2 || unarmed[0] != "GH_TOKEN=owner" {
+		t.Fatalf("unarmed scope must be identity: %v", unarmed)
+	}
+}

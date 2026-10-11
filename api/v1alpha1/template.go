@@ -58,6 +58,16 @@ func ApplyTemplateDefaults(wf *Workflow, tmpl *WorkflowTemplate) {
 	if a.NoMCP == nil {
 		a.NoMCP = ta.NoMCP
 	}
+	// #680: the intent knobs flow through templateRef like every other
+	// agent field — a template declaring thinking/toolBudget must arm
+	// templateRef workflows, else the rearming is inert on instances (found
+	// live: a dispatched attempt still carried the fleet turn cap).
+	if a.Thinking == "" {
+		a.Thinking = ta.Thinking
+	}
+	if a.ToolBudget == nil {
+		a.ToolBudget = ta.ToolBudget
+	}
 	if a.TaskTemplate == (TaskTemplate{}) {
 		a.TaskTemplate = ta.TaskTemplate
 	}

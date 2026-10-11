@@ -21,6 +21,10 @@ func tmplSpec() WorkflowTemplateSpec {
 			TaskTemplate: TaskTemplate{Name: "pr-review", ConfigMap: "harmostes-tasks", Key: "pr-review.txt"},
 			Gate:         GateRef{Plugin: PluginRef{Name: "pr-review", ConfigMap: "harmostes-pr-review"}},
 			MaxFixes:     1,
+			// #680: the intent knobs inherit through templateRef like the
+			// rest — a template declaring them must arm its instances.
+			Thinking:   "high",
+			ToolBudget: func() *int { v := 0; return &v }(),
 		},
 		Deploy: DeploySpec{Plugin: PluginRef{Name: "post-review", ConfigMap: "harmostes-pr-review"}},
 	}
@@ -48,6 +52,12 @@ func TestApplyTemplateDefaultsFullInheritance(t *testing.T) {
 	}
 	if s.Agent.MaxFixes != 1 {
 		t.Fatalf("maxFixes not inherited: %d", s.Agent.MaxFixes)
+	}
+	if s.Agent.Thinking != "high" {
+		t.Fatalf("thinking not inherited (the rearming would be inert on templateRef instances): %q", s.Agent.Thinking)
+	}
+	if s.Agent.ToolBudget == nil || *s.Agent.ToolBudget != 0 {
+		t.Fatalf("toolBudget not inherited (uncapped would not reach templateRef instances): %+v", s.Agent.ToolBudget)
 	}
 	if s.Deploy.Plugin.Name != "post-review" {
 		t.Fatalf("deploy plugin not inherited: %+v", s.Deploy.Plugin)

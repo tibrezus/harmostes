@@ -112,7 +112,7 @@ func (f *fakeForge) mux(t *testing.T) *http.ServeMux {
 					t.Errorf("hijack: %v", err)
 					return
 				}
-				defer conn.Close()
+				defer func() { _ = conn.Close() }()
 				_, _ = buf.WriteString("HTTP/1.1 404 Not \"Found (quoted)\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
 				_ = buf.Flush()
 				return

@@ -193,6 +193,12 @@ except Exception as e:
 PYEOF
 )
 GATE_STATUS="evaluated"; [ -s "$GATE_STATUS_FILE" ] && GATE_STATUS="$(cat "$GATE_STATUS_FILE")"
+# The gate status interpolates into the double-quoted artifact line at
+# three points — the listing-failure reason is host/exception text that
+# can carry quotes, and a raw splice unbalances the line so lastJSONLine
+# zeroes the whole round artifact (#685 r2: the same class as the status
+# note). Sanitized ONCE here, at the single source.
+GATE_STATUS="$(printf '%s' "$GATE_STATUS" | tr '\n\r\t' '   ' | tr -d '"' | tr '\\' '/')"
 # A degraded gate must never post a verdict it could not evaluate (r6 P1):
 # on an APPROVE with a failed/truncated listing, skip the verdict comment
 # AND the label removal — emit the structured skip and let the next cycle
@@ -308,10 +314,16 @@ try: ms=json.loads(msraw)
 except Exception: ms=[]
 milestone=None
 if isinstance(ms,list) and ms:
-    # fork: numeric id; GitHub: the NUMBER (an id is 422-invalid — probed
-    # live #685 r1).
-    milestone=ms[0].get("id") if is_fj else ms[0].get("number")
-    if len(ms)>1: notes.append("milestone: %d open, using newest (%s)" % (len(ms), ms[0].get("title")))
+    # "most recent open" = newest CREATED — NOT ms[0]: GitHub's /milestones
+    # default sort is due_on ASC (ms[0] is the OLDEST — verified live #685
+    # r2 on this very repo) and no cross-host sort param exists, so the
+    # ordering is computed client-side from the serialized timestamps
+    # (#685 r2: both wired hosts carry created_at on milestone objects).
+    def _ms_key(m):
+        return str(m.get("created_at") or m.get("updated_at") or "")
+    newest=max(ms, key=_ms_key)
+    milestone=newest.get("id") if is_fj else newest.get("number")
+    if len(ms)>1: notes.append("milestone: %d open, using newest (%s)" % (len(ms), newest.get("title")))
 else:
     notes.append("no open milestone — carried issue minted unmilestoned (assign manually)")
 # 2) open issues for exact-title dedup.

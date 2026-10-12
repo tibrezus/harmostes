@@ -421,3 +421,31 @@ func TestPostReviewCarryGitHubResolveLostSpeaks(t *testing.T) {
 		t.Fatalf("the lost resolve must be spoken, got %v", report["notes"])
 	}
 }
+
+// TestPostReviewCarryMilestoneNewest pins the #685 r2 milestone choice:
+// "most recent open" = newest CREATED — computed client-side, because
+// GitHub's /milestones default sort is due_on ASC (ms[0] is the OLDEST,
+// verified live on this very repo) and no cross-host sort param exists.
+func TestPostReviewCarryMilestoneNewest(t *testing.T) {
+	// ordered as GitHub actually returns them (oldest first); the newest
+	// CREATED (pi 1.x, 2026-10-10) sits LAST.
+	f := &carryForge{milestones: []map[string]any{
+		{"id": 9, "number": 4, "title": "v0.6.0", "created_at": "2026-07-16T10:00:00Z"},
+		{"id": 7, "number": 2, "title": "ui-v3", "created_at": "2026-08-02T10:00:00Z"},
+		{"id": 5, "number": 6, "title": "pi 1.x runtime program", "created_at": "2026-10-10T10:00:00Z"},
+	}}
+	srv := httptest.NewServer(f.mux(t))
+	t.Cleanup(srv.Close)
+
+	carryEnv := `[[0,{"path":"c.md","line":3,"body":"milestone choice","disposition":"architecture-carry"}]]`
+	runCarryStep(t, srv, `[]`, carryEnv, "IS_FJ=false")
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.mintPayloads) != 1 {
+		t.Fatalf("one mint, got %d", len(f.mintPayloads))
+	}
+	if ms, _ := f.mintPayloads[0]["milestone"].(float64); int(ms) != 6 {
+		t.Fatalf("milestone = %v, want the NEWEST-created (number 6, 'pi 1.x runtime program') — not ms[0] (number 4)", f.mintPayloads[0]["milestone"])
+	}
+}

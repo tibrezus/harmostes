@@ -33,23 +33,24 @@ const (
 )
 
 type fakeForge struct {
-	mu             sync.Mutex
-	prState        string // "open" | "closed"
-	hostDialect    string // "github" | "forgejo" — the POST /reviews validator enforces the host's event enum (#470 r2 t3)
-	reviews        []map[string]any
-	comments       []map[string]any
-	verdictPost    bool
-	verdictBody    string
-	labelGone      bool
-	comment422     map[string]bool  // path → force 422
-	authHeaders    []string         // Authorization on native posts (#480 host-gating)
-	statusBodies   []map[string]any // the pr-review/verdict merge-status posts (decoded — bodies do not survive the handler)
-	issues         []map[string]any
-	resolutions    []string // resolution PUT paths (the carry step's close-outs)
-	resolvedGH     []string // GraphQL resolveReviewThread thread ids (GitHub dialect carry)
-	repliesGH      []string // /comments/{id}/replies paths (GitHub dialect carry)
-	graphqlBody    string   // the resolve-state GraphQL response (default: zero threads)
-	forceStatus422 bool     // the merge-status POST answers 422 with a quoted JSON body
+	mu               sync.Mutex
+	prState          string // "open" | "closed"
+	hostDialect      string // "github" | "forgejo" — the POST /reviews validator enforces the host's event enum (#470 r2 t3)
+	reviews          []map[string]any
+	comments         []map[string]any
+	verdictPost      bool
+	verdictBody      string
+	labelGone        bool
+	comment422       map[string]bool  // path → force 422
+	authHeaders      []string         // Authorization on native posts (#480 host-gating)
+	statusBodies     []map[string]any // the pr-review/verdict merge-status posts (decoded — bodies do not survive the handler)
+	issues           []map[string]any
+	resolutions      []string // resolution PUT paths (the carry step's close-outs)
+	resolvedGH       []string // GraphQL resolveReviewThread thread ids (GitHub dialect carry)
+	repliesGH        []string // /comments/{id}/replies paths (GitHub dialect carry)
+	graphqlBody      string   // the resolve-state GraphQL response (default: zero threads)
+	forceStatus422   bool     // the merge-status POST answers 422 with a quoted JSON body
+	forceComments500 bool     // the thread listing answers 500 (the gate-skip path)
 }
 
 func (f *fakeForge) mux(t *testing.T) *http.ServeMux {
@@ -98,6 +99,12 @@ func (f *fakeForge) mux(t *testing.T) *http.ServeMux {
 	mux.HandleFunc("/repos/tibrezus/harmostes/pulls/99/comments", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
 			f.mu.Lock()
+			if f.forceComments500 {
+				f.mu.Unlock()
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = w.Write([]byte(`server says "no" (quoted)`))
+				return
+			}
 			cs := f.comments
 			if cs == nil {
 				cs = []map[string]any{}
@@ -1625,5 +1632,48 @@ func TestPostReviewArtifactFinalLineParsesOnDegradedHost(t *testing.T) {
 	}
 	if strings.Contains(note, "\"") {
 		t.Fatalf("raw quotes must be sanitized out of the note: %q", note)
+	}
+}
+
+// TestPostReviewArtifactParsesOnGateSkip pins the #685 r2 hardening: a
+// listing failure (gate skip) interpolates the failure reason into the
+// artifact's thread_gate field at three points — the sanitize keeps the
+// final line parseable even when the reason carries quotes (the fake's
+// 500 body is quoted prose; the same tr primitive the status note uses).
+func TestPostReviewArtifactParsesOnGateSkip(t *testing.T) {
+	f := &fakeForge{
+		comments:         []map[string]any{},
+		reviews:          []map[string]any{},
+		forceComments500: true,
+	}
+	srv := httptest.NewServer(f.mux(t))
+	t.Cleanup(srv.Close)
+
+	review := map[string]any{
+		"decision":     "APPROVE",
+		"reviewed_sha": "deadbeef123",
+		"comments":     []any{},
+	}
+	out := runPlugin(t, srv, false, review)
+
+	var last map[string]any
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "{") && strings.Contains(line, "\"thread_gate\"") {
+			if err := json.Unmarshal([]byte(line), &last); err != nil {
+				t.Fatalf("artifact line unparsable on the gate-skip path (raw gate status splice): %v\n%s", err, line)
+			}
+		}
+	}
+	if last == nil {
+		t.Fatalf("no artifact line in output:\n%s", out)
+	}
+	ev, _ := last["event"].(map[string]any)
+	tg, _ := ev["thread_gate"].(string)
+	if !strings.HasPrefix(tg, "skipped:") {
+		t.Fatalf("the gate skip must be spoken in thread_gate, got %q", tg)
+	}
+	if strings.Contains(tg, "\"") {
+		t.Fatalf("raw quotes must be sanitized out of thread_gate: %q", tg)
 	}
 }

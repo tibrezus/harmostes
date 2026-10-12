@@ -1974,3 +1974,63 @@ func TestPostReviewLinelessTodoCarriesAsTodo(t *testing.T) {
 		t.Fatalf("carried entry cls = %v, want todo", cs[0])
 	}
 }
+
+// TestPostReviewCarriedBodyNotSilentlyTruncated pins the #685 r8 contract:
+// a carried finding's text arrives in the verdict body complete or
+// complete-with-an-EXPLICIT truncation marker — never a silent [:200] stub
+// that drops the fix instruction while the verdict claims the finding
+// "stands". Also pins the >10 case: every carried item stays addressable
+// on the PR (no "N more in the run artifact" punt below the 30 cap).
+func TestPostReviewCarriedBodyNotSilentlyTruncated(t *testing.T) {
+	// item 0 SHORT (its FIX line fits the 1500 window → arrives complete);
+	// items 1-11 long (FIX beyond the window → explicit truncation marker)
+	fs := []any{}
+	for i := 0; i < 12; i++ {
+		var body string
+		if i == 0 {
+			body = "Blocking: " + strings.Repeat("short evidence; ", 20) + "FIX: apply fix number 0 exactly as written"
+		} else {
+			long := strings.Repeat(fmt.Sprintf("evidence %d: the publisher must not silently drop text; ", i), 30)
+			body = "Blocking: " + long + fmt.Sprintf("FIX: apply fix number %d exactly as written", i)
+		}
+		fs = append(fs, map[string]any{"path": fmt.Sprintf("off%02d.diff", i), "line": 5, "body": body})
+	}
+	f := &fakeForge{
+		comments: []map[string]any{},
+		reviews:  []map[string]any{},
+		comment422: func() map[string]bool {
+			m := map[string]bool{}
+			for i := 0; i < 12; i++ {
+				m[fmt.Sprintf("off%02d.diff", i)] = true
+			}
+			return m
+		}(),
+	}
+	srv := httptest.NewServer(f.mux(t))
+	t.Cleanup(srv.Close)
+
+	review := map[string]any{"decision": "REQUEST_CHANGES", "reviewed_sha": "deadbeef123", "comments": fs}
+	runPlugin(t, srv, false, review)
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	vb := f.verdictBody
+	// all 12 addressable on the PR
+	for i := 0; i < 12; i++ {
+		if !strings.Contains(vb, fmt.Sprintf("off%02d.diff:5", i)) {
+			t.Fatalf("carried item %d must be addressable in the verdict body", i)
+		}
+	}
+	if strings.Contains(vb, "more in the run artifact (ledger pathological") {
+		t.Fatal("12 carried items is below the 30 cap — every one must be listed, no artifact punt")
+	}
+	// long bodies: complete or explicitly marked — count markers
+	markers := strings.Count(vb, "…[truncated")
+	if markers < 11 {
+		t.Fatalf("every long carried body must carry an explicit truncation marker, got %d/11", markers)
+	}
+	// the SHORT body arrives complete, unmarked, FIX line intact
+	if !strings.Contains(vb, "FIX: apply fix number 0 exactly as written") {
+		t.Fatal("a body within the 1500-char window must arrive COMPLETE in the verdict body")
+	}
+}

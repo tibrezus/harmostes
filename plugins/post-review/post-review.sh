@@ -697,11 +697,19 @@ valid=[]
 carried=[]  # findings the publisher could not LAND (#685 r5): they ride
              # the verdict body — the round may not claim threads the
              # forge never took, nor let the text exist nowhere.
+def cbody(t, cap=1500):
+    # #685 r8: a silent [:200] stub delivered half a finding while the
+    # verdict claimed it "stands" — truncation must be explicit, never
+    # implied. The actionable tail (the fix instruction) is exactly what
+    # a silent cut drops.
+    t=str(t or "")
+    if len(t)<=cap: return t
+    return t[:cap]+(" …[truncated %d chars — full text in the run artifact]" % (len(t)-cap))
 for c in cs:
     path=c.get("path"); body=c.get("body")
     if not path or not body:
         rejected+=1   # a malformed finding skips itself, never the batch (r1 P5)
-        carried.append({"path":str(path or "?"),"line":"?","body":str(body or "")[:200],"why":"malformed","cls":c.get("cls") or "finding"})
+        carried.append({"path":str(path or "?"),"line":"?","body":cbody(body),"why":"malformed","cls":c.get("cls") or "finding"})
         print("[post-review] WARN: malformed finding (missing path/body) — skipped", file=sys.stderr)
         continue
     try:
@@ -711,7 +719,7 @@ for c in cs:
         # threads anchor to a line — a finding without one is carried by
         # the verdict body (now literally true), never silently pinned to line 1.
         rejected+=1
-        carried.append({"path":path,"line":"?","body":str(body)[:200],"why":"no-usable-line","cls":c.get("cls") or "finding"})
+        carried.append({"path":path,"line":"?","body":cbody(body),"why":"no-usable-line","cls":c.get("cls") or "finding"})
         print(f"[post-review] WARN: finding {path} has no usable line — carried by the verdict body", file=sys.stderr)
         continue
     valid.append((path, line, c.get("side","RIGHT"), body, c.get("cls") or "finding"))
@@ -738,7 +746,7 @@ if fj:
                 else: posted_findings+=1
             else:
                 rejected+=1
-                carried.append({"path":p,"line":l,"body":str(b)[:200],"why":str(reason2)[:80],"cls":cl})
+                carried.append({"path":p,"line":l,"body":cbody(b),"why":str(reason2)[:80],"cls":cl})
                 if not last_error:
                     last_error = reason2
                 print(f"[post-review] WARN: inline thread {p}:{l} rejected — {reason2}", file=sys.stderr)
@@ -752,16 +760,16 @@ else:
             else: posted_findings+=1
         else:
             rejected+=1
-            carried.append({"path":p,"line":l,"body":str(b)[:200],"why":str(reason)[:80],"cls":cl})
+            carried.append({"path":p,"line":l,"body":cbody(b),"why":str(reason)[:80],"cls":cl})
             if not last_error:
                 last_error = reason
             print(f"[post-review] WARN: inline thread {p}:{l} rejected — {reason}", file=sys.stderr)
 # the cap overage lands in the verdict body for BOTH classes (#685 r6:
 # findings-only was the r5 fix's symmetric hole — a capped TODO evaporated)
 for c in (all_cs[len(cs):]):
-    carried.append({"path":str(c.get("path","?")),"line":c.get("line","?"),"body":str(c.get("body",""))[:200],"why":"cap","cls":"finding"})
+    carried.append({"path":str(c.get("path","?")),"line":c.get("line","?"),"body":cbody(c.get("body","")),"why":"cap","cls":"finding"})
 for t in todo_dropped:
-    carried.append({"path":str(t.get("path","?")),"line":t.get("line","?"),"body":TODO_PREFIX+str(t.get("body",""))[:180],"why":"cap","cls":"todo"})
+    carried.append({"path":str(t.get("path","?")),"line":t.get("line","?"),"body":cbody(TODO_PREFIX+str(t.get("body",""))),"why":"cap","cls":"todo"})
 capped=len(all_cs[len(cs):])+len(todo_dropped)
 dropped=[str(c.get("path","?")) for c in all_cs[len(cs):]]+[str(t.get("path","?")) for t in todo_dropped]
 if dropped:
@@ -903,9 +911,13 @@ else:
 body=line
 if carried:
     body+="\n\nUnanchorable this round (the host rejected the inline anchor) — the finding stands:\n"
-    for c in carried[:10]:
-        body+="\n- **%s:%s** %s" % (c.get("path","?"), c.get("line","?"), str(c.get("body",""))[:400])
-    if len(carried)>10: body+="\n- … %d more in the run artifact" % (len(carried)-10)
+    # every carried item stays addressable ON the PR (#685 r8): the
+    # [:10]-plus-punt dropped real findings into an ephemeral artifact.
+    # 30 in-body + explicit fallback beyond (a pathological ledger).
+    for c in carried[:30]:
+        b=str(c.get("body",""))
+        body+="\n- **%s:%s** %s" % (c.get("path","?"), c.get("line","?"), b if len(b)<=1600 else b[:1600]+" …[truncated %d chars — full text in the run artifact]" % (len(b)-1600))
+    if len(carried)>30: body+="\n- … %d more in the run artifact (ledger pathological — inspect the round)" % (len(carried)-30)
 print(json.dumps({"body": body+"\n\n<!-- pr-review: "+dec+" @ "+sha+" -->"}))
 PYEOF
 )

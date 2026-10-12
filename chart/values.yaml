@@ -527,10 +527,15 @@ tasks:
 
     `findings` carries ONLY blocking findings (CRITICAL or verified
     MAJOR) — each posted as a native anchored thread as it is verified
-    (thread body opens with **Blocking**). Fill `thread_ref` after
-    posting. The pipeline publishes any finding without a `thread_ref`
-    (session-death resilience) and composes the one-line verdict from
-    the threads actually on the PR. MINOR/NIT stay in your notes.
+    (thread body opens with **Blocking**). The anchor MUST be a line of
+    the PR's own diff (merge-base..head): hosts 422 any line outside it
+    (GitHub: 'could not be resolved' on the review-thread field) — an
+    unanchorable finding is carried by the verdict, but the thread is
+    the addressable surface, so pick anchors FROM the diff. Fill
+    `thread_ref` after posting. The pipeline publishes any finding
+    without a `thread_ref` (session-death resilience) and composes the
+    one-line verdict from the threads actually on the PR. MINOR/NIT
+    stay in your notes.
     `todos` are completely-missing pieces and COUNT as threads of the
     round (**TODO** prefix; disposition fix-in-pr default): fixed in this
     PR, reply+resolve — they block the verdict like any thread. Only a

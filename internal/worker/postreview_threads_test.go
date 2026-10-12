@@ -1884,3 +1884,51 @@ func TestPostReviewAnchorRejectionCarriedInVerdict(t *testing.T) {
 		t.Fatalf("the verdict body must carry the unanchorable finding's TEXT (the fallback landing), got %q", f.verdictBody)
 	}
 }
+
+// TestPostReviewCapOverflowCarriesFindingsAndTodos pins the #685 r6 hole:
+// the r5 carried-list covered FINDINGS only — a TODO dropped by the
+// 20-thread cap evaporated exactly like an unanchored finding, while the
+// comment claimed both classes were covered; the mixed 'posted' count
+// also inflated the blocking number with TODO threads. 20 findings + 2
+// TODOs: the findings fill the cap, both TODOs ride the carried list, and
+// the verdict speaks per-class counts.
+func TestPostReviewCapOverflowCarriesFindingsAndTodos(t *testing.T) {
+	f := &fakeForge{comments: []map[string]any{}, reviews: []map[string]any{}}
+	srv := httptest.NewServer(f.mux(t))
+	t.Cleanup(srv.Close)
+
+	fs := []any{}
+	for i := 0; i < 20; i++ {
+		fs = append(fs, map[string]any{"path": fmt.Sprintf("f%02d.go", i), "line": 1, "body": fmt.Sprintf("Blocking: finding %d", i)})
+	}
+	review := map[string]any{
+		"decision":     "REQUEST_CHANGES",
+		"reviewed_sha": "deadbeef123",
+		"comments":     fs,
+		"todos": []any{
+			map[string]any{"path": "t1.md", "line": 2, "body": "capped TODO one"},
+			map[string]any{"path": "t2.md", "line": 3, "body": "capped TODO two"},
+		},
+	}
+	out := runPlugin(t, srv, false, review)
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.comments) != 20 {
+		t.Fatalf("the cap admits exactly 20 threads (findings first), got %d", len(f.comments))
+	}
+	// both capped TODOs ride the verdict body — neither evaporates
+	if !strings.Contains(f.verdictBody, "capped TODO one") || !strings.Contains(f.verdictBody, "capped TODO two") {
+		t.Fatalf("capped TODOs must be carried in the verdict body, got %q", f.verdictBody)
+	}
+	if !strings.Contains(f.verdictBody, "2 TODO(s)") {
+		t.Fatalf("the verdict must speak the TODO class separately, got %q", f.verdictBody)
+	}
+	if !strings.Contains(f.verdictBody, "(20 findings, 0 TODOs)") {
+		t.Fatalf("posted counts must be per-class, got %q", f.verdictBody)
+	}
+	if !strings.Contains(f.verdictBody, "0 findings, 2 TODOs)") {
+		t.Fatalf("carried counts must be per-class, got %q", f.verdictBody)
+	}
+	_ = out
+}

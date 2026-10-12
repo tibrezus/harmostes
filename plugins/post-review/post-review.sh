@@ -662,11 +662,16 @@ all_todos=[t for i,t in enumerate(review.get("todos",[]) or [])
 # in the verdict's blocking number; teeth come from the classifier — an
 # unresolved TODO thread downgrades the NEXT round's APPROVE.
 TODO_PREFIX="**TODO** — missing complement; fix in this PR, reply+resolve: "
-todo_bodies=[TODO_PREFIX+str(t.get("body","")) for t in all_todos
-             if isinstance(t,dict) and t.get("path") and t.get("body")]
-merged=all_cs[:20]+[{**t,"body":b} for t,b in zip(
-    [t for t in all_todos if isinstance(t,dict) and t.get("path") and t.get("body")][:max(0,20-len(all_cs[:20]))],
-    todo_bodies[:max(0,20-len(all_cs[:20]))])]
+anchorable=[t for t in all_todos if isinstance(t,dict) and t.get("path") and t.get("body")]
+todo_bodies=[TODO_PREFIX+str(t.get("body","")) for t in anchorable]
+todo_room=max(0,20-len(all_cs[:20]))
+# #685 r6: the class rides every merged entry so posted counts stay
+# per-class (a mixed 'posted' number inflated the blocking count) and the
+# cap overage names BOTH classes — a capped-out TODO evaporated exactly
+# like an unanchored finding (the r5 hole's symmetric twin).
+todo_published=anchorable[:todo_room]
+todo_dropped=anchorable[todo_room:]
+merged=all_cs[:20]+[{**t,"body":b,"cls":"todo"} for t,b in zip(todo_published, todo_bodies[:todo_room])]
 cs=merged
 base=os.environ["API_BASE"]
 # Native reviews post as the bot when provisioned (#480) — see REVIEW_TOKEN above.
@@ -675,6 +680,7 @@ repo=os.environ["REPO"]; pr=os.environ["PR_NUM"]; sha=review.get("reviewed_sha",
 fj = os.environ.get("IS_FJ")=="true"
 marker=os.environ["MARKER"]
 posted=0; rejected=0; last_error=""
+posted_findings=0; posted_todos=0  # #685 r6: per-class truth for the verdict
 def curl(path, payload):
     # No -f: with -f the response body never reaches stdout and the WARN
     # drops the host's actual reason (r2 P8). Status parsed manually.
@@ -708,49 +714,59 @@ for c in cs:
         carried.append({"path":path,"line":"?","body":str(body)[:200],"why":"no-usable-line"})
         print(f"[post-review] WARN: finding {path} has no usable line — carried by the verdict body", file=sys.stderr)
         continue
-    valid.append((path, line, c.get("side","RIGHT"), body))
+    valid.append((path, line, c.get("side","RIGHT"), body, c.get("cls") or "finding"))
 if fj:
     # Forgejo accepts a comments ARRAY in one create-pull-review — batch
     # first (one review object on the UI), fall back per finding on
     # rejection so one bad line cannot kill the batch (r2 P7).
     payload={"event":os.environ["REVIEW_EVENT"],"commit_id":sha,"body":marker,
-             "comments":[{"path":p,"new_position":l,"body":b} for p,l,_,b in valid]}
+             "comments":[{"path":p,"new_position":l,"body":b} for p,l,_,b,_c in valid]}
     ok, reason = curl(f"/repos/{repo}/pulls/{pr}/reviews", payload)
     if ok:
         posted += len(valid)
+        posted_findings += sum(1 for v_ in valid if v_[4]!="todo")
+        posted_todos    += sum(1 for v_ in valid if v_[4]=="todo")
     else:
         last_error = reason  # r5 t12: the artifact must carry the host's reason (the #480 symptom was an unattributable rejection)
         print(f"[post-review] WARN: batch publish rejected ({reason[:120]}) — falling back per finding", file=sys.stderr)
-        for p,l,_,b in valid:
+        for p,l,_,b,cl in valid:
             ok2, reason2 = curl(f"/repos/{repo}/pulls/{pr}/reviews", {"event":os.environ["REVIEW_EVENT"],"commit_id":sha,"body":marker,
                                      "comments":[{"path":p,"new_position":l,"body":b}]})
-            if ok2: posted+=1
+            if ok2:
+                posted+=1
+                if cl=="todo": posted_todos+=1
+                else: posted_findings+=1
             else:
                 rejected+=1
-                carried.append({"path":p,"line":l,"body":str(b)[:200],"why":str(reason2)[:80]})
+                carried.append({"path":p,"line":l,"body":str(b)[:200],"why":str(reason2)[:80],"cls":cl})
                 if not last_error:
                     last_error = reason2
                 print(f"[post-review] WARN: inline thread {p}:{l} rejected — {reason2}", file=sys.stderr)
 else:
-    for p,l,side,b in valid:
+    for p,l,side,b,cl in valid:
         ok, reason = curl(f"/repos/{repo}/pulls/{pr}/comments", {"commit_id":sha,"path":p,"line":l,"side":side,
                  "body":"_"+marker+"_"+chr(10)+chr(10)+b})
-        if ok: posted+=1
+        if ok:
+            posted+=1
+            if cl=="todo": posted_todos+=1
+            else: posted_findings+=1
         else:
             rejected+=1
-            carried.append({"path":p,"line":l,"body":str(b)[:200],"why":str(reason)[:80]})
+            carried.append({"path":p,"line":l,"body":str(b)[:200],"why":str(reason)[:80],"cls":cl})
             if not last_error:
                 last_error = reason
             print(f"[post-review] WARN: inline thread {p}:{l} rejected — {reason}", file=sys.stderr)
-capped=max(0,len(all_cs)+len(all_todos)-len(cs))
-# the cap overage also lands in the verdict body (was: log-only — the
-# "anchor only in the verdict body" claim was not literally true either)
+# the cap overage lands in the verdict body for BOTH classes (#685 r6:
+# findings-only was the r5 fix's symmetric hole — a capped TODO evaporated)
 for c in (all_cs[len(cs):]):
-    carried.append({"path":str(c.get("path","?")),"line":c.get("line","?"),"body":str(c.get("body",""))[:200],"why":"cap"})
-dropped=[c.get("path","?") for c in all_cs[len(cs):]]
+    carried.append({"path":str(c.get("path","?")),"line":c.get("line","?"),"body":str(c.get("body",""))[:200],"why":"cap","cls":"finding"})
+for t in todo_dropped:
+    carried.append({"path":str(t.get("path","?")),"line":t.get("line","?"),"body":TODO_PREFIX+str(t.get("body",""))[:180],"why":"cap","cls":"todo"})
+capped=len(all_cs[len(cs):])+len(todo_dropped)
+dropped=[str(c.get("path","?")) for c in all_cs[len(cs):]]+[str(t.get("path","?")) for t in todo_dropped]
 if dropped:
-    print(f"[post-review] capped: {len(dropped)} findings anchor only in the verdict body: {', '.join(dropped)}", file=sys.stderr)
-summary={"posted":posted,"rejected":rejected,"capped":capped,"todos":len(todo_bodies)}
+    print(f"[post-review] capped: {len(all_cs[len(cs):])} findings + {len(todo_dropped)} TODOs anchor only in the verdict body: {', '.join(dropped)}", file=sys.stderr)
+summary={"posted":posted,"posted_findings":posted_findings,"posted_todos":posted_todos,"rejected":rejected,"capped":capped,"todos":len(todo_bodies)}
 if carried:
     summary["carried"]=carried
 if last_error:
@@ -859,6 +875,8 @@ try: th=json.loads(os.environ.get("THREADS") or "{}")
 except Exception: th={}
 carried=th.get("carried") or []
 posted=int(th.get("posted") or 0)
+posted_findings=int(th.get("posted_findings") or 0)
+posted_todos=int(th.get("posted_todos") or 0)
 if os.environ.get("DOWNGRADED"):
     line=(f"{dec} at {sha} — downgraded: {os.environ.get('OPEN_THREADS','0')} open thread(s) "
           "(blocking, TODO, or carried-failed); reply the fix SHA and RESOLVE each — or carry "
@@ -868,9 +886,18 @@ elif dec=="APPROVE":
 else:
     plural="finding" if n==1 else "findings"
     if carried:
-        line=(f"{dec} at {sha} — {n} blocking {plural}: {posted} posted as review threads, "
-              f"{len(carried)} could not anchor (line not in the diff or beyond the cap) and are carried below; "
-              "close them, then re-arm with the label to re-review.")
+        # per-class truth (#685 r6): a mixed 'posted' number counted TODO
+        # threads as blocking findings — the counts must not lie in either
+        # direction. Posted numbers come from the publisher's summary;
+        # carried entries carry their own class.
+        c_f=sum(1 for c in carried if c.get("cls")!="todo")
+        c_t=sum(1 for c in carried if c.get("cls")=="todo")
+        parts=[f"{dec} at {sha} — {n} blocking {plural}"]
+        if int(th.get("posted_todos") or 0) or c_t:
+            parts[0]=f"{dec} at {sha} — {n} blocking {plural} + {int(th.get('posted_todos') or 0)+c_t} TODO(s)"
+        parts.append(f"{posted} posted as review threads ({posted_findings} findings, {posted_todos} TODOs)")
+        parts.append(f"{len(carried)} could not anchor (line not in the diff or beyond the cap: {c_f} findings, {c_t} TODOs) and are carried below")
+        line="; ".join(parts)+"; close them, then re-arm with the label to re-review."
     else:
         line=f"{dec} at {sha} — {n} blocking {plural} posted as review threads; close them, then re-arm with the label to re-review."
 body=line

@@ -33,16 +33,20 @@ const (
 )
 
 type fakeForge struct {
-	mu          sync.Mutex
-	prState     string // "open" | "closed"
-	hostDialect string // "github" | "forgejo" — the POST /reviews validator enforces the host's event enum (#470 r2 t3)
-	reviews     []map[string]any
-	comments    []map[string]any
-	verdictPost bool
-	verdictBody string
-	labelGone   bool
-	comment422  map[string]bool // path → force 422
-	authHeaders []string        // Authorization on native posts (#480 host-gating)
+	mu           sync.Mutex
+	prState      string // "open" | "closed"
+	hostDialect  string // "github" | "forgejo" — the POST /reviews validator enforces the host's event enum (#470 r2 t3)
+	reviews      []map[string]any
+	comments     []map[string]any
+	verdictPost  bool
+	verdictBody  string
+	labelGone    bool
+	comment422   map[string]bool  // path → force 422
+	authHeaders  []string         // Authorization on native posts (#480 host-gating)
+	statusBodies []map[string]any // the pr-review/verdict merge-status posts (decoded — bodies do not survive the handler)
+	issues       []map[string]any
+	resolutions  []string // resolution PUT paths (the carry step's close-outs)
+	graphqlBody  string   // the resolve-state GraphQL response (default: zero threads)
 }
 
 func (f *fakeForge) mux(t *testing.T) *http.ServeMux {
@@ -91,7 +95,11 @@ func (f *fakeForge) mux(t *testing.T) *http.ServeMux {
 	mux.HandleFunc("/repos/tibrezus/harmostes/pulls/99/comments", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
 			f.mu.Lock()
-			out, _ := json.Marshal(f.comments)
+			cs := f.comments
+			if cs == nil {
+				cs = []map[string]any{}
+			}
+			out, _ := json.Marshal(cs)
 			f.mu.Unlock()
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write(out)
@@ -128,6 +136,63 @@ func (f *fakeForge) mux(t *testing.T) *http.ServeMux {
 		f.labelGone = true
 		f.mu.Unlock()
 		w.WriteHeader(http.StatusNoContent)
+	})
+	// Resolve-state GraphQL (the GitHub listing's second half): the body
+	// is a FIELD — tests set f.graphqlBody to seed resolve state instead of
+	// re-registering the route (ServeMux panics on duplicate patterns).
+	if f.graphqlBody == "" {
+		f.graphqlBody = `{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}`
+	}
+	mux.HandleFunc("/graphql", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		body := f.graphqlBody
+		f.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	})
+	// The thread-closure mandate's surfaces: the merge STATUS post (every
+	// verdict round), and the carry step's milestones/issues/resolutions.
+	mux.HandleFunc("/repos/tibrezus/harmostes/statuses/deadbeef123", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		f.mu.Lock()
+		f.statusBodies = append(f.statusBodies, body)
+		f.mu.Unlock()
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{}`))
+	})
+	mux.HandleFunc("/repos/tibrezus/harmostes/milestones", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"id":7,"title":"v3.2"},{"id":5,"title":"backlog"}]`))
+	})
+	mux.HandleFunc("/repos/tibrezus/harmostes/issues", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		switch r.Method {
+		case http.MethodGet:
+			out, _ := json.Marshal(f.issues)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(out)
+		case http.MethodPost:
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			body["number"] = 431
+			f.issues = append(f.issues, body)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(body)
+		}
+	})
+	mux.HandleFunc("/repos/tibrezus/harmostes/pulls/99/comments/", func(w http.ResponseWriter, r *http.Request) {
+		// .../comments/{id}/resolutions — the fork's native resolve route.
+		if strings.HasSuffix(r.URL.Path, "/resolutions") && r.Method == http.MethodPut {
+			f.mu.Lock()
+			f.resolutions = append(f.resolutions, r.URL.Path)
+			f.mu.Unlock()
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
 	})
 	return mux
 }
@@ -423,11 +488,8 @@ func seenKey(m map[string]bool, path string) string {
 func TestPostReviewZeroFindingsArtifactValid(t *testing.T) {
 	f := &fakeForge{comments: []map[string]any{}, reviews: []map[string]any{}}
 	mux := f.mux(t)
-	// The APPROVE gate maps resolved threads via GraphQL (reviewThreads).
-	mux.HandleFunc("/graphql", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}`))
-	})
+	// The APPROVE gate maps resolved threads via GraphQL (reviewThreads) —
+	// served by the shared fake's zero-threads default.
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		t.Errorf("unmatched fake-forge request: %s %s", r.Method, r.URL.Path)
 		w.WriteHeader(http.StatusNotFound)
@@ -861,7 +923,14 @@ func TestPostReviewForgejoZeroFindingsPostsNativeApproval(t *testing.T) {
 // APPROVED review carrying the TODOs as anchored comments — the approval
 // stands, the threads still owe the dev a follow-up, and the verdict line
 // says so instead of hiding them.
-func TestPostReviewForgejoTodosRideTheNativeApproval(t *testing.T) {
+// The thread-closure mandate flipped the TODO lane: a todo is a thread of
+// the round and counts in the verdict immediately — an APPROVE over an
+// open todo is downgraded, the todo publishes as a REQUEST_CHANGES-anchored
+// thread with the fix-in-pr class prefix, and the verdict says so. (The old
+// test pinned "todos ride the APPROVED review as non-blocking" — the
+// live #2745 ending: APPROVE with two newborn TODOs, merged 60s later,
+// follow-ups dead. Never again.)
+func TestPostReviewTodosDowngradeTheApproval(t *testing.T) {
 	var mu sync.Mutex
 	var verdictBody string
 	reviewPosts := []map[string]any{}
@@ -915,26 +984,26 @@ func TestPostReviewForgejoTodosRideTheNativeApproval(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	if len(reviewPosts) != 1 {
-		t.Fatalf("expected one native APPROVED review post, got %d", len(reviewPosts))
+		t.Fatalf("expected one native review post, got %d", len(reviewPosts))
 	}
 	p := reviewPosts[0]
-	if p["event"] != "APPROVED" || p["commit_id"] != "deadbeef123" {
-		t.Fatalf("approval must stay APPROVED at the reviewed SHA, got %v", p)
+	if p["event"] != "REQUEST_CHANGES" {
+		t.Fatalf("an APPROVE over an open todo must downgrade: the review event is %v, want REQUEST_CHANGES", p["event"])
 	}
 	cs, _ := p["comments"].([]any)
 	if len(cs) != 1 {
-		t.Fatalf("the APPROVED review must anchor the TODO as a comment, got %v", p["comments"])
+		t.Fatalf("the downgraded review must anchor the TODO as a thread, got %v", p["comments"])
 	}
 	c, _ := cs[0].(map[string]any)
 	cb, _ := c["body"].(string)
-	if !strings.HasPrefix(cb, "TODO (non-blocking") || !strings.Contains(cb, "dark-mode tokens") {
-		t.Errorf("TODO comment must carry the non-blocking prefix + body, got %q", cb)
+	if !strings.HasPrefix(cb, "**TODO**") || !strings.Contains(cb, "dark-mode tokens") {
+		t.Errorf("TODO thread must carry the class prefix + body, got %q", cb)
 	}
-	if !strings.Contains(verdictBody, "1 TODO thread(s) anchored") {
-		t.Errorf("verdict must state the anchored TODO count, got %q", verdictBody)
+	if !strings.Contains(verdictBody, "downgraded: 1 open thread(s)") {
+		t.Errorf("verdict must be self-describing about the open todo, got %q", verdictBody)
 	}
-	if !strings.Contains(verdictBody, "<!-- pr-review: APPROVE @ deadbeef123 -->") {
-		t.Errorf("verdict must keep the APPROVE trailer, got %q", verdictBody)
+	if !strings.Contains(verdictBody, "<!-- pr-review: REQUEST_CHANGES @ deadbeef123 -->") {
+		t.Errorf("verdict must carry the downgraded trailer, got %q", verdictBody)
 	}
 }
 
@@ -990,10 +1059,7 @@ func TestPostReviewDowngradeIsR7Conforming(t *testing.T) {
 	// reviewThreads for the resolve-state map (C1): one UNresolved thread
 	// whose only comment carries databaseId 77 — matching the prior-round
 	// comment seeded below (unresolved ⇒ it can downgrade an APPROVE).
-	mux.HandleFunc("/graphql", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[{"isResolved":false,"comments":{"nodes":[{"databaseId":77}]}}]}}}}}`))
-	})
+	f.graphqlBody = `{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[{"isResolved":false,"comments":{"nodes":[{"databaseId":77}]}}]}}}}}`
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	// Seed the prior-round open thread the classifier downgrades on:
@@ -1025,7 +1091,7 @@ func TestPostReviewDowngradeIsR7Conforming(t *testing.T) {
 	if !strings.Contains(vb, "<!-- pr-review: REQUEST_CHANGES @ deadbeef123 -->") {
 		t.Errorf("downgrade verdict must carry the REQUEST_CHANGES trailer (dw_wait_review's merge currency), got %q", vb)
 	}
-	if !strings.Contains(vb, "downgraded:") || !strings.Contains(vb, "1 unresolved prior-round thread") {
+	if !strings.Contains(vb, "downgraded:") || !strings.Contains(vb, "1 open thread(s)") {
 		t.Errorf("downgrade verdict must be self-describing (no false findings count), got %q", vb)
 	}
 	if strings.Contains(vb, "0 blocking findings") {
@@ -1369,11 +1435,52 @@ func TestPostReviewForgejoNativeResolverClosesPriorThreads(t *testing.T) {
 	if !strings.Contains(vb, "downgraded:") {
 		t.Fatalf("the UNresolved thread must still downgrade the APPROVE, got %q", vb)
 	}
-	if !strings.Contains(vb, "1 unresolved prior-round thread") {
+	if !strings.Contains(vb, "1 open thread(s)") {
 		t.Fatalf("exactly the resolver-less thread counts open (the resolver-carrying one is closed by native state); got %q", vb)
 	}
 	if strings.Contains(vb, "2 unresolved") {
 		t.Fatalf("the resolver-carrying thread must be CLOSED (fork-native resolve is authoritative); got %q", vb)
 	}
 	_ = out
+}
+
+// The merge STATUS (pr-review/verdict): posted on every wired-dialect
+// verdict round, head-bound, success ⇔ APPROVE (which now MEANS all
+// threads closed or carried). REQUEST_CHANGES posts failure — a project
+// adopting the context in branch protection gets a merge block that
+// re-checks at merge time, not just at verdict time.
+func TestPostReviewStatusPosted(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		decision  string
+		findings  []any
+		wantState string
+	}{
+		{"clean APPROVE posts success", "APPROVE", []any{}, "success"},
+		{"REQUEST_CHANGES posts failure", "REQUEST_CHANGES", []any{map[string]any{"path": "a.go", "line": 1, "body": "Blocking: x"}}, "failure"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &fakeForge{comments: []map[string]any{}, reviews: []map[string]any{}}
+			srv := httptest.NewServer(f.mux(t))
+			t.Cleanup(srv.Close)
+			review := map[string]any{
+				"decision":     tc.decision,
+				"reviewed_sha": "deadbeef123",
+				"comments":     tc.findings,
+			}
+			out := runPlugin(t, srv, false, review)
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			if len(f.statusBodies) != 1 {
+				t.Fatalf("exactly one status post per verdict round, got %d (out: %s)", len(f.statusBodies), out)
+			}
+			body := f.statusBodies[0]
+			if state, _ := body["state"].(string); state != tc.wantState {
+				t.Errorf("status state = %q, want %q (body %v)", state, tc.wantState, body)
+			}
+			if ctx, _ := body["context"].(string); ctx != "pr-review/verdict" {
+				t.Errorf("status context = %q, want pr-review/verdict", ctx)
+			}
+		})
+	}
 }

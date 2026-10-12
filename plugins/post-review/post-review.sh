@@ -63,15 +63,39 @@ DEC=$(python3 -c "import json;print(json.load(open('$REVIEW'))['decision'])")
 # composes the verdict from the round's threads on the PR
 # as native anchored threads below. The agent must NOT self-post (the task
 # prompt says so; the dedupe guard in the publisher is the second line of
-# defense for a skill-following agent). This plugin owns: the VERDICT
-# comment, the inline-thread PUBLISH, and the unresolved-thread GATE. ──
-# ── Unresolved-thread gate (the merge currency, mechanically enforced) ──
-# Threads from PRIOR rounds (commit_id != this reviewed_sha) with NO reply
-# must be addressed before an APPROVE is lawful. Any open prior thread
-# downgrades APPROVE → REQUEST_CHANGES; the reply+resolve protocol lives
-# in the pr-review skill.
-GATE_STATUS="not-evaluated"  # non-APPROVE verdicts skip the gate entirely
-if [ "$DEC" = "APPROVE" ]; then
+# defense for a skill-following agent). This plugin owns: the CARRY, the
+# unresolved-thread GATE, the VERDICT comment, the inline-thread PUBLISH,
+# and the merge STATUS. ──
+# ── Thread-closure mandate (live burns: rhesadox #2744 merged with its
+# round-1 BLOCKING findings never answered — the gate then counted only
+# the newest prior round; #2745 APPROVEd over two TODO threads born in the
+# approving round itself — the gate listed threads only BEFORE this
+# round's publish). The mandate, made mechanical:
+#   1. TOTAL counting — every review-thread root on the PR, any round,
+#      any author. No dedup, no round scoping: the decision is binary and
+#      any dedup key tried so far burned (exact path:line drifted because
+#      each comment's position serializes against its own head; newest-
+#      prior-round scoping is what let #2744 through).
+#   2. RESOLVE-ONLY closure — a reply is the record, the native resolve
+#      is the close-out. The reply/marker closure grammar is retired:
+#      resolve is API-settable on every wired host (the fork: PUT
+#      /repos/{o}/{r}/pulls/{n}/comments/{id}/resolutions — verified
+#      live; GitHub: GraphQL resolveReviewThread).
+#   3. TODOs block their own round — everything is fixed in this PR; the
+#      only escape is the ARCHITECTURE CARRY: a design-scale finding
+#      outliving the diff becomes ONE deduped tracker issue (milestone =
+#      the repo's most recent open milestone), referenced by reply on the
+#      thread, then resolved. Carried threads do not downgrade; the issue
+#      gates nothing. Severe items are never only carried — the skill's
+#      dual-thread rule keeps a Blocking quick fix in the PR.
+# The listing feeds THREE consumers (carry scan, gate, artifact) — one
+# fetch, before any mutation, so the gate's reads are pre-carry state and
+# the carry reports exactly which ids it resolved.
+CS_JSON=""
+GATE_STATUS="not-evaluated"
+CARRY_JSON_FILE="$(mktemp)"
+echo '{"resolved_ids":[],"ledger_carried":[],"minted":[],"notes":[]}' > "$CARRY_JSON_FILE"
+if [ "${IS_GITLAB:-}" != "true" ]; then
 export REVIEWED_SHA="$(python3 -c "import json;print(json.load(open('$REVIEW'))['reviewed_sha'])")"
 # ── Thread listing is HOST-DIALECT (S2/r26, r28): the hosts serve review
 # comments from different routes with different thread semantics.
@@ -117,7 +141,7 @@ def paged(path):
     while page <= 5:
         if _t.time()-t0 > 40:
             fail("scan budget exceeded — listing truncated")
-        part = get(f"{path}{sep}per_page=100&page={page}")
+        part = get(f"{path}{sep}per_page=100&page={page}") or []
         out += part
         if len(part) < 100:
             return out
@@ -180,211 +204,249 @@ if [ "$DEC" = "APPROVE" ] && [ "$GATE_STATUS" != "evaluated" ]; then
   exit 0
 fi
 rm -f "$GATE_STATUS_FILE"
+# ── CARRY (CARRY-CLASSIFIER markers — tested verbatim): architecture-
+# scale items escape the PR as ONE deduped tracker issue each. Inputs: the
+# ledger (todos[] with disposition "architecture-carry") and the thread
+# listing (open roots whose body opens with the Architecture-carry
+# prefix — the skill's machine-read class grammar; agent-posted threads
+# the agent could not mint for). Dedup: a body-referenced issue or an
+# OPEN issue with the identical title is REFERENCED, never re-minted.
+# Every carried thread is replied (issue reference) and RESOLVED — the
+# resolve is what keeps it out of the gate's count; the minted issue
+# gates nothing (non-blocking by construction — the whole point of the
+# carry). Failures are SPOKEN in the artifact and the entry stays open
+# for the gate to count: a failed carry must downgrade, never lose the
+# thread.
+export CARRY_JSON_FILE
+ARCH_TODOS=$(python3 -c "
+import json
+r=json.load(open('$REVIEW'))
+ts=[t for t in (r.get('todos') or []) if isinstance(t,dict) and t.get('disposition')=='architecture-carry']
+print(json.dumps(ts))")
+if [ "$ARCH_TODOS" != "[]" ] || printf '%s' "${CS_JSON:-}" | grep -q 'Architecture-carry'; then
+  CARRY_ENV="$ARCH_TODOS" python3 - <<'PYCARRY' || log "WARN: carry step failed — entries stay open (the gate counts them)"
+# CARRY-CLASSIFIER-START (tested verbatim by TestPostReviewCarryStep —
+# everything between the markers must be self-contained; env: CARRY_ENV
+# (JSON array of architecture-carry ledger todos), reads CS_JSON on
+# stdin; writes the unified carry report to $CARRY_JSON_FILE).
+import json, os, re, subprocess, sys
+repo=os.environ["REPO"]; pr=os.environ["PR_NUM"]
+base=os.environ["API_BASE"]; tok=os.environ["TOKEN"]
+try:
+    cs=json.load(sys.stdin)
+except Exception:
+    cs=[]
+arch_todos=json.loads(os.environ.get("CARRY_ENV") or "[]")
+def curl(method, path, payload=None):
+    # The HTTP status is parsed, not implied by curl's exit: without this a
+    # 403/422 resolution or mint "succeeds" at transport level and the
+    # carry reports threads resolved the host never resolved — a false
+    # APPROVE through the merge currency.
+    cmd=["curl","-sS","--max-time","20","-X",method,
+         "-H","authorization: token "+tok,"-H","content-type: application/json",
+         "-w","\n%{http_code}",base+path]
+    if payload is not None: cmd+=["-d",json.dumps(payload)]
+    r=subprocess.run(cmd,capture_output=True,text=True)
+    out=r.stdout or ""
+    code=out.rsplit("\n",1)[-1].strip() if "\n" in out else "000"
+    body=out.rsplit("\n",1)[0] if "\n" in out else out
+    ok=r.returncode==0 and code.startswith("2")
+    return ok, body
+resolved_ids=[]; ledger_carried=[]; minted=[]; notes=[]
+def resolve(comment_id):
+    ok,_=curl("PUT", "/repos/%s/pulls/%s/comments/%s/resolutions" % (repo,pr,comment_id))
+    return ok
+# 1) open milestones — the carry assigns the most recent open one.
+_,msraw=curl("GET", "/repos/%s/milestones?state=open" % repo)
+try: ms=json.loads(msraw)
+except Exception: ms=[]
+milestone=None
+if isinstance(ms,list) and ms:
+    milestone=ms[0].get("id")
+    if len(ms)>1: notes.append("milestone: %d open, using newest (%s)" % (len(ms), ms[0].get("title")))
+else:
+    notes.append("no open milestone — carried issue minted unmilestoned (assign manually)")
+# 2) open issues for exact-title dedup.
+_,israw=curl("GET", "/repos/%s/issues?state=open&type=issues&limit=50" % repo)
+open_titles={}
+try:
+    issues=json.loads(israw)
+    if isinstance(issues,list):
+        for i in issues:
+            t=(i.get("title") or "").strip()
+            if t: open_titles[t]=i.get("number")
+except Exception:
+    pass
+def ensure_issue(title, body):
+    if title in open_titles:
+        return open_titles[title], False
+    payload={"title":title,"body":body}
+    if milestone is not None: payload["milestone"]=milestone
+    ok,resp=curl("POST", "/repos/%s/issues" % repo, payload)
+    try: r=json.loads(resp)
+    except Exception: r={}
+    if ok and isinstance(r,dict) and r.get("number"):
+        return r["number"], True
+    return None, False
+def reply_thread(comment_id, body_text):
+    # GitHub REST: in_reply_to reply; the fork cannot set in_reply_to via
+    # REST (create-review gap) — there the reply is best-effort and the
+    # RESOLVE is the closure that counts.
+    curl("POST", "/repos/%s/pulls/%s/comments" % (repo,pr),
+         {"body":body_text, "in_reply_to":comment_id})
+# 3) ledger todos with disposition architecture-carry.
+for idx,t in enumerate(arch_todos):
+    if not isinstance(t,dict) or not t.get("body"): continue
+    body=str(t.get("body"))
+    title=("architecture: "+body.splitlines()[0])[:140]
+    ref=t.get("issue")  # the agent may pre-reference an existing issue
+    if ref and re.search(r"\d+", str(ref)):
+        num=re.search(r"\d+", str(ref)).group(0)
+    else:
+        num,minted_here=ensure_issue(title, "from PR #%s — %s\n(carried by the review pipeline; milestone auto-assigned)" % (pr, body))
+        if num is None:
+            notes.append("carry mint FAILED for: %s" % title[:60])
+            continue
+        if minted_here: minted.append({"issue":num,"title":title})
+    tref=t.get("thread_ref")
+    if tref:
+        rid=str(tref).split("/")[-1]
+        reply_thread(rid, "carried to #%s — tracked as architecture follow-up; the thread closes here" % num)
+        if resolve(rid): resolved_ids.append(str(rid))
+        else: notes.append("resolve FAILED for thread %s (issue #%s exists — resolve manually)" % (rid, num))
+    ledger_carried.append(idx)
+# 4) open Architecture-carry THREADS on the PR (agent-posted, unresolved).
+if isinstance(cs,list):
+    seen=set()
+    for c in cs:
+        if not isinstance(c,dict) or c.get("id") is None: continue
+        if c.get("in_reply_to") or c.get("in_reply_to_id"): continue
+        if c.get("resolved"): continue
+        body=str(c.get("body") or "")
+        if not body.lstrip().startswith("**Architecture-carry**"): continue
+        if str(c["id"]) in seen: continue
+        seen.add(str(c["id"]))
+        m=re.search(r"#(\d+)", body)
+        if m:
+            num=m.group(1)
+        else:
+            first=body.replace("**Architecture-carry**","").strip()
+            first=first.splitlines()[0][:140] if first else "architecture follow-up"
+            title="architecture: "+first
+            num,minted_here=ensure_issue(title, "from PR #%s thread %s — %s\n(carried by the review pipeline)" % (pr, c["id"], body))
+            if num is None:
+                notes.append("carry mint FAILED for thread %s" % c["id"])
+                continue
+            if minted_here: minted.append({"issue":num,"title":title})
+        reply_thread(c["id"], "carried to #%s — tracked as architecture follow-up; the thread closes here" % num)
+        if resolve(c["id"]): resolved_ids.append(str(c["id"]))
+        else: notes.append("resolve FAILED for thread %s (issue #%s exists — resolve manually)" % (c["id"], num))
+report={"resolved_ids":resolved_ids,"ledger_carried":ledger_carried,"minted":minted,"notes":notes}
+with open(os.environ["CARRY_JSON_FILE"],"w") as f: json.dump(report,f)
+# CARRY-CLASSIFIER-END
+PYCARRY
+fi
+CARRY=$(cat "$CARRY_JSON_FILE"); export CARRY
+CARRY_LEDGER=$(printf '%s' "$CARRY" | python3 -c "import json,sys;print(json.dumps(json.load(sys.stdin)['ledger_carried']))")
+export CARRY_LEDGER
+CARRY_RESOLVED=$(printf '%s' "$CARRY" | python3 -c "import json,sys;print(json.dumps(json.load(sys.stdin)['resolved_ids']))")
+export CARRY_RESOLVED
+UNCARRIED_TODOS=$(ARCH="$CARRY" python3 -c "
+import json,os
+r=json.load(open(os.environ['REVIEW'])); c=set(json.loads(os.environ['ARCH'])['ledger_carried'])
+ts=[t for i,t in enumerate(r.get('todos') or []) if isinstance(t,dict) and i not in c]
+print(len(ts))")
+REMAINDER_FINDINGS=$(python3 -c "
+import json
+r=json.load(open('$REVIEW'))
+fs=r.get('findings', r.get('comments',[]) or []) or []
+print(len([f for f in fs if isinstance(f,dict) and not f.get('thread_ref')]))")
+
 # The classifier program lives verbatim between the GATE-CLASSIFIER markers
 # (the golden test extracts exactly these bytes). It is held in a QUOTED
 # heredoc so bash never parses it; do not unquote.
 CLASSIFIER_PY=$(cat << 'GATE_PYEOF'
 # GATE-CLASSIFIER-START (tested verbatim by TestPostReviewGateClassifier —
-# everything between the markers must be a self-contained script; the
-# invocation below extracts exactly this block via sed and feeds the
-# comments JSON on stdin — do NOT move the program into a heredoc: the
-# heredoc clobbers the pipe's stdin, r29 P4-1).
+# everything between the markers must be a self-contained script; it reads
+# the comments JSON on stdin and CARRY_RESOLVED (JSON id array) from the
+# environment; stdout: open count, then decision).
+# TOTAL counting, RESOLVE-ONLY closure (the thread-closure mandate):
+#   open = root AND NOT resolved AND id not in carry_resolved
+# A root is a comment without in_reply_to linkage (both hosts' shapes;
+# the fork serializes 0 for roots — falsy under the same read). Rounds
+# do NOT scope the count (rhesadox #2744: round-1 blockers merged
+# unanswered under newest-prior-round scoping) and commit_id is
+# irrelevant — the round's OWN threads count too (#2745: TODOs born in
+# the approving round). Replies close NOTHING: the reply is the record,
+# the resolve is the close-out (resolve is API-settable on every wired
+# host; the reply/marker grammar existed only for the fork's REST gap).
+# Degraded-read posture: a shape this program cannot read is SKIPPED,
+# never a KeyError — the classifier runs under set -e and a crash aborts
+# the deploy before the verdict + label DELETE. A false APPROVE
+# re-reviews next round; a crash wedges the head.
 import json, os, sys
 cs=json.load(sys.stdin)
-sha=os.environ.get("REVIEWED_SHA","")
-open_n=0
-if not isinstance(cs, list):
-    print(0); print("APPROVE"); raise SystemExit   # fetch failed — fail-open with a loud WARN upstream
+try:
+    carried=set(str(x) for x in json.loads(os.environ.get("CARRY_RESOLVED") or "[]"))
+except Exception:
+    carried=set()
+open_threads=[]
+if isinstance(cs,list):
+    for c in cs:
+        if not isinstance(c,dict) or c.get("id") is None:
+            continue  # unreadable shape: skipped
+        if c.get("in_reply_to_id") or c.get("in_reply_to"):
+            continue  # reply — part of a thread, not a root
+        if c.get("resolved") or c.get("resolver"):
+            continue  # resolved: the one lawful close-out
+        if str(c["id"]) in carried:
+            continue  # resolved by this run's carry step
+        open_threads.append(c)
 dec="APPROVE"
-# Degraded-read posture (r7 review of 90a24e63): a shape this program
-# cannot classify must DEGRADE (treat as unresolvable-but-not-open), never
-# KeyError — the classifier runs under `set -e` inside the APPROVE branch,
-# and a crash there aborts the deploy before the verdict + label DELETE
-# (the exact lost-round signature this plugin exists to prevent). Anything
-# whose dialect/identity we cannot read is counted as CLOSED-BY-DEFAULT
-# here: a false APPROVE re-reviews next round, a crash wedges the head.
-# Round identity = commit_id; roots = non-reply comments at a prior head.
-# The r12 invariant, made mechanical (#579 — the rhesadox#2360 burn): the
-# downgrade counts unresolved threads on the NEWEST PRIOR ROUND only —
-# selected over ALL prior-round roots (a fully-resolved newest round must
-# yield zero, not fall back to counting stale older rounds). Older
-# rounds' leftovers are bookkeeping: the reviewer re-reviews the whole
-# diff each round, so a still-live finding reappears at the current head
-# (commit_id == sha, excluded) or on the immediately-prior round. Naive
-# all-round counting let duplicates accumulate monotonically (the
-# reviewer re-posts canonical findings as NEW threads each round; the
-# author resolves only the newest review's — 3×5=15 stale threads
-# downgraded verdicts over a fixed diff on #2360, the exact "trusts UI
-# state" failure r12 forbade). Both hosts emit Z-suffixed RFC3339 (the
-# non-Z caveat is the marker rule's); unlike closure, ordering merely
-# picks WHICH round gets counted — a non-Z round can shift the count to
-# another real round, never to zero.
-def reply_parent(c):
-    return c.get("in_reply_to_id") or c.get("in_reply_to")
-_roots=[c for c in cs
-    if isinstance(c, dict) and not reply_parent(c)
-    and c.get("commit_id") not in (None, "")
-    and str(c.get("commit_id"))!=sha]
-_rounds={}
-for _c in _roots:
-    _rounds.setdefault(str(_c.get("commit_id")), []).append(_c)
-_newest=max(_rounds, key=lambda _cid: max(str(_c.get("created_at") or "") for _c in _rounds[_cid])) if _rounds else None
-if cs and isinstance(cs[0], dict) and "resolvable" in cs[0]:
-    # GitLab dialect: native resolve is authoritative.
-    open_threads=[c for c in (_rounds.get(_newest, []) if _newest else [])
-        if isinstance(c, dict)
-        and c.get("resolvable") and not c.get("resolved")]
-else:
-    # GitHub/Forgejo dialect: a thread is CLOSED by real resolve state
-    # (C1 — a GraphQL-side resolve leaves no reply) or by a reply.
-    # Reply linkage is host-dialectal: GitHub REST names it
-    # in_reply_to_id, Forgejo in_reply_to — read both (the live review
-    # loop of #467 tripped this: replies never closed threads on GitHub,
-    # so every APPROVE downgraded on phantom open threads).
-    replied={reply_parent(c) for c in cs if isinstance(c, dict) and reply_parent(c)}
-    # Fork-gap addressal marker (#572): on Forgejo the REST create-review
-    # API cannot SET in_reply_to (a rezuscloud/forgejo follow-up) and the
-    # fork-native resolver (resolve_doer) is only settable through the
-    # web UI — so the documented author/reviewer protocol (the pr-review
-    # skill) addresses a thread with a follow-up review comment at the
-    # SAME anchor whose body references the original comment id
-    # (`path:line (comment N) — fix SHA + rationale`). Without parsing
-    # that marker, a REST-only review round can never close a prior-round
-    # thread: every round downgrades until a human uses the browser (the
-    # rhesadox#2359 burn — five consecutive downgrades over a fixed
-    # diff; the protocol-shaped replies themselves added unresolvable
-    # flat threads to the count). Closure requirements, all deliberate:
-    #   same path     — the marker's path must equal the thread's. #573
-    #                  round 5 (the rhesadox#2376 burn): the fork
-    #                  serializes each comment's position against ITS
-    #                  OWN head — a fix that edits the file above the
-    #                  anchor shifts the marker's position (thread at
-    #                  pos 96, marker at pos 83 over a 15-line insert),
-    #                  so exact position equality can NEVER hold when
-    #                  the fix touches the addressed file. The id-in-body
-    #                  + lead + identity + later requirements already pin
-    #                  WHICH thread the marker addresses; the position
-    #                  adds only fragility. (GitHub unaffected: threads
-    #                  there close via in_reply_to natively.)
-    #   later        — created_at strictly after the thread's. Both
-    #                  sides must be Z-suffixed RFC3339 (both hosts emit
-    #                  Z today): a +hh:mm offset sorts lexically by
-    #                  wall-clock text and can read "later" while being
-    #                  earlier (#573 review round 1). Non-Z entries never
-    #                  close via the marker — conservative, same posture
-    #                  as the missing-timestamp case.
-    #   id in body   — the thread's id as a BOUNDED token anywhere in the
-    #                  body (`(?<!\d)N(?!\d)`): no substring matching
-    #                  ('4026' must not match inside '40268' — dense ids
-    #                  at one anchor are the collision domain, #573
-    #                  round 1) and not limited to a parenthesized lead
-    #                  (round 3: 'path:line — fixed at abc (see comment
-    #                  N)' is protocol-conformant and must close). An id
-    #                  is REQUIRED — an id-less reply cannot be attributed
-    #                  to one thread at a shared anchor.
-    #   leads path:line — the body must OPEN with the anchor's own
-    #                  `path:line` enumeration lead (markdown emphasis /
-    #                  bullet prefixes tolerated).
-    #   other author  — the marker's author must DIFFER from the thread's
-    #                  (user.login): an addressal is written by the party
-    #                  being reviewed (the PR author), a finding by the
-    #                  reviewer. #573 round 4: the reviewer itself emits
-    #                  path:line-leading re-findings at an unresolved
-    #                  anchor ('w.yml:433 — still wrong, see 40268' — raw
-    #                  bodies on Forgejo, no marker prefix) which under a
-    #                  lead-only grammar closed the older thread AND
-    #                  erased themselves — a false APPROVE through the
-    #                  merge currency. Identity restores the round-2
-    #                  invariant (closure evidence never deletes
-    #                  itself): a same-author comment — sibling findings,
-    #                  reviewer cross-references — closes nothing; a
-    #                  missing user on either side reads as same-author
-    #                  (conservative). The reviewer's own verification
-    #                  still cannot close mechanically — the dev's reply
-    #                  is mandatory per the protocol, and THAT closes.
-    import re as _re
-    _lead_form=_re.compile(r'^\s*[*_>\-\s]*[\w./+-]+:\d+\b')
-    def _bounded(tid):
-        return _re.compile(r'(?<!\d)'+_re.escape(str(tid))+r'(?!\d)')
-    def anchor_key(c):
-        return c.get("path")
-    def author_of(c):
-        u=c.get("user")
-        return (u.get("login") if isinstance(u, dict) else None) or ""
-    addressed=set()   # thread ids a marker closed
-    marker_ids=set()  # the marker replies that closed them (a reply is not
-                      # itself a finding thread — without this, the flat
-                      # model counts every protocol reply as ANOTHER open
-                      # thread: the rhesadox#2359 count grew 1→2→3 as the
-                      # author followed the documented protocol)
-    for r in cs:
-        if not isinstance(r, dict) or r.get("id") is None:
-            continue
-        body=str(r.get("body") or "")
-        if not _lead_form.match(body):
-            continue
-        for t in cs:
-            if (isinstance(t, dict) and t.get("id") is not None
-                and str(t.get("id"))!=str(r.get("id"))
-                and author_of(r)!=author_of(t)
-                and _bounded(t.get("id")).search(body)
-                and anchor_key(t)==anchor_key(r)
-                and str(r.get("created_at") or "").endswith("Z")
-                and str(t.get("created_at") or "").endswith("Z")
-                and str(r.get("created_at"))>str(t.get("created_at"))):
-                addressed.add(t.get("id")); marker_ids.add(r.get("id"))
-    open_threads=[c for c in (_rounds.get(_newest, []) if _newest else [])
-        if isinstance(c, dict)
-        and not reply_parent(c)
-        and c.get("id") not in replied
-        and c.get("id") not in addressed
-        and c.get("id") not in marker_ids
-        and not c.get("resolved")]
-open_n=len(open_threads)
 if open_threads:
     dec="REQUEST_CHANGES"
     for c in open_threads[:10]:
-        print(f"[post-review] unresolved thread {c.get('path','?')}:{c.get('line','?')} id={c.get('id')} — reply+resolve required before APPROVE", file=sys.stderr)
+        print("[post-review] open thread %s:%s id=%s — reply+resolve (or carry) required before APPROVE" % (c.get("path","?"), c.get("line") or c.get("line_num") or "?", c.get("id")), file=sys.stderr)
 # stdout: count line FIRST, decision LAST — the shell and the golden test
-# read the decision as the last line; the count feeds the downgrade verdict
-# line (DOWNGRADED path) so the two never drift into separate
-# implementations.
-print(open_n)
+# read the decision as the last line.
+print(len(open_threads))
 print(dec)
 # GATE-CLASSIFIER-END
 GATE_PYEOF
 )
 
-# stdout of the classifier: count line first, decision last (the golden
-# test reads the decision as the last line — keep that invariant). If the
-# classifier itself dies, the gate was NOT evaluated: apply the r6 P1
-# posture (skip the verdict + label removal, next cycle retries) instead
-# of posting a verdict from an unknown decision.
-CLASS_OUT=$(printf '%s' "$CS_JSON" | python3 -c "$CLASSIFIER_PY") || {
+# stdout of the classifier: count line first, decision last. If the
+# classifier itself dies, the gate was NOT evaluated: skip the verdict post
+# and label removal; next cycle retries (a verdict from an unknown decision
+# is worse than no verdict).
+CLASS_OUT=$(printf '%s' "$CS_JSON" | CARRY_RESOLVED="$CARRY_RESOLVED" python3 -c "$CLASSIFIER_PY") || {
   log "WARN: gate classifier failed — gate not evaluated; skipping verdict post and label removal; next cycle retries"
   echo "{\"artifact\":\"pr-$HOST-$REPO-$PR_NUM\",\"status\":\"ok\",\"event\":{\"host\":\"$HOST\",\"repo\":\"$REPO\",\"number\":$PR_NUM,\"decision\":\"$DEC\",\"thread_gate\":\"classifier-crash\",\"skipped\":\"gate-unavailable\"}}"
   exit 0
 }
-NEWDEC=$(printf '%s\n' "$CLASS_OUT" | tail -n 1)
-OPEN_THREADS=$(printf '%s\n' "$CLASS_OUT" | head -n 1)
-if [ -z "$NEWDEC" ] || [ "$NEWDEC" != "APPROVE" ] && [ "$NEWDEC" != "REQUEST_CHANGES" ]; then
-  log "WARN: gate classifier produced no decision — gate not evaluated; skipping verdict post and label removal; next cycle retries"
-  echo "{\"artifact\":\"pr-$HOST-$REPO-$PR_NUM\",\"status\":\"ok\",\"event\":{\"host\":\"$HOST\",\"repo\":\"$REPO\",\"number\":$PR_NUM,\"decision\":\"$DEC\",\"thread_gate\":\"classifier-crash\",\"skipped\":\"gate-unavailable\"}}"
+if [ -z "$CS_JSON" ]; then
+  LISTED_OPEN=0
+else
+  LISTED_OPEN=$(printf '%s\n' "$CLASS_OUT" | head -n 1)
+fi
+# TOTAL open = listed open roots + this round's own yet-unpublished ledger
+# items (remainder findings and uncarried todos — they ARE threads of this
+# round's verdict, publishing right after this gate; counting them pre-
+# publish is what makes same-round threads visible, the #2745 hole).
+TOTAL_OPEN=$(( ${LISTED_OPEN:-0} + ${REMAINDER_FINDINGS:-0} + ${UNCARRIED_TODOS:-0} ))
+if [ "$DEC" = "APPROVE" ] && [ "$GATE_STATUS" != "evaluated" ]; then
+  log "thread gate unavailable ($GATE_STATUS) on an APPROVE — skipping verdict post and label removal; next cycle retries"
+  echo "{\"artifact\":\"pr-$HOST-$REPO-$PR_NUM\",\"status\":\"ok\",\"event\":{\"host\":\"$HOST\",\"repo\":\"$REPO\",\"number\":$PR_NUM,\"decision\":\"$DEC\",\"thread_gate\":\"$GATE_STATUS\",\"skipped\":\"gate-unavailable\"}}"
   exit 0
 fi
-
-if [ "$NEWDEC" != "$DEC" ]; then
-  log "APPROVE downgraded: $OPEN_THREADS unresolved prior-round thread(s)"
-  DEC="$NEWDEC"
+if [ "$DEC" = "APPROVE" ] && [ "$TOTAL_OPEN" -gt 0 ]; then
+  log "APPROVE downgraded: $TOTAL_OPEN open thread(s) ($LISTED_OPEN listed + $REMAINDER_FINDINGS remainder findings + $UNCARRIED_TODOS uncarried todos)"
+  DEC="REQUEST_CHANGES"
   DOWNGRADED=1
-  export DOWNGRADED OPEN_THREADS   # the verdict builder emits the downgrade line
-  # S1 (r26): the downgrade rewrites the whole verdict — the decision field
-  # here AND the trailer of the posted verdict comment below (rebuilt from
-  # decision + SHA, so the downgrade is visible to dw_wait_review).
-  # r7: review.json has NO body field — the reviewer no longer writes one,
-  # so the downgrade marker rides the decision field + the comment note
-  # (DOWNGRADED), not a body rewrite. verdictTrailer in internal/review/review.go
-  # is the contract's canonical home — keep both in step.
+  export DOWNGRADED OPEN_THREADS="$TOTAL_OPEN"
+  # The trailer contract: verdictTrailer in internal/review/review.go is
+  # the canonical home — the decision field and the posted trailer must
+  # move together.
   python3 - "$REVIEW" "$DEC" << 'PYEOF'
 import json,sys
 p,newdec=sys.argv[1],sys.argv[2]; r=json.load(open(p))
@@ -392,7 +454,7 @@ r["decision"]=newdec
 json.dump(r, open(p,"w"))
 PYEOF
 fi
-fi
+fi   # IS_GITLAB guard closes: the listing/carry/gate are wired dialects only
 
 # The verdict as a ONE-LINE comment, BUILT here from decision + SHA +
 # blocking count (r7, owner directive): the review's posted output is
@@ -413,17 +475,13 @@ n=len(fs)
 if os.environ.get("DOWNGRADED"):
     # Deploy-composed downgrade: NOT the reviewer's verdict — the ≥1-finding
     # rule (pr-review.sh validation) governs review.json, not this line. It
-    # must stay self-describing: the downgrade fires on PRIOR-round threads,
-    # so "N blocking findings" would be false here.
-    line=(f"{dec} at {sha} — downgraded: {os.environ.get('OPEN_THREADS','0')} unresolved "
-          "prior-round thread(s); reply with the fix SHA, resolve, then push (any commit) and re-arm — a same-head re-arm is refused (#567, #579).")
+    # must stay self-describing: the downgrade fires on OPEN THREADS (any
+    # round — the mandate), so "N blocking findings" would be false here.
+    line=(f"{dec} at {sha} — downgraded: {os.environ.get('OPEN_THREADS','0')} open thread(s) "
+          "(blocking, TODO, or carried-failed); reply the fix SHA and RESOLVE each — or carry "
+          "architecture-scale items to an issue — then push (any commit) and re-arm; a same-head re-arm is refused.")
 elif dec=="APPROVE":
-    line=f"APPROVE at {sha} — all pillars clean, no blocking findings. Label consumed; re-arm with the label to review again."
-    todos=review.get("todos",[]) or []
-    if todos:
-        # TODO lane (r7-r10): the approval stands; the anchored TODO threads
-        # still owe the dev a follow-up — say so on the record line.
-        line=f"APPROVE at {sha} — all pillars clean, no blocking findings; {len(todos)} TODO thread(s) anchored to address. Label consumed; re-arm with the label to review again."
+    line=f"APPROVE at {sha} — all pillars clean, all threads closed. Label consumed; re-arm with the label to review again."
 else:
     plural="finding" if n==1 else "findings"
     line=f"{dec} at {sha} — {n} blocking {plural} posted as review threads; close them, then re-arm with the label to re-review."
@@ -533,7 +591,14 @@ if [ "${IS_GITLAB:-}" = "true" ]; then
   # Unwired dialect — it must SPEAK (r4 P8): a green artifact here is
   # ambiguous between "nothing to post" and "this host cannot be posted to".
   echo '{"posted":0,"rejected":0,"capped":0,"skipped":"gitlab-not-wired"}' > "$THREAD_STATUS_FILE"
-elif [ "$THREADS_ANCHOR" = "1" ] && python3 -c "import json,sys;r=json.load(open('$REVIEW'));cs=r.get('findings',r.get('comments',[]));sys.exit(0 if cs else 1)" 2>/dev/null; then
+elif [ "$THREADS_ANCHOR" = "1" ] && CARRY_LEDGER="$CARRY_LEDGER" python3 -c "
+import json,os,sys
+r=json.load(open(os.environ['REVIEW']))
+cs=r.get('findings', r.get('comments',[])) or []
+try: carried=set(json.loads(os.environ.get('CARRY_LEDGER','[]')))
+except Exception: carried=set()
+todos=[t for i,t in enumerate(r.get('todos',[]) or []) if i not in carried]
+sys.exit(0 if (cs or todos) else 1)" 2>/dev/null; then
   # Dedupe guard keyed on the MARKER (r2): already posted at this SHA → skip.
   if [ "${EXISTING:-0}" != "0" ]; then
     log "inline threads already posted at ${REVIEWED_SHA:0:8} — not duplicating"
@@ -548,12 +613,20 @@ review=json.load(open(os.environ["REVIEW"]))
 # publish: their threads are already on the PR and already counted.
 all_cs=[c for c in (review.get("findings", review.get("comments",[])) or [])
         if not c.get("thread_ref")]
-all_todos=review.get("todos",[])
+# carried todos are terminated by the carry step (issue minted + thread
+# resolved or never posted) — they must NOT publish as threads: an open
+# carried thread would downgrade the NEXT verdict by this same gate.
+try:
+    carried_idx=set(json.loads(os.environ.get("CARRY_LEDGER","[]")))
+except Exception:
+    carried_idx=set()
+all_todos=[t for i,t in enumerate(review.get("todos",[]) or [])
+           if i not in carried_idx]
 # TODO lane (r7-r10): completely-missing pieces anchor as NON-blocking
 # threads after the findings, sharing the 20-thread cap. They never count
 # in the verdict's blocking number; teeth come from the classifier — an
 # unresolved TODO thread downgrades the NEXT round's APPROVE.
-TODO_PREFIX="TODO (non-blocking — reply with the follow-up, then resolve): "
+TODO_PREFIX="**TODO** — missing complement; fix in this PR, reply+resolve: "
 todo_bodies=[TODO_PREFIX+str(t.get("body","")) for t in all_todos
              if isinstance(t,dict) and t.get("path") and t.get("body")]
 merged=all_cs[:20]+[{**t,"body":b} for t,b in zip(
@@ -701,7 +774,50 @@ if [ -s "$DEDUPE_FLAG_FILE" ]; then
 fi
 rm -f "$THREAD_STATUS_FILE" "$DEDUPE_FLAG_FILE"
 
+# ── Merge status (the merge-time re-check, project-independent): the
+# verdict is bound to this head as a commit status ANY project may
+# require in branch protection (adopting it is per-repo data — the same
+# context name everywhere: pr-review/verdict). success ⇔ final APPROVE
+# (which now MEANS: reviewed at this head with every thread resolved or
+# carried); failure on REQUEST_CHANGES; nothing posted when the gate
+# could not evaluate (a missing context blocks exactly like a failing
+# one where required — the fail-closed posture). NON-FATAL: a status
+# transport failure must never skip the consume step; it speaks in the
+# artifact. GitLab: not wired (the descoped dialect), speaks the skip.
+STATUS_STATE=""; STATUS_NOTE=""
+if [ "${IS_GITLAB:-}" = "true" ]; then
+  STATUS_NOTE="gitlab-not-wired"
+elif echo "${REVIEWED_SHA:-}" | grep -qE '^[0-9a-f]{7,40}$'; then
+  if [ "$DEC" = "APPROVE" ] && [ "$GATE_STATUS" = "evaluated" ]; then
+    STATUS_STATE="success"
+    STATUS_DESC="reviewed: APPROVE, all threads closed"
+  else
+    STATUS_STATE="failure"
+    STATUS_DESC="reviewed: REQUEST_CHANGES — open threads must be resolved/carried"
+  fi
+  STATUS_CODE="$(curl -sS --max-time 20 -o /tmp/.pr-status.$$ -w "%{http_code}" -X POST \
+    -H "authorization: token $TOKEN" -H "content-type: application/json" \
+    -d "{\"state\":\"$STATUS_STATE\",\"context\":\"pr-review/verdict\",\"description\":\"$STATUS_DESC\"}" \
+    "$API_BASE/repos/$REPO/statuses/$REVIEWED_SHA" 2>/dev/null || true)"
+  case "$STATUS_CODE" in
+    201|200) : ;;
+    *) STATUS_NOTE="status-post-failed-http-${STATUS_CODE:-000}: $(head -c 80 /tmp/.pr-status.$$ 2>/dev/null)"
+       log "WARN: verdict status post rejected (${STATUS_CODE:-000}) — verdict stands; $STATUS_NOTE" ;;
+  esac
+  rm -f /tmp/.pr-status.$$
+else
+  STATUS_NOTE="status-skipped-sha-invalid"
+fi
+
 log "removing label '$LABEL'…"
 curl -fsSL -X DELETE -H "authorization: token $TOKEN" -H "accept: application/json" \
   "$API_BASE/repos/$REPO/issues/$PR_NUM/labels/$LABEL" 2>/dev/null||log "WARN: could not remove label"
-echo "{\"artifact\":\"pr-$HOST-$REPO-$PR_NUM\",\"status\":\"ok\",\"event\":{\"host\":\"$HOST\",\"repo\":\"$REPO\",\"number\":$PR_NUM,\"decision\":\"$DEC\",\"thread_gate\":\"$GATE_STATUS\",\"inline_threads\":$THREADS}}"
+CARRY_SUMMARY=$(printf '%s' "$CARRY" | python3 -c "import json,sys;d=json.load(sys.stdin);print(json.dumps({k:d[k] for k in ('minted','notes')}))")
+if [ -n "$STATUS_STATE" ]; then
+  STATUS_FIELD="\"status_post\":{\"state\":\"$STATUS_STATE\",\"context\":\"pr-review/verdict\""
+  [ -n "$STATUS_NOTE" ] && STATUS_FIELD="$STATUS_FIELD,\"note\":\"$STATUS_NOTE\""
+  STATUS_FIELD="$STATUS_FIELD},"
+else
+  STATUS_FIELD="\"status_post\":{\"note\":\"$STATUS_NOTE\"},"
+fi
+echo "{\"artifact\":\"pr-$HOST-$REPO-$PR_NUM\",\"status\":\"ok\",\"event\":{\"host\":\"$HOST\",\"repo\":\"$REPO\",\"number\":$PR_NUM,\"decision\":\"$DEC\",\"thread_gate\":\"$GATE_STATUS\",${STATUS_FIELD}\"carry\":$CARRY_SUMMARY,\"inline_threads\":$THREADS}}"

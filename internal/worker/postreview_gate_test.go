@@ -18,106 +18,52 @@ import (
 const (
 	ghResolvedOnly     = `[{"id":21,"path":"r.go","line":3,"commit_id":"OLD","in_reply_to":null,"resolved":true}]`
 	ghUnresolvedMarked = `[{"id":31,"path":"u.go","line":7,"commit_id":"OLD","in_reply_to":null,"resolved":false}]`
-	ghNullCommit       = `[{"id":41,"path":"n.go","line":2,"commit_id":null,"in_reply_to":null}]`
-	// A host shape the classifier cannot fully subscript (missing id —
-	// the r7 review of 90a24e63 mutation-probed `KeyError: 'id'` on the
-	// shipped block): must DEGRADE, never exit 1 — a crash here aborts
-	// the deploy under set -e and wedges the head (#328). A readable
-	// prior-round comment stays an open thread (C4); only unreadable
-	// SHAPES (non-list, non-dict) are skipped entirely.
+	// A host shape the classifier cannot fully subscript (missing id):
+	// must DEGRADE (skip), never exit 1 — a crash here aborts the deploy
+	// under set -e and wedges the head. Unreadable shapes are skipped; a
+	// false APPROVE re-reviews next round.
 	ghTruncated = `[{"path":"a.go","line":1,"commit_id":"OLD"}]`
+	// TOTAL counting (#2744 hole): a reply is NOT a close-out — the
+	// resolve is. A replied-but-unresolved root stays OPEN no matter which
+	// field name the host uses for the linkage.
 	ghOpenPrior = `[{"id":1,"path":"a.go","line":10,"commit_id":"OLD","in_reply_to":null},{"id":2,"path":"b.go","line":20,"commit_id":"OLD","in_reply_to":1}]`
 	ghUnreplied = `[{"id":1,"path":"a.go","line":10,"commit_id":"OLD","in_reply_to":null}]`
-	ghOpenCur   = `[{"id":1,"path":"a.go","line":10,"commit_id":"CUR","in_reply_to":null}]`
-	// GitHub REST names the reply linkage in_reply_to_id (the live #467
-	// loop: replies never closed threads under the in_reply_to-only read,
-	// so every APPROVE downgraded on phantom open threads).
+	// Same-round visibility (#2745 hole): the round's OWN open thread
+	// counts — commit_id is irrelevant under total counting.
+	ghOpenCur = `[{"id":1,"path":"a.go","line":10,"commit_id":"CUR","in_reply_to":null}]`
+	// commit_id-less roots count like any root (round identity no longer
+	// scopes anything).
+	ghNullCommit       = `[{"id":41,"path":"n.go","line":2,"commit_id":null,"in_reply_to":null}]`
 	ghRepliedRestField = `[{"id":1,"path":"a.go","line":10,"commit_id":"OLD","in_reply_to_id":2},{"id":2,"path":"b.go","line":20,"commit_id":"OLD","in_reply_to_id":null}]`
 	forgejoDialect     = `[{"id":7,"path":"x.go","line":1,"commit_id":"OLD","in_reply_to":null},{"id":8,"path":"x.go","line":1,"commit_id":"OLD","in_reply_to":7}]`
-	// #572 fork-gap addressal marker: the pr-review skill's documented
-	// Forgejo protocol — a LATER same-anchor comment whose body references
-	// the original comment id. Real shape from the rhesadox#2359 burn: the
-	// fork serializes line=null with position=<diff anchor> for review
-	// comments, and REST create-review cannot set in_reply_to at all.
+	// The retired marker grammar, kept as ONE shape: a protocol-shaped
+	// addressal (path:line lead, id in body, different author, later) is a
+	// REPLY — evidence on the record — and closes nothing. Only the
+	// resolve closes.
 	fjMarkerAddressed = `[{"id":40268,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T01:39:33Z","user":{"login":"harmostes-bot"}},{"id":40305,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T04:17:30Z","user":{"login":"tibrez"},"body":"w.yml:433 (comment 40268) — RESOLVED at abc: the coupled key re-armed"}]`
-	// Same marker shape but anchored on a DIFFERENT conversation — must
-	// not close (the anchor is part of the marker, not decoration).
-	// #573 round 5 (the rhesadox#2376 burn): the fork serializes each
-	// comment's position against ITS OWN head — a fix that edits the file
-	// above the anchor shifts the marker's position (thread pos 96, marker
-	// pos 83 over a 15-line insert). A protocol-shaped reply (author
-	// identity + path:line lead + bounded id + later) at a DIFFERENT
-	// position of the SAME path must CLOSE.
-	fjMarkerDriftedAnchor = `[{"id":41865,"path":"acceptance.yml","line":null,"position":96,"commit_id":"OLD","created_at":"2026-09-23T00:54:51Z","user":{"login":"harmostes-bot"}},{"id":41887,"path":"acceptance.yml","line":null,"position":83,"commit_id":"OLD","created_at":"2026-09-23T01:11:24Z","user":{"login":"tibrez"},"body":"acceptance.yml:96 — fixed at abc (comment 41865): cancel-in-progress false"}]`
-	// A different PATH is still another conversation — never closes, and
-	// the marker itself stays an open comment.
-	fjMarkerWrongPath = `[{"id":40268,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T01:39:33Z","user":{"login":"harmostes-bot"}},{"id":40306,"path":"other.yml","line":null,"position":370,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T04:17:30Z","user":{"login":"tibrez"},"body":"other.yml:370 (comment 40268) — reply for another thread"}]`
-	// Same anchor, later, but the body never names the original id — a
-	// same-anchor comment that does not identify its thread must not close
-	// it (the id reference is the discriminator).
-	fjMarkerNoIdRef = `[{"id":40268,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T01:39:33Z"},{"id":40307,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T04:17:30Z","body":"fixed at abc — the coupled key re-armed"}]`
-	// #573 review: sibling findings at one anchor cross-referencing each
-	// other ("see comment N") — one review batch, one commit_id, the
-	// reviewer itself emits this shape. A mid-body id reference must NOT
-	// close the sibling NOR erase the referencing finding from the count.
-	// Expectation: BOTH stay open (2) — strictly conservative; the review
-	// text sketched "1" under cross-reference-closes-A semantics, but the
-	// leading-form rule treats cross-references as closure of NOTHING,
-	// which still pins the blocking property (never 0/APPROVE) and never
-	// undercounts unanswered findings.
 	fjSiblingFindings = `[{"id":1,"path":"a.go","line":9,"commit_id":"OLD","in_reply_to":null,"created_at":"2026-09-21T01:00:00Z","body":"finding A"},{"id":2,"path":"a.go","line":9,"commit_id":"OLD","in_reply_to":null,"created_at":"2026-09-21T02:00:00Z","body":"finding B, see comment 1"}]`
-	// The id appears mid-body (not the leading enumeration form) with the
-	// leading form ABSENT — must not close via the marker even though the
-	// id string is present somewhere in the body.
-	fjMarkerMidBodyId = `[{"id":40268,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T01:39:33Z"},{"id":40309,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T04:17:30Z","body":"note: related to comment 40268 but this is a new finding"}]`
-	// #573 review round 1 (CRITICAL): prefix-related ids at one anchor —
-	// the real rhesadox#2359 shape (dense growing ids). A marker naming
-	// 40268 must NOT close 4026 ("4026" is a substring of "40268" under
-	// an id-anywhere predicate; the leading form's bounded token +
-	// equality is the fix). Expected: 40268 closed + the marker consumed,
-	// 4026 stays open → 1 / REQUEST_CHANGES.
-	fjPrefixIdCollision = `[{"id":4026,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T01:00:00Z","user":{"login":"harmostes-bot"}},{"id":40268,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T02:00:00Z","user":{"login":"harmostes-bot"}},{"id":40305,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T04:00:00Z","user":{"login":"tibrez"},"body":"w.yml:433 (comment 40268) — fixed at abc"}]`
-	// #573 review round 4: the reviewer itself emits path:line-leading
-	// re-findings at an unresolved anchor (raw bodies on Forgejo — the
-	// GitHub publisher's `_automated review_` prefix is host-specific).
-	// Same-author cross-references must close NOTHING and never erase
-	// themselves — even in the full marker shape.
-	fjReviewerCrossRef = `[{"id":1,"path":"a.go","line":9,"commit_id":"OLD","in_reply_to":null,"created_at":"2026-09-21T01:00:00Z","user":{"login":"harmostes-bot"},"body":"finding A"},{"id":2,"path":"a.go","line":9,"commit_id":"OLD","in_reply_to":null,"created_at":"2026-09-21T02:00:00Z","user":{"login":"harmostes-bot"},"body":"a.go:9 new finding, related to comment 1"}]`
-	// The same shape from the OTHER party (the PR author) — the documented
-	// addressal: closes the thread and consumes itself.
-	fjDevMarker = `[{"id":40268,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T01:39:33Z","user":{"login":"harmostes-bot"}},{"id":40315,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T04:17:30Z","user":{"login":"tibrez"},"body":"w.yml:433 — fixed at abc (comment 40268)"}]`
-	// Missing user on either side reads as same-author (conservative — no
-	// closure): the legacy fixtures' shape.
-	fjNoUser              = `[{"id":40268,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T01:39:33Z"},{"id":40316,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T04:17:30Z","body":"w.yml:433 (comment 40268) — fixed at abc"}]`
-	fjMarkerIdMidBodyLead = `[{"id":40268,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T01:39:33Z","user":{"login":"harmostes-bot"}},{"id":40311,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T04:17:30Z","user":{"login":"tibrez"},"body":"w.yml:433 — fixed at abc (see comment 40268)"}]`
-	fjMarkerMarkdownLead  = `[{"id":40268,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T01:39:33Z","user":{"login":"harmostes-bot"}},{"id":40312,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T04:17:30Z","user":{"login":"tibrez"},"body":"**w.yml:433** (comment 40268) fixed"}]`
-	// A path:line lead with NO id: cannot be attributed to one thread at a
-	// shared anchor — must not close (documented divergence from the
-	// reviewer's probe: id-required is what keeps the prefix-collision and
-	// sibling-findings holes closed; the emitter's grammar is one regex,
-	// stated in the classifier block and the skill).
-	fjMarkerNoId = `[{"id":40268,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T01:39:33Z"},{"id":40313,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T04:17:30Z","body":"w.yml:433 → fixed at abc1234"}]`
-	// #573 review round 1 (latent): a +hh:mm offset must never sort
-	// "later" lexically — 14:00+02:00 is EARLIER than 13:00Z but sorts
-	// after it as text. Non-Z timestamps never close via the marker (both
-	// lead shapes pinned).
-	fjOffsetTimestamp  = `[{"id":40268,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T13:00:00Z"},{"id":40310,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T14:00:00+02:00","body":"w.yml:433 (comment 40268) — fixed at abc"}]`
-	fjOffsetTimestamp2 = `[{"id":40268,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T13:00:00Z"},{"id":40314,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T14:00:00+02:00","body":"w.yml:433 — fixed at abc (comment 40268)"}]`
-	// Marker EARLIER than the thread (created_at before) — a thread cannot
-	// be addressed by something written before it existed.
-	fjMarkerEarlier = `[{"id":40268,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T04:17:30Z"},{"id":40308,"path":"w.yml","line":null,"position":433,"commit_id":"OLD","in_reply_to":0,"created_at":"2026-09-21T01:39:33Z","body":"w.yml:433 (comment 40268) — resolved"}]`
-	// #579 (the rhesadox#2360 burn): stale leftovers from OLDER rounds must
-	// not poison the gate — the reviewer re-posts canonical findings as new
-	// threads each round, the author resolves only the newest review's, and
-	// counting ALL rounds downgraded verdicts over a fixed diff (3×5=15).
-	// Only the NEWEST PRIOR round counts: OLD1's stale thread ignored, OLD2
-	// (newest prior, by created_at) fully resolved → APPROVE, 0.
+	// #579 REVERSED (the #2744 burn): stale leftovers from OLDER rounds DO
+	// count under total counting — an answered-only-by-round-identity
+	// thread is still open until someone resolves it. The old fixture
+	// pinned newest-prior-round scoping; the scoping is what let round-1
+	// blockers merge unanswered.
 	fjStaleOlderRounds = `[{"id":1,"path":"a.yml","line":null,"position":10,"commit_id":"OLD1","in_reply_to":0,"created_at":"2026-09-20T01:00:00Z"},{"id":2,"path":"b.yml","line":null,"position":20,"commit_id":"OLD2","in_reply_to":0,"created_at":"2026-09-22T07:55:00Z","resolved":true}]`
-	// The honest case preserved: the NEWEST prior round carries an open
-	// thread while an older stale one lingers — count 1, not 2.
-	fjNewestPriorOpen = `[{"id":1,"path":"a.yml","line":null,"position":10,"commit_id":"OLD1","in_reply_to":0,"created_at":"2026-09-20T01:00:00Z"},{"id":2,"path":"b.yml","line":null,"position":20,"commit_id":"OLD2","in_reply_to":0,"created_at":"2026-09-22T07:55:00Z"}]`
-	gitlabOpen        = `[{"id":12,"path":"z.go","line":6,"commit_id":"OLD","resolvable":true,"resolved":false}]`
-	gitlabResolved    = `[{"id":11,"path":"y.go","line":5,"commit_id":"OLD","resolvable":true,"resolved":true}]`
+	fjNewestPriorOpen  = `[{"id":1,"path":"a.yml","line":null,"position":10,"commit_id":"OLD1","in_reply_to":0,"created_at":"2026-09-20T01:00:00Z"},{"id":2,"path":"b.yml","line":null,"position":20,"commit_id":"OLD2","in_reply_to":0,"created_at":"2026-09-22T07:55:00Z"}]`
+	// LIVE #2744 (10-11/12 October): round-1 BLOCKING findings replied to
+	// via the web UI (in_reply_to-linked) but never resolved, newest round
+	// clean — under resolve-only total counting the verdict that merged
+	// this PR is impossible: 2 open roots downgrade it.
+	live2744 = `[{"id":55286,"path":"rhesadox/proof/ownership.zig","line":null,"commit_id":"d4e41da551","in_reply_to":0,"resolver":null,"body":"Blocking (correctness / performance — unguarded Linux-only assumption)"},{"id":55287,"path":"rhesadox/proof/scoping.zig","line":null,"commit_id":"d4e41da551","in_reply_to":0,"resolver":null,"body":"Blocking (design intent / DRY — the new scoping lever is only half-wired)"},{"id":55418,"path":"rhesadox/proof/ownership.zig","line":null,"commit_id":"875127724a","in_reply_to":55286,"body":"Fixed at 87512772 — the finding was right"},{"id":55419,"path":"rhesadox/proof/scoping.zig","line":null,"commit_id":"875127724a","in_reply_to":55287,"body":"Residual re-scoped at 87512772"}]`
+	// LIVE #2745: TODO threads born in the APPROVING round itself —
+	// invisible to the old gate (listing ran pre-publish + commit_id
+	// exclusion); under total counting they downgrade.
+	live2745 = `[{"id":55537,"path":"rhesadox/ci/test-is-main-block.sh","line":null,"commit_id":"a1477bfb5b","in_reply_to":0,"resolver":null,"body":"**TODO** — missing complement; fix in this PR, reply+resolve: witness artifact"},{"id":55539,"path":"rhesadox/ci/main_matrix.issues","line":null,"commit_id":"a1477bfb5b","in_reply_to":0,"resolver":null,"body":"**TODO** — missing complement; fix in this PR, reply+resolve: matrix row varies the payload ref"}]`
+	// The carry exemption: an open Architecture-carry root whose id the
+	// carry step resolved this run (CARRY_RESOLVED) is closed — carried
+	// items gate nothing.
+	fjCarriedRoot  = `[{"id":900,"path":"docs/adr/0012.md","line":null,"commit_id":"OLD","in_reply_to":0,"resolver":null,"body":"**Architecture-carry** — the proof router needs an ADR before v2 (#512)"}]`
+	gitlabOpen     = `[{"id":12,"path":"z.go","line":6,"commit_id":"OLD","resolvable":true,"resolved":false}]`
+	gitlabResolved = `[{"id":11,"path":"y.go","line":5,"commit_id":"OLD","resolvable":true,"resolved":true}]`
 )
 
 // wantOpen mirrors the classifier's stdout count line (printed BEFORE the
@@ -146,40 +92,34 @@ func TestPostReviewGateClassifier(t *testing.T) {
 		name     string
 		fixture  string
 		sha      string
+		carried  string // CARRY_RESOLVED env (JSON id array); "" = unset
 		want     string
 		wantOpen string // the stdout count line ("" = don't assert)
 	}{
-		{"github: replied prior thread is closed", ghOpenPrior, "CUR", "APPROVE", "0"},
-		{"github: REST in_reply_to_id reply closes the thread", ghRepliedRestField, "CUR", "APPROVE", "0"},
-		{"github: unreplied prior thread downgrades", ghUnreplied, "CUR", "REQUEST_CHANGES", "1"},
-		{"github: current-round thread does not downgrade", ghOpenCur, "CUR", "APPROVE", "0"},
-		{"forgejo in_reply_to dialect closes threads", forgejoDialect, "OLD", "APPROVE", "0"},
-		{"forgejo: same-anchor id-referencing marker closes the thread (#572)", fjMarkerAddressed, "CUR", "APPROVE", "0"},
-		{"forgejo: marker at a DRIFTED position of the same path closes (#573 round 5, the #2376 burn)", fjMarkerDriftedAnchor, "CUR", "APPROVE", "0"},
-		{"forgejo: marker on a different PATH does not close — and itself stays an open comment", fjMarkerWrongPath, "CUR", "REQUEST_CHANGES", "2"},
-		{"forgejo: same-anchor reply without the id reference does not close — and itself stays an open comment (#572)", fjMarkerNoIdRef, "CUR", "REQUEST_CHANGES", "2"},
-		{"forgejo: sibling findings cross-referencing each other both stay open (#573 review)", fjSiblingFindings, "CUR", "REQUEST_CHANGES", "2"},
-		{"forgejo: mid-body id reference without the leading form does not close (#573 review)", fjMarkerMidBodyId, "CUR", "REQUEST_CHANGES", "2"},
-		{"forgejo: reviewer's own path:line cross-reference closes nothing and stays open (#573 round 4)", fjReviewerCrossRef, "CUR", "REQUEST_CHANGES", "2"},
-		{"forgejo: the author's marker (different identity) closes and consumes itself (#573 round 4)", fjDevMarker, "CUR", "APPROVE", "0"},
-		{"forgejo: missing user fields read as same-author — no closure (conservative)", fjNoUser, "CUR", "REQUEST_CHANGES", "2"},
-		{"forgejo: id mid-body under a path:line lead closes (#573 round 3)", fjMarkerIdMidBodyLead, "CUR", "APPROVE", "0"},
-		{"forgejo: markdown emphasis on the path:line lead closes (#573 round 3)", fjMarkerMarkdownLead, "CUR", "APPROVE", "0"},
-		{"forgejo: path:line lead with no id does not close (#573 round 3, documented divergence)", fjMarkerNoId, "CUR", "REQUEST_CHANGES", "2"},
-		{"forgejo: prefix-related ids at one anchor — marker closes only its named thread (#573 review)", fjPrefixIdCollision, "CUR", "REQUEST_CHANGES", "1"},
-		{"forgejo: non-Z offset timestamps never close via the marker (#573 review)", fjOffsetTimestamp, "CUR", "REQUEST_CHANGES", "2"},
-		{"forgejo: non-Z offset timestamps never close via the marker — mid-body id variant (#573 review)", fjOffsetTimestamp2, "CUR", "REQUEST_CHANGES", "2"},
-		{"forgejo: marker predating the thread does not close — and itself stays an open comment (#572)", fjMarkerEarlier, "CUR", "REQUEST_CHANGES", "2"},
-		{"gitlab: unresolved prior discussion downgrades", gitlabOpen, "CUR", "REQUEST_CHANGES", "1"},
-		{"forgejo: stale older-round leftovers do not poison (#579/#2360)", fjStaleOlderRounds, "CUR", "APPROVE", "0"},
-		{"forgejo: newest prior round open downgrades; older stale ignored (#579)", fjNewestPriorOpen, "CUR", "REQUEST_CHANGES", "1"},
-		{"gitlab: resolved prior discussion passes", gitlabResolved, "CUR", "APPROVE", "0"},
-		{"github: resolved-but-unreplied thread is CLOSED (C1)", ghResolvedOnly, "CUR", "APPROVE", "0"},
-		{"github: marked-unresolved unreplied thread downgrades", ghUnresolvedMarked, "CUR", "REQUEST_CHANGES", "1"},
-		{"github: commit_id-less root never downgrades (C4)", ghNullCommit, "CUR", "APPROVE", "0"},
-		{"github: field-truncated entry degrades, not dies", ghTruncated, "CUR", "REQUEST_CHANGES", "1"},
-		{"github: non-list payload degrades, not dies", `{"message":"bad credentials"}`, "CUR", "APPROVE", "0"},
-		{"null payload (fetch failed) fails open", `null`, "CUR", "APPROVE", "0"},
+		{"github: resolved thread is closed (resolve is the close-out)", ghResolvedOnly, "CUR", "", "APPROVE", "0"},
+		{"github: unresolved root downgrades", ghUnresolvedMarked, "CUR", "", "REQUEST_CHANGES", "1"},
+		{"github: reply does NOT close — replied root stays open (live #2744 shape)", ghOpenPrior, "CUR", "", "REQUEST_CHANGES", "1"},
+		{"github: REST in_reply_to_id reply does NOT close either", ghRepliedRestField, "CUR", "", "REQUEST_CHANGES", "1"},
+		{"github: unreplied prior thread downgrades", ghUnreplied, "CUR", "", "REQUEST_CHANGES", "1"},
+		{"github: the round's OWN open thread counts (#2745 hole)", ghOpenCur, "CUR", "", "REQUEST_CHANGES", "1"},
+		{"github: commit_id-less root counts (round identity is irrelevant)", ghNullCommit, "CUR", "", "REQUEST_CHANGES", "1"},
+		{"forgejo dialect: linked reply does NOT close", forgejoDialect, "OLD", "", "REQUEST_CHANGES", "1"},
+		// The fork cannot link replies via REST (the gap that birthed the marker
+		// grammar): an addressal posts as a FLAT root. Under total counting
+		// both the finding AND the unlinked addressal are open roots — each
+		// needs its own resolve. Two listed, no magic consumption.
+		{"forgejo: protocol-shaped addressal is an UNLINKED root — the finding and the addressal both stay open", fjMarkerAddressed, "CUR", "", "REQUEST_CHANGES", "2"},
+		{"forgejo: sibling findings both stay open", fjSiblingFindings, "CUR", "", "REQUEST_CHANGES", "2"},
+		{"forgejo: stale older-round leftovers DO count (#579 reversed — the #2744 burn)", fjStaleOlderRounds, "CUR", "", "REQUEST_CHANGES", "1"},
+		{"forgejo: two open roots across rounds count as two", fjNewestPriorOpen, "CUR", "", "REQUEST_CHANGES", "2"},
+		{"live #2744: round-1 blockers replied-but-unresolved downgrade the clean newest round", live2744, "7cf37b5c0c", "", "REQUEST_CHANGES", "2"},
+		{"live #2745: TODOs born in the approving round downgrade it", live2745, "a1477bfb5b", "", "REQUEST_CHANGES", "2"},
+		{"carry: a root resolved by this run's carry step is closed", fjCarriedRoot, "CUR", `["900"]`, "APPROVE", "0"},
+		{"gitlab: unresolved prior discussion downgrades", gitlabOpen, "CUR", "", "REQUEST_CHANGES", "1"},
+		{"gitlab: resolved prior discussion passes", gitlabResolved, "CUR", "", "APPROVE", "0"},
+		{"github: field-truncated entry degrades, not dies", ghTruncated, "CUR", "", "APPROVE", "0"},
+		{"github: non-list payload degrades, not dies", `{"message":"bad credentials"}`, "CUR", "", "APPROVE", "0"},
+		{"null payload (fetch failed) fails open", `null`, "CUR", "", "APPROVE", "0"},
 	}
 	// r29 P4-1 regression lock: the production invocation must feed the
 	// classifier its program via -c and the JSON via stdin. The old wiring
@@ -203,7 +143,7 @@ func TestPostReviewGateClassifier(t *testing.T) {
 		// it reads the API, not stdin. (The wiring was renamed for the count
 		// line — CLASS_OUT feeds both the decision and the open-thread count
 		// — r7 review of 2e16f0c5; the PROPERTY locked here is unchanged.)
-		inv := `CLASS_OUT=$(printf '%s' "$CS_JSON" | python3 -c "$CLASSIFIER_PY")`
+		inv := `CLASS_OUT=$(printf '%s' "$CS_JSON" | CARRY_RESOLVED="$CARRY_RESOLVED" python3 -c "$CLASSIFIER_PY")`
 		if !strings.Contains(script, inv) {
 			t.Fatalf("classifier invocation drifted from the safe wiring (%q) — re-check the stdin wiring", inv)
 		}
@@ -220,8 +160,8 @@ func TestPostReviewGateClassifier(t *testing.T) {
 			t.Fatalf("production wiring crashed: %v — %s", err, out)
 		}
 		lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-		if lines[len(lines)-1] != "APPROVE" {
-			t.Errorf("production wiring decision = %q, want APPROVE", lines[len(lines)-1])
+		if lines[len(lines)-1] != "REQUEST_CHANGES" {
+			t.Errorf("production wiring decision = %q, want REQUEST_CHANGES (the replied-but-unresolved root is open under resolve-only)", lines[len(lines)-1])
 		}
 	})
 	for _, tc := range cases {
@@ -239,7 +179,7 @@ func TestPostReviewGateClassifier(t *testing.T) {
 			}
 			cmd := exec.Command(py, script)
 			cmd.Stdin = strings.NewReader(tc.fixture)
-			cmd.Env = append(os.Environ(), "REVIEWED_SHA="+tc.sha)
+			cmd.Env = append(os.Environ(), "REVIEWED_SHA="+tc.sha, "CARRY_RESOLVED="+tc.carried)
 			out, err := cmd.Output()
 			if err != nil {
 				t.Fatalf("classifier exited %v: %s", err, out)

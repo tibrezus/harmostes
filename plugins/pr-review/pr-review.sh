@@ -30,14 +30,24 @@ if d=="REQUEST_CHANGES" and not findings:
 for i,c in enumerate(findings):
     if not isinstance(c,dict) or not c.get("path") or not c.get("body"):
         print(f"ERROR: findings[{i}] must have path+body",file=sys.stderr);sys.exit(1)
-# TODO lane (r7-r10): completely-missing pieces ride todos[] — anchored as
-# non-blocking threads the dev must address; they never change the decision.
+# TODO lane: completely-missing pieces ride todos[]. They publish as
+# threads of the round and count in the verdict like any thread (the
+# closure mandate): disposition says how each ends —
+#   fix-in-pr (default): the dev fixes it in this PR, replies, resolves.
+#   architecture-carry: a design-scale item outliving the diff; the
+#     deploy carries it (one deduped issue, milestone-assigned, thread
+#     resolved) — never blocking, never a finding.
 todos=review.get("todos",[])
 if not isinstance(todos,list):
     print("ERROR: todos must be a list",file=sys.stderr);sys.exit(1)
 for i,t in enumerate(todos):
     if not isinstance(t,dict) or not t.get("path") or not t.get("body"):
         print(f"ERROR: todos[{i}] must have path+body",file=sys.stderr);sys.exit(1)
+    disp=t.get("disposition","fix-in-pr")
+    if disp not in ("fix-in-pr","architecture-carry"):
+        print(f"ERROR: todos[{i}] disposition must be fix-in-pr|architecture-carry (got {disp!r})",file=sys.stderr);sys.exit(1)
+    if t.get("issue") is not None and not isinstance(t.get("issue"),str):
+        print(f"ERROR: todos[{i}] issue must be a string reference (e.g. '#431')",file=sys.stderr);sys.exit(1)
 review["decision"]=d
 # Skill output contract (v2): reviewed_sha must equal the PR head SHA and
 # ── Output contract (#680): the LEDGER. findings[] carries blocking

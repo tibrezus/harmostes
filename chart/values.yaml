@@ -18,7 +18,7 @@ skills:
   # ledger contract, agent-posted findings, and the scoped posting token;
   # the served skill, prompt, and plugins must agree at every deployable
   # state. Prior: 3707bc7 (r18 doctrine, batch-publish era).
-  rev: "795840754b498eedd89798ed5d8414f17877c192"
+  rev: "f44b548fc061518cf59e30d4f3aa2f272caa2272"
 
 agent:
   # Hard tool-call cap per agent session (#484): past the cap only the

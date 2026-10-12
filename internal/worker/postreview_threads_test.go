@@ -51,6 +51,12 @@ type fakeForge struct {
 	graphqlBody      string   // the resolve-state GraphQL response (default: zero threads)
 	forceStatus422   bool     // the merge-status POST answers 422 with a quoted JSON body
 	forceComments500 bool     // the thread listing answers 500 (the gate-skip path)
+	// forceCommentsQuoted hijacks the connection and answers with a QUOTED
+	// REASON PHRASE (raw status line — legal HTTP TEXT): urllib propagates
+	// it into str(HTTPError), so the quote REACHES thread_gate — the fixture
+	// that makes the sanitize test able to fail (#685 r3: a plain 500 never
+	// could; default reason phrases carry no quotes).
+	forceCommentsQuoted bool
 }
 
 func (f *fakeForge) mux(t *testing.T) *http.ServeMux {
@@ -99,6 +105,18 @@ func (f *fakeForge) mux(t *testing.T) *http.ServeMux {
 	mux.HandleFunc("/repos/tibrezus/harmostes/pulls/99/comments", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
 			f.mu.Lock()
+			if f.forceCommentsQuoted {
+				f.mu.Unlock()
+				conn, buf, err := w.(http.Hijacker).Hijack()
+				if err != nil {
+					t.Errorf("hijack: %v", err)
+					return
+				}
+				defer conn.Close()
+				_, _ = buf.WriteString("HTTP/1.1 404 Not \"Found (quoted)\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+				_ = buf.Flush()
+				return
+			}
 			if f.forceComments500 {
 				f.mu.Unlock()
 				w.WriteHeader(http.StatusInternalServerError)
@@ -1635,16 +1653,18 @@ func TestPostReviewArtifactFinalLineParsesOnDegradedHost(t *testing.T) {
 	}
 }
 
-// TestPostReviewArtifactParsesOnGateSkip pins the #685 r2 hardening: a
-// listing failure (gate skip) interpolates the failure reason into the
-// artifact's thread_gate field at three points — the sanitize keeps the
-// final line parseable even when the reason carries quotes (the fake's
-// 500 body is quoted prose; the same tr primitive the status note uses).
+// TestPostReviewArtifactParsesOnGateSkip pins the #685 r2/r3 hardening:
+// a listing failure interpolates the failure reason into the artifact's
+// thread_gate field at three points — the sanitize keeps the final line
+// parseable even when the reason carries quotes. The fixture HIJACKS the
+// connection and answers with a quoted REASON PHRASE (str(HTTPError)
+// carries it — a plain 500's reason has no quotes and can never bite;
+// #685 r3 caught exactly that: the test could not fail).
 func TestPostReviewArtifactParsesOnGateSkip(t *testing.T) {
 	f := &fakeForge{
-		comments:         []map[string]any{},
-		reviews:          []map[string]any{},
-		forceComments500: true,
+		comments:            []map[string]any{},
+		reviews:             []map[string]any{},
+		forceCommentsQuoted: true,
 	}
 	srv := httptest.NewServer(f.mux(t))
 	t.Cleanup(srv.Close)

@@ -1932,3 +1932,45 @@ func TestPostReviewCapOverflowCarriesFindingsAndTodos(t *testing.T) {
 	}
 	_ = out
 }
+
+// TestPostReviewLinelessTodoCarriesAsTodo pins the #685 r7 tally fix: a
+// contract-legal lineless TODO (path+body, no line) that lands in the
+// carried list is tallied as a TODO — the malformed/no-usable-line
+// append sites defaulted to cls=finding, mis-counting a TODO as a
+// blocking finding in the verdict's per-class breakdown.
+func TestPostReviewLinelessTodoCarriesAsTodo(t *testing.T) {
+	f := &fakeForge{comments: []map[string]any{}, reviews: []map[string]any{}}
+	srv := httptest.NewServer(f.mux(t))
+	t.Cleanup(srv.Close)
+
+	review := map[string]any{
+		"decision":     "REQUEST_CHANGES",
+		"reviewed_sha": "deadbeef123",
+		"comments":     []any{map[string]any{"path": "a.go", "line": 1, "body": "Blocking: the in-diff finding"}},
+		"todos":        []any{map[string]any{"path": "t.md", "body": "lineless TODO rides the carried list as a TODO"}},
+	}
+	out := runPlugin(t, srv, false, review)
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !strings.Contains(f.verdictBody, "0 findings, 1 TODOs)") {
+		t.Fatalf("the lineless TODO must tally as a TODO in the carried breakdown, got %q", f.verdictBody)
+	}
+	// the artifact's carried entry carries cls=todo
+	var last map[string]any
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "{") && strings.Contains(line, "\"inline_threads\"") {
+			_ = json.Unmarshal([]byte(line), &last)
+		}
+	}
+	ev, _ := last["event"].(map[string]any)
+	it, _ := ev["inline_threads"].(map[string]any)
+	cs, _ := it["carried"].([]any)
+	if len(cs) != 1 {
+		t.Fatalf("exactly one carried entry (the lineless TODO), got %v", cs)
+	}
+	if cls, _ := cs[0].(map[string]any)["cls"].(string); cls != "todo" {
+		t.Fatalf("carried entry cls = %v, want todo", cs[0])
+	}
+}

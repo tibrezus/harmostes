@@ -57,8 +57,10 @@ review["decision"]=d
 # session-death resilience) and composes the one-line verdict from the
 # threads actually on the PR. Legacy "comments" is accepted as an alias
 # for findings (one shape at the boundary, normalized here). MINOR/NIT
-# never enter the ledger; todos[] are completely-missing pieces —
-# non-blocking, anchored by the deploy, followed up next round.
+# never enter the ledger; todos[] are completely-missing pieces that
+# BLOCK THEIR OWN ROUND under the thread-closure mandate (disposition
+# fix-in-pr default: fixed here, reply+resolve; architecture-carry:
+# carried to a tracker issue by the deploy).
 sha=review.get("reviewed_sha","")
 ctx_path=os.path.join(os.path.dirname(path),"pr-context.json")
 head=os.environ.get("HARMOSTES_PR_HEAD_SHA","")

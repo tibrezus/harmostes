@@ -701,7 +701,7 @@ for c in cs:
     path=c.get("path"); body=c.get("body")
     if not path or not body:
         rejected+=1   # a malformed finding skips itself, never the batch (r1 P5)
-        carried.append({"path":str(path or "?"),"line":"?","body":str(body or "")[:200],"why":"malformed"})
+        carried.append({"path":str(path or "?"),"line":"?","body":str(body or "")[:200],"why":"malformed","cls":c.get("cls") or "finding"})
         print("[post-review] WARN: malformed finding (missing path/body) — skipped", file=sys.stderr)
         continue
     try:
@@ -711,7 +711,7 @@ for c in cs:
         # threads anchor to a line — a finding without one is carried by
         # the verdict body (now literally true), never silently pinned to line 1.
         rejected+=1
-        carried.append({"path":path,"line":"?","body":str(body)[:200],"why":"no-usable-line"})
+        carried.append({"path":path,"line":"?","body":str(body)[:200],"why":"no-usable-line","cls":c.get("cls") or "finding"})
         print(f"[post-review] WARN: finding {path} has no usable line — carried by the verdict body", file=sys.stderr)
         continue
     valid.append((path, line, c.get("side","RIGHT"), body, c.get("cls") or "finding"))

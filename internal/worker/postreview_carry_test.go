@@ -16,9 +16,16 @@ package worker
 //   - a failed mint leaves the entry out of ledger_carried (the gate then
 //     counts it open — a failed carry downgrades, never loses the thread).
 //   - resolve failures are spoken in notes, not fatal.
+//   - ledger_carried indices are FULL-LEDGER (#685 r1: a filtered-space
+//     index inverts mixed ledgers — the carried item published, the
+//     fix-in-pr item dropped).
+//   - the GitHub dialect resolves via GraphQL resolveReviewThread, replies
+//     via /comments/{id}/replies, mints milestone by NUMBER, dedups via
+//     per_page — the fork verbs 404/422 on GitHub (#685 r1).
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -45,68 +52,107 @@ func extractCarryStep(t *testing.T) string {
 }
 
 type carryForge struct {
-	mu         sync.Mutex
-	issues     []map[string]any
-	milestones []map[string]any
-	minted     int
-	resolved   []string
-	replies    []map[string]any
-	forceMintF bool // force issue-mint failure
-	forceResF  bool // force resolution failure
+	mu            sync.Mutex
+	issues        []map[string]any
+	milestones    []map[string]any
+	minted        int
+	resolved      []string
+	replies       []map[string]any
+	resolvedGH    []string // GraphQL resolveReviewThread thread ids (GitHub dialect)
+	repliesGH     []string // /comments/{id}/replies paths (GitHub dialect)
+	issuesQuery   string   // the dedup listing's RawQuery (dialect shape)
+	mintPayloads  []map[string]any
+	forceMintF    bool   // force issue-mint failure
+	forceResF     bool   // force resolution failure
+	ghThreadMap   string // reviewThreads map for the GitHub resolve path
+	forceResGH404 bool   // GraphQL mutation answers 200-but-empty (resolve lost)
 }
 
-func (c *carryForge) mux(t *testing.T) *http.ServeMux {
+func (f *carryForge) mux(t *testing.T) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/repos/tibrez/rhesadox/milestones", func(w http.ResponseWriter, r *http.Request) {
-		c.mu.Lock()
-		out, _ := json.Marshal(c.milestones)
-		c.mu.Unlock()
+		f.mu.Lock()
+		out, _ := json.Marshal(f.milestones)
+		f.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write(out)
 	})
 	mux.HandleFunc("/repos/tibrez/rhesadox/issues", func(w http.ResponseWriter, r *http.Request) {
-		c.mu.Lock()
-		defer c.mu.Unlock()
+		f.mu.Lock()
+		defer f.mu.Unlock()
 		switch r.Method {
 		case http.MethodGet:
-			out, _ := json.Marshal(c.issues)
+			f.issuesQuery = r.URL.RawQuery
+			out, _ := json.Marshal(f.issues)
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write(out)
 		case http.MethodPost:
-			if c.forceMintF {
+			if f.forceMintF {
 				w.WriteHeader(http.StatusUnprocessableEntity)
 				_, _ = w.Write([]byte(`{"message":"title is reserved"}`))
 				return
 			}
 			var body map[string]any
 			_ = json.NewDecoder(r.Body).Decode(&body)
-			c.minted++
-			body["number"] = 400 + c.minted
-			c.issues = append(c.issues, body)
+			f.minted++
+			f.mintPayloads = append(f.mintPayloads, body)
+			body["number"] = 400 + f.minted
+			f.issues = append(f.issues, body)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(body)
 		}
 	})
+	mux.HandleFunc("/graphql", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if strings.Contains(fmt.Sprint(body["query"]), "resolveReviewThread") {
+			vars, _ := body["variables"].(map[string]any)
+			tid, _ := vars["t"].(string)
+			f.resolvedGH = append(f.resolvedGH, tid)
+			if f.forceResGH404 {
+				_, _ = w.Write([]byte(`{"data":{"resolveReviewThread":null}}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"data":{"resolveReviewThread":{"thread":{"isResolved":true}}}}`))
+			return
+		}
+		if f.ghThreadMap == "" {
+			f.ghThreadMap = `{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}`
+		}
+		_, _ = w.Write([]byte(f.ghThreadMap))
+	})
 	mux.HandleFunc("/repos/tibrez/rhesadox/pulls/99/comments", func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&body)
-		c.mu.Lock()
-		c.replies = append(c.replies, body)
-		c.mu.Unlock()
+		f.mu.Lock()
+		f.replies = append(f.replies, body)
+		f.mu.Unlock()
 		w.WriteHeader(http.StatusCreated)
 		_, _ = w.Write([]byte(`{}`))
 	})
 	mux.HandleFunc("/repos/tibrez/rhesadox/pulls/99/comments/", func(w http.ResponseWriter, r *http.Request) {
+		// GitHub dialect: the documented reply route — in_reply_to is a
+		// not-permitted key there (422, probed live #685 r1).
+		if strings.HasSuffix(r.URL.Path, "/replies") && r.Method == http.MethodPost {
+			f.mu.Lock()
+			f.repliesGH = append(f.repliesGH, r.URL.Path)
+			f.mu.Unlock()
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{}`))
+			return
+		}
 		if strings.HasSuffix(r.URL.Path, "/resolutions") && r.Method == http.MethodPut {
-			c.mu.Lock()
-			if c.forceResF {
-				c.mu.Unlock()
+			f.mu.Lock()
+			if f.forceResF {
+				f.mu.Unlock()
 				w.WriteHeader(http.StatusForbidden)
 				return
 			}
-			c.resolved = append(c.resolved, r.URL.Path)
-			c.mu.Unlock()
+			f.resolved = append(f.resolved, r.URL.Path)
+			f.mu.Unlock()
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
@@ -115,7 +161,7 @@ func (c *carryForge) mux(t *testing.T) *http.ServeMux {
 	return mux
 }
 
-func runCarryStep(t *testing.T, srv *httptest.Server, listing string, carryEnv string) map[string]any {
+func runCarryStep(t *testing.T, srv *httptest.Server, listing string, carryEnv string, extraEnv ...string) map[string]any {
 	t.Helper()
 	dir := t.TempDir()
 	carryFile := filepath.Join(dir, "carry.json")
@@ -125,6 +171,8 @@ func runCarryStep(t *testing.T, srv *httptest.Server, listing string, carryEnv s
 	}
 	cmd := exec.Command("python3", script)
 	cmd.Stdin = strings.NewReader(listing)
+	// IS_FJ=true is the fixture default (fork dialect); GitHub-dialect
+	// tests override it with "IS_FJ=false" in extraEnv.
 	cmd.Env = append(os.Environ(),
 		"CARRY_ENV="+carryEnv,
 		"CARRY_JSON_FILE="+carryFile,
@@ -132,7 +180,9 @@ func runCarryStep(t *testing.T, srv *httptest.Server, listing string, carryEnv s
 		"TOKEN=fake",
 		"REPO=tibrez/rhesadox",
 		"PR_NUM=99",
+		"IS_FJ=true",
 	)
+	cmd.Env = append(cmd.Env, extraEnv...)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("carry step crashed: %v\n%s", err, out)
 	}
@@ -154,7 +204,7 @@ func TestPostReviewCarryMintsDedupedAndResolves(t *testing.T) {
 
 	listing := `[{"id":900,"path":"a.md","in_reply_to":0,"resolved":null,"body":"**Architecture-carry** — the proof router needs an ADR (#512)"},`
 	listing += `{"id":901,"path":"b.md","in_reply_to":0,"resolved":null,"body":"unrelated open finding"}]`
-	carryEnv := `[{"path":"c.md","line":3,"body":"proof registry split deserves its own issue","disposition":"architecture-carry","thread_ref":"902"}]`
+	carryEnv := `[[0,{"path":"c.md","line":3,"body":"proof registry split deserves its own issue","disposition":"architecture-carry","thread_ref":"902"}]]`
 	report := runCarryStep(t, srv, listing, carryEnv)
 
 	if ids, _ := report["resolved_ids"].([]any); len(ids) != 2 {
@@ -194,7 +244,7 @@ func TestPostReviewCarryReferencesExistingIssue(t *testing.T) {
 	srv := httptest.NewServer(f.mux(t))
 	t.Cleanup(srv.Close)
 
-	carryEnv := `[{"path":"c.md","line":3,"body":"proof registry split deserves its own issue","disposition":"architecture-carry"}]`
+	carryEnv := `[[0,{"path":"c.md","line":3,"body":"proof registry split deserves its own issue","disposition":"architecture-carry"}]]`
 	report := runCarryStep(t, srv, `[]`, carryEnv)
 
 	f.mu.Lock()
@@ -212,7 +262,7 @@ func TestPostReviewCarryFailedMintStaysOpen(t *testing.T) {
 	srv := httptest.NewServer(f.mux(t))
 	t.Cleanup(srv.Close)
 
-	carryEnv := `[{"path":"c.md","line":3,"body":"the carry must never lose the thread","disposition":"architecture-carry"}]`
+	carryEnv := `[[0,{"path":"c.md","line":3,"body":"the carry must never lose the thread","disposition":"architecture-carry"}]]`
 	report := runCarryStep(t, srv, `[]`, carryEnv)
 
 	if lc, _ := report["ledger_carried"].([]any); len(lc) != 0 {
@@ -229,7 +279,7 @@ func TestPostReviewCarryResolveFailureSpeaks(t *testing.T) {
 	srv := httptest.NewServer(f.mux(t))
 	t.Cleanup(srv.Close)
 
-	carryEnv := `[{"path":"c.md","line":3,"body":"resolve rejected","disposition":"architecture-carry","thread_ref":"902"}]`
+	carryEnv := `[[0,{"path":"c.md","line":3,"body":"resolve rejected","disposition":"architecture-carry","thread_ref":"902"}]]`
 	report := runCarryStep(t, srv, `[]`, carryEnv)
 
 	if ids, _ := report["resolved_ids"].([]any); len(ids) != 0 {
@@ -253,4 +303,121 @@ func mapToStrings(v any) []string {
 		}
 	}
 	return out
+}
+
+// TestPostReviewCarryGitHubDialect pins the GitHub half of the dialect
+// branch (#685 r1 blocking): the fork verbs (PUT /resolutions,
+// in_reply_to replies, milestone id, type=issues&limit dedup) 404/422 on
+// GitHub — without the branch every carry ends as an unclosable open
+// thread and the mandate's own close-out is unreachable.
+func TestPostReviewCarryGitHubDialect(t *testing.T) {
+	f := &carryForge{
+		milestones: []map[string]any{{"id": 7, "number": 2, "title": "v3.2"}},
+		issues: []map[string]any{{
+			// a same-title PR mixed into /issues (GitHub has no type filter)
+			// must NOT be a dedup hit: it is skipped client-side.
+			"title":        "architecture: proof registry split deserves its own issue",
+			"number":       388,
+			"pull_request": map[string]any{"url": "x"},
+		}},
+		ghThreadMap: `{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[` +
+			`{"id":"RT_902","comments":{"nodes":[{"databaseId":902}]}},` +
+			`{"id":"RT_900","comments":{"nodes":[{"databaseId":900}]}}]}}}}}`,
+	}
+	srv := httptest.NewServer(f.mux(t))
+	t.Cleanup(srv.Close)
+
+	listing := `[{"id":900,"path":"a.md","in_reply_to":0,"resolved":null,"body":"**Architecture-carry** — the proof router needs an ADR (#512)"}]`
+	carryEnv := `[[1,{"path":"c.md","line":3,"body":"proof registry split deserves its own issue","disposition":"architecture-carry","thread_ref":"902"}]]`
+	report := runCarryStep(t, srv, listing, carryEnv, "IS_FJ=false")
+
+	// resolve went through GraphQL resolveReviewThread (thread ids mapped
+	// from databaseIds) — NOT the fork's PUT /resolutions (404 on GitHub).
+	if ids, _ := report["resolved_ids"].([]any); len(ids) != 2 {
+		t.Fatalf("both threads resolve via the GraphQL mutation, got %v", report["resolved_ids"])
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.resolvedGH) != 2 {
+		t.Fatalf("two resolveReviewThread mutations (RT_902, RT_900), got %v", f.resolvedGH)
+	}
+	if len(f.resolved) != 0 {
+		t.Fatalf("the fork /resolutions route must never be hit on GitHub, got %v", f.resolved)
+	}
+	if len(f.repliesGH) != 2 {
+		t.Fatalf("replies land on the documented /comments/{id}/replies route, got %v", f.repliesGH)
+	}
+	if len(f.replies) != 0 {
+		t.Fatalf("no in_reply_to payloads on GitHub (422 not-permitted-key), got %v", f.replies)
+	}
+	// dedup listing: per_page, never type=issues/limit; the same-title PR
+	// is skipped client-side so the tracker IS minted fresh.
+	if strings.Contains(f.issuesQuery, "type=issues") || strings.Contains(f.issuesQuery, "limit=") {
+		t.Fatalf("GitHub dedup query must use per_page (no type=issues, no limit), got %q", f.issuesQuery)
+	}
+	if !strings.Contains(f.issuesQuery, "per_page=") {
+		t.Fatalf("GitHub dedup query must page with per_page, got %q", f.issuesQuery)
+	}
+	if f.minted != 1 {
+		t.Fatalf("the ledger carry mints despite the same-title PR in /issues (PRs are not dedup hits), got %d", f.minted)
+	}
+	// milestone: the NUMBER (2), never the id (7) — ids are 422-invalid on
+	// GitHub (probed live).
+	for i, mp := range f.mintPayloads {
+		if ms, _ := mp["milestone"].(float64); int(ms) != 2 {
+			t.Errorf("mint %d milestone = %v, want the GitHub NUMBER 2 (not the id 7)", i, mp["milestone"])
+		}
+	}
+	// ledger identity: the pair index survives — full-space [1].
+	if lc, _ := report["ledger_carried"].([]any); len(lc) != 1 || lc[0] != float64(1) {
+		t.Fatalf("ledger_carried must carry the FULL-ledger index [1], got %v", report["ledger_carried"])
+	}
+}
+
+// TestPostReviewCarryMixedLedgerFullIndices pins the #685 r1 index-space
+// contract: ledger_carried is FULL-ledger. With a ledger [fix-in-pr,
+// architecture-carry], the carry (run on the pair [1, todo]) must report
+// [1] — a filtered-space index ([0]) would make the publisher post the
+// CARRIED item as an open TODO and drop the fix-in-pr one.
+func TestPostReviewCarryMixedLedgerFullIndices(t *testing.T) {
+	f := &carryForge{milestones: []map[string]any{{"id": 7, "number": 2, "title": "v3.2"}}}
+	srv := httptest.NewServer(f.mux(t))
+	t.Cleanup(srv.Close)
+
+	// the shell producer enumerates the FULL ledger and filters inside:
+	// index 1 is the architecture-carry item, index 0 the fix-in-pr one.
+	carryEnv := `[[1,{"path":"c.md","line":9,"body":"split deserves its own issue","disposition":"architecture-carry","thread_ref":"902"}]]`
+	report := runCarryStep(t, srv, `[]`, carryEnv)
+
+	lc, _ := report["ledger_carried"].([]any)
+	if len(lc) != 1 {
+		t.Fatalf("exactly the carried entry is reported, got %v", report["ledger_carried"])
+	}
+	if lc[0] != float64(1) {
+		t.Fatalf("ledger_carried[0] = %v, want 1 — the FULL-ledger index (a filtered-space 0 inverts the publish set)", lc[0])
+	}
+}
+
+// TestPostReviewCarryGitHubResolveLostSpeaks: a GraphQL resolve that the
+// host acknowledges but does not perform (data.resolveReviewThread null)
+// must not count as resolved — the thread stays open for the gate.
+func TestPostReviewCarryGitHubResolveLostSpeaks(t *testing.T) {
+	f := &carryForge{
+		milestones:    []map[string]any{{"id": 7, "number": 2, "title": "v3.2"}},
+		ghThreadMap:   `{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"id":"RT_902","comments":{"nodes":[{"databaseId":902}]}}]}}}}}`,
+		forceResGH404: true,
+	}
+	srv := httptest.NewServer(f.mux(t))
+	t.Cleanup(srv.Close)
+
+	carryEnv := `[[0,{"path":"c.md","line":3,"body":"resolve lost","disposition":"architecture-carry","thread_ref":"902"}]]`
+	report := runCarryStep(t, srv, `[]`, carryEnv, "IS_FJ=false")
+
+	if ids, _ := report["resolved_ids"].([]any); len(ids) != 0 {
+		t.Fatalf("an unperformed resolve must NOT count as resolved, got %v", report["resolved_ids"])
+	}
+	joined := strings.Join(mapToStrings(report["notes"]), " ")
+	if !strings.Contains(joined, "resolve FAILED") {
+		t.Fatalf("the lost resolve must be spoken, got %v", report["notes"])
+	}
 }

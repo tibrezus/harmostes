@@ -218,32 +218,46 @@ rm -f "$GATE_STATUS_FILE"
 # for the gate to count: a failed carry must downgrade, never lose the
 # thread.
 export CARRY_JSON_FILE
+# CARRY_ENV carries [FULL-ledger index, todo] pairs — the index space
+# EVERY consumer reads (UNCARRIED_TODOS, the publish gate, the publisher's
+# all_todos all enumerate the raw ledger). The first cut emitted indices
+# from the FILTERED list (#685 r1 blocking: a mixed ledger [fix-in-pr,
+# carry] inverted the bookkeeping — the carried item published as an open
+# TODO while the fix-in-pr item was dropped).
 ARCH_TODOS=$(python3 -c "
 import json
 r=json.load(open('$REVIEW'))
-ts=[t for t in (r.get('todos') or []) if isinstance(t,dict) and t.get('disposition')=='architecture-carry']
-print(json.dumps(ts))")
+pairs=[[i,t] for i,t in enumerate(r.get('todos') or []) if isinstance(t,dict) and t.get('disposition')=='architecture-carry']
+print(json.dumps(pairs))")
 if [ "$ARCH_TODOS" != "[]" ] || printf '%s' "${CS_JSON:-}" | grep -q 'Architecture-carry'; then
   CARRY_ENV="$ARCH_TODOS" python3 - <<'PYCARRY' || log "WARN: carry step failed — entries stay open (the gate counts them)"
 # CARRY-CLASSIFIER-START (tested verbatim by TestPostReviewCarryStep —
 # everything between the markers must be self-contained; env: CARRY_ENV
-# (JSON array of architecture-carry ledger todos), reads CS_JSON on
-# stdin; writes the unified carry report to $CARRY_JSON_FILE).
+# (JSON array of [FULL-ledger index, todo] pairs — the index space every
+# consumer reads; a filtered-space index inverts mixed ledgers, #685 r1),
+# IS_FJ (dialect: the fork resolves via PUT /resolutions, replies via
+# in_reply_to, milestones by id, dedup via type=issues&limit — GitHub via
+# GraphQL resolveReviewThread, /comments/{id}/replies, milestone NUMBER,
+# dedup via per_page with PRs filtered client-side; #685 r1 blocking: the
+# fork verbs 404/422 on GitHub and every carry ends unclosable);
+# reads CS_JSON on stdin; writes the unified carry report to
+# $CARRY_JSON_FILE).
 import json, os, re, subprocess, sys
 repo=os.environ["REPO"]; pr=os.environ["PR_NUM"]
 base=os.environ["API_BASE"]; tok=os.environ["TOKEN"]
+is_fj=os.environ.get("IS_FJ")=="true"
 try:
     cs=json.load(sys.stdin)
 except Exception:
     cs=[]
 arch_todos=json.loads(os.environ.get("CARRY_ENV") or "[]")
-def curl(method, path, payload=None):
+def curl(method, path, payload=None, auth=None):
     # The HTTP status is parsed, not implied by curl's exit: without this a
     # 403/422 resolution or mint "succeeds" at transport level and the
     # carry reports threads resolved the host never resolved — a false
     # APPROVE through the merge currency.
     cmd=["curl","-sS","--max-time","20","-X",method,
-         "-H","authorization: token "+tok,"-H","content-type: application/json",
+         "-H","authorization: "+(auth or "token "+tok),"-H","content-type: application/json",
          "-w","\n%{http_code}",base+path]
     if payload is not None: cmd+=["-d",json.dumps(payload)]
     r=subprocess.run(cmd,capture_output=True,text=True)
@@ -253,26 +267,67 @@ def curl(method, path, payload=None):
     ok=r.returncode==0 and code.startswith("2")
     return ok, body
 resolved_ids=[]; ledger_carried=[]; minted=[]; notes=[]
+def gh_thread_map():
+    # GitHub resolve is GraphQL-only (PUT /resolutions does not exist —
+    # probed live #685 r1): map databaseId → reviewThread id, then mutate.
+    owner,name=repo.split("/",1)
+    q={"query":'{ repository(owner: "%s", name: "%s") { pullRequest(number: %s) { reviewThreads(first: 100) { nodes { id comments(first: 5) { nodes { databaseId } } } } } } }' % (owner,name,pr)}
+    ok,body=curl("POST","/graphql",q,auth="bearer "+tok)
+    try: data=json.loads(body or "{}")
+    except Exception: return {}
+    out={}
+    nodes=((data.get("data",{}) or {}).get("repository",{}) or {}).get("pullRequest",{}).get("reviewThreads",{}).get("nodes",[]) or []
+    for t in nodes:
+        for cm in (t.get("comments",{}) or {}).get("nodes",[]) or []:
+            if cm.get("databaseId") is not None: out[str(cm["databaseId"])]=t.get("id")
+    return out
 def resolve(comment_id):
-    ok,_=curl("PUT", "/repos/%s/pulls/%s/comments/%s/resolutions" % (repo,pr,comment_id))
-    return ok
+    if is_fj:
+        ok,_=curl("PUT", "/repos/%s/pulls/%s/comments/%s/resolutions" % (repo,pr,comment_id))
+        return ok
+    tid=gh_thread_map().get(str(comment_id))
+    if not tid:
+        return False
+    ok,body=curl("POST","/graphql",
+              {"query":'mutation($t:ID!){ resolveReviewThread(input:{threadId:$t}){ thread { isResolved } } }',
+               "variables":{"t":tid}},
+              auth="bearer "+tok)
+    if not ok:
+        return False
+    # GraphQL answers 200 even when the mutation does not perform: a null
+    # payload or an errors[] entry means the thread is STILL OPEN — count
+    # only a confirmed resolve (fail-closed carry).
+    try:
+        performed=(((json.loads(body).get("data",{}) or {}).get("resolveReviewThread",{}) or {}).get("thread",{}) or {}).get("isResolved")
+    except Exception:
+        performed=None
+    return performed is True
 # 1) open milestones — the carry assigns the most recent open one.
 _,msraw=curl("GET", "/repos/%s/milestones?state=open" % repo)
 try: ms=json.loads(msraw)
 except Exception: ms=[]
 milestone=None
 if isinstance(ms,list) and ms:
-    milestone=ms[0].get("id")
+    # fork: numeric id; GitHub: the NUMBER (an id is 422-invalid — probed
+    # live #685 r1).
+    milestone=ms[0].get("id") if is_fj else ms[0].get("number")
     if len(ms)>1: notes.append("milestone: %d open, using newest (%s)" % (len(ms), ms[0].get("title")))
 else:
     notes.append("no open milestone — carried issue minted unmilestoned (assign manually)")
 # 2) open issues for exact-title dedup.
-_,israw=curl("GET", "/repos/%s/issues?state=open&type=issues&limit=50" % repo)
+if is_fj:
+    _,israw=curl("GET", "/repos/%s/issues?state=open&type=issues&limit=50" % repo)
+else:
+    # GitHub has no type=issues filter on /issues and no limit param (both
+    # 422 — probed live #685 r1): per_page + PRs skipped client-side (a
+    # same-title PR is not a dedup hit).
+    _,israw=curl("GET", "/repos/%s/issues?state=open&per_page=50" % repo)
 open_titles={}
 try:
     issues=json.loads(israw)
     if isinstance(issues,list):
         for i in issues:
+            if not is_fj and i.get("pull_request"): continue
             t=(i.get("title") or "").strip()
             if t: open_titles[t]=i.get("number")
 except Exception:
@@ -289,13 +344,18 @@ def ensure_issue(title, body):
         return r["number"], True
     return None, False
 def reply_thread(comment_id, body_text):
-    # GitHub REST: in_reply_to reply; the fork cannot set in_reply_to via
-    # REST (create-review gap) — there the reply is best-effort and the
-    # RESOLVE is the closure that counts.
-    curl("POST", "/repos/%s/pulls/%s/comments" % (repo,pr),
-         {"body":body_text, "in_reply_to":comment_id})
-# 3) ledger todos with disposition architecture-carry.
-for idx,t in enumerate(arch_todos):
+    # fork: in_reply_to on the flat comments route (the fork cannot REST
+    # a create-review reply); GitHub: the documented /replies route — it
+    # rejects in_reply_to as a not-permitted key (422, probed live #685
+    # r1). Best-effort either way: the RESOLVE is the closure that counts.
+    if is_fj:
+        curl("POST", "/repos/%s/pulls/%s/comments" % (repo,pr),
+             {"body":body_text, "in_reply_to":comment_id})
+    else:
+        curl("POST", "/repos/%s/pulls/%s/comments/%s/replies" % (repo,pr,comment_id),
+             {"body":body_text})
+# 3) ledger todos with disposition architecture-carry (FULL-ledger idx).
+for idx,t in arch_todos:
     if not isinstance(t,dict) or not t.get("body"): continue
     body=str(t.get("body"))
     title=("architecture: "+body.splitlines()[0])[:140]
@@ -801,7 +861,13 @@ elif echo "${REVIEWED_SHA:-}" | grep -qE '^[0-9a-f]{7,40}$'; then
     "$API_BASE/repos/$REPO/statuses/$REVIEWED_SHA" 2>/dev/null || true)"
   case "$STATUS_CODE" in
     201|200) : ;;
-    *) STATUS_NOTE="status-post-failed-http-${STATUS_CODE:-000}: $(head -c 80 /tmp/.pr-status.$$ 2>/dev/null)"
+    *) STATUS_NOTE="status-post-failed-http-${STATUS_CODE:-000}: $(head -c 80 /tmp/.pr-status.$$ 2>/dev/null | tr '\n\r\t' '   ' | tr -d '"' | tr '\\' '/')"
+       # tr, not trust: the note splices into the double-quoted artifact
+       # JSON — a raw error body (GitHub 422s are JSON: quotes, braces)
+       # would unbalance the line and lastJSONLine would zero the ENTIRE
+       # round artifact (#685 r1 blocking: the loss fires exactly when the
+       # status could not be posted). Quotes drop, backslashes slash,
+       # control characters space — the note is diagnostic, not data.
        log "WARN: verdict status post rejected (${STATUS_CODE:-000}) — verdict stands; $STATUS_NOTE" ;;
   esac
   rm -f /tmp/.pr-status.$$

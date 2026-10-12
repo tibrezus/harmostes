@@ -33,20 +33,23 @@ const (
 )
 
 type fakeForge struct {
-	mu           sync.Mutex
-	prState      string // "open" | "closed"
-	hostDialect  string // "github" | "forgejo" — the POST /reviews validator enforces the host's event enum (#470 r2 t3)
-	reviews      []map[string]any
-	comments     []map[string]any
-	verdictPost  bool
-	verdictBody  string
-	labelGone    bool
-	comment422   map[string]bool  // path → force 422
-	authHeaders  []string         // Authorization on native posts (#480 host-gating)
-	statusBodies []map[string]any // the pr-review/verdict merge-status posts (decoded — bodies do not survive the handler)
-	issues       []map[string]any
-	resolutions  []string // resolution PUT paths (the carry step's close-outs)
-	graphqlBody  string   // the resolve-state GraphQL response (default: zero threads)
+	mu             sync.Mutex
+	prState        string // "open" | "closed"
+	hostDialect    string // "github" | "forgejo" — the POST /reviews validator enforces the host's event enum (#470 r2 t3)
+	reviews        []map[string]any
+	comments       []map[string]any
+	verdictPost    bool
+	verdictBody    string
+	labelGone      bool
+	comment422     map[string]bool  // path → force 422
+	authHeaders    []string         // Authorization on native posts (#480 host-gating)
+	statusBodies   []map[string]any // the pr-review/verdict merge-status posts (decoded — bodies do not survive the handler)
+	issues         []map[string]any
+	resolutions    []string // resolution PUT paths (the carry step's close-outs)
+	resolvedGH     []string // GraphQL resolveReviewThread thread ids (GitHub dialect carry)
+	repliesGH      []string // /comments/{id}/replies paths (GitHub dialect carry)
+	graphqlBody    string   // the resolve-state GraphQL response (default: zero threads)
+	forceStatus422 bool     // the merge-status POST answers 422 with a quoted JSON body
 }
 
 func (f *fakeForge) mux(t *testing.T) *http.ServeMux {
@@ -144,11 +147,23 @@ func (f *fakeForge) mux(t *testing.T) *http.ServeMux {
 		f.graphqlBody = `{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}`
 	}
 	mux.HandleFunc("/graphql", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
 		f.mu.Lock()
-		body := f.graphqlBody
-		f.mu.Unlock()
+		defer f.mu.Unlock()
+		// The carry step's GitHub resolve (#685 r1): the mutation is answered
+		// with a confirmed payload — the same route serves the listing's
+		// reviewThreads query (f.graphqlBody).
+		if strings.Contains(fmt.Sprint(body["query"]), "resolveReviewThread") {
+			vars, _ := body["variables"].(map[string]any)
+			tid, _ := vars["t"].(string)
+			f.resolvedGH = append(f.resolvedGH, tid)
+			_, _ = w.Write([]byte(`{"data":{"resolveReviewThread":{"thread":{"isResolved":true}}}}`))
+			return
+		}
+		body2 := f.graphqlBody
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(body))
+		_, _ = w.Write([]byte(body2))
 	})
 	// The thread-closure mandate's surfaces: the merge STATUS post (every
 	// verdict round), and the carry step's milestones/issues/resolutions.
@@ -157,13 +172,23 @@ func (f *fakeForge) mux(t *testing.T) *http.ServeMux {
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		f.mu.Lock()
 		f.statusBodies = append(f.statusBodies, body)
+		force := f.forceStatus422
 		f.mu.Unlock()
+		if force {
+			// A GitHub-shaped error body: quoted JSON with embedded quotes —
+			// the exact shape that used to unbalance the artifact line (#685 r1).
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			_, _ = w.Write([]byte(`{"message":"Validation Failed","errors":[{"resource":"Status","code":"custom","message":"description is too long (maximum is 140 characters)"}]}`))
+			return
+		}
 		w.WriteHeader(http.StatusCreated)
 		_, _ = w.Write([]byte(`{}`))
 	})
 	mux.HandleFunc("/repos/tibrezus/harmostes/milestones", func(w http.ResponseWriter, r *http.Request) {
+		// id (fork) and number (GitHub) both present: each dialect reads its
+		// own field and the mint payload pins the right one (#685 r1).
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`[{"id":7,"title":"v3.2"},{"id":5,"title":"backlog"}]`))
+		_, _ = w.Write([]byte(`[{"id":7,"number":2,"title":"v3.2"},{"id":5,"number":1,"title":"backlog"}]`))
 	})
 	mux.HandleFunc("/repos/tibrezus/harmostes/issues", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
@@ -184,6 +209,16 @@ func (f *fakeForge) mux(t *testing.T) *http.ServeMux {
 		}
 	})
 	mux.HandleFunc("/repos/tibrezus/harmostes/pulls/99/comments/", func(w http.ResponseWriter, r *http.Request) {
+		// .../comments/{id}/replies — GitHub's documented reply route
+		// (#685 r1: in_reply_to is a not-permitted key there).
+		if strings.HasSuffix(r.URL.Path, "/replies") && r.Method == http.MethodPost {
+			f.mu.Lock()
+			f.repliesGH = append(f.repliesGH, r.URL.Path)
+			f.mu.Unlock()
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{}`))
+			return
+		}
 		// .../comments/{id}/resolutions — the fork's native resolve route.
 		if strings.HasSuffix(r.URL.Path, "/resolutions") && r.Method == http.MethodPut {
 			f.mu.Lock()
@@ -1482,5 +1517,113 @@ func TestPostReviewStatusPosted(t *testing.T) {
 				t.Errorf("status context = %q, want pr-review/verdict", ctx)
 			}
 		})
+	}
+}
+
+// TestPostReviewMixedLedgerPublishesOnlyUncarried pins the #685 r1
+// index-space contract end-to-end through the SHIPPED plugin (the marker
+// test proves the carry emits full indices; this proves the publisher
+// consumes them): a ledger [fix-in-pr, architecture-carry] must publish
+// ONLY the fix-in-pr todo as an open TODO thread — the carried one is
+// terminated by the carry (issue minted, thread resolved via GraphQL).
+// A filtered-space index inverts exactly this set (carried published,
+// fix-in-pr dropped) — which is why the fixture is MIXED.
+func TestPostReviewMixedLedgerPublishesOnlyUncarried(t *testing.T) {
+	f := &fakeForge{
+		comments: []map[string]any{},
+		reviews:  []map[string]any{},
+		// the carry's databaseId→threadId map: 902 resolvable via GraphQL
+		graphqlBody: `{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"id":"RT_902","isResolved":false,"comments":{"nodes":[{"databaseId":902}]}}]}}}}}`,
+	}
+	srv := httptest.NewServer(f.mux(t))
+	t.Cleanup(srv.Close)
+
+	review := map[string]any{
+		"decision":     "REQUEST_CHANGES",
+		"reviewed_sha": "deadbeef123",
+		"comments":     []any{},
+		"todos": []any{
+			map[string]any{"path": "a.md", "line": 2, "body": "FIXINPR-todo must publish"},
+			map[string]any{"path": "b.md", "line": 4, "body": "CARRY-todo must NOT publish",
+				"disposition": "architecture-carry", "thread_ref": "902"},
+		},
+	}
+	out := runPlugin(t, srv, false, review) // GitHub dialect
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	// the publish set: exactly one TODO thread — the fix-in-pr item.
+	todoPosts := 0
+	for _, c := range f.comments {
+		body, _ := c["body"].(string)
+		if strings.Contains(body, "CARRY-todo must NOT publish") {
+			t.Errorf("the CARRIED todo was published as a thread (index-space inversion): %s", body)
+		}
+		if strings.Contains(body, "FIXINPR-todo must publish") {
+			todoPosts++
+		}
+	}
+	if todoPosts != 1 {
+		t.Fatalf("exactly the fix-in-pr todo publishes (got %d posts; comments now %d)", todoPosts, len(f.comments))
+	}
+	// the carry: issue minted under the GitHub milestone NUMBER, thread
+	// resolved via the GraphQL mutation (never the fork's /resolutions).
+	if len(f.issues) != 1 {
+		t.Fatalf("the carried item mints exactly one tracker issue, got %v", f.issues)
+	}
+	if ms, _ := f.issues[0]["milestone"].(float64); int(ms) != 2 {
+		t.Errorf("GitHub mint milestone = %v, want the NUMBER 2 (not the id 7)", f.issues[0]["milestone"])
+	}
+	if len(f.resolvedGH) != 1 || len(f.resolutions) != 0 {
+		t.Errorf("resolve via GraphQL mutation only (resolvedGH=%v resolutions=%v)", f.resolvedGH, f.resolutions)
+	}
+	// and the artifact line still parses (the whole point of the harness).
+	assertInlineThreads(t, out, 1, 0, 0)
+}
+
+// TestPostReviewArtifactFinalLineParsesOnDegradedHost pins the #685 r1
+// artifact-line contract: when the merge-status POST 422s, the host's
+// quoted JSON error body must land SANITIZED in the note — the final
+// line stays parseable or lastJSONLine zeroes the ENTIRE round artifact
+// exactly when the operator most needs the note.
+func TestPostReviewArtifactFinalLineParsesOnDegradedHost(t *testing.T) {
+	f := &fakeForge{
+		comments:       []map[string]any{},
+		reviews:        []map[string]any{},
+		forceStatus422: true,
+	}
+	srv := httptest.NewServer(f.mux(t))
+	t.Cleanup(srv.Close)
+
+	review := map[string]any{
+		"decision":     "REQUEST_CHANGES",
+		"reviewed_sha": "deadbeef123",
+		"comments":     []any{map[string]any{"path": "a.go", "line": 1, "body": "Blocking: degraded-host shape"}},
+	}
+	out := runPlugin(t, srv, false, review)
+
+	var last map[string]any
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "{") && strings.Contains(line, "\"inline_threads\"") {
+			if err := json.Unmarshal([]byte(line), &last); err != nil {
+				t.Fatalf("artifact line unparsable on the degraded host (the lost-artifact bug): %v\n%s", err, line)
+			}
+		}
+	}
+	if last == nil {
+		t.Fatalf("no artifact line in output:\n%s", out)
+	}
+	ev, _ := last["event"].(map[string]any)
+	sp, _ := ev["status_post"].(map[string]any)
+	if sp == nil {
+		t.Fatalf("artifact carries no status_post: %v", ev)
+	}
+	note, _ := sp["note"].(string)
+	if !strings.Contains(note, "status-post-failed-http-422") {
+		t.Fatalf("the failure note must survive (spoke), got %q", note)
+	}
+	if strings.Contains(note, "\"") {
+		t.Fatalf("raw quotes must be sanitized out of the note: %q", note)
 	}
 }

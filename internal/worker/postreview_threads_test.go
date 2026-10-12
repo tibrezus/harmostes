@@ -254,6 +254,111 @@ func (f *fakeForge) mux(t *testing.T) *http.ServeMux {
 		}
 		w.WriteHeader(http.StatusNotFound)
 	})
+	// Fork-dialect mirror under the rhesadox key (runPluginEnv with fj=true
+	// rewrites the context host+repo): same recording fields, so a single
+	// test can assert cross-dialect behavior.
+	fk := "/repos/git.rezus.cloud/tibrez/rhesadox"
+	mux.HandleFunc(fk+"/pulls/99", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		st := f.prState
+		f.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"head": map[string]string{"sha": "deadbeef123"}, "state": st})
+	})
+	mux.HandleFunc(fk+"/milestones", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"id":7,"number":2,"title":"v3.2"},{"id":5,"number":1,"title":"backlog"}]`))
+	})
+	mux.HandleFunc(fk+"/issues", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		switch r.Method {
+		case http.MethodGet:
+			out, _ := json.Marshal(f.issues)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(out)
+		case http.MethodPost:
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			body["number"] = 431
+			f.issues = append(f.issues, body)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(body)
+		}
+	})
+	mux.HandleFunc(fk+"/pulls/99/reviews", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		switch r.Method {
+		case http.MethodGet:
+			out, _ := json.Marshal(f.reviews)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(out)
+		case http.MethodPost:
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			f.authHeaders = append(f.authHeaders, r.Header.Get("Authorization"))
+			f.reviews = append(f.reviews, body)
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{}`))
+		}
+	})
+	mux.HandleFunc(fk+"/pulls/99/comments", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			f.mu.Lock()
+			cs := f.comments
+			if cs == nil {
+				cs = []map[string]any{}
+			}
+			f.mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(cs)
+			return
+		}
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		f.mu.Lock()
+		f.comments = append(f.comments, body)
+		f.mu.Unlock()
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{}`))
+	})
+	mux.HandleFunc(fk+"/pulls/99/comments/", func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/resolutions") && r.Method == http.MethodPut {
+			f.mu.Lock()
+			f.resolutions = append(f.resolutions, r.URL.Path)
+			f.mu.Unlock()
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+	mux.HandleFunc(fk+"/issues/99/comments", func(w http.ResponseWriter, r *http.Request) {
+		var b map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&b)
+		f.mu.Lock()
+		f.verdictPost = true
+		f.verdictBody, _ = b["body"].(string)
+		f.mu.Unlock()
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"id": 2}`))
+	})
+	mux.HandleFunc(fk+"/issues/99/labels/needs-review", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		f.labelGone = true
+		f.mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc(fk+"/statuses/deadbeef123", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		f.mu.Lock()
+		f.statusBodies = append(f.statusBodies, body)
+		f.mu.Unlock()
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{}`))
+	})
 	return mux
 }
 
@@ -1695,5 +1800,87 @@ func TestPostReviewArtifactParsesOnGateSkip(t *testing.T) {
 	}
 	if strings.Contains(tg, "\"") {
 		t.Fatalf("raw quotes must be sanitized out of thread_gate: %q", tg)
+	}
+}
+
+// TestPostReviewForkApproveCarriedTodosNotRepublished pins the #685 r5
+// fifth-round blocker: the Forgejo zero-findings APPROVED path re-published
+// architecture-carry todos as open roots — an APPROVE plus a success merge
+// status posted over a newborn thread (the exact #2745 shape). With every
+// todo carried (mint + resolve), the native APPROVED review must carry ZERO
+// comments.
+func TestPostReviewForkApproveCarriedTodosNotRepublished(t *testing.T) {
+	f := &fakeForge{comments: []map[string]any{}, reviews: []map[string]any{}}
+	srv := httptest.NewServer(f.mux(t))
+	t.Cleanup(srv.Close)
+
+	review := map[string]any{
+		"decision":     "APPROVE",
+		"reviewed_sha": "deadbeef123",
+		"comments":     []any{},
+		"todos": []any{
+			map[string]any{"path": "b.md", "line": 4, "body": "carry me to an issue",
+				"disposition": "architecture-carry", "thread_ref": "902"},
+		},
+	}
+	out := runPluginEnv(t, srv, true, review) // fork context (host git.rezus.cloud → IS_FJ recomputed true)
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.resolutions) != 1 {
+		t.Fatalf("the carry resolves the thread natively (resolutions=%v)", f.resolutions)
+	}
+	if len(f.reviews) == 0 {
+		t.Fatal("the native APPROVED review is posted")
+	}
+	rv := f.reviews[len(f.reviews)-1]
+	if ev, _ := rv["event"].(string); ev != "APPROVED" {
+		t.Fatalf("native review event = %v, want APPROVED", rv["event"])
+	}
+	if cs, _ := rv["comments"].([]any); len(cs) != 0 {
+		t.Fatalf("the CARRIED todo must not ride the APPROVED review as an open root (the #2745 shape), got %v", cs)
+	}
+	if !strings.Contains(f.verdictBody, "APPROVE at deadbeef123") {
+		t.Fatalf("verdict stays APPROVE (nothing open), got %q", f.verdictBody)
+	}
+	_ = out
+}
+
+// TestPostReviewAnchorRejectionCarriedInVerdict pins the #685 r5 delivery
+// hole: a blocking finding whose anchor the host 422s (line not in the
+// diff) must not evaporate — the verdict posts AFTER the publisher and
+// carries the unanchorable finding's text in its body with TRUE counts.
+// This PR's own history is the existence proof: four rounds of "N blocking
+// findings posted as review threads" while a rejected-anchor finding
+// existed nowhere on the platform.
+func TestPostReviewAnchorRejectionCarriedInVerdict(t *testing.T) {
+	f := &fakeForge{
+		comments:   []map[string]any{},
+		reviews:    []map[string]any{},
+		comment422: map[string]bool{"notin.diff": true},
+	}
+	srv := httptest.NewServer(f.mux(t))
+	t.Cleanup(srv.Close)
+
+	review := map[string]any{
+		"decision":     "REQUEST_CHANGES",
+		"reviewed_sha": "deadbeef123",
+		"comments":     []any{map[string]any{"path": "notin.diff", "line": 99, "body": "Blocking: the off-diff anchor must not evaporate"}},
+	}
+	runPlugin(t, srv, false, review) // GitHub dialect — per-finding POST, the anchor 422s
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.comments) != 0 {
+		t.Fatalf("the anchor is rejected (nothing lands as a review comment), got %d", len(f.comments))
+	}
+	if !strings.Contains(f.verdictBody, "1 could not anchor") {
+		t.Fatalf("the verdict must count the rejection honestly, got %q", f.verdictBody)
+	}
+	if !strings.Contains(f.verdictBody, "notin.diff:99") {
+		t.Fatalf("the verdict body must carry the unanchorable finding's anchor, got %q", f.verdictBody)
+	}
+	if !strings.Contains(f.verdictBody, "the off-diff anchor must not evaporate") {
+		t.Fatalf("the verdict body must carry the unanchorable finding's TEXT (the fallback landing), got %q", f.verdictBody)
 	}
 }

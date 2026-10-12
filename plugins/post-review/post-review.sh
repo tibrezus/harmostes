@@ -528,43 +528,6 @@ PYEOF
 fi
 fi   # IS_GITLAB guard closes: the listing/carry/gate are wired dialects only
 
-# The verdict as a ONE-LINE comment, BUILT here from decision + SHA +
-# blocking count (r7, owner directive): the review's posted output is
-# blocking threads + this line. review.json's analysis prose is never
-# posted — there is no pillar-structured body, no findings summary; the
-# threads ARE the findings record. The trailer inside is the merge
-# currency the gate polls for.
-VERDICT_COMMENT=$(python3 - << 'PYEOF'
-import json, os
-with open(os.environ["REVIEW"]) as f: review=json.load(f)
-dec=review["decision"]; sha=review.get("reviewed_sha","")
-# #680: the ledger's canonical key is findings (comments = legacy alias,
-# normalized by the gate before this runs). The blocking count includes
-# findings the agent ALREADY posted itself (thread_ref present) — the
-# threads on the PR are the record, whichever path posted them.
-fs=review.get("findings", review.get("comments",[]) or []) or []
-n=len(fs)
-if os.environ.get("DOWNGRADED"):
-    # Deploy-composed downgrade: NOT the reviewer's verdict — the ≥1-finding
-    # rule (pr-review.sh validation) governs review.json, not this line. It
-    # must stay self-describing: the downgrade fires on OPEN THREADS (any
-    # round — the mandate), so "N blocking findings" would be false here.
-    line=(f"{dec} at {sha} — downgraded: {os.environ.get('OPEN_THREADS','0')} open thread(s) "
-          "(blocking, TODO, or carried-failed); reply the fix SHA and RESOLVE each — or carry "
-          "architecture-scale items to an issue — then push (any commit) and re-arm; a same-head re-arm is refused.")
-elif dec=="APPROVE":
-    line=f"APPROVE at {sha} — all pillars clean, all threads closed. Label consumed; re-arm with the label to review again."
-else:
-    plural="finding" if n==1 else "findings"
-    line=f"{dec} at {sha} — {n} blocking {plural} posted as review threads; close them, then re-arm with the label to re-review."
-print(json.dumps({"body": line+"\n\n<!-- pr-review: "+dec+" @ "+sha+" -->"}))
-PYEOF
-)
-curl -fsSL -X POST -H "authorization: token $TOKEN" -H "content-type: application/json" \
-  "$API_BASE/repos/$REPO/issues/$PR_NUM/comments" -d "$VERDICT_COMMENT" >/dev/null \
-  || { echo "ERROR: issue comment rejected">&2; exit 1; }
-log "verdict comment posted to $REPO#$PR_NUM ($DEC)"
-
 # ── Native inline threads (deterministic, #429): the agent never reliably
 # self-posts (attempt 90f9fd63ad9a: 81 bash tools, zero review-api calls —
 # the task's review.json contract and the round-trip budget both push it to
@@ -725,10 +688,14 @@ def curl(path, payload):
     ok = r.returncode==0 and code.startswith("2")
     return ok, (body or r.stderr).strip()[:120]
 valid=[]
+carried=[]  # findings the publisher could not LAND (#685 r5): they ride
+             # the verdict body — the round may not claim threads the
+             # forge never took, nor let the text exist nowhere.
 for c in cs:
     path=c.get("path"); body=c.get("body")
     if not path or not body:
         rejected+=1   # a malformed finding skips itself, never the batch (r1 P5)
+        carried.append({"path":str(path or "?"),"line":"?","body":str(body or "")[:200],"why":"malformed"})
         print("[post-review] WARN: malformed finding (missing path/body) — skipped", file=sys.stderr)
         continue
     try:
@@ -736,8 +703,9 @@ for c in cs:
     except (ValueError, TypeError):
         # r4 P5d: line is optional by the review.json contract but the
         # threads anchor to a line — a finding without one is carried by
-        # the verdict body, never silently pinned to line 1.
+        # the verdict body (now literally true), never silently pinned to line 1.
         rejected+=1
+        carried.append({"path":path,"line":"?","body":str(body)[:200],"why":"no-usable-line"})
         print(f"[post-review] WARN: finding {path} has no usable line — carried by the verdict body", file=sys.stderr)
         continue
     valid.append((path, line, c.get("side","RIGHT"), body))
@@ -759,6 +727,7 @@ if fj:
             if ok2: posted+=1
             else:
                 rejected+=1
+                carried.append({"path":p,"line":l,"body":str(b)[:200],"why":str(reason2)[:80]})
                 if not last_error:
                     last_error = reason2
                 print(f"[post-review] WARN: inline thread {p}:{l} rejected — {reason2}", file=sys.stderr)
@@ -769,13 +738,21 @@ else:
         if ok: posted+=1
         else:
             rejected+=1
+            carried.append({"path":p,"line":l,"body":str(b)[:200],"why":str(reason)[:80]})
             if not last_error:
                 last_error = reason
             print(f"[post-review] WARN: inline thread {p}:{l} rejected — {reason}", file=sys.stderr)
+capped=max(0,len(all_cs)+len(all_todos)-len(cs))
+# the cap overage also lands in the verdict body (was: log-only — the
+# "anchor only in the verdict body" claim was not literally true either)
+for c in (all_cs[len(cs):]):
+    carried.append({"path":str(c.get("path","?")),"line":c.get("line","?"),"body":str(c.get("body",""))[:200],"why":"cap"})
 dropped=[c.get("path","?") for c in all_cs[len(cs):]]
 if dropped:
     print(f"[post-review] capped: {len(dropped)} findings anchor only in the verdict body: {', '.join(dropped)}", file=sys.stderr)
-summary={"posted":posted,"rejected":rejected,"capped":max(0,len(all_cs)+len(all_todos)-len(cs)),"todos":len(todo_bodies)}
+summary={"posted":posted,"rejected":rejected,"capped":capped,"todos":len(todo_bodies)}
+if carried:
+    summary["carried"]=carried
 if last_error:
     summary["last_error"]=last_error[:60]
 with open(os.environ["THREAD_STATUS_FILE"],"w") as f:
@@ -793,9 +770,17 @@ elif [ "${IS_FJ:-}" = "true" ] && [ "$THREADS_ANCHOR" = "1" ] && [ "${EXISTING:-
   python3 - "$REVIEW" > "$APPROVAL_JSON" << 'PYTODO'
 import json, os, sys
 r=json.load(open(sys.argv[1]))
+# CARRY_LEDGER excludes successfully-carried todos (#685 r5, fifth-round
+# blocker): the zero-findings APPROVED review re-published carried items
+# as open roots — an APPROVE + success status posted over a newborn
+# thread, the exact #2745 shape. A FAILED carry (index absent from
+# CARRY_LEDGER) still rides: it must not vanish (fail-closed).
+try: carried=set(json.loads(os.environ.get("CARRY_LEDGER","[]")))
+except Exception: carried=set()
 P="TODO (non-blocking — reply with the follow-up, then resolve): "
 cs=[{"path":t["path"],"new_position":int(t["line"]),"body":P+str(t["body"])}
-    for t in (r.get("todos") or []) if isinstance(t,dict) and t.get("path") and t.get("line")]
+    for i,t in enumerate(r.get("todos") or [])
+    if isinstance(t,dict) and t.get("path") and t.get("line") and i not in carried]
 json.dump({"event":"APPROVED","commit_id":r.get("reviewed_sha",""),
            "body":os.environ["MARKER"],"comments":cs}, sys.stdout)
 PYTODO
@@ -845,6 +830,76 @@ if [ -s "$DEDUPE_FLAG_FILE" ]; then
   THREADS="${THREADS%\}}${FLAG}}"
 fi
 rm -f "$THREAD_STATUS_FILE" "$DEDUPE_FLAG_FILE"
+export THREADS
+
+
+# ── Verdict comment (r7, owner directive; repositioned #685 r5): posted
+# AFTER the thread publisher so its counts are TRUE. The first cut
+# claimed "N blocking findings posted as review threads" before the
+# publisher ran — a finding whose anchor the host 422s (line not in the
+# diff) never reached the PR and existed nowhere (review.json is
+# workspace-ephemeral): the platform asserted a thread the forge never
+# took, for five consecutive rounds on this very PR (the reviewer's
+# r1-r4 anchors all 422'd — which is ALSO how a real blocking finding
+# survived undelivered). The one-line counts clause stays; findings the
+# publisher could not land are CARRIED in the body below it — visible,
+# addressable, and honest about being unanchorable. review.json's
+# analysis prose is still never posted: the threads + the carried list
+# are the findings record.
+VERDICT_COMMENT=$(python3 - << 'PYEOF'
+import json, os
+with open(os.environ["REVIEW"]) as f: review=json.load(f)
+dec=review["decision"]; sha=review.get("reviewed_sha","")
+fs=review.get("findings", review.get("comments",[]) or []) or []
+n=len(fs)
+# The publisher's true counts + everything it could not land (#685 r5):
+# rejected anchors, lineless findings, and the 20-thread cap overage all
+# ride here — the verdict may not claim a thread the forge never took.
+try: th=json.loads(os.environ.get("THREADS") or "{}")
+except Exception: th={}
+carried=th.get("carried") or []
+posted=int(th.get("posted") or 0)
+if os.environ.get("DOWNGRADED"):
+    line=(f"{dec} at {sha} — downgraded: {os.environ.get('OPEN_THREADS','0')} open thread(s) "
+          "(blocking, TODO, or carried-failed); reply the fix SHA and RESOLVE each — or carry "
+          "architecture-scale items to an issue — then push (any commit) and re-arm; a same-head re-arm is refused.")
+elif dec=="APPROVE":
+    line=f"APPROVE at {sha} — all pillars clean, all threads closed. Label consumed; re-arm with the label to review again."
+else:
+    plural="finding" if n==1 else "findings"
+    if carried:
+        line=(f"{dec} at {sha} — {n} blocking {plural}: {posted} posted as review threads, "
+              f"{len(carried)} could not anchor (line not in the diff or beyond the cap) and are carried below; "
+              "close them, then re-arm with the label to re-review.")
+    else:
+        line=f"{dec} at {sha} — {n} blocking {plural} posted as review threads; close them, then re-arm with the label to re-review."
+body=line
+if carried:
+    body+="\n\nUnanchorable this round (the host rejected the inline anchor) — the finding stands:\n"
+    for c in carried[:10]:
+        body+="\n- **%s:%s** %s" % (c.get("path","?"), c.get("line","?"), str(c.get("body",""))[:400])
+    if len(carried)>10: body+="\n- … %d more in the run artifact" % (len(carried)-10)
+print(json.dumps({"body": body+"\n\n<!-- pr-review: "+dec+" @ "+sha+" -->"}))
+PYEOF
+)
+
+# ── Verdict comment (r7, owner directive; repositioned #685 r5): posted
+# AFTER the thread publisher so its counts are TRUE. The first cut
+# claimed "N blocking findings posted as review threads" before the
+# publisher ran — a finding whose anchor the host 422s (line not in the
+# diff) never reached the PR and existed nowhere (review.json is
+# workspace-ephemeral): the platform asserted a thread the forge never
+# took, for five consecutive rounds on this very PR (the reviewer's
+# r1-r4 anchors all 422'd — which is ALSO how a real blocking finding
+# survived undelivered). The one-line counts clause stays; findings the
+# publisher could not land are CARRIED in the body below it — visible,
+# addressable, and honest about being unanchorable. review.json's
+# analysis prose is still never posted: the threads + the carried list
+# are the findings record.
+curl -fsSL -X POST -H "authorization: token $TOKEN" -H "content-type: application/json" \
+  "$API_BASE/repos/$REPO/issues/$PR_NUM/comments" -d "$VERDICT_COMMENT" >/dev/null \
+  || { echo "ERROR: issue comment rejected">&2; exit 1; }
+log "verdict comment posted to $REPO#$PR_NUM ($DEC)"
 
 # ── Merge status (the merge-time re-check, project-independent): the
 # verdict is bound to this head as a commit status ANY project may

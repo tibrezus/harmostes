@@ -2038,7 +2038,7 @@ func TestPostReviewCarriedBodyNotSilentlyTruncated(t *testing.T) {
 // TestPostReviewCarriedArtifactComplete pins the #685 r9 fidelity: the
 // artifact's carried entry keeps the FULL body (the FIX tail — what the
 // dev needs — recoverable), while the verdict body truncates WITH a
-// marker whose pointer ("full text in the run artifact") is then TRUE.
+// marker whose pointer ("full text in the run record (timeline, 7d)") is then TRUE.
 func TestPostReviewCarriedArtifactComplete(t *testing.T) {
 	long := "Blocking: " + strings.Repeat("evidence that must survive in the artifact; ", 45) +
 		"FIX: replace the render-site cap and verify the artifact tail"

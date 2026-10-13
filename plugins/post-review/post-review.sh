@@ -915,9 +915,9 @@ if carried:
         # THE display cap (r9): the single authority — the artifact's
         # carried entry is complete, so this marker's pointer is true.
         b=str(c.get("body",""))
-        shown=b if len(b)<=1600 else b[:1600]+(" …[truncated %d chars — full text in the run artifact]" % (len(b)-1600))
+        shown=b if len(b)<=1600 else b[:1600]+(" …[truncated %d chars — full text in the run record (timeline, 7d)]" % (len(b)-1600))
         body+="\n- **%s:%s** %s" % (c.get("path","?"), c.get("line","?"), shown)
-    if len(carried)>30: body+="\n- … %d more in the run artifact (ledger pathological — inspect the round)" % (len(carried)-30)
+    if len(carried)>30: body+="\n- … %d more in the run record (timeline, 7d — ledger pathological: inspect the round)" % (len(carried)-30)
 print(json.dumps({"body": body+"\n\n<!-- pr-review: "+dec+" @ "+sha+" -->"}))
 PYEOF
 )

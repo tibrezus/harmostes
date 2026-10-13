@@ -2034,3 +2034,53 @@ func TestPostReviewCarriedBodyNotSilentlyTruncated(t *testing.T) {
 		t.Fatal("a body within the 1500-char window must arrive COMPLETE in the verdict body")
 	}
 }
+
+// TestPostReviewCarriedArtifactComplete pins the #685 r9 fidelity: the
+// artifact's carried entry keeps the FULL body (the FIX tail — what the
+// dev needs — recoverable), while the verdict body truncates WITH a
+// marker whose pointer ("full text in the run artifact") is then TRUE.
+func TestPostReviewCarriedArtifactComplete(t *testing.T) {
+	long := "Blocking: " + strings.Repeat("evidence that must survive in the artifact; ", 45) +
+		"FIX: replace the render-site cap and verify the artifact tail"
+	f := &fakeForge{
+		comments:   []map[string]any{},
+		reviews:    []map[string]any{},
+		comment422: map[string]bool{"off.diff": true},
+	}
+	srv := httptest.NewServer(f.mux(t))
+	t.Cleanup(srv.Close)
+
+	review := map[string]any{
+		"decision":     "REQUEST_CHANGES",
+		"reviewed_sha": "deadbeef123",
+		"comments":     []any{map[string]any{"path": "off.diff", "line": 7, "body": long}},
+	}
+	out := runPlugin(t, srv, false, review)
+
+	// the artifact's carried entry: COMPLETE
+	var last map[string]any
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "{") && strings.Contains(line, "\"inline_threads\"") {
+			_ = json.Unmarshal([]byte(line), &last)
+		}
+	}
+	ev, _ := last["event"].(map[string]any)
+	it, _ := ev["inline_threads"].(map[string]any)
+	cs, _ := it["carried"].([]any)
+	if len(cs) != 1 {
+		t.Fatalf("one carried entry, got %v", cs)
+	}
+	if b, _ := cs[0].(map[string]any)["body"].(string); !strings.Contains(b, "FIX: replace the render-site cap and verify the artifact tail") {
+		t.Fatalf("the artifact carried entry must be COMPLETE (FIX tail present), got %d chars", len(b))
+	}
+	// the verdict body: truncated WITH the marker
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !strings.Contains(f.verdictBody, "…[truncated") {
+		t.Fatalf("the long body truncates in the verdict body with an explicit marker, got %d chars", len(f.verdictBody))
+	}
+	if strings.Contains(f.verdictBody, "FIX: replace the render-site cap") {
+		t.Fatal("beyond the display cap the verdict shows the marker, not the tail (the artifact holds it)")
+	}
+}

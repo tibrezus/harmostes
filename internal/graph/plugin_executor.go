@@ -87,11 +87,15 @@ func (e *PluginExecutor) Execute(ctx context.Context, node v1alpha1.NodeSpec, en
 		// for the same #115 reason as the tail; structured plugin output,
 		// not free-form echo.
 		if res.Artifact != "" {
-			// The FULL parsed result (status, event — carried bodies
-			// included), not the bare artifact name: the truncation
-			// marker's promise is about the event's carried list.
+			// The parsed result (status, event — carried bodies included),
+			// not the bare artifact name: the truncation marker's promise
+			// is about the event's carried list. Bounded (r12): a
+			// pathological ledger could otherwise write ~1MB rows into the
+			// statestore per event (7d TTL) — evidence rows, not log dumps
+			// (the package convention). The plugin's own 96KB artifact
+			// bound keeps real rounds far below this cap.
 			if b, merr := json.Marshal(res); merr == nil {
-				payload["artifact"] = worker.Redact(string(b))
+				payload["artifact"] = truncateForTimeline(worker.Redact(string(b)), 128*1024)
 			}
 		}
 		if err := e.tl.Emit(ctx, timeline.KindPluginTail, node.ID, payload); err != nil {

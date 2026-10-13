@@ -780,16 +780,46 @@ if dropped:
 # it each new body caps at 1600 with why=budget and the summary counts
 # them. The run record keeps what fits; the counts stay honest.
 BUDGET=64*1024
-_total=0; _capped=0
+# r12: over-budget ≠ cut. A body under the display window rides WHOLE
+# (tagged budget-uncut for forensics); only a body actually shortened is
+# budget_capped — the counter and the verdict note speak CUTS, and the
+# render site treats a [budget-capped] body as final (never re-caps it
+# into a false 'full text in the run record' pointer: the run record
+# holds the same cut body).
+_total=0; _capped=0; _uncut=0
 for c in carried:
     b=str(c.get("body",""))
     if _total+len(b)<=BUDGET:
         _total+=len(b); continue
-    if len(b)>1600: c["body"]=b[:1600]+" …[budget-capped]"
-    c["why"]=(str(c.get("why") or "")+"+budget").lstrip("+")
-    _capped+=1
+    if len(b)>1600:
+        c["body"]=b[:1600]+" …[budget-capped]"
+        c["why"]=(str(c.get("why") or "")+"+budget-cut").lstrip("+")
+        _capped+=1
+    else:
+        c["why"]=(str(c.get("why") or "")+"+budget-uncut").lstrip("+")
+        _uncut+=1
+# r12 todo: the budget bounds per-entry size, NOT entry count — a
+# 700-finding pathological ledger still breaches the 1MB scanner
+# (~1.4KB × 700 + framing; reproduced: n=700 → 1.07MB line, zeroed
+# parse). Hard bound on the ARTIFACT's carried list: full entries while
+# they fit the list budget, then count-only rows (path+line+why, no
+# body) — the verdict body and the timeline event carry the same
+# bounded shape, so the recovery pointer stays true within it.
+ART_ENTRY_BUDGET=96*1024
+_art=0; _rows=[]; _bound=0
+for c in carried:
+    b=str(c.get("body",""))
+    row_sz=len(b)+len(str(c.get("path","")))+64
+    if _art+row_sz<=ART_ENTRY_BUDGET:
+        _art+=row_sz; _rows.append(c)
+    else:
+        _rows.append({"path":c.get("path","?"),"line":c.get("line","?"),"why":str(c.get("why") or "")+"+artifact-bound","cls":c.get("cls") or "finding"})
+        _bound+=1
+carried=_rows
 summary={"posted":posted,"posted_findings":posted_findings,"posted_todos":posted_todos,"rejected":rejected,"capped":capped,"todos":len(todo_bodies)}
 if _capped: summary["budget_capped"]=_capped
+if _uncut: summary["budget_uncut"]=_uncut
+if _bound: summary["artifact_bound"]=_bound
 if carried:
     summary["carried"]=carried
 if last_error:
@@ -939,14 +969,23 @@ if carried:
     # [:10]-plus-punt dropped real findings into an ephemeral artifact.
     # 30 in-body + explicit fallback beyond (a pathological ledger).
     for c in carried[:30]:
-        # THE display cap (r9): the single authority — the artifact's
-        # carried entry is complete, so this marker's pointer is true.
+        # THE display cap (r9/r12): the single authority — a body already
+        # ending [budget-capped] is FINAL (the run record holds the same
+        # cut text; promising recovery would lie); a whole body beyond
+        # 1600 truncates with the run-record pointer, which is true.
         b=str(c.get("body",""))
-        shown=b if len(b)<=1600 else b[:1600]+(" …[truncated %d chars — full text in the run record (timeline, 7d)]" % (len(b)-1600))
+        if b.endswith("[budget-capped]"):
+            shown=b
+        elif len(b)<=1600:
+            shown=b
+        else:
+            shown=b[:1600]+(" …[truncated %d chars — full text in the run record (timeline, 7d)]" % (len(b)-1600))
         body+="\n- **%s:%s** %s" % (c.get("path","?"), c.get("line","?"), shown)
     if len(carried)>30: body+="\n- … %d more in the run record (timeline, 7d — ledger pathological: inspect the round)" % (len(carried)-30)
     if int(th.get("budget_capped") or 0):
-        body+="\n\n(aggregate carried budget reached: %d bodies show their first 1600 chars; counts above are exact)" % int(th.get("budget_capped"))
+        body+="\n\n(carried budget: %d bodies CUT at 1600 chars — the run record holds the same cut text; counts above are exact)" % int(th.get("budget_capped"))
+    if int(th.get("artifact_bound") or 0):
+        body+="\n\n(artifact bound: %d carried entries beyond the list budget appear as count-only rows — no body text)" % int(th.get("artifact_bound"))
 print(json.dumps({"body": body+"\n\n<!-- pr-review: "+dec+" @ "+sha+" -->"}))
 PYEOF
 )

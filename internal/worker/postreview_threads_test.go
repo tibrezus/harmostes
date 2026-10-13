@@ -2141,3 +2141,131 @@ func TestPostReviewLargeCarriedListSurvives(t *testing.T) {
 		t.Fatalf("the artifact line must stay far under the 1MB scanner cap, output %d bytes", len(out))
 	}
 }
+
+// TestPostReviewBudgetInteraction pins the #685 r12 faces: over-budget ≠
+// cut. (a) bodies UNDER the 1600 window with an over-budget aggregate
+// ride WHOLE — no cut, budget_capped=0, the note must not claim cuts;
+// (b) bodies cut by the budget end '[budget-capped]' and the verdict
+// renders them FINAL — never re-capped into a false 'full text in the
+// run record' pointer.
+func TestPostReviewBudgetInteraction(t *testing.T) {
+	m := map[string]bool{}
+	fs := []any{}
+	// 60 findings × ~1.2KB bodies (under the window) → aggregate >64KB
+	for i := 0; i < 60; i++ {
+		p := fmt.Sprintf("u%02d.diff", i)
+		m[p] = true
+		fs = append(fs, map[string]any{"path": p, "line": 2,
+			"body": "Blocking: " + strings.Repeat("under-window body ", 60) + fmt.Sprintf("FIX %d", i)})
+	}
+	f := &fakeForge{comments: []map[string]any{}, reviews: []map[string]any{}, comment422: m}
+	srv := httptest.NewServer(f.mux(t))
+	t.Cleanup(srv.Close)
+
+	out := runPlugin(t, srv, false, map[string]any{"decision": "REQUEST_CHANGES", "reviewed_sha": "deadbeef123", "comments": fs})
+
+	var last map[string]any
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "{") && strings.Contains(line, "\"inline_threads\"") {
+			_ = json.Unmarshal([]byte(line), &last)
+		}
+	}
+	ev, _ := last["event"].(map[string]any)
+	it, _ := ev["inline_threads"].(map[string]any)
+	// Face B: under-window bodies are never CUT — the counter speaks cuts only
+	if bc, _ := it["budget_capped"].(float64); int(bc) != 0 {
+		t.Fatalf("under-window bodies must not be counted as cut (budget_capped=%v), got %v", bc, it)
+	}
+	if bu, _ := it["budget_uncut"].(float64); int(bu) == 0 {
+		t.Fatalf("over-aggregate under-window entries are tagged budget-uncut (honest forensics), got %v", it)
+	}
+	f.mu.Lock()
+	vb := f.verdictBody
+	f.mu.Unlock()
+	if strings.Contains(vb, "bodies CUT at 1600") {
+		t.Fatalf("the verdict must not claim cuts that did not happen: %q", vb[:200])
+	}
+
+	// Face A: over-window bodies cut by the budget render FINAL — the
+	// '[budget-capped]' marker survives, no run-record pointer appended.
+	m2 := map[string]bool{"big.diff": true}
+	f2 := &fakeForge{comments: []map[string]any{}, reviews: []map[string]any{}, comment422: m2}
+	srv2 := httptest.NewServer(f2.mux(t))
+	t.Cleanup(srv2.Close)
+	// one huge body + filler to push the aggregate over the budget first
+	// 29 fillers × ~2.3KB push the aggregate past the 64KB budget; the
+	// big body rides at carried index 29 — the LAST displayed slot — so it
+	// is both CUT by the budget and RENDERED (the interaction under test).
+	fs2 := []any{}
+	for i := 0; i < 29; i++ {
+		p := fmt.Sprintf("fill%02d.diff", i)
+		m2[p] = true
+		fs2 = append(fs2, map[string]any{"path": p, "line": 1, "body": strings.Repeat("filler evidence ", 150)})
+	}
+	fs2 = append(fs2, map[string]any{"path": "big.diff", "line": 9,
+		"body": "Blocking: " + strings.Repeat("must end budget-capped ", 300) + "TAIL"})
+	m2["big.diff"] = true
+	runPlugin(t, srv2, false, map[string]any{"decision": "REQUEST_CHANGES", "reviewed_sha": "deadbeef123", "comments": fs2})
+	f2.mu.Lock()
+	vb2 := f2.verdictBody
+	f2.mu.Unlock()
+	if !strings.Contains(vb2, "[budget-capped]") {
+		t.Fatalf("a budget-cut body must render with its final marker, got %q", vb2[len(vb2)-400:])
+	}
+	// the pointer is legal ONLY for whole-body truncation; over a
+	// budget-cut body it lies (the record holds the same cut text)
+	for _, ln := range strings.Split(vb2, "\n") {
+		if strings.Contains(ln, "big.diff:9") {
+			if strings.Contains(ln, "full text in the run record") {
+				t.Fatalf("the budget-cut body's line must not carry the run-record pointer (it would lie): %q", ln[:160])
+			}
+			if !strings.Contains(ln, "[budget-capped]") {
+				t.Fatalf("the budget-cut body's line must end with its final marker: %q", ln[:160])
+			}
+		}
+	}
+}
+
+// TestPostReviewPathologicalCountBounded pins the #685 r12 TODO: the
+// budget bounds per-entry SIZE, not COUNT — 700 under-window bodies
+// breached the 1MB scanner (reproduced: 1.07MB line, zeroed parse). The
+// artifact's carried list is now hard-bounded (96KB of entries, then
+// count-only rows): the artifact line must stay parseable at any count.
+func TestPostReviewPathologicalCountBounded(t *testing.T) {
+	m := map[string]bool{}
+	fs := []any{}
+	for i := 0; i < 700; i++ {
+		p := fmt.Sprintf("path%03d.diff", i)
+		m[p] = true
+		fs = append(fs, map[string]any{"path": p, "line": 2,
+			"body": strings.Repeat("pathological evidence body ", 55)})
+	}
+	f := &fakeForge{comments: []map[string]any{}, reviews: []map[string]any{}, comment422: m}
+	srv := httptest.NewServer(f.mux(t))
+	t.Cleanup(srv.Close)
+
+	out := runPlugin(t, srv, false, map[string]any{"decision": "REQUEST_CHANGES", "reviewed_sha": "deadbeef123", "comments": fs})
+
+	var last map[string]any
+	var maxLine int
+	for _, line := range strings.Split(out, "\n") {
+		if len(line) > maxLine {
+			maxLine = len(line)
+		}
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "{") && strings.Contains(line, "\"inline_threads\"") {
+			if err := json.Unmarshal([]byte(line), &last); err != nil {
+				t.Fatalf("artifact line unparsable at 700 findings (the lost-artifact class): %v", err)
+			}
+		}
+	}
+	if maxLine > 400*1024 {
+		t.Fatalf("the artifact line must stay bounded (~96KB entries + framing), got %d bytes", maxLine)
+	}
+	ev, _ := last["event"].(map[string]any)
+	it, _ := ev["inline_threads"].(map[string]any)
+	if ab, _ := it["artifact_bound"].(float64); int(ab) == 0 {
+		t.Fatalf("count-only rows must engage at 700×1.4KB, got %v", it)
+	}
+}

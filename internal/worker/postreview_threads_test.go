@@ -1982,7 +1982,7 @@ func TestPostReviewLinelessTodoCarriesAsTodo(t *testing.T) {
 // "stands". Also pins the >10 case: every carried item stays addressable
 // on the PR (no "N more in the run artifact" punt below the 30 cap).
 func TestPostReviewCarriedBodyNotSilentlyTruncated(t *testing.T) {
-	// item 0 SHORT (its FIX line fits the 1500 window → arrives complete);
+	// item 0 SHORT (its FIX line fits the 1600 window → arrives complete);
 	// items 1-11 long (FIX beyond the window → explicit truncation marker)
 	fs := []any{}
 	for i := 0; i < 12; i++ {
@@ -2031,7 +2031,7 @@ func TestPostReviewCarriedBodyNotSilentlyTruncated(t *testing.T) {
 	}
 	// the SHORT body arrives complete, unmarked, FIX line intact
 	if !strings.Contains(vb, "FIX: apply fix number 0 exactly as written") {
-		t.Fatal("a body within the 1500-char window must arrive COMPLETE in the verdict body")
+		t.Fatal("a body within the 1600-char window must arrive COMPLETE in the verdict body")
 	}
 }
 

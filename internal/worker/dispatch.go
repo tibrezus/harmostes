@@ -503,6 +503,14 @@ var jobEnvAllowlist = []string{
 	// each verified finding as it confirms it. Its scope is enforced by the
 	// forge (a scoped token minted comment-only), not by this codebase.
 	"HARMOSTES_REVIEW_POST_TOKEN",
+	// HARMOSTES_REVIEW_POST_TOKEN_FJ (#687): the fork-forge half of the
+	// host-keyed posting pair — one value cannot be valid on both wired
+	// forges, and a github.com PAT re-bound as FORGEJO_TOKEN 401s every
+	// fork call in an armed session (observed live: rhesadox rounds
+	// grinding on invalid-token posting attempts while github rounds
+	// held the single slot). Forwards like its sibling, review-attempts
+	// only.
+	"HARMOSTES_REVIEW_POST_TOKEN_FJ",
 	// PI_TOOL_BUDGET: the turn-budget extension's hard tool-call cap
 	// (#484). The 43-minute review round ran 47 calls at ~55s of model
 	// latency each — turn COUNT is the wall clock; the prompt's ~12-call
@@ -532,15 +540,16 @@ var jobEnvAllowlist = []string{
 // dropped, not leaked. The LLM trio is here because sessions need the
 // model; the budget trio and skills pins are not credentials.
 var spawnSafeEnv = map[string]bool{
-	"LITELLM_URL":                 true, // the model endpoint — no session without it
-	"LITELLM_API_KEY":             true, // the model credential itself (model access ≠ forge access)
-	"LITELLM_FALLBACKS":           true, // routing chain, no secret material
-	"PI_TOOL_BUDGET":              true, // turn cap — a number, not a credential
-	"PI_TOOL_BUDGET_ALLOW":        true,
-	"PI_TOOL_BUDGET_NUDGE":        true,
-	"HARMOSTES_SKILLS_REPO":       true, // git URL of the served skills
-	"HARMOSTES_SKILLS_REV":        true, // a commit sha pin
-	"HARMOSTES_REVIEW_POST_TOKEN": true, // the scoped credential itself
+	"LITELLM_URL":                    true, // the model endpoint — no session without it
+	"LITELLM_API_KEY":                true, // the model credential itself (model access ≠ forge access)
+	"LITELLM_FALLBACKS":              true, // routing chain, no secret material
+	"PI_TOOL_BUDGET":                 true, // turn cap — a number, not a credential
+	"PI_TOOL_BUDGET_ALLOW":           true,
+	"PI_TOOL_BUDGET_NUDGE":           true,
+	"HARMOSTES_SKILLS_REPO":          true, // git URL of the served skills
+	"HARMOSTES_SKILLS_REV":           true, // a commit sha pin
+	"HARMOSTES_REVIEW_POST_TOKEN":    true, // the scoped credential itself (github.com)
+	"HARMOSTES_REVIEW_POST_TOKEN_FJ": true, // the fork-forge half (#687)
 }
 
 // SpawnSafeEnv reports whether an allowlisted name survives into an ARMED
@@ -571,6 +580,7 @@ func jobCredentialEnv(policy budgetPolicyFn) []string {
 	// objective kind is the truthful discriminator.
 	if !policy.isReviewAttempt() {
 		delete(wanted, "HARMOSTES_REVIEW_POST_TOKEN")
+		delete(wanted, "HARMOSTES_REVIEW_POST_TOKEN_FJ")
 	}
 	var out []string
 	for _, kv := range os.Environ() {

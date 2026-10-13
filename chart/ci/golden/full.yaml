@@ -5470,7 +5470,7 @@ spec:
               value: "8084"
             # ── Dispatcher knobs (ADR-0007 phase 3) ──
             - name: HARMOSTES_MAX_CONCURRENT
-              value: "3"
+              value: "5"
             # Leg-2 fast path: sweep cadence for ARMED-not-dispatched
             # claims — CI-green dispatches within one tick. "0" = off.
             - name: HARMOSTES_GATE_FASTPOLL
@@ -5547,6 +5547,17 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: harmostes-review-post-token
+                  key: token
+                  optional: true
+            # The fork-forge half (#687): a github.com PAT re-bound as
+            # FORGEJO_TOKEN 401s every call in a fork session — the session
+            # picks by its PR host (scopePostToken). Comment-scoped on the
+            # fork (write:issue — verified live: comment 201, merge 403).
+            # OPTIONAL: absent = fork sessions stay unarmed.
+            - name: HARMOSTES_REVIEW_POST_TOKEN_FJ
+              valueFrom:
+                secretKeyRef:
+                  name: harmostes-review-post-token-forgejo
                   key: token
                   optional: true
             # Served-skills single source (#441): passed to the dispatcher so

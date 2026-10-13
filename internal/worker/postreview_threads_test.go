@@ -2084,3 +2084,60 @@ func TestPostReviewCarriedArtifactComplete(t *testing.T) {
 		t.Fatal("beyond the display cap the verdict shows the marker, not the tail (the artifact holds it)")
 	}
 }
+
+// TestPostReviewLargeCarriedListSurvives pins the #685 r11 CRITICAL: an
+// unbounded carried list rode `export THREADS` into execve and died at
+// MAX_ARG_STRLEN (exit 126, no verdict, no artifact, label never
+// consumed → re-arm crash loop; reproduced at n=30), and could breach
+// lastJSONLine's 1MB scanner cap. The list now travels as a file path,
+// the artifact line is python-built, and carried bodies are budgeted
+// (64KB aggregate; 1600/window beyond). 40 off-diff findings × 4KB
+// bodies: the round must survive with honest counts.
+func TestPostReviewLargeCarriedListSurvives(t *testing.T) {
+	m := map[string]bool{}
+	fs := []any{}
+	for i := 0; i < 40; i++ {
+		p := fmt.Sprintf("big%02d.diff", i)
+		m[p] = true
+		fs = append(fs, map[string]any{"path": p, "line": 3,
+			"body": "Blocking: " + strings.Repeat("four-kilobyte evidence body that must not kill execve. ", 68) + fmt.Sprintf("FIX #%d", i)})
+	}
+	f := &fakeForge{comments: []map[string]any{}, reviews: []map[string]any{}, comment422: m}
+	srv := httptest.NewServer(f.mux(t))
+	t.Cleanup(srv.Close)
+
+	review := map[string]any{"decision": "REQUEST_CHANGES", "reviewed_sha": "deadbeef123", "comments": fs}
+	out := runPlugin(t, srv, false, review) // exit 0 — the exit-126 crash is the bug
+
+	f.mu.Lock()
+	labelGone, verdict := f.labelGone, f.verdictBody
+	f.mu.Unlock()
+	if !labelGone {
+		t.Fatal("the label must be consumed (an unconsumed label re-arms into the same crash)")
+	}
+	if verdict == "" {
+		t.Fatal("the verdict must post")
+	}
+	var last map[string]any
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "{") && strings.Contains(line, "\"inline_threads\"") {
+			if err := json.Unmarshal([]byte(line), &last); err != nil {
+				t.Fatalf("artifact line unparsable (the lost-artifact class): %v", err)
+			}
+		}
+	}
+	ev, _ := last["event"].(map[string]any)
+	it, _ := ev["inline_threads"].(map[string]any)
+	if bc, _ := it["budget_capped"].(float64); int(bc) == 0 {
+		t.Fatalf("the 64KB budget must engage at 40×4KB bodies, got %v", it)
+	}
+	rej, _ := it["rejected"].(float64)
+	capd, _ := it["capped"].(float64)
+	if int(rej)+int(capd) != 40 {
+		t.Fatalf("counts stay exact under the budget (rejected+capped=40), got rejected=%v capped=%v", rej, capd)
+	}
+	if len(out) > 300*1024 {
+		t.Fatalf("the artifact line must stay far under the 1MB scanner cap, output %d bytes", len(out))
+	}
+}

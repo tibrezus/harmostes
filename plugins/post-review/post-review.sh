@@ -771,7 +771,25 @@ capped=len(all_cs[len(cs):])+len(todo_dropped)
 dropped=[str(c.get("path","?")) for c in all_cs[len(cs):]]+[str(t.get("path","?")) for t in todo_dropped]
 if dropped:
     print(f"[post-review] capped: {len(all_cs[len(cs):])} findings + {len(todo_dropped)} TODOs anchor only in the verdict body: {', '.join(dropped)}", file=sys.stderr)
+# r11 CRITICAL: the carried list rides the plugin's artifact line and the
+# timeline event — an UNBOUNDED list (r9's full-fidelity fix) overflows
+# Linux MAX_ARG_STRLEN via export THREADS (exit 126, round lost, label
+# not consumed, re-arm crash loop — reproduced at n=30) and can breach
+# lastJSONLine's 1MB scanner cap (zeroed parse — the lost-artifact class).
+# Budget: bodies stay COMPLETE while the aggregate is under 64KB; beyond
+# it each new body caps at 1600 with why=budget and the summary counts
+# them. The run record keeps what fits; the counts stay honest.
+BUDGET=64*1024
+_total=0; _capped=0
+for c in carried:
+    b=str(c.get("body",""))
+    if _total+len(b)<=BUDGET:
+        _total+=len(b); continue
+    if len(b)>1600: c["body"]=b[:1600]+" …[budget-capped]"
+    c["why"]=(str(c.get("why") or "")+"+budget").lstrip("+")
+    _capped+=1
 summary={"posted":posted,"posted_findings":posted_findings,"posted_todos":posted_todos,"rejected":rejected,"capped":capped,"todos":len(todo_bodies)}
+if _capped: summary["budget_capped"]=_capped
 if carried:
     summary["carried"]=carried
 if last_error:
@@ -842,16 +860,25 @@ PYTODO
   esac
   rm -f "$APPROVAL_JSON" "$APPROVAL_RESP_FILE"
 fi
-THREADS=$(cat "$THREAD_STATUS_FILE")
-# The scan-failed flag (written by the dedupe scan on failure) splices into
-# WHATEVER shape the file carries — publish, skip, or default (r4 P8
-# blocker: reading+rm'ing the flag inside a branch made the splice dead).
+# r11 CRITICAL: this used to be `THREADS=$(cat …); export THREADS` — the
+# exported blob rode envp into the NEXT exec (the verdict heredoc's
+# python3) and died at MAX_ARG_STRLEN once the carried list grew (exit
+# 126, crash site unrelated to cause). The summary now travels as a FILE
+# PATH — small constant env — and every consumer reads the file.
+# The scan-failed flag still splices into the file itself (r4 P8: the
+# splice must survive whichever branch wrote the shape).
 if [ -s "$DEDUPE_FLAG_FILE" ]; then
   FLAG="$(cat "$DEDUPE_FLAG_FILE")"
-  THREADS="${THREADS%\}}${FLAG}}"
+  python3 - "$THREAD_STATUS_FILE" "$FLAG" <<'PYFLAG'
+import json,sys
+p,frag=sys.argv[1],sys.argv[2].strip().lstrip(",")
+k,_,v=frag.partition(":")
+d=json.load(open(p)); d[k.strip().strip('"')]=v.strip().strip('"')
+json.dump(d,open(p,"w"))
+PYFLAG
 fi
-rm -f "$THREAD_STATUS_FILE" "$DEDUPE_FLAG_FILE"
-export THREADS
+rm -f "$DEDUPE_FLAG_FILE"
+export THREADS_FILE="$THREAD_STATUS_FILE"
 
 
 # ── Verdict comment (r7, owner directive; repositioned #685 r5): posted
@@ -876,7 +903,7 @@ n=len(fs)
 # The publisher's true counts + everything it could not land (#685 r5):
 # rejected anchors, lineless findings, and the 20-thread cap overage all
 # ride here — the verdict may not claim a thread the forge never took.
-try: th=json.loads(os.environ.get("THREADS") or "{}")
+try: th=json.load(open(os.environ["THREADS_FILE"]))
 except Exception: th={}
 carried=th.get("carried") or []
 posted=int(th.get("posted") or 0)
@@ -918,6 +945,8 @@ if carried:
         shown=b if len(b)<=1600 else b[:1600]+(" …[truncated %d chars — full text in the run record (timeline, 7d)]" % (len(b)-1600))
         body+="\n- **%s:%s** %s" % (c.get("path","?"), c.get("line","?"), shown)
     if len(carried)>30: body+="\n- … %d more in the run record (timeline, 7d — ledger pathological: inspect the round)" % (len(carried)-30)
+    if int(th.get("budget_capped") or 0):
+        body+="\n\n(aggregate carried budget reached: %d bodies show their first 1600 chars; counts above are exact)" % int(th.get("budget_capped"))
 print(json.dumps({"body": body+"\n\n<!-- pr-review: "+dec+" @ "+sha+" -->"}))
 PYEOF
 )
@@ -984,12 +1013,26 @@ fi
 log "removing label '$LABEL'…"
 curl -fsSL -X DELETE -H "authorization: token $TOKEN" -H "accept: application/json" \
   "$API_BASE/repos/$REPO/issues/$PR_NUM/labels/$LABEL" 2>/dev/null||log "WARN: could not remove label"
-CARRY_SUMMARY=$(printf '%s' "$CARRY" | python3 -c "import json,sys;d=json.load(sys.stdin);print(json.dumps({k:d[k] for k in ('minted','notes')}))")
-if [ -n "$STATUS_STATE" ]; then
-  STATUS_FIELD="\"status_post\":{\"state\":\"$STATUS_STATE\",\"context\":\"pr-review/verdict\""
-  [ -n "$STATUS_NOTE" ] && STATUS_FIELD="$STATUS_FIELD,\"note\":\"$STATUS_NOTE\""
-  STATUS_FIELD="$STATUS_FIELD},"
-else
-  STATUS_FIELD="\"status_post\":{\"note\":\"$STATUS_NOTE\"},"
-fi
-echo "{\"artifact\":\"pr-$HOST-$REPO-$PR_NUM\",\"status\":\"ok\",\"event\":{\"host\":\"$HOST\",\"repo\":\"$REPO\",\"number\":$PR_NUM,\"decision\":\"$DEC\",\"thread_gate\":\"$GATE_STATUS\",${STATUS_FIELD}\"carry\":$CARRY_SUMMARY,\"inline_threads\":$THREADS}}"
+# r11: the artifact line is BUILT IN PYTHON, not echo-interpolated — the
+# echo shipped the whole carried list through a bash string (quoting
+# hazards) and its size rode the process env; json.dumps makes the line
+# and the budget keeps it far under lastJSONLine's 1MB scanner cap.
+DEC="$DEC" GATE_STATUS="$GATE_STATUS" STATUS_STATE="$STATUS_STATE" STATUS_NOTE="$STATUS_NOTE" \
+python3 - <<'PYARTIFACT'
+import json, os
+H=os.environ["HOST"]; R=os.environ["REPO"]; P=int(os.environ["PR_NUM"])
+ev={"host":H,"repo":R,"number":P,
+    "decision":os.environ["DEC"],"thread_gate":os.environ["GATE_STATUS"]}
+ss=os.environ.get("STATUS_STATE",""); sn=os.environ.get("STATUS_NOTE","")
+if ss:
+    ev["status_post"]={"state":ss,"context":"pr-review/verdict",**({"note":sn} if sn else {})}
+else:
+    ev["status_post"]={"note":sn}
+carry=json.load(open(os.environ["CARRY_JSON_FILE"]))
+ev["carry"]={k:carry.get(k) for k in ("minted","notes")}
+ev["inline_threads"]=json.load(open(os.environ["THREADS_FILE"]))
+# compact separators: the legacy echo's byte shape (no spaces) is part of
+# the contract — consumers grep the line, not parse-and-rebuild.
+print(json.dumps({"artifact":"pr-%s-%s-%d"%(H,R,P),"status":"ok","event":ev},separators=(",",":")))
+PYARTIFACT
+rm -f "$THREAD_STATUS_FILE"

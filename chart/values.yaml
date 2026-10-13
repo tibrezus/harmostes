@@ -89,7 +89,12 @@ worker:
   # "0" = off (cron-only backstop).
   gateFastPoll: "30s"
   job:                     # per-Attempt Job pods (ADR-0007)
-    maxConcurrent: 3       # fleet default; spec.reviewReady.maxConcurrent overrides per Workflow
+    # 5 (#687, 2026-10-13): two review workflows share these slots and the
+    # wall-era rounds run 25-120m — at 3, a pair of long fork rounds
+    # starved github reviews entirely (observed live: stranded candidates,
+    # a dispatched Job lost to overbooking). 5 keeps both fleets moving;
+    # per-workflow override remains spec.reviewReady.maxConcurrent.
+    maxConcurrent: 5
     cancelOnSupersede: true # delete the review Job of a claim released superseded/closed (#402); false = let dead-head reviews burn the run bound (pre-#402 behavior)
     ttlSecondsAfterFinished: 3600
 

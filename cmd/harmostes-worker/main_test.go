@@ -574,7 +574,7 @@ func TestScopePostToken(t *testing.T) {
 	for _, n := range worker.EnvAllowlistNames() {
 		safe := worker.SpawnSafeEnv(n)
 		if safe && (strings.Contains(n, "TOKEN") || strings.Contains(n, "PASSWORD") || strings.Contains(n, "USERNAME") || n == "HARMOSTES_FORGEJO_BOT_HOST") {
-			if n != "HARMOSTES_REVIEW_POST_TOKEN" && n != "LITELLM_API_KEY" {
+			if n != "HARMOSTES_REVIEW_POST_TOKEN" && n != "HARMOSTES_REVIEW_POST_TOKEN_FJ" && n != "LITELLM_API_KEY" {
 				t.Fatalf("safe set must not contain credential-shaped %s — justify or remove", n)
 			}
 		}
@@ -606,5 +606,57 @@ func TestScopePostToken(t *testing.T) {
 	unarmed := scopePostToken([]string{"GH_TOKEN=owner", "PATH=/x"})
 	if len(unarmed) != 2 || unarmed[0] != "GH_TOKEN=owner" {
 		t.Fatalf("unarmed scope must be identity: %v", unarmed)
+	}
+}
+
+// TestScopePostTokenHostKeyed pins #687: one value cannot serve both wired
+// forges. github.com sessions take the github token, fork sessions the FJ
+// token; a host with no configured token stays unarmed (never wrong-armed);
+// the session sees exactly ONE posting credential under the canonical name —
+// both raw token names are dropped.
+func TestScopePostTokenHostKeyed(t *testing.T) {
+	base := func(repo string) []string {
+		e := []string{"PATH=/usr/bin"}
+		if repo != "" {
+			e = append(e, "HARMOSTES_TRIGGER_REPO="+repo)
+		}
+		return e
+	}
+	t.Setenv("HARMOSTES_REVIEW_POST_TOKEN", "gh-token")
+	t.Setenv("HARMOSTES_REVIEW_POST_TOKEN_FJ", "fj-token")
+
+	scoped := scopePostToken(base("github.com/tibrezus/harmostes"))
+	joined := strings.Join(scoped, "\n")
+	for _, want := range []string{"HARMOSTES_REVIEW_POST_TOKEN=gh-token", "GH_TOKEN=gh-token", "FORGEJO_TOKEN=gh-token"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("github session must bind the github token (%s missing): %v", want, scoped)
+		}
+	}
+	if strings.Contains(joined, "fj-token") || strings.Contains(joined, "REVIEW_POST_TOKEN_FJ") {
+		t.Fatalf("the fork token must not reach a github session: %v", scoped)
+	}
+
+	scoped = scopePostToken(base("git.rezus.cloud/tibrez/rhesadox"))
+	joined = strings.Join(scoped, "\n")
+	for _, want := range []string{"HARMOSTES_REVIEW_POST_TOKEN=fj-token", "FORGEJO_TOKEN=fj-token", "GH_TOKEN=fj-token"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("fork session must bind the fork token (%s missing): %v", want, scoped)
+		}
+	}
+	if strings.Contains(joined, "gh-token") {
+		t.Fatalf("the github token must not reach a fork session (the 401 storm): %v", scoped)
+	}
+
+	// a host with no configured token: unarmed for that host, never armed wrong
+	t.Setenv("HARMOSTES_REVIEW_POST_TOKEN_FJ", "")
+	scoped = scopePostToken(base("git.rezus.cloud/tibrez/rhesadox"))
+	joined = strings.Join(scoped, "\n")
+	if strings.Contains(joined, "gh-token") || strings.Contains(joined, "HARMOSTES_REVIEW_POST_TOKEN=") {
+		t.Fatalf("a fork session without a fork token must carry NO posting credential: %v", scoped)
+	}
+	// absent repo env defaults to the github side (the historically armed host)
+	scoped = scopePostToken(base(""))
+	if !strings.Contains(strings.Join(scoped, "\n"), "HARMOSTES_REVIEW_POST_TOKEN=gh-token") {
+		t.Fatalf("absent repo defaults to github: %v", scoped)
 	}
 }

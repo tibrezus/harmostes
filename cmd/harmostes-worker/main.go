@@ -205,11 +205,38 @@ func spawnEnv(base []string, graphPath string, logf func(string, ...any)) []stri
 // to the scoped value, so the CLIs authenticate but can only do what a
 // comment-scoped token allows. Unarmed deployments keep the historical
 // env (no behavior change).
-const ReviewPostTokenEnvKey = "HARMOSTES_REVIEW_POST_TOKEN"
+const (
+	ReviewPostTokenEnvKey    = "HARMOSTES_REVIEW_POST_TOKEN"
+	ReviewPostTokenFJEnvKey  = "HARMOSTES_REVIEW_POST_TOKEN_FJ" // #687: the fork-forge half
+	ReviewTriggerRepoEnvKey  = "HARMOSTES_TRIGGER_REPO"
+	// ReviewGithubHost: the github.com discriminator (mirrors host::is_fj —
+	// a non-github.com host is Forgejo-shaped for token selection).
+	ReviewGithubHost = "github.com"
+)
+
+// pickPostToken selects the session's posting credential by the PR's host
+// (#687): one value cannot be valid on both wired forges, and re-binding a
+// github PAT as FORGEJO_TOKEN (or the reverse) arms the session with a
+// credential its own forge 401s — the agent grinds on posting failures
+// mid-round. github.com sessions take the github token, every other host
+// the fork token; a missing repo env defaults to github (the historically
+// armed side). A side with no configured token stays unarmed for that
+// host's sessions: absent = unarmed, never wrong-armed.
+func pickPostToken(repo, gh, fj string) string {
+	host := ReviewGithubHost
+	if i := strings.Index(repo, "/"); i > 0 {
+		host = repo[:i]
+	}
+	if host == ReviewGithubHost {
+		return gh
+	}
+	return fj
+}
 
 func scopePostToken(env []string) []string {
-	post := os.Getenv(ReviewPostTokenEnvKey)
-	if post == "" {
+	gh := os.Getenv(ReviewPostTokenEnvKey)
+	fj := os.Getenv(ReviewPostTokenFJEnvKey)
+	if gh == "" && fj == "" {
 		return env
 	}
 	// FAIL-CLOSED: keep only the explicitly-safe names (worker.SpawnSafeEnv);
@@ -222,7 +249,27 @@ func scopePostToken(env []string) []string {
 			drop = append(drop, n)
 		}
 	}
+	// drop BOTH raw token names: the session sees exactly one posting
+	// credential, the chosen one, under the canonical name the prompt and
+	// the skill document.
+	drop = append(drop, ReviewPostTokenEnvKey, ReviewPostTokenFJEnvKey)
 	scoped := agent.FilterEnv(env, drop...)
+	repo := ""
+	for _, kv := range env {
+		if strings.HasPrefix(kv, ReviewTriggerRepoEnvKey+"=") {
+			repo = strings.TrimPrefix(kv, ReviewTriggerRepoEnvKey+"=")
+			break
+		}
+	}
+	post := pickPostToken(repo, gh, fj)
+	if post == "" {
+		post = gh
+		// wrong-armed is worse than unarmed: this host has no token, the
+		// session keeps the rich-env drop but no posting credential — the
+		// historical unarmed posture for that host.
+		return scoped
+	}
+	scoped = append(scoped, ReviewPostTokenEnvKey+"="+post)
 	// RE-BIND the CLI-canonical names to the scoped credential (r4 P1):
 	// dropping the rich aliases without re-binding un-authenticates the very
 	// CLI paths the skill's host guide drives. gh reads GH_TOKEN/GITHUB_TOKEN;

@@ -540,14 +540,14 @@ var jobEnvAllowlist = []string{
 // dropped, not leaked. The LLM trio is here because sessions need the
 // model; the budget trio and skills pins are not credentials.
 var spawnSafeEnv = map[string]bool{
-	"LITELLM_URL":                 true, // the model endpoint — no session without it
-	"LITELLM_API_KEY":             true, // the model credential itself (model access ≠ forge access)
-	"LITELLM_FALLBACKS":           true, // routing chain, no secret material
-	"PI_TOOL_BUDGET":              true, // turn cap — a number, not a credential
-	"PI_TOOL_BUDGET_ALLOW":        true,
-	"PI_TOOL_BUDGET_NUDGE":        true,
-	"HARMOSTES_SKILLS_REPO":       true, // git URL of the served skills
-	"HARMOSTES_SKILLS_REV":        true, // a commit sha pin
+	"LITELLM_URL":                    true, // the model endpoint — no session without it
+	"LITELLM_API_KEY":                true, // the model credential itself (model access ≠ forge access)
+	"LITELLM_FALLBACKS":              true, // routing chain, no secret material
+	"PI_TOOL_BUDGET":                 true, // turn cap — a number, not a credential
+	"PI_TOOL_BUDGET_ALLOW":           true,
+	"PI_TOOL_BUDGET_NUDGE":           true,
+	"HARMOSTES_SKILLS_REPO":          true, // git URL of the served skills
+	"HARMOSTES_SKILLS_REV":           true, // a commit sha pin
 	"HARMOSTES_REVIEW_POST_TOKEN":    true, // the scoped credential itself (github.com)
 	"HARMOSTES_REVIEW_POST_TOKEN_FJ": true, // the fork-forge half (#687)
 }

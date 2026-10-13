@@ -206,9 +206,9 @@ func spawnEnv(base []string, graphPath string, logf func(string, ...any)) []stri
 // comment-scoped token allows. Unarmed deployments keep the historical
 // env (no behavior change).
 const (
-	ReviewPostTokenEnvKey    = "HARMOSTES_REVIEW_POST_TOKEN"
-	ReviewPostTokenFJEnvKey  = "HARMOSTES_REVIEW_POST_TOKEN_FJ" // #687: the fork-forge half
-	ReviewTriggerRepoEnvKey  = "HARMOSTES_TRIGGER_REPO"
+	ReviewPostTokenEnvKey   = "HARMOSTES_REVIEW_POST_TOKEN"
+	ReviewPostTokenFJEnvKey = "HARMOSTES_REVIEW_POST_TOKEN_FJ" // #687: the fork-forge half
+	ReviewTriggerRepoEnvKey = "HARMOSTES_TRIGGER_REPO"
 	// ReviewGithubHost: the github.com discriminator (mirrors host::is_fj —
 	// a non-github.com host is Forgejo-shaped for token selection).
 	ReviewGithubHost = "github.com"

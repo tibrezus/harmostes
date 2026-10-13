@@ -152,3 +152,53 @@ func TestReviewGateRejectsSHAMismatch(t *testing.T) {
 		t.Fatalf("stale reviewed_sha must be rejected, out=%s", out)
 	}
 }
+
+func TestReviewGateAcceptsDispositionContract(t *testing.T) {
+	// todos[] may carry disposition (fix-in-pr | architecture-carry) and an
+	// optional string issue reference — the carry contract.
+	out, code := runReviewGate(t, map[string]any{
+		"decision":     "REQUEST_CHANGES",
+		"reviewed_sha": sha40,
+		"findings":     []any{map[string]any{"path": "a.go", "line": 1, "body": "Blocking: x"}},
+		"todos": []any{
+			map[string]any{"path": "b.go", "line": 2, "body": "missing test scope"},
+			map[string]any{"path": "c.go", "line": 3, "body": "router needs an ADR", "disposition": "architecture-carry", "issue": "#431"},
+			map[string]any{"path": "d.go", "line": 4, "body": "proof registry split", "disposition": "fix-in-pr"},
+		},
+	}, sha40)
+	if code != 0 {
+		t.Fatalf("gate must accept the disposition contract, got exit %d:\n%s", code, out)
+	}
+}
+
+func TestReviewGateRejectsBadDisposition(t *testing.T) {
+	out, code := runReviewGate(t, map[string]any{
+		"decision":     "REQUEST_CHANGES",
+		"reviewed_sha": sha40,
+		"findings":     []any{map[string]any{"path": "a.go", "line": 1, "body": "Blocking: x"}},
+		"todos": []any{
+			map[string]any{"path": "b.go", "line": 2, "body": "x", "disposition": "carry-please"},
+		},
+	}, sha40)
+	if code == 0 {
+		t.Fatal("gate must reject an unknown disposition — the carry step dispatches on this field")
+	}
+	if !strings.Contains(out, "disposition") {
+		t.Errorf("rejection must name the field, got:\n%s", out)
+	}
+}
+
+func TestReviewGateRejectsNonStringIssue(t *testing.T) {
+	out, code := runReviewGate(t, map[string]any{
+		"decision":     "REQUEST_CHANGES",
+		"reviewed_sha": sha40,
+		"findings":     []any{map[string]any{"path": "a.go", "line": 1, "body": "Blocking: x"}},
+		"todos": []any{
+			map[string]any{"path": "b.go", "line": 2, "body": "x", "disposition": "architecture-carry", "issue": 431},
+		},
+	}, sha40)
+	if code == 0 {
+		t.Fatal("gate must reject a non-string issue reference — the carry parses it as text")
+	}
+	_ = out
+}

@@ -14,11 +14,17 @@ skills:
   # workflow owns freshness (scheduled PR bumping this value when agents
   # main moves). Empty string = track the repo's default branch (the
   # pre-#408 behavior; the manifest log line remains the only provenance).
-  # c1382e7: the pr-review skill rewrite (#680 cutover — atomic with the
-  # ledger contract, agent-posted findings, and the scoped posting token;
-  # the served skill, prompt, and plugins must agree at every deployable
-  # state. Prior: 3707bc7 (r18 doctrine, batch-publish era).
-  rev: "c1382e7d3b9e9be54fadcb4917f9a2615f747fe7"
+  # ec29895: host verbs corrected against the live forges (#685's
+  # review rounds — probes on both hosts): GitHub replies via the
+  # documented /comments/{id}/replies route (in_reply_to is a 422
+  # not-permitted-key there — the skill had it inverted), the carry-mint
+  # picks the NEWEST-CREATED open milestone client-side (both hosts'
+  # default listing sort is due_on ASC — .[0] is the oldest; verified
+  # live: fork id 50 over id 42, GitHub number 10 over v0.6.0), and the
+  # GitHub mint takes the milestone NUMBER. The verbs are now executable
+  # verbatim on every wired host. Prior: f44b548 (order fix, verb still
+  # .id), c1382e7 (the #680 rewrite), 3707bc7 (r18 doctrine).
+  rev: "ec298953da291b343bde8fa842f7759a006461f2"
 
 agent:
   # Hard tool-call cap per agent session (#484): past the cap only the
@@ -521,16 +527,28 @@ tasks:
            {"path": "...", "line": N, "body": "Blocking: ...",
             "thread_ref": "<platform thread reference, once posted>"}],
          "todos": [
-           {"path": "...", "line": N, "body": "<what is completely missing>"}]}
+           {"path": "...", "line": N, "body": "<what is completely missing>",
+            "disposition": "fix-in-pr|architecture-carry"}]}
 
     `findings` carries ONLY blocking findings (CRITICAL or verified
-    MAJOR) — each posted as a native anchored thread as it is verified.
-    Fill `thread_ref` after posting. The pipeline publishes any finding
-    without a `thread_ref` (session-death resilience), composes the
-    one-line verdict from the threads actually on the PR, and counts
-    blocking findings from those threads. MINOR/NIT stay in your notes.
-    `todos` are completely-missing pieces — non-blocking anchors the
-    next round follows up.
+    MAJOR) — each posted as a native anchored thread as it is verified
+    (thread body opens with **Blocking**). The anchor MUST be a line of
+    the PR's own diff (merge-base..head): hosts 422 any line outside it
+    (GitHub: 'could not be resolved' on the review-thread field) — an
+    unanchorable finding is carried by the verdict, but the thread is
+    the addressable surface, so pick anchors FROM the diff. Fill
+    `thread_ref` after posting. The pipeline publishes any finding
+    without a `thread_ref` (session-death resilience) and composes the
+    one-line verdict from the threads actually on the PR. MINOR/NIT
+    stay in your notes.
+    `todos` are completely-missing pieces and COUNT as threads of the
+    round (**TODO** prefix; disposition fix-in-pr default): fixed in this
+    PR, reply+resolve — they block the verdict like any thread. Only a
+    design/architecture-scale item that outlives this diff goes out as
+    disposition architecture-carry (**Architecture-carry** prefix): the
+    pipeline mints one deduped tracker issue (milestone-assigned),
+    replies the reference, resolves the thread — carried items never
+    block. A reply alone never closes a thread: resolve is the close-out.
 
     Then verify it parses:
     python3 -c "import json; r=json.load(open('/workspace/review.json')); print('OK', r['decision'])"

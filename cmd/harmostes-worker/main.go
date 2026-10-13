@@ -263,7 +263,6 @@ func scopePostToken(env []string) []string {
 	}
 	post := pickPostToken(repo, gh, fj)
 	if post == "" {
-		post = gh
 		// wrong-armed is worse than unarmed: this host has no token, the
 		// session keeps the rich-env drop but no posting credential — the
 		// historical unarmed posture for that host.

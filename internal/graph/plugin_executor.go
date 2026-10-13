@@ -2,6 +2,7 @@ package graph
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"os/exec"
@@ -71,12 +72,33 @@ func (e *PluginExecutor) Execute(ctx context.Context, node v1alpha1.NodeSpec, en
 	pluginEnv := envToPluginEnv(env, "plugin", specJSON)
 	res, out, runErr := worker.RunPlugin(ctx, command, args, pluginEnv, env.ExtraEnv)
 	if e.tl != nil {
-		if err := e.tl.Emit(ctx, timeline.KindPluginTail, node.ID, map[string]any{
+		payload := map[string]any{
 			"plugin": cfg.Name,
 			// Redacted before persistence: tails are run evidence, and the
 			// combined output can echo credential-bearing URLs (#115 class).
 			"tail": tailLines(worker.Redact(out), 20),
-		}); err != nil {
+		}
+		// The parsed artifact rides the same event (#685 r10): the deploy
+		// verdict's truncation marker promises 'full text in the run
+		// record', and this event IS that record — without the field the
+		// pointer named a surface that retained nothing (green deploys
+		// dropped the artifact everywhere: logs die with the pod, the
+		// onDeployed pubsub event has no persisting subscriber). Redacted
+		// for the same #115 reason as the tail; structured plugin output,
+		// not free-form echo.
+		if res.Artifact != "" {
+			// The parsed result (status, event — carried bodies included),
+			// not the bare artifact name: the truncation marker's promise
+			// is about the event's carried list. Bounded (r12): a
+			// pathological ledger could otherwise write ~1MB rows into the
+			// statestore per event (7d TTL) — evidence rows, not log dumps
+			// (the package convention). The plugin's own 96KB artifact
+			// bound keeps real rounds far below this cap.
+			if b, merr := json.Marshal(res); merr == nil {
+				payload["artifact"] = truncateForTimeline(worker.Redact(string(b)), 128*1024)
+			}
+		}
+		if err := e.tl.Emit(ctx, timeline.KindPluginTail, node.ID, payload); err != nil {
 			// Evidence loss must be visible in process logs, not only tracing.
 			slog.Warn("timeline emit plugin.tail failed", "node", node.ID, "err", err)
 		}

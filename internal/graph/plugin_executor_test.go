@@ -255,3 +255,36 @@ func TestPluginExecutorExecFailureSurfacesError(t *testing.T) {
 		t.Errorf("feedback must be truncated, got %d bytes", len(result.Feedback))
 	}
 }
+
+// TestPluginTailCarriesArtifact pins the #685 r10 recovery surface: the
+// deploy verdict's truncation marker promises 'full text in the run
+// record' — without the artifact field on the persisted plugin.tail
+// event, a green deploy retained the artifact nowhere (logs die with the
+// pod; the onDeployed pubsub event has no persisting subscriber).
+func TestPluginTailCarriesArtifact(t *testing.T) {
+	dir := t.TempDir()
+	script := dir + "/p.sh"
+	art := `{"artifact":"pr-github.com-o/r-99","status":"ok","event":{"decision":"REQUEST_CHANGES","inline_threads":{"carried":[{"path":"x.md","body":"FIX: the tail the marker promises must be recoverable"}]}}}`
+	if err := os.WriteFile(script, []byte("#!/bin/sh\necho working\necho '"+art+"'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tl := &fakeTL{}
+	e := NewPluginExecutor(scriptResolver{script})
+	e.tl = tl
+	res, err := e.Execute(t.Context(), v1alpha1.NodeSpec{ID: "deploy", Type: "plugin", Config: []byte(`{"name":"post-review"}`)}, NodeEnv{Workdir: dir})
+	if err != nil || res.Status != StatusGreen {
+		t.Fatalf("execute: %v %s", err, res.Status)
+	}
+	var got string
+	for _, it := range tl.items {
+		if it.Kind == "plugin.tail" {
+			got, _ = it.Payload["artifact"].(string)
+		}
+	}
+	if got == "" {
+		t.Fatal("plugin.tail carries no artifact — the truncation marker's 'full text in the run record' points at nothing")
+	}
+	if !strings.Contains(got, "FIX: the tail the marker promises must be recoverable") {
+		t.Fatalf("the artifact field must carry the FULL structured output (carried bodies included), got %s", got)
+	}
+}

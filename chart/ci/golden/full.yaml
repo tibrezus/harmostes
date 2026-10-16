@@ -5986,7 +5986,7 @@ spec:
       name: pr-review
     thinking: high
     timeout: 3600
-    toolBudget: 0
+    toolBudget: 200
     tools:
     - read
     - bash
@@ -5998,6 +5998,7 @@ spec:
   prepare:
     plugin:
       name: workspace
+      timeout: 5m
   reviewReady:
     dispatchTimeout: 45m
     horizon: 6h

@@ -112,6 +112,7 @@ spec:
                         image: { type: string }                # optional: plugin as its own image
                         configMap: { type: string }            # optional: plugin script from a ConfigMap
                         args: { type: array, items: { type: string } }
+                        timeout: { type: string }                # G8 node bound (e.g. 5m) — fail fast, release, re-dispatch (#689)
                     output: { type: string }                   # artifact produced (path / branch / ref)
                     detect: { type: string, enum: [changed, conflict, always] }
                     config:                                    # arbitrary config passed to the plugin
@@ -162,6 +163,7 @@ spec:
                             image: { type: string }
                             configMap: { type: string }
                             args: { type: array, items: { type: string } }
+                            timeout: { type: string }                # G8 node bound (e.g. 5m) — fail fast, release, re-dispatch (#689)
                     maxFixes: { type: integer, default: 3 }
                     timeout: { type: integer, default: 1800 }
                     scope: { type: string }                    # optional task scope override
@@ -178,6 +180,7 @@ spec:
                         image: { type: string }
                         configMap: { type: string }
                         args: { type: array, items: { type: string } }
+                        timeout: { type: string }                # G8 node bound (e.g. 5m) — fail fast, release, re-dispatch (#689)
 
                 events:                                     # topic names on the Dapr pub/sub
                   type: object

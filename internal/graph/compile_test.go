@@ -225,3 +225,40 @@ func TestCompileLabelsRealComponents(t *testing.T) {
 		t.Errorf("deploy label = %q, want post-review", labels["deploy"])
 	}
 }
+
+// TestCompileWorkflowCarriesPluginRefTimeout (#689): PluginRef.Timeout lands
+// on the compiled node's Timeout — the G8 circuit breaker input. A stalled
+// prepare (clone/rig) must hit a node bound and fail fast ("timed out
+// after…"), releasing the claim for re-dispatch, instead of burning the
+// whole run bound with zero durable work.
+func TestCompileWorkflowCarriesPluginRefTimeout(t *testing.T) {
+	wf := &v1alpha1.Workflow{
+		Spec: v1alpha1.WorkflowSpec{
+			Prepare: v1alpha1.PrepareSpec{
+				Plugin: v1alpha1.PluginRef{Name: "workspace", Timeout: "5m"},
+			},
+			Agent: v1alpha1.AgentSpec{
+				Model:        "none",
+				TaskTemplate: v1alpha1.TaskTemplate{Name: "none"},
+				Gate:         v1alpha1.GateRef{Plugin: v1alpha1.PluginRef{Name: "noop"}},
+			},
+			Deploy: v1alpha1.DeploySpec{
+				Plugin: v1alpha1.PluginRef{Name: "post-review", Timeout: "3m"},
+			},
+		},
+	}
+
+	gs := CompileWorkflow(wf)
+	want := map[string]string{"prepare": "5m", "deploy": "3m"}
+	for _, n := range gs.Nodes {
+		if w, ok := want[n.ID]; ok {
+			if n.Timeout != w {
+				t.Errorf("node %s Timeout = %q, want %q (PluginRef.Timeout must flow to the G8 bound)", n.ID, n.Timeout, w)
+			}
+			delete(want, n.ID)
+		}
+	}
+	for id := range want {
+		t.Errorf("node %s missing from compiled graph", id)
+	}
+}

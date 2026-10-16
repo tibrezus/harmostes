@@ -341,10 +341,20 @@ workflowTemplates:
       # generates hypotheses; chilling its sampling collapsed findings from
       # ~4 to 1-2 on large merges, observed live Oct 8+).
       thinking: high
-      # #680 — uncapped by turns: all nine pillars, all the time needed,
-      # bounded only by `timeout` (the run bound). Findings post as they
-      # are verified, so a long round can never die with unposted work.
-      toolBudget: 0
+      # #689 (measured live 2026-10-16, the #2628 round's session): under
+      # thinking=high the reviewer turns at ~110 calls/h and is
+      # GENERATION-BOUND — 216K output tokens/h ≈ 120% of the 120m run
+      # bound spent purely generating, so an uncapped round dies at the
+      # wall mid-turn: the post-review plugin never runs, no verdict
+      # composes, total loss. Cap at the wall's call budget minus a
+      # finalize margin: (120m − 10m) × 110/60 ≈ 200 calls. Past the cap
+      # the finalize lane keeps the artifact writable and the plugin
+      # composes the verdict from the ledger — a capped round DELIVERS;
+      # a wall-killed round delivers nothing. The converge nudge derives
+      # cap/2 = 100 (dispatch.go carries it), landing the checkpoint with
+      # ~55m of wall left. #680's incrementally-posted findings are
+      # unaffected: exploration still owns the first half of the wall.
+      toolBudget: 200
       timeout: 3600
       tools:
         - read
@@ -357,6 +367,14 @@ workflowTemplates:
     prepare:
       plugin:
         name: workspace
+        # #689: the clone/rig prelude is unbounded by default — one
+        # rhesadox run sat the FULL 120m wall in prepare (its healthy
+        # sibling took 2m26s) and was killed with zero durable work: no
+        # session, no timeline, no verdict. Bound it: a stalled prepare
+        # fails the node at 5m ("timed out after 5m0s"), the claim
+        # releases, and the gate re-dispatches — minutes lost, not the
+        # wall.
+        timeout: 5m
     reviewReady:
       dispatchTimeout: 45m
       horizon: 6h

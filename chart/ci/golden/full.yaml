@@ -4754,6 +4754,16 @@ data:
     invariants — and say explicitly which mechanical claims you did not
     re-verify.
     
+    ## Your turn budget
+    
+    The session runs under a tool-call cap (PI_TOOL_BUDGET, currently
+    200) with a converge checkpoint at half budget (PI_TOOL_BUDGET_NUDGE).
+    This is your wall as well as the run bound: past the cap only the
+    artifact lane stays open, and the round must end composed. Budget
+    accordingly — verify the pillars the diff actually triggers, post
+    each finding the moment it's verified, and treat the checkpoint as
+    the signal to stop exploring and finish synthesis.
+    
     ## Posting credentials
     
     HARMOSTES_REVIEW_POST_TOKEN is a comment-scoped credential for the

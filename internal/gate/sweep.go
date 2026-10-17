@@ -429,6 +429,24 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 		}
 		return false
 	}
+	// liveJobs is the LIVENESS view over the one snapshot (#698 review r2):
+	// the single list means activeJobs() now returns finished Jobs too — a
+	// consumer that relied on the old filter silently inheriting them must
+	// say so. The #402 cancel pass is the one such consumer: its contract is
+	// to stop a RUNNING review on a cancelled claim; a finished Job's round
+	// already ended, and deleting it would count a completed review as a
+	// cancellation — the same success/loss collapse #697 exists to stop.
+	liveJobs := func() []batchv1.Job {
+		all := activeJobs()
+		live := make([]batchv1.Job, 0, len(all))
+		for i := range all {
+			j := &all[i]
+			if j.DeletionTimestamp == nil && j.Status.CompletionTime == nil && !k8s.IsJobFailed(j) {
+				live = append(live, *j)
+			}
+		}
+		return live
+	}
 	// Fact-based classification (#697): the live-filtered view reports
 	// success and loss identically (both are "not active"), which released
 	// successful rounds as dead dispatches (observed live: four successful
@@ -1110,7 +1128,7 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 		} else if !jobsKnown() {
 			log("review-ready: live-job list failed (%v) — skipping the cancel pass (delete is destructive; unknown must fail closed)", jobListErr)
 		} else {
-			jobs := activeJobs()
+			jobs := liveJobs()
 			for idx := range jobs { // index range: the Job structs are large — no copies
 				if ctx.Err() != nil {
 					log("review-ready: sweep deadline hit mid-cancel-pass — %d Job(s) left for the next sweep (fail-safe: the pass re-runs)", len(jobs)-idx)

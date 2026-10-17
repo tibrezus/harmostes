@@ -2,11 +2,13 @@ package graph
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
+	"github.com/tibrezus/harmostes/internal/worker"
 )
 
 func TestCompileWorkflowProducesScope(t *testing.T) {
@@ -275,6 +277,46 @@ func TestCompileWorkflowCarriesPluginRefTimeout(t *testing.T) {
 		}
 		if acfg.Gate == nil || acfg.Gate.Plugin.Timeout != "4m" {
 			t.Fatalf("gate plugin Timeout = %v, want 4m (an advertised bound the compiler drops is schema-only)", acfg.Gate)
+		}
+	}
+}
+
+// TestAsAgentGateCarriesTimeout (#695 r2 4301287303): the config carrying the
+// bound is not enough — worker.GatePlugin must RECEIVE it. Mutating the
+// AsAgentGate wiring away left the whole suite green; this pins the handoff.
+func TestAsAgentGateCarriesTimeout(t *testing.T) {
+	wf := &v1alpha1.Workflow{
+		Spec: v1alpha1.WorkflowSpec{
+			Agent: v1alpha1.AgentSpec{
+				Model:        "none",
+				TaskTemplate: v1alpha1.TaskTemplate{Name: "none"},
+				Gate:         v1alpha1.GateRef{Plugin: v1alpha1.PluginRef{Name: "noop", Timeout: "4m"}},
+			},
+		},
+	}
+	gs := CompileWorkflow(wf)
+	resolver := &fakeResolver{command: "echo", args: []string{"noop"}}
+	for _, n := range gs.Nodes {
+		if n.ID != "agent" {
+			continue
+		}
+		var acfg AgentNodeConfig
+		if err := json.Unmarshal(n.Config, &acfg); err != nil {
+			t.Fatalf("unmarshal agent config: %v", err)
+		}
+		if acfg.Gate == nil {
+			t.Fatal("agent node has no gate config")
+		}
+		g, err := acfg.Gate.AsAgentGate(context.Background(), resolver, NodeEnv{})
+		if err != nil {
+			t.Fatalf("AsAgentGate: %v", err)
+		}
+		gp, ok := g.(worker.GatePlugin)
+		if !ok {
+			t.Fatalf("AsAgentGate returned %T, want worker.GatePlugin", g)
+		}
+		if gp.Timeout != "4m" {
+			t.Fatalf("GatePlugin.Timeout = %q, want 4m (the bound must reach the runner, not just the config)", gp.Timeout)
 		}
 	}
 }

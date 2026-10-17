@@ -6005,6 +6005,7 @@ spec:
   deploy:
     plugin:
       name: post-review
+      timeout: 10m
   description: PR review (fetch PR → agent → pr-review → post review)
   prepare:
     plugin:

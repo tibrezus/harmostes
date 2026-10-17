@@ -363,6 +363,10 @@ workflowTemplates:
     deploy:
       plugin:
         name: post-review
+        # #695 r2: the artifact leg is a node too — a hung forge call in
+        # post-review must not outlive its welcome after the review has
+        # already been delivered.
+        timeout: 10m
     description: PR review (fetch PR → agent → pr-review → post review)
     prepare:
       plugin:

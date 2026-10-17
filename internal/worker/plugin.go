@@ -94,17 +94,14 @@ func RunPlugin(ctx context.Context, command string, args []string, env PluginEnv
 	return lastJSONLine(out.String()), out.String(), runErr
 }
 
-// setWaitDelay makes a context cancel actually RETURN from cmd.Run when the
-// direct child spawned pipe-holding grandchildren (#695 r1): Go SIGKILLs only
-// the direct child on cancel, and cmd.Wait then blocks until every
-// grandchild that inherited the stdout/stderr pipes exits — a hung `git
-// clone … | tail` escaped the node's G8 timeout and burned the run wall
-// (#689's zero-work rounds). WaitDelay forces Wait to reap after the grace
-// and hand back the pipes; Setpgid keeps the group killable as a unit.
-const pluginWaitDelay = 5 * time.Second
+// setWaitDelay (name historical) arms the process-group kill: on context
+// cancel the WHOLE group dies, so pipe-holding grandchildren close their
+// ends and cmd.Run returns. No unconditional WaitDelay here — r2
+// 4301252377 showed WaitDelay re-contracts SUCCESS, reporting an exit-0
+// plugin with daemon children as "WaitDelay expired". The group kill
+// needs no deadline and never touches the happy path.
 
 func setWaitDelay(cmd *exec.Cmd) {
-	cmd.WaitDelay = pluginWaitDelay
 	cmd.SysProcAttr = sysProcAttrGroup()
 	if cancel := cancelKillGroup(cmd); cancel != nil {
 		cmd.Cancel = cancel
@@ -155,6 +152,12 @@ func (g GatePlugin) Run(ctx context.Context) (bool, string, error) {
 		span.SetAttributes(attribute.Int("harmostes.plugin.exit_code", exitCodeFrom(err)))
 	}
 	recordPluginSeconds(ctx, observability.WorkflowFrom(ctx), "gate", name, time.Since(start))
+	// A killed gate is NOT gate feedback — r2 4301258144: green=false
+	// would burn an agent fix attempt on a timeout. Surface the context
+	// error so the node fails with timeout attribution instead.
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return false, strings.TrimSpace(out.String()), ctxErr
+	}
 	return err == nil, strings.TrimSpace(out.String()), nil
 }
 

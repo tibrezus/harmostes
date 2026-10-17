@@ -274,11 +274,19 @@ export function decide(
 ): Decision {
 	const fp = fingerprint(toolName, args);
 	const lane = allowSubstrings[0] ?? DEFAULT_ALLOW;
+	// The lane is where the static-workspace invariant BREAKS: the artifact
+	// changes under the session (the agent writes it), so re-touching it is
+	// legitimate work, not a loop. Targeted access counts — a bash command
+	// naming the lane, or a read/edit/write whose PATH is the lane (r2
+	// 4302821795: refusing a re-read of the reviewer's own ledger
+	// contradicts the invariant's exception). A search whose PATTERN
+	// mentions the lane is not targeting it — searches stay loop-controlled
+	// (the artifact is directly readable, and that read is exempt).
+	const targetArgs = [typeof args.command === "string" ? args.command : "",
+		typeof args.path === "string" ? args.path : "",
+		typeof args.file_path === "string" ? args.file_path : ""];
 	const inLane = FILE_TOOLS.has(toolName) ||
-		(toolName === "bash" && allowSubstrings.some((s) => {
-			const cmd = typeof args.command === "string" ? args.command : "";
-			return cmd.includes(s);
-		}));
+		allowSubstrings.some((s) => targetArgs.some((v) => v.includes(s)));
 
 	// Wall-clock anchor (r2 4302426988): the dispatcher stamps the Job's
 	// start (HARMOSTES_RUN_STARTED_MS) — the SAME clock ADS enforces. The

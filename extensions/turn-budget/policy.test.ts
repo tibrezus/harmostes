@@ -146,6 +146,21 @@ test("loop breaker: the worst observed offender — 10 re-reads of one file — 
 	}
 });
 
+test("loop breaker: re-reading the ARTIFACT is lane work, not a loop (r2 4302821795 — the artifact changes under the session)", () => {
+	const st = newState();
+	const read = { path: "/workspace/review.json" };
+	assert.deepEqual(decide("read", read, st, [DEFAULT_ALLOW], RB), { allow: true });
+	assert.deepEqual(decide("read", read, st, [DEFAULT_ALLOW], RB), { allow: true }); // repeat: ALLOWED
+	// boundary: a SEARCH whose pattern mentions the ledger is not targeting
+	// the artifact — it stays loop-controlled (the model can read the
+	// artifact directly, which is exempt).
+	const grep = { pattern: "review.json", path: "/workspace" };
+	assert.deepEqual(decide("grep", grep, st, [DEFAULT_ALLOW], RB), { allow: true });
+	const d = decide("grep", grep, st, [DEFAULT_ALLOW], RB);
+	assert.equal(d.allow, false);
+	assert.equal(d.loop, true);
+});
+
 test("loop breaker: the finalize lane may repeat (composing legitimately re-touches the artifact)", () => {
 	const st = newState();
 	const append = { command: "cd /workspace && python3 -c \"open('/workspace/review.json','a').write('{}')\"" };

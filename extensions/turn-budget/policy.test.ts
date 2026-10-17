@@ -51,10 +51,20 @@ test("numeric cap: the nudge fires exactly once at nudgeAt", () => {
 
 const RB = { loopBreaker: true, wallSeconds: 0 };
 
-test("fingerprint: canonicalizes whitespace, keeps meaningful differences", () => {
+test("fingerprint: canonicalizes whitespace, keeps meaningful differences — over ALL args", () => {
 	assert.equal(fingerprint("bash", { command: "ls   -la /w" }), fingerprint("bash", { command: "ls -la /w" }));
 	assert.notEqual(fingerprint("bash", { command: "ls /a" }), fingerprint("bash", { command: "ls /b" }));
 	assert.notEqual(fingerprint("read", { path: "/w/x" }), fingerprint("bash", { command: "cat /w/x" }));
+	// r2 4302417584: a primary-key fingerprint collided chunked reads and
+	// same-path greps — every arg participates now.
+	assert.notEqual(
+		fingerprint("read", { path: "/workspace/pr-diff.patch", offset: 1 }),
+		fingerprint("read", { path: "/workspace/pr-diff.patch", offset: 201 }),
+	);
+	assert.notEqual(
+		fingerprint("grep", { pattern: "TODO", path: "/w" }),
+		fingerprint("grep", { pattern: "FIXME", path: "/w" }),
+	);
 });
 
 test("loop breaker: a repeated call is refused with a redirect, and never counts as work", () => {
@@ -72,6 +82,58 @@ test("loop breaker: a repeated call is refused with a redirect, and never counts
 	// a DIFFERENT call resets the stagnation streak
 	assert.deepEqual(decide("bash", { command: "cat /workspace/other" }, st, [DEFAULT_ALLOW], RB), { allow: true });
 	assert.equal(st.loopStreak, 0);
+});
+
+test("loop breaker: chunked reads of one file are DISTINCT calls (the documented way past the read cap)", () => {
+	const st = newState();
+	const base = { path: "/workspace/pr-diff.patch" };
+	assert.deepEqual(decide("read", { ...base, offset: 1 }, st, [], RB), { allow: true });
+	assert.deepEqual(decide("read", { ...base, offset: 201 }, st, [], RB), { allow: true });
+	// only the IDENTICAL re-read is a loop
+	const d = decide("read", { ...base, offset: 201 }, st, [], RB);
+	assert.equal(d.allow, false);
+});
+
+test("loop breaker: greps in one directory differ by pattern", () => {
+	const st = newState();
+	assert.deepEqual(decide("grep", { pattern: "TODO", path: "/w" }, st, [], RB), { allow: true });
+	assert.deepEqual(decide("grep", { pattern: "FIXME", path: "/w" }, st, [], RB), { allow: true });
+});
+
+test("wall clock: anchored at the JOB start (dispatcher stamp), not the session's first call", () => {
+	const st = newState();
+	const realNow = Date.now;
+	// the Job started 101.5m ago; prepare already consumed its share — the
+	// converge checkpoint must fire NOW, not 5m from now (r2 4302426988).
+	const jobStart = realNow() - 101.5 * 60 * 1000;
+	Date.now = () => realNow();
+	try {
+		const d = decide("bash", { command: "first call" }, st, [DEFAULT_ALLOW], {
+			loopBreaker: true, wallSeconds: 120 * 60, runStartedAtMs: jobStart,
+		});
+		assert.equal(d.nudge, true);
+		assert.equal(d.reason, convergeReason(18, DEFAULT_ALLOW));
+	} finally {
+		Date.now = realNow;
+	}
+});
+
+test("wall clock: absent dispatcher stamp falls back to first-call anchoring (documented approximation)", () => {
+	const st = newState();
+	const realNow = Date.now;
+	const t0 = realNow();
+	Date.now = () => t0;
+	decide("bash", { command: "prime" }, st, [DEFAULT_ALLOW], { loopBreaker: true, wallSeconds: 120 * 60 });
+	assert.equal(st.startedAtMs, t0);
+	Date.now = () => t0 + 101.5 * 60 * 1000;
+	try {
+		const d = decide("bash", { command: "second call" }, st, [DEFAULT_ALLOW], {
+			loopBreaker: true, wallSeconds: 120 * 60,
+		});
+		assert.equal(d.nudge, true);
+	} finally {
+		Date.now = realNow;
+	}
 });
 
 test("loop breaker: the worst observed offender — 10 re-reads of one file — is refused every time", () => {

@@ -224,6 +224,12 @@ func BuildJob(p AttemptJobParams) *batchv1.Job {
 		// so the agent can pace depth against it (#680: the reviewer is
 		// uncapped by turns; the run bound is the only wall).
 		{Name: "HARMOSTES_WALL_SECONDS", Value: strconv.FormatInt(int64(p.runBoundSeconds()/time.Second), 10)},
+		// The wall clock's anchor (#695 r3): the session's conceptual
+		// budget compares against the SAME zero ADS uses — the Job's
+		// creation. A session-side first-call anchor drifts late by the
+		// prepare prelude and quotes the reviewer a minutes-left number
+		// that is not the truth.
+		{Name: "HARMOSTES_RUN_STARTED_MS", Value: strconv.FormatInt(time.Now().UnixMilli(), 10)},
 	}
 	for _, kv := range p.ExtraEnv {
 		if k, v, ok := strings.Cut(kv, "="); ok {

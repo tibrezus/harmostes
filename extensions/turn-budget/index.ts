@@ -31,7 +31,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
 	decide, eventArgs, newState, parseAllow, parseBudget, parseConvergeMargin,
-	parseFinalizeMargin, parseNudge, parseWallSeconds,
+	parseFinalizeMargin, parseNudge, parseRunStartedMs, parseWallSeconds,
 } from "./policy.ts";
 
 export default function (pi: ExtensionAPI) {
@@ -40,6 +40,7 @@ export default function (pi: ExtensionAPI) {
 	const nudgeAt = parseNudge(process.env.PI_TOOL_BUDGET_NUDGE, budget);
 	const loopBreaker = process.env.PI_LOOP_BREAKER === "1";
 	const wallSeconds = parseWallSeconds(process.env.HARMOSTES_WALL_SECONDS);
+	const runStartedAtMs = parseRunStartedMs(process.env.HARMOSTES_RUN_STARTED_MS);
 	const convergeMargin = parseConvergeMargin(process.env.PI_WALL_CONVERGE_MARGIN);
 	const finalizeMargin = parseFinalizeMargin(process.env.PI_WALL_FINALIZE_MARGIN);
 
@@ -65,6 +66,7 @@ export default function (pi: ExtensionAPI) {
 			nudgeAt,
 			loopBreaker,
 			wallSeconds,
+			runStartedAtMs,
 			convergeMarginSeconds: convergeMargin,
 			finalizeMarginSeconds: finalizeMargin,
 		});

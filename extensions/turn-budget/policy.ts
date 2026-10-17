@@ -107,20 +107,31 @@ export function parseFinalizeMargin(raw: string | undefined): number {
 	return Number.isFinite(n) && n >= 0 ? n : 8 * 60;
 }
 
-/** Canonicalize a tool call into a loop-comparable fingerprint. Review
- * workspaces are static, so identical canonical calls return identical
- * bytes — the definition of wasted work. Whitespace-collapsed; volatile
- * noise (tokens, timestamps) is NOT stripped: a command that differs only
- * in a token is usually a genuinely different call (different gate, PR, or
- * path), and false loop-refusals are worse than missed ones. */
+/** Canonicalize a tool call into a loop-comparable fingerprint — over ALL
+ * arguments, sorted (r2 4302417584: a primary-key fingerprint collided
+ * chunked reads — read {path, offset=1} vs {path, offset=201} are DIFFERENT
+ * calls, the documented way past the 2000-line read cap — and every grep
+ * sharing a path collapsed into one). Whitespace-collapsed for shell
+ * readability; volatile noise (tokens, timestamps) is NOT stripped: a
+ * command that differs only in a token is usually a genuinely different
+ * call, and false loop-refusals are worse than missed ones. */
 export function fingerprint(toolName: string, args: Record<string, unknown>): string {
-	const primary =
-		typeof args.command === "string" ? args.command :
-		typeof args.path === "string" ? args.path :
-		typeof args.file_path === "string" ? args.file_path :
-		typeof args.pattern === "string" ? args.pattern :
-		JSON.stringify(args, Object.keys(args).sort());
-	return toolName + "::" + primary.replace(/\s+/g, " ").trim();
+	const keys = Object.keys(args).sort();
+	const canon = keys.map((k) => {
+		const v = args[k];
+		const str = typeof v === "string" ? v : JSON.stringify(v) ?? "";
+		return `${k}=${str.replace(/\s+/g, " ").trim()}`;
+	}).join("&");
+	return toolName + "::" + canon;
+}
+
+/** Human-facing echo of a call for refusal messages — the primary arg when
+ * it reads well, else the fingerprint tail. */
+export function callEcho(toolName: string, args: Record<string, unknown>): string {
+	for (const k of ["command", "path", "file_path", "pattern"]) {
+		if (typeof args[k] === "string") return (args[k] as string).replace(/\s+/g, " ").slice(0, 60);
+	}
+	return fingerprint(toolName, args).split("::")[1].slice(0, 60);
 }
 
 /** Converge checkpoint message — time-based, not count-based (#689). */
@@ -242,8 +253,10 @@ export interface DecideOpts {
 	/** Conceptual layers armed? Review-only (dispatch.go): the loop breaker
 	 * assumes a static workspace. */
 	loopBreaker?: boolean;
-	/** Wall layers: seconds of wall (the session start lives in state). */
+	/** Wall layers: seconds of wall + the Job's start epoch ms (the ADS
+	 * clock). Absent stamp → first-call anchoring (approximate). */
 	wallSeconds?: number;
+	runStartedAtMs?: number;
 	convergeMarginSeconds?: number;
 	finalizeMarginSeconds?: number;
 }
@@ -267,11 +280,17 @@ export function decide(
 			return cmd.includes(s);
 		}));
 
-	// Wall-clock anchor: the session's FIRST decision starts the clock —
-	// clone, dispatch queue, and CI-wait consumed their share of the wall
-	// before the reviewer could act, and the reviewer cannot recover them.
+	// Wall-clock anchor (r2 4302426988): the dispatcher stamps the Job's
+	// start (HARMOSTES_RUN_STARTED_MS) — the SAME clock ADS enforces. The
+	// session's first tool call would anchor LATE by the prepare prelude
+	// (clone+rig, bounded 5m), firing both checkpoints late and quoting the
+	// model a minutes-left number that is not the truth. First-call
+	// anchoring remains the fallback for a dispatcher that predates the
+	// stamp (documented approximation).
 	if (opts.loopBreaker && (opts.wallSeconds ?? 0) > 0 && state.startedAtMs === undefined) {
-		state.startedAtMs = Date.now();
+		// Prefer the dispatcher's stamp (the ADS clock); fall back to the
+		// first call (approximate — late by the prepare prelude).
+		state.startedAtMs = opts.runStartedAtMs ?? Date.now();
 	}
 
 	// 1. Loop breaker — but never inside the finalize lane (composing IS the
@@ -283,7 +302,7 @@ export function decide(
 			state.loopStreak = 0;
 			return { allow: false, nudge: true, loop: true, reason: stagnationReason(STAGNATION_THRESHOLD, lane) };
 		}
-		return { allow: false, loop: true, reason: loopReason(fp.split("::")[1].slice(0, 60)) };
+		return { allow: false, loop: true, reason: loopReason(callEcho(toolName, args)) };
 	}
 
 	// 3. Wall-margin convergence — TIME is the resource (#689).
@@ -326,4 +345,12 @@ export function decide(
 	state.loopStreak = 0;
 	state.executed++;
 	return { allow: true };
+}
+
+/** Parse HARMOSTES_RUN_STARTED_MS (the Job's creation, epoch ms): absent or
+ * garbage → undefined = the caller falls back to first-call anchoring (a
+ * documented approximation, r2 4302426988). */
+export function parseRunStartedMs(raw: string | undefined): number | undefined {
+	const n = Number.parseInt((raw ?? "").trim(), 10);
+	return Number.isFinite(n) && n > 0 ? n : undefined;
 }

@@ -401,49 +401,71 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 		jobListErr  error
 		jobsFetched bool
 	)
+	// ONE list, two views (#697; review F2 on #698): the full snapshot —
+	// finished Jobs included — feeds both the liveness filter and the
+	// death pass's fact classification. A second list call would carry its
+	// own error path, and a mid-pass blip on it would fail the destructive
+	// pass OPEN (an empty snapshot reads as "no live job" for every
+	// claim). The single jobListErr latch preserves the file's polarity:
+	// a failed list skips releases, it never enables them (the timer pass
+	// keeps its own fail-closed-counts-dead contract on the same error).
 	activeJobs := func() []batchv1.Job {
 		if !jobsFetched {
-			jobSnapshot, jobListErr = k8s.ListActiveJobs(ctx, deps.Client, wf.Namespace, wf.Name)
+			jobSnapshot, jobListErr = k8s.ListAttemptJobs(ctx, deps.Client, wf.Namespace, wf.Name)
 			if jobListErr != nil {
-				log("review-ready: live-job list failed (%v) — deferring to the dispatch-timeout bound", jobListErr)
+				log("review-ready: job list failed (%v) — deferring to the dispatch-timeout bound", jobListErr)
 			}
 			jobsFetched = true
 		}
 		return jobSnapshot
 	}
 	jobAlive := func(attemptName string) bool {
-		for _, j := range activeJobs() {
-			if j.Labels[v1alpha1.AttemptLabel] == attemptName {
+		for i := range activeJobs() {
+			j := &jobSnapshot[i]
+			if j.Labels[v1alpha1.AttemptLabel] == attemptName && j.DeletionTimestamp == nil &&
+				j.Status.CompletionTime == nil && !k8s.IsJobFailed(j) {
 				return true
 			}
 		}
 		return false
 	}
-	// The FULL snapshot — finished Jobs included (#697): the death pass must
-	// classify by FACT. The live-filtered snapshot reports success and loss
-	// identically (both are "not active"), which released successful rounds
-	// as dead dispatches (observed live: four successful #2391 rounds, four
-	// "deaths", three of which would have tripped the breaker).
-	allFetched := false
-	var allSnapshot []batchv1.Job
-	var allErr error
-	allJobs := func() []batchv1.Job {
-		if !allFetched {
-			allSnapshot, allErr = k8s.ListAttemptJobs(ctx, deps.Client, wf.Namespace, wf.Name)
-			allFetched = true
-		}
-		return allSnapshot
-	}
-	finishedJob := func(attemptName string) *batchv1.Job {
-		for i := range allJobs() {
-			j := &allSnapshot[i]
-			if j.Labels[v1alpha1.AttemptLabel] == attemptName && j.DeletionTimestamp == nil {
-				if j.Status.CompletionTime != nil || k8s.IsJobFailed(j) {
-					return j
-				}
+	// Fact-based classification (#697): the live-filtered view reports
+	// success and loss identically (both are "not active"), which released
+	// successful rounds as dead dispatches (observed live: four successful
+	// #2391 rounds, four "deaths", three of which would have tripped the
+	// breaker; attempt CRs b6b44a371ce8/#2628, 5d8502ae1081/#2748,
+	// 73f9a3e28274/#2654 sit at dead#3 on heads that later succeeded).
+	//
+	// ANY completed (not failed) Job for the attempt wins regardless of
+	// order (review F1 on #698: an attempt can carry two terminal Jobs —
+	// dispatch #1 FAILED, dispatch #2 COMPLETED — and a first-match scan
+	// is name-ordered, so the stale failure must not mask the newer
+	// success; the verdict is on the forge and the controller is
+	// terminalizing the attempt). A FAILED Job is a genuine dead dispatch;
+	// neither fact (Job absent) is the vanished-dispatch loss. A deleting
+	// terminal Job still carries its fact — DeletionTimestamp is a
+	// liveness concern, not a classification one (review F3 on #698).
+	jobDeath := func(attemptName string) string {
+		completed, failed := false, false
+		for i := range activeJobs() {
+			j := &jobSnapshot[i]
+			if j.Labels[v1alpha1.AttemptLabel] != attemptName {
+				continue
+			}
+			if j.Status.CompletionTime != nil && !k8s.IsJobFailed(j) {
+				completed = true
+			}
+			if k8s.IsJobFailed(j) {
+				failed = true
 			}
 		}
-		return nil
+		if completed {
+			return "completed"
+		}
+		if failed {
+			return "failed"
+		}
+		return "vanished"
 	}
 
 	// ── A. In-flight claims: consume / expiry / refresh — never dispatch. ──
@@ -647,23 +669,21 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 			break
 		}
 	}
-	if fetched && jobListErr == nil && allErr == nil {
+	if fetched && jobListErr == nil {
 		for _, c := range claims {
 			r := c.Status.Review
 			if r.DispatchedAt == nil || time.Since(r.DispatchedAt.Time) <= jobDeathGrace {
 				continue
 			}
 			if !jobAlive(c.Name) {
-				// Fact-based classification (#697): a COMPLETED Job is a
-				// successful round — the verdict is on the forge and the
-				// controller is terminalizing the attempt. Releasing it as
-				// dispatch-lost fed the breaker false positives.
-				if j := finishedJob(c.Name); j != nil && !k8s.IsJobFailed(j) {
+				switch jobDeath(c.Name) {
+				case "completed":
 					log("review-ready: claim %s (%s) Job completed successfully — not a loss (#697)", c.Name, r.PR)
 					continue
+				default:
+					log("review-ready: claim %s (%s) has no live job — releasing as dispatch-lost", c.Name, r.PR)
+					releaseDeadClaim(ctx, deps, c, v1alpha1.ReleaseReasonDispatchLost, log)
 				}
-				log("review-ready: claim %s (%s) has no live job — releasing as dispatch-lost", c.Name, r.PR)
-				releaseDeadClaim(ctx, deps, c, v1alpha1.ReleaseReasonDispatchLost, log)
 			}
 		}
 	}

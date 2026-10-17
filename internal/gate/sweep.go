@@ -419,6 +419,32 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 		}
 		return false
 	}
+	// The FULL snapshot — finished Jobs included (#697): the death pass must
+	// classify by FACT. The live-filtered snapshot reports success and loss
+	// identically (both are "not active"), which released successful rounds
+	// as dead dispatches (observed live: four successful #2391 rounds, four
+	// "deaths", three of which would have tripped the breaker).
+	allFetched := false
+	var allSnapshot []batchv1.Job
+	var allErr error
+	allJobs := func() []batchv1.Job {
+		if !allFetched {
+			allSnapshot, allErr = k8s.ListAttemptJobs(ctx, deps.Client, wf.Namespace, wf.Name)
+			allFetched = true
+		}
+		return allSnapshot
+	}
+	finishedJob := func(attemptName string) *batchv1.Job {
+		for i := range allJobs() {
+			j := &allSnapshot[i]
+			if j.Labels[v1alpha1.AttemptLabel] == attemptName && j.DeletionTimestamp == nil {
+				if j.Status.CompletionTime != nil || k8s.IsJobFailed(j) {
+					return j
+				}
+			}
+		}
+		return nil
+	}
 
 	// ── A. In-flight claims: consume / expiry / refresh — never dispatch. ──
 	liveDispatched := 0
@@ -621,13 +647,21 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 			break
 		}
 	}
-	if fetched && jobListErr == nil {
+	if fetched && jobListErr == nil && allErr == nil {
 		for _, c := range claims {
 			r := c.Status.Review
 			if r.DispatchedAt == nil || time.Since(r.DispatchedAt.Time) <= jobDeathGrace {
 				continue
 			}
 			if !jobAlive(c.Name) {
+				// Fact-based classification (#697): a COMPLETED Job is a
+				// successful round — the verdict is on the forge and the
+				// controller is terminalizing the attempt. Releasing it as
+				// dispatch-lost fed the breaker false positives.
+				if j := finishedJob(c.Name); j != nil && !k8s.IsJobFailed(j) {
+					log("review-ready: claim %s (%s) Job completed successfully — not a loss (#697)", c.Name, r.PR)
+					continue
+				}
 				log("review-ready: claim %s (%s) has no live job — releasing as dispatch-lost", c.Name, r.PR)
 				releaseDeadClaim(ctx, deps, c, v1alpha1.ReleaseReasonDispatchLost, log)
 			}

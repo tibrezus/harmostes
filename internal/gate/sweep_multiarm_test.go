@@ -3457,3 +3457,111 @@ func TestMultiArmWaitingPersistsHoldNoteOnClaim(t *testing.T) {
 		t.Errorf("dispatch must clear the hold note, got %q", after.Status.Review.HoldNote)
 	}
 }
+
+// ── #697: a COMPLETED Job is a successful round, never a dead dispatch.
+// Observed live 2026-10-17: four successful #2391 rounds released as
+// dispatch-lost (verdict on the forge, Job complete, sweep beat the
+// attempt resolution) — three would have tripped the breaker on a healthy
+// head. The death pass must classify by fact: Complete = win, Failed =
+// loss, absent = vanished. ──
+func TestSweepCompletedJobNotCountedDead(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := noLabelServer(t)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	st := &fakeStatus{}
+	now := time.Now()
+	disp := now.Add(-3 * time.Minute) // past jobDeathGrace: eligible for the death pass
+	claim := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#102", "deadbeef123", now.Add(-3*time.Minute), &disp)
+	claim.Status.Phase = v1alpha1.AttemptPhaseReconciling
+	completion := metav1.NewTime(now.Add(-1 * time.Minute))
+	job := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "attempt-" + claim.Name + "-done", Namespace: wf.Namespace,
+			Labels: map[string]string{
+				"app.kubernetes.io/name": "harmostes",
+				"harmostes.dev/workflow": wf.Name,
+				v1alpha1.AttemptLabel:    claim.Name,
+			},
+		},
+		Status: batchv1.JobStatus{
+			CompletionTime: &completion,
+			Conditions:     []batchv1.JobCondition{{Type: batchv1.JobComplete, Status: "True"}},
+			Succeeded:      1,
+		},
+	}
+	deps, ctx := gateEnv(t, wf, st, claim, job)
+
+	out, err := RunReviewGateSweep(ctx, deps, wf)
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if len(out) != 0 {
+		t.Fatalf("a completed round must not dispatch, got %d", len(out))
+	}
+
+	var got v1alpha1.Attempt
+	if err := deps.Client.Get(ctx, client.ObjectKey{Namespace: wf.Namespace, Name: claim.Name}, &got); err != nil {
+		t.Fatalf("get claim: %v", err)
+	}
+	r := got.Status.Review
+	if r.Released {
+		t.Fatalf("a COMPLETED round must not be released, got reason %q", r.ReleaseReason)
+	}
+	if r.DeadDispatches != 0 {
+		t.Fatalf("dead dispatches = %d, want 0 — a successful round counted dead burns breaker budget on a healthy head", r.DeadDispatches)
+	}
+	if got.Status.Phase == v1alpha1.AttemptPhaseFailed {
+		t.Fatal("ledger finalized a failed phase for a successful round")
+	}
+}
+
+// The negative control: a FAILED Job in the same position is still a dead
+// dispatch — the classification keys on the failure fact, not on job
+// existence.
+func TestSweepFailedJobStillCountsDead(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := noLabelServer(t)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	st := &fakeStatus{}
+	now := time.Now()
+	disp := now.Add(-3 * time.Minute)
+	claim := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#103", "deadbeef123", now.Add(-3*time.Minute), &disp)
+	claim.Status.Phase = v1alpha1.AttemptPhaseReconciling
+	failAt := metav1.NewTime(now.Add(-1 * time.Minute))
+	job := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "attempt-" + claim.Name + "-dead", Namespace: wf.Namespace,
+			Labels: map[string]string{
+				"app.kubernetes.io/name": "harmostes",
+				"harmostes.dev/workflow": wf.Name,
+				v1alpha1.AttemptLabel:    claim.Name,
+			},
+		},
+		Status: batchv1.JobStatus{
+			Conditions: []batchv1.JobCondition{{Type: batchv1.JobFailed, Status: "True"}},
+			Failed:     1,
+		},
+	}
+	_ = failAt
+	deps, ctx := gateEnv(t, wf, st, claim, job)
+
+	if _, err := RunReviewGateSweep(ctx, deps, wf); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+
+	var got v1alpha1.Attempt
+	if err := deps.Client.Get(ctx, client.ObjectKey{Namespace: wf.Namespace, Name: claim.Name}, &got); err != nil {
+		t.Fatalf("get claim: %v", err)
+	}
+	r := got.Status.Review
+	if !r.Released || r.ReleaseReason != "dispatch-lost" {
+		t.Fatalf("a FAILED job is a dead dispatch: released=%v reason=%q", r.Released, r.ReleaseReason)
+	}
+	if r.DeadDispatches != 1 {
+		t.Fatalf("dead dispatches = %d, want 1", r.DeadDispatches)
+	}
+}

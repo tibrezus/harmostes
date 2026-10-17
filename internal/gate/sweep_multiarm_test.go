@@ -3457,3 +3457,268 @@ func TestMultiArmWaitingPersistsHoldNoteOnClaim(t *testing.T) {
 		t.Errorf("dispatch must clear the hold note, got %q", after.Status.Review.HoldNote)
 	}
 }
+
+// ── #697: a COMPLETED Job is a successful round, never a dead dispatch.
+// Observed live 2026-10-17: four successful #2391 rounds released as
+// dispatch-lost (verdict on the forge, Job complete, sweep beat the
+// attempt resolution) — three would have tripped the breaker on a healthy
+// head. The death pass must classify by fact: Complete = win, Failed =
+// loss, absent = vanished. ──
+func TestSweepCompletedJobNotCountedDead(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := noLabelServer(t)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	st := &fakeStatus{}
+	now := time.Now()
+	disp := now.Add(-3 * time.Minute) // past jobDeathGrace: eligible for the death pass
+	claim := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#102", "deadbeef123", now.Add(-3*time.Minute), &disp)
+	claim.Status.Phase = v1alpha1.AttemptPhaseReconciling
+	completion := metav1.NewTime(now.Add(-1 * time.Minute))
+	job := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "attempt-" + claim.Name + "-done", Namespace: wf.Namespace,
+			Labels: map[string]string{
+				"app.kubernetes.io/name": "harmostes",
+				"harmostes.dev/workflow": wf.Name,
+				v1alpha1.AttemptLabel:    claim.Name,
+			},
+		},
+		Status: batchv1.JobStatus{
+			CompletionTime: &completion,
+			Conditions:     []batchv1.JobCondition{{Type: batchv1.JobComplete, Status: "True"}},
+			Succeeded:      1,
+		},
+	}
+	deps, ctx := gateEnv(t, wf, st, claim, job)
+
+	out, err := RunReviewGateSweep(ctx, deps, wf)
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if len(out) != 0 {
+		t.Fatalf("a completed round must not dispatch, got %d", len(out))
+	}
+
+	var got v1alpha1.Attempt
+	if err := deps.Client.Get(ctx, client.ObjectKey{Namespace: wf.Namespace, Name: claim.Name}, &got); err != nil {
+		t.Fatalf("get claim: %v", err)
+	}
+	r := got.Status.Review
+	if r.Released {
+		t.Fatalf("a COMPLETED round must not be released, got reason %q", r.ReleaseReason)
+	}
+	if r.DeadDispatches != 0 {
+		t.Fatalf("dead dispatches = %d, want 0 — a successful round counted dead burns breaker budget on a healthy head", r.DeadDispatches)
+	}
+	if got.Status.Phase == v1alpha1.AttemptPhaseFailed {
+		t.Fatal("ledger finalized a failed phase for a successful round")
+	}
+}
+
+// The negative control: a FAILED Job in the same position is still a dead
+// dispatch — the classification keys on the failure fact, not on job
+// existence.
+func TestSweepFailedJobStillCountsDead(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := noLabelServer(t)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	st := &fakeStatus{}
+	now := time.Now()
+	disp := now.Add(-3 * time.Minute)
+	claim := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#103", "deadbeef123", now.Add(-3*time.Minute), &disp)
+	claim.Status.Phase = v1alpha1.AttemptPhaseReconciling
+	failAt := metav1.NewTime(now.Add(-1 * time.Minute))
+	job := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "attempt-" + claim.Name + "-dead", Namespace: wf.Namespace,
+			Labels: map[string]string{
+				"app.kubernetes.io/name": "harmostes",
+				"harmostes.dev/workflow": wf.Name,
+				v1alpha1.AttemptLabel:    claim.Name,
+			},
+		},
+		Status: batchv1.JobStatus{
+			Conditions: []batchv1.JobCondition{{Type: batchv1.JobFailed, Status: "True"}},
+			Failed:     1,
+		},
+	}
+	_ = failAt
+	deps, ctx := gateEnv(t, wf, st, claim, job)
+
+	if _, err := RunReviewGateSweep(ctx, deps, wf); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+
+	var got v1alpha1.Attempt
+	if err := deps.Client.Get(ctx, client.ObjectKey{Namespace: wf.Namespace, Name: claim.Name}, &got); err != nil {
+		t.Fatalf("get claim: %v", err)
+	}
+	r := got.Status.Review
+	if !r.Released || r.ReleaseReason != "dispatch-lost" {
+		t.Fatalf("a FAILED job is a dead dispatch: released=%v reason=%q", r.Released, r.ReleaseReason)
+	}
+	if r.DeadDispatches != 1 {
+		t.Fatalf("dead dispatches = %d, want 1", r.DeadDispatches)
+	}
+}
+
+// ── #698 review F1: an attempt can carry TWO terminal Jobs (dispatch #1
+// FAILED, dispatch #2 COMPLETED — the re-dispatch shape). The classification
+// must let ANY completed Job win regardless of name order: a first-match
+// scan is name-ordered, so the stale failure must not mask the newer
+// success. Proven red on the first-match implementation. ──
+func TestSweepCompletedJobWinsOverOlderFailedJob(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := noLabelServer(t)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	st := &fakeStatus{}
+	now := time.Now()
+	disp := now.Add(-3 * time.Minute)
+	claim := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#104", "deadbeef123", now.Add(-3*time.Minute), &disp)
+	claim.Status.Phase = v1alpha1.AttemptPhaseReconciling
+	completion := metav1.NewTime(now.Add(-1 * time.Minute))
+	labels := map[string]string{
+		"app.kubernetes.io/name": "harmostes",
+		"harmostes.dev/workflow": wf.Name,
+		v1alpha1.AttemptLabel:    claim.Name,
+	}
+	// Name order pins the trap: the FAILED job sorts FIRST — a first-match
+	// scan returns it and the caller rejects the whole attempt for its
+	// failure, releasing the round that actually completed.
+	failedJob := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{Name: "a-" + claim.Name, Namespace: wf.Namespace, Labels: labels},
+		Status:     batchv1.JobStatus{Conditions: []batchv1.JobCondition{{Type: batchv1.JobFailed, Status: "True"}}, Failed: 1},
+	}
+	doneJob := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{Name: "z-" + claim.Name, Namespace: wf.Namespace, Labels: labels},
+		Status:     batchv1.JobStatus{CompletionTime: &completion, Conditions: []batchv1.JobCondition{{Type: batchv1.JobComplete, Status: "True"}}, Succeeded: 1},
+	}
+	deps, ctx := gateEnv(t, wf, st, claim, failedJob, doneJob)
+
+	if _, err := RunReviewGateSweep(ctx, deps, wf); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+
+	var got v1alpha1.Attempt
+	if err := deps.Client.Get(ctx, client.ObjectKey{Namespace: wf.Namespace, Name: claim.Name}, &got); err != nil {
+		t.Fatalf("get claim: %v", err)
+	}
+	r := got.Status.Review
+	if r.Released {
+		t.Fatalf("a COMPLETED dispatch must win over a stale FAILED one, got reason %q", r.ReleaseReason)
+	}
+	if r.DeadDispatches != 0 {
+		t.Fatalf("dead dispatches = %d, want 0", r.DeadDispatches)
+	}
+}
+
+// ── #698 review F3: DeletionTimestamp is a liveness concern, not a
+// classification one. A COMPLETED Job mid-foreground-delete (the janitor's
+// DeletePropagationForeground, #667) still proves the run finished —
+// skipping it re-opens #697 for exactly the shapes the janitor creates. ──
+func TestSweepDeletingCompletedJobStillNotLoss(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := noLabelServer(t)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	st := &fakeStatus{}
+	now := time.Now()
+	disp := now.Add(-3 * time.Minute)
+	claim := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#105", "deadbeef123", now.Add(-3*time.Minute), &disp)
+	claim.Status.Phase = v1alpha1.AttemptPhaseReconciling
+	completion := metav1.NewTime(now.Add(-1 * time.Minute))
+	del := metav1.NewTime(now.Add(-30 * time.Second))
+	job := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "attempt-" + claim.Name + "-done", Namespace: wf.Namespace,
+			Finalizers:        []string{"harmostes.dev/pin"},
+			DeletionTimestamp: &del,
+			Labels: map[string]string{
+				"app.kubernetes.io/name": "harmostes",
+				"harmostes.dev/workflow": wf.Name,
+				v1alpha1.AttemptLabel:    claim.Name,
+			},
+		},
+		Status: batchv1.JobStatus{
+			CompletionTime: &completion,
+			Conditions:     []batchv1.JobCondition{{Type: batchv1.JobComplete, Status: "True"}},
+			Succeeded:      1,
+		},
+	}
+	deps, ctx := gateEnv(t, wf, st, claim, job)
+
+	if _, err := RunReviewGateSweep(ctx, deps, wf); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+
+	var got v1alpha1.Attempt
+	if err := deps.Client.Get(ctx, client.ObjectKey{Namespace: wf.Namespace, Name: claim.Name}, &got); err != nil {
+		t.Fatalf("get claim: %v", err)
+	}
+	r := got.Status.Review
+	if r.Released {
+		t.Fatalf("a deleting COMPLETED Job still proves the round finished, got reason %q", r.ReleaseReason)
+	}
+	if r.DeadDispatches != 0 {
+		t.Fatalf("dead dispatches = %d, want 0", r.DeadDispatches)
+	}
+}
+
+// ── #698 review F2 (polarity pin): a job-list failure must SKIP the death
+// pass, never arm it. The single-snapshot latch makes the mid-pass blip
+// impossible; this pins that the latch's error fails the destructive pass
+// closed (mirrors the never-dispatched pass's r11 must-fix 3; the timer
+// pass keeps its opposite, pinned contract on the same error). ──
+func TestSweepDeathPassSkipsOnJobListError(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := noLabelServer(t)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	st := &fakeStatus{}
+	now := time.Now()
+	disp := now.Add(-3 * time.Minute) // past jobDeathGrace: the pass would fire
+	claim := claimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#106", "deadbeef123", now.Add(-3*time.Minute), &disp)
+	claim.Status.Phase = v1alpha1.AttemptPhaseReconciling
+
+	scheme := runtime.NewScheme()
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("AddToScheme: %v", err)
+	}
+	if err := batchv1.AddToScheme(scheme); err != nil {
+		t.Fatalf("batchv1: %v", err)
+	}
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&v1alpha1.Attempt{}).
+		WithRuntimeObjects(claim).
+		WithInterceptorFuncs(interceptor.Funcs{List: func(ctx context.Context, cl client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			if _, ok := list.(*batchv1.JobList); ok {
+				return fmt.Errorf("api blip")
+			}
+			return cl.List(ctx, list, opts...)
+		}}).
+		Build()
+	deps := GateDeps{Status: st, Client: cl, Scheme: scheme, FleetMaxConcurrent: 3, Log: t.Logf}
+	ctx := context.Background()
+
+	if _, err := RunReviewGateSweep(ctx, deps, wf); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+
+	var got v1alpha1.Attempt
+	if err := deps.Client.Get(ctx, client.ObjectKey{Namespace: wf.Namespace, Name: claim.Name}, &got); err != nil {
+		t.Fatalf("get claim: %v", err)
+	}
+	if got.Status.Review.Released || got.Status.Review.DeadDispatches != 0 {
+		t.Fatalf("a failed list must skip the destructive pass: released=%v dead=%d reason=%q",
+			got.Status.Review.Released, got.Status.Review.DeadDispatches, got.Status.Review.ReleaseReason)
+	}
+}

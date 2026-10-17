@@ -2,12 +2,12 @@ package graph
 
 import (
 	"context"
-	"time"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"os/exec"
 	"strings"
+	"time"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"

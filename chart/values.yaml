@@ -341,20 +341,20 @@ workflowTemplates:
       # generates hypotheses; chilling its sampling collapsed findings from
       # ~4 to 1-2 on large merges, observed live Oct 8+).
       thinking: high
-      # #689 (measured live 2026-10-16, the #2628 round's session): under
-      # thinking=high the reviewer turns at ~110 calls/h and is
-      # GENERATION-BOUND — 216K output tokens/h ≈ 120% of the 120m run
-      # bound spent purely generating, so an uncapped round dies at the
-      # wall mid-turn: the post-review plugin never runs, no verdict
-      # composes, total loss. Cap at the wall's call budget minus a
-      # finalize margin: (120m − 10m) × 110/60 ≈ 200 calls. Past the cap
-      # the finalize lane keeps the artifact writable and the plugin
-      # composes the verdict from the ledger — a capped round DELIVERS;
-      # a wall-killed round delivers nothing. The converge nudge derives
-      # cap/2 = 100 (dispatch.go carries it), landing the checkpoint with
-      # ~55m of wall left. #680's incrementally-posted findings are
-      # unaffected: exploration still owns the first half of the wall.
-      toolBudget: 200
+      # #695 r3 (the owner's call, backed by the round data): NO numeric
+      # cap for the reviewer. The post-roll rounds measured call rates at
+      # 110/h AND 57/h — a 2x spread — so any count calibrated to one pace
+      # binds past the wall on the other (the live #2673 round would have
+      # hit 200 calls at ~210m, after the 120m wall). The reviewer is
+      # instead MANAGED conceptually (turn-budget v3, armed by
+      # PI_LOOP_BREAKER on review attempts only): a loop breaker refuses
+      # repeated identical calls (the wall-died round re-read one file ten
+      # times), a stagnation checkpoint fires on cycling, and the WALL
+      # itself drives convergence (checkpoint at <=20m left,
+      # finalize-lane-only at <=8m) — so a slow round composes a verdict
+      # instead of dying verdict-less. toolBudget stays the emergency knob
+      # for OTHER workflows (fleet default 32).
+      toolBudget: 0
       timeout: 3600
       tools:
         - read
@@ -538,14 +538,18 @@ tasks:
 
     ## Your turn budget
 
-    The session runs under a tool-call cap with a converge checkpoint at
-    half budget — the enforced values ride in your environment as
-    PI_TOOL_BUDGET and PI_TOOL_BUDGET_NUDGE; never assume a number not
-    in them. This is your wall as well as the run bound: past the cap
-    only the artifact lane stays open, and the round must end composed.
-    Budget accordingly — verify the pillars the diff actually triggers,
-    post each finding the moment it's verified, and treat the checkpoint
-    as the signal to stop exploring and finish synthesis.
+    There is no call count to budget — your real constraints are
+    behavioral and temporal. (1) The workspace is static: re-running an
+    identical call returns the same bytes, and the harness REFUSES
+    repeats — every call must produce new information. (2) If your last
+    few calls were refused as repeats, you are cycling: step back,
+    consolidate what you hold, and compose. (3) The wall is real: near
+    its end you will receive one convergence checkpoint (stop exploring,
+    verify only what your findings depend on, post and write the
+    artifact), and past the final margin only artifact writes execute.
+    Post each verified finding the moment you verify it — the verdict is
+    composed from your ledger, and an honest partial review beats no
+    review.
 
     ## Posting credentials
 

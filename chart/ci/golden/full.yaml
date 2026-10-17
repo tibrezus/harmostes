@@ -4756,14 +4756,18 @@ data:
     
     ## Your turn budget
     
-    The session runs under a tool-call cap with a converge checkpoint at
-    half budget — the enforced values ride in your environment as
-    PI_TOOL_BUDGET and PI_TOOL_BUDGET_NUDGE; never assume a number not
-    in them. This is your wall as well as the run bound: past the cap
-    only the artifact lane stays open, and the round must end composed.
-    Budget accordingly — verify the pillars the diff actually triggers,
-    post each finding the moment it's verified, and treat the checkpoint
-    as the signal to stop exploring and finish synthesis.
+    There is no call count to budget — your real constraints are
+    behavioral and temporal. (1) The workspace is static: re-running an
+    identical call returns the same bytes, and the harness REFUSES
+    repeats — every call must produce new information. (2) If your last
+    few calls were refused as repeats, you are cycling: step back,
+    consolidate what you hold, and compose. (3) The wall is real: near
+    its end you will receive one convergence checkpoint (stop exploring,
+    verify only what your findings depend on, post and write the
+    artifact), and past the final margin only artifact writes execute.
+    Post each verified finding the moment you verify it — the verdict is
+    composed from your ledger, and an honest partial review beats no
+    review.
     
     ## Posting credentials
     
@@ -5997,7 +6001,7 @@ spec:
       name: pr-review
     thinking: high
     timeout: 3600
-    toolBudget: 200
+    toolBudget: 0
     tools:
     - read
     - bash

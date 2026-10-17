@@ -45,12 +45,16 @@ func (e *GateExecutor) Execute(ctx context.Context, node v1alpha1.NodeSpec, env 
 		return NodeResult{Status: StatusFailed, Feedback: "resolve gate plugin: " + err.Error()}, err
 	}
 
-	// Reuse the existing GatePlugin adapter (exit 0 = green).
+	// Reuse the existing GatePlugin adapter (exit 0 = green). The config's
+	// Timeout bounds one evaluation here too (#695 r2 4301215249: a
+	// standalone gate node was the same schema-only class as the inline
+	// gate — only AsAgentGate carried the bound).
 	gate := worker.GatePlugin{
 		Command: command,
 		Args:    args,
 		Env:     envToPluginEnv(env, "gate", string(node.Config)),
 		Name:    cfg.Plugin.Name,
+		Timeout: cfg.Plugin.Timeout,
 	}
 
 	green, feedback, gateErr := gate.Run(ctx)

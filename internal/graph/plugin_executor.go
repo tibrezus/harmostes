@@ -2,6 +2,7 @@ package graph
 
 import (
 	"context"
+	"time"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -70,6 +71,18 @@ func (e *PluginExecutor) Execute(ctx context.Context, node v1alpha1.NodeSpec, en
 
 	specJSON := string(node.Config)
 	pluginEnv := envToPluginEnv(env, "plugin", specJSON)
+	// Config-level bound (#695 r2 4301215249): PluginNodeConfig.Timeout is
+	// the inner belt for graph-native plugin nodes — NodeSpec.Timeout (the
+	// G8 wrap) is the outer one, and a config that declares only this
+	// timeout still bounds the run. Parse failures degrade to unbounded
+	// (the node bound still applies), never fail the node.
+	if cfg.Timeout != "" {
+		if d, perr := time.ParseDuration(cfg.Timeout); perr == nil && d > 0 {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, d)
+			defer cancel()
+		}
+	}
 	res, out, runErr := worker.RunPlugin(ctx, command, args, pluginEnv, env.ExtraEnv)
 	if e.tl != nil {
 		payload := map[string]any{

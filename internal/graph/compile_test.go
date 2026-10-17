@@ -240,7 +240,7 @@ func TestCompileWorkflowCarriesPluginRefTimeout(t *testing.T) {
 			Agent: v1alpha1.AgentSpec{
 				Model:        "none",
 				TaskTemplate: v1alpha1.TaskTemplate{Name: "none"},
-				Gate:         v1alpha1.GateRef{Plugin: v1alpha1.PluginRef{Name: "noop"}},
+				Gate:         v1alpha1.GateRef{Plugin: v1alpha1.PluginRef{Name: "noop", Timeout: "4m"}},
 			},
 			Deploy: v1alpha1.DeploySpec{
 				Plugin: v1alpha1.PluginRef{Name: "post-review", Timeout: "3m"},
@@ -260,5 +260,21 @@ func TestCompileWorkflowCarriesPluginRefTimeout(t *testing.T) {
 	}
 	for id := range want {
 		t.Errorf("node %s missing from compiled graph", id)
+	}
+
+	// The inline gate's bound rides the agent node CONFIG (there is no
+	// gate node to carry NodeSpec.Timeout): GateNodeConfig.Plugin.Timeout
+	// must be set or the gate leg stays the unbounded prelude (#695 r1).
+	for _, n := range gs.Nodes {
+		if n.ID != "agent" {
+			continue
+		}
+		var acfg AgentNodeConfig
+		if err := json.Unmarshal(n.Config, &acfg); err != nil {
+			t.Fatalf("unmarshal agent config: %v", err)
+		}
+		if acfg.Gate == nil || acfg.Gate.Plugin.Timeout != "4m" {
+			t.Fatalf("gate plugin Timeout = %v, want 4m (an advertised bound the compiler drops is schema-only)", acfg.Gate)
+		}
 	}
 }

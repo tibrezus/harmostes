@@ -91,5 +91,6 @@ func (g GateNodeConfig) AsAgentGate(ctx context.Context, resolver worker.PluginR
 		Args:    args,
 		Env:     envToPluginEnv(env, "gate", ""),
 		Name:    g.Plugin.Name,
+		Timeout: g.Plugin.Timeout,
 	}, nil
 }

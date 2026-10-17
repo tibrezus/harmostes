@@ -89,8 +89,26 @@ func RunPlugin(ctx context.Context, command string, args []string, env PluginEnv
 	var out strings.Builder
 	cmd.Stdout = &out
 	cmd.Stderr = &out
+	setWaitDelay(cmd)
 	runErr := cmd.Run()
 	return lastJSONLine(out.String()), out.String(), runErr
+}
+
+// setWaitDelay makes a context cancel actually RETURN from cmd.Run when the
+// direct child spawned pipe-holding grandchildren (#695 r1): Go SIGKILLs only
+// the direct child on cancel, and cmd.Wait then blocks until every
+// grandchild that inherited the stdout/stderr pipes exits — a hung `git
+// clone … | tail` escaped the node's G8 timeout and burned the run wall
+// (#689's zero-work rounds). WaitDelay forces Wait to reap after the grace
+// and hand back the pipes; Setpgid keeps the group killable as a unit.
+const pluginWaitDelay = 5 * time.Second
+
+func setWaitDelay(cmd *exec.Cmd) {
+	cmd.WaitDelay = pluginWaitDelay
+	cmd.SysProcAttr = sysProcAttrGroup()
+	if cancel := cancelKillGroup(cmd); cancel != nil {
+		cmd.Cancel = cancel
+	}
 }
 
 // GatePlugin adapts a gate plugin (exit 0 = green) to agent.Gate. Its combined
@@ -101,6 +119,11 @@ type GatePlugin struct {
 	Env      PluginEnv
 	ExtraEnv []string
 	Name     string // plugin name (for the plugin.gate.<name> span + metric)
+	// Timeout bounds ONE gate evaluation (duration string, e.g. "2m").
+	// Empty = unbounded (runs on the caller's context — for inline gates
+	// that is the agent task's context). #695 r1: the gate leg was the
+	// unbounded prelude class.
+	Timeout string
 }
 
 func (g GatePlugin) Run(ctx context.Context) (bool, string, error) {
@@ -111,12 +134,20 @@ func (g GatePlugin) Run(ctx context.Context) (bool, string, error) {
 	_, span := observability.Tracer().Start(ctx, "plugin.gate."+name)
 	defer span.End()
 	start := time.Now()
+	if g.Timeout != "" {
+		if d, err := time.ParseDuration(g.Timeout); err == nil && d > 0 {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, d)
+			defer cancel()
+		}
+	}
 	cmd := exec.CommandContext(ctx, g.Command, g.Args...)
 	cmd.Dir = g.Env.Workdir
 	cmd.Env = g.Env.EnvSlice(g.ExtraEnv...)
 	var out strings.Builder
 	cmd.Stdout = &out
 	cmd.Stderr = &out
+	setWaitDelay(cmd)
 	err := cmd.Run()
 	if err != nil {
 		// non-zero exit is a gate-not-green, not a system error — record the code,

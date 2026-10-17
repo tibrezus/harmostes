@@ -59,6 +59,7 @@ func CompileWorkflow(wf *v1alpha1.Workflow) v1alpha1.GraphSpec {
 					Name:      wf.Spec.Agent.Gate.Plugin.Name,
 					ConfigMap: wf.Spec.Agent.Gate.Plugin.ConfigMap,
 					Args:      wf.Spec.Agent.Gate.Plugin.Args,
+					Timeout:   wf.Spec.Agent.Gate.Plugin.Timeout,
 				},
 			},
 			Scope: wikiLintScope(wf.Name),

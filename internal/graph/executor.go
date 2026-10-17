@@ -558,13 +558,21 @@ func (e *GraphExecutor) Execute(ctx context.Context, graph v1alpha1.GraphSpec, p
 			nodeResult, execErr = exec.Execute(execCtx, node, env)
 			if execErr != nil {
 				nodeResult.Status = StatusFailed
-				if nodeResult.Feedback == "" {
-					// Check if the error was a timeout (G8 circuit breaker).
-					if timeoutStr != "" && (execErr == context.DeadlineExceeded || strings.Contains(execErr.Error(), "deadline exceeded")) {
-						nodeResult.Feedback = fmt.Sprintf("timed out after %s", timeoutStr)
-					} else {
-						nodeResult.Feedback = execErr.Error()
+				// Timeout attribution (#695 r1): a plugin node fills Feedback
+				// with its output tail ("signal: killed"), which would shadow
+				// the timeout message below. When the execution context
+				// expired, the deadline is the cause REGARDLESS of feedback —
+				// attribute it, then keep the tail (trim the tail so the
+				// attribution stays the first thing an operator reads).
+				timedOut := timeoutStr != "" && (execErr == context.DeadlineExceeded || strings.Contains(execErr.Error(), "deadline exceeded"))
+				if timedOut {
+					tail := nodeResult.Feedback
+					nodeResult.Feedback = fmt.Sprintf("timed out after %s", timeoutStr)
+					if tail != "" {
+						nodeResult.Feedback += " — last output: " + tail
 					}
+				} else if nodeResult.Feedback == "" {
+					nodeResult.Feedback = execErr.Error()
 				}
 			}
 			if nodeResult.Status == "" {

@@ -69,6 +69,7 @@ test-extensions:
 		extensions/rig-query/index.runtime.test.ts \
 		extensions/litellm-provider/fallbacks.test.ts \
 		extensions/turn-budget/policy.test.ts \
+		extensions/turn-budget/index.test.ts \
 		extensions/turn-budget/contract.test.ts
 	@node --experimental-strip-types -e 'await import("./extensions/litellm-provider/index.ts")'
 	python3 extensions/rig-query/fixtures/freshness.py

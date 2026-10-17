@@ -594,6 +594,14 @@ func jobCredentialEnv(policy budgetPolicyFn) []string {
 	for kv, v := range policy.overrides() {
 		out = append(out, kv+"="+v)
 	}
+	// The conceptual budget layers are REVIEW-ONLY (#695 r3): the loop
+	// breaker assumes a STATIC workspace — true for a review (the checkout
+	// never changes under the session), false for fork-maintenance, where
+	// retrying an identical command after an upstream fix is legitimate.
+	// Later env entries win; nothing else sets this name.
+	if policy.isReviewAttempt() {
+		out = append(out, "PI_LOOP_BREAKER=1")
+	}
 	return out
 }
 

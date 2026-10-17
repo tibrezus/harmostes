@@ -1,134 +1,266 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { decide, eventArgs, parseAllow, parseBudget, parseNudge, DEFAULT_ALLOW, finalizeReason, nudgeReason } from "./policy.ts";
+import {
+	decide, eventArgs, fingerprint, newState, parseAllow, parseBudget, parseNudge,
+	parseWallSeconds, parseConvergeMargin, parseFinalizeMargin,
+	DEFAULT_ALLOW, STAGNATION_THRESHOLD,
+	budgetExhaustedReason, convergeReason, finalizeReason, loopReason, nudgeReason, stagnationReason,
+} from "./policy.ts";
+
+// ─── legacy numeric-cap surface (kept for workflows that set one) ───
 
 test("no/0/unparsable budget is inert", () => {
 	for (const raw of [undefined, "", "0", "-3", "abc", "  "]) {
 		assert.equal(parseBudget(raw), 0, `raw=${String(raw)}`);
-		assert.deepEqual(decide("bash", { command: "ls" }, 999, parseBudget(raw), []), { allow: true });
+		const st = newState();
+		assert.deepEqual(decide("bash", { command: "ls" }, st, [], { budget: parseBudget(raw) }), { allow: true });
 	}
 	assert.equal(parseBudget("24"), 24);
 	assert.equal(parseBudget(" 32 "), 32);
 });
 
-test("calls within budget always pass", () => {
-	assert.deepEqual(decide("bash", { command: "grep -rn x /workspace/repo" }, 24, 24, [DEFAULT_ALLOW]), { allow: true });
-	assert.deepEqual(decide("bash", { command: "grep -rn x /workspace/repo" }, 1, 24, []), { allow: true });
-});
-
-test("v1 regression: past the cap the finalize lane (bash touching review.json) stays open", () => {
-	// The exact call that bricked attempt 57a1232749c0 — a python3 heredoc
-	// writing review.json — must EXECUTE past the cap.
-	const writeCall = "cd /workspace && python3 - <<'PY'\nimport json\nr = {\"decision\": \"REQUEST_CHANGES\"}\nopen('/workspace/review.json','w').write(json.dumps(r))\nPY";
-	assert.deepEqual(decide("bash", { command: writeCall }, 25, 24, parseAllow(undefined)), { allow: true });
-	assert.deepEqual(decide("bash", { command: "ls -l /workspace/review.json && cat /workspace/review.json | head -5" }, 30, 24, [DEFAULT_ALLOW]), { allow: true });
-});
-
-test("v1 regression: a phantom write tool must not be REQUIRED — but is allowed when registered", () => {
-	assert.deepEqual(decide("write", { path: "/workspace/review.json" }, 25, 24, []), { allow: true });
-	assert.deepEqual(decide("edit", { path: "/workspace/review.json" }, 25, 24, []), { allow: true });
-});
-
-test("past the cap, non-finalize calls are refused with the lane named", () => {
-	const d = decide("bash", { command: "grep -rn codeberg /workspace/repo/chart" }, 25, 24, parseAllow(undefined));
+test("numeric cap: within budget passes, past it the finalize lane stays open", () => {
+	const writeCall = "cd /workspace && python3 - <<'PY'\nopen('/workspace/review.json','w').write('{}')\nPY";
+	const st = newState();
+	for (let i = 0; i < 24; i++) {
+		assert.deepEqual(decide("bash", { command: `probe-${i}` }, st, parseAllow(undefined), { budget: 24 }), { allow: true });
+	}
+	// past the cap: the artifact lane still executes
+	assert.deepEqual(decide("bash", { command: writeCall }, st, parseAllow(undefined), { budget: 24 }), { allow: true });
+	assert.deepEqual(decide("write", { path: "/workspace/review.json" }, st, []), { allow: true });
+	// non-lane work is refused with the exhaustion message
+	const d = decide("bash", { command: "grep -rn x /workspace/repo" }, st, [DEFAULT_ALLOW], { budget: 24 });
 	assert.equal(d.allow, false);
-	assert.match(d.reason!, /budget exhausted \(25 calls > 24 allowed\)/);
-	assert.ok(d.reason!.includes(String(DEFAULT_ALLOW)), "reason names the lane");
-	assert.match(d.reason!, /finalize lane/i);
+	assert.ok(d.reason!.startsWith("Tool budget exhausted"));
+	assert.equal(d.reason, budgetExhaustedReason(26, 24, DEFAULT_ALLOW));
 });
 
-test("non-bash tools past the cap are refused (read/rig/web_search cannot finalize)", () => {
-	for (const tool of ["read", "rig", "web_search"]) {
-		const d = decide(tool, {}, 25, 24, [DEFAULT_ALLOW]);
-		assert.equal(d.allow, false, tool);
+test("numeric cap: the nudge fires exactly once at nudgeAt", () => {
+	const st = newState();
+	const opts = { budget: 10, nudgeAt: 5 };
+	for (let i = 0; i < 5; i++) decide("bash", { command: `w${i}` }, st, [], opts);
+	const d = decide("bash", { command: "w5" }, st, [], opts);
+	assert.equal(d.nudge, true);
+	assert.equal(d.reason, nudgeReason(5, 10, DEFAULT_ALLOW));
+	// one-shot
+	const d2 = decide("bash", { command: "w6" }, st, [], opts);
+	assert.equal(d2.nudge, undefined);
+});
+
+// ─── v3 conceptual layers (#689) ───
+
+const RB = { loopBreaker: true, wallSeconds: 0 };
+
+test("fingerprint: canonicalizes whitespace, keeps meaningful differences — over ALL args", () => {
+	assert.equal(fingerprint("bash", { command: "ls   -la /w" }), fingerprint("bash", { command: "ls -la /w" }));
+	assert.notEqual(fingerprint("bash", { command: "ls /a" }), fingerprint("bash", { command: "ls /b" }));
+	assert.notEqual(fingerprint("read", { path: "/w/x" }), fingerprint("bash", { command: "cat /w/x" }));
+	// r2 4302417584: a primary-key fingerprint collided chunked reads and
+	// same-path greps — every arg participates now.
+	assert.notEqual(
+		fingerprint("read", { path: "/workspace/pr-diff.patch", offset: 1 }),
+		fingerprint("read", { path: "/workspace/pr-diff.patch", offset: 201 }),
+	);
+	assert.notEqual(
+		fingerprint("grep", { pattern: "TODO", path: "/w" }),
+		fingerprint("grep", { pattern: "FIXME", path: "/w" }),
+	);
+});
+
+test("loop breaker: a repeated call is refused with a redirect, and never counts as work", () => {
+	const st = newState();
+	const call = { command: "grep -rn TODO /workspace/repo" };
+	assert.deepEqual(decide("bash", call, st, [DEFAULT_ALLOW], RB), { allow: true });
+	assert.equal(st.seen.size, 1);
+	const d = decide("bash", call, st, [DEFAULT_ALLOW], RB);
+	assert.equal(d.allow, false);
+	assert.equal(d.loop, true);
+	assert.equal(d.reason, loopReason("grep -rn TODO /workspace/repo"));
+	// the repeat did NOT grow the executed memory (a refusal is not work done)
+	assert.equal(st.seen.size, 1);
+	assert.equal(st.loopStreak, 1);
+	// a DIFFERENT call resets the stagnation streak
+	assert.deepEqual(decide("bash", { command: "cat /workspace/other" }, st, [DEFAULT_ALLOW], RB), { allow: true });
+	assert.equal(st.loopStreak, 0);
+});
+
+test("loop breaker: chunked reads of one file are DISTINCT calls (the documented way past the read cap)", () => {
+	const st = newState();
+	const base = { path: "/workspace/pr-diff.patch" };
+	assert.deepEqual(decide("read", { ...base, offset: 1 }, st, [], RB), { allow: true });
+	assert.deepEqual(decide("read", { ...base, offset: 201 }, st, [], RB), { allow: true });
+	// only the IDENTICAL re-read is a loop
+	const d = decide("read", { ...base, offset: 201 }, st, [], RB);
+	assert.equal(d.allow, false);
+});
+
+test("loop breaker: greps in one directory differ by pattern", () => {
+	const st = newState();
+	assert.deepEqual(decide("grep", { pattern: "TODO", path: "/w" }, st, [], RB), { allow: true });
+	assert.deepEqual(decide("grep", { pattern: "FIXME", path: "/w" }, st, [], RB), { allow: true });
+});
+
+test("wall clock: anchored at the JOB start (dispatcher stamp), not the session's first call", () => {
+	const st = newState();
+	const realNow = Date.now;
+	// the Job started 101.5m ago; prepare already consumed its share — the
+	// converge checkpoint must fire NOW, not 5m from now (r2 4302426988).
+	const jobStart = realNow() - 101.5 * 60 * 1000;
+	Date.now = () => realNow();
+	try {
+		const d = decide("bash", { command: "first call" }, st, [DEFAULT_ALLOW], {
+			loopBreaker: true, wallSeconds: 120 * 60, runStartedAtMs: jobStart,
+		});
+		assert.equal(d.nudge, true);
+		assert.equal(d.reason, convergeReason(18, DEFAULT_ALLOW));
+	} finally {
+		Date.now = realNow;
 	}
 });
 
-test("blocked attempts do not consume budget — counting is executed-only", () => {
-	// The caller never increments on a block; simulate: 30 executed, 100
-	// blocked retries, still the same decision shape.
-	for (let i = 0; i < 100; i++) {
-		const d = decide("bash", { command: "grep x" }, 30, 24, [DEFAULT_ALLOW]);
+test("wall clock: absent dispatcher stamp falls back to first-call anchoring (documented approximation)", () => {
+	const st = newState();
+	const realNow = Date.now;
+	const t0 = realNow();
+	Date.now = () => t0;
+	decide("bash", { command: "prime" }, st, [DEFAULT_ALLOW], { loopBreaker: true, wallSeconds: 120 * 60 });
+	assert.equal(st.startedAtMs, t0);
+	Date.now = () => t0 + 101.5 * 60 * 1000;
+	try {
+		const d = decide("bash", { command: "second call" }, st, [DEFAULT_ALLOW], {
+			loopBreaker: true, wallSeconds: 120 * 60,
+		});
+		assert.equal(d.nudge, true);
+	} finally {
+		Date.now = realNow;
+	}
+});
+
+test("loop breaker: the worst observed offender — 10 re-reads of one file — is refused every time", () => {
+	const st = newState();
+	const file = { path: "/workspace/repo/src/backend/decode_vulkan.zig" };
+	assert.deepEqual(decide("read", file, st, [], RB), { allow: true });
+	for (let i = 0; i < 9; i++) {
+		const d = decide("read", file, st, [], RB);
 		assert.equal(d.allow, false);
 	}
-	assert.deepEqual(decide("bash", { command: "cat /workspace/review.json" }, 30, 24, [DEFAULT_ALLOW]), { allow: true });
 });
 
-test("empty allow env falls back to the fleet default — never a bricked agent", () => {
-	assert.deepEqual(parseAllow(undefined), [DEFAULT_ALLOW]);
-	assert.deepEqual(parseAllow(""), [DEFAULT_ALLOW]);
-	assert.deepEqual(parseAllow("  "), [DEFAULT_ALLOW]);
-	assert.deepEqual(parseAllow("/tmp/out.json , /workspace/review.json"), ["/tmp/out.json", "/workspace/review.json"]);
+test("loop breaker: re-reading the ARTIFACT is lane work, not a loop (r2 4302821795 — the artifact changes under the session)", () => {
+	const st = newState();
+	const read = { path: "/workspace/review.json" };
+	assert.deepEqual(decide("read", read, st, [DEFAULT_ALLOW], RB), { allow: true });
+	assert.deepEqual(decide("read", read, st, [DEFAULT_ALLOW], RB), { allow: true }); // repeat: ALLOWED
+	// boundary: a SEARCH whose pattern mentions the ledger is not targeting
+	// the artifact — it stays loop-controlled (the model can read the
+	// artifact directly, which is exempt).
+	const grep = { pattern: "review.json", path: "/workspace" };
+	assert.deepEqual(decide("grep", grep, st, [DEFAULT_ALLOW], RB), { allow: true });
+	const d = decide("grep", grep, st, [DEFAULT_ALLOW], RB);
+	assert.equal(d.allow, false);
+	assert.equal(d.loop, true);
 });
 
-test("allow matching is substring-based on the command string", () => {
-	assert.deepEqual(decide("bash", { command: "echo review.json && grep x repo" }, 25, 24, ["review.json"]), { allow: true });
-	// near-miss: different filename does not open the lane
-	assert.equal(decide("bash", { command: "cat /workspace/review.json.bak" }, 25, 24, [DEFAULT_ALLOW]).allow, true); // substring — accepted by design
-	assert.equal(decide("bash", { command: "cat /workspace/reviews.json" }, 25, 24, [DEFAULT_ALLOW]).allow, false);
+test("loop breaker: the finalize lane may repeat (composing legitimately re-touches the artifact)", () => {
+	const st = newState();
+	const append = { command: "cd /workspace && python3 -c \"open('/workspace/review.json','a').write('{}')\"" };
+	assert.deepEqual(decide("bash", append, st, [DEFAULT_ALLOW], RB), { allow: true });
+	// past the cap AND repeated: the lane wins
+	st.executed = 999;
+	const d = decide("bash", append, st, [DEFAULT_ALLOW], { ...RB, budget: 10 });
+	assert.equal(d.allow, true);
 });
 
-test("finalizeReason names the count, the cap, and the lane", () => {
-	const msg = finalizeReason(31, 30, "/workspace/review.json");
-	assert.match(msg, /31 calls > 30 allowed/);
-	assert.match(msg, /\/workspace\/review\.json/);
+test("stagnation: K consecutive loop-refusals fire the checkpoint (max twice)", () => {
+	const st = newState();
+	const call = { command: "grep -rn x /workspace/repo" };
+	decide("bash", call, st, [DEFAULT_ALLOW], RB); // fresh execution
+	const d = decide("bash", call, st, [DEFAULT_ALLOW], RB); // refused (streak 1)
+	assert.equal(d.loop, true);
+	// streaks 2 and 3 are plain loop refusals; the 4th fires the checkpoint
+	assert.equal(decide("bash", call, st, [DEFAULT_ALLOW], RB).loop, true);
+	assert.equal(decide("bash", call, st, [DEFAULT_ALLOW], RB).loop, true);
+	const sd = decide("bash", call, st, [DEFAULT_ALLOW], RB);
+	assert.equal(sd.nudge, true);
+	assert.equal(sd.reason, stagnationReason(STAGNATION_THRESHOLD, DEFAULT_ALLOW));
+	// second stagnation fires after another K; a third never comes
+	let fired = 0;
+	for (let i = 0; i < 3 * STAGNATION_THRESHOLD; i++) {
+		const x = decide("bash", call, st, [DEFAULT_ALLOW], RB);
+		if (x.nudge) fired++;
+	}
+	assert.equal(fired, 1); // the second (final) stagnation fire
+	assert.equal(st.stagnationFired, 2);
 });
 
-test("eventArgs reads pi's `input` key (types.d.ts) with `args` fallback", () => {
-	// the shape that bricked attempt 55de07e6351f: command under `input`
-	assert.deepEqual(eventArgs({ input: { command: "cat > /workspace/review.json" } }), { command: "cat > /workspace/review.json" });
-	assert.deepEqual(eventArgs({ args: { command: "ls" } }), { command: "ls" });
-	// JSON-string form parses defensively
-	assert.deepEqual(eventArgs({ input: JSON.stringify({ command: "ls" }) }), { command: "ls" });
-	assert.deepEqual(eventArgs({ input: "not json" }), {});
+test("wall convergence: the checkpoint fires once at the converge margin — regardless of call count", () => {
+	const st = newState();
+	// 101 minutes into a 120m wall: the count cap (200) would not have fired
+	// at the measured 57-calls/h pace — time does not drift (#689).
+	// prime: the session's first call anchors the wall clock at real now
+	decide("bash", { command: "prime" }, st, [DEFAULT_ALLOW], {
+		loopBreaker: true, wallSeconds: 120 * 60, convergeMarginSeconds: 20 * 60,
+	});
+	const realNow = Date.now;
+	Date.now = () => realNow() + 101.5 * 60 * 1000; // 18.5m left → floor 18, deterministic
+	try {
+		const d = decide("bash", { command: "grep -rn x /w" }, st, [DEFAULT_ALLOW], {
+			loopBreaker: true, wallSeconds: 120 * 60, convergeMarginSeconds: 20 * 60,
+		});
+		assert.equal(d.nudge, true);
+		assert.equal(d.reason, convergeReason(18, DEFAULT_ALLOW));
+		// one-shot
+		Date.now = () => realNow() + 102 * 60 * 1000;
+		const d2 = decide("bash", { command: "grep -rn y /w" }, st, [DEFAULT_ALLOW], {
+			loopBreaker: true, wallSeconds: 120 * 60, convergeMarginSeconds: 20 * 60,
+		});
+		assert.equal(d2.allow, true);
+		assert.equal(d2.nudge, undefined);
+	} finally {
+		Date.now = realNow;
+	}
+});
+
+test("wall finalize: past the finalize margin only the lane runs", () => {
+	const st = newState();
+	decide("bash", { command: "prime" }, st, [DEFAULT_ALLOW], { loopBreaker: true, wallSeconds: 120 * 60 });
+	const realNow = Date.now;
+	Date.now = () => realNow() + 115 * 60 * 1000; // 5m left
+	try {
+		const d = decide("bash", { command: "grep -rn x /w" }, st, [DEFAULT_ALLOW], {
+			loopBreaker: true, wallSeconds: 120 * 60,
+		});
+		assert.equal(d.allow, false);
+		assert.equal(d.reason, finalizeReason(DEFAULT_ALLOW));
+		const lane = decide("bash", { command: "python3 -c \"open('/workspace/review.json','w')\"" }, st, [DEFAULT_ALLOW], {
+			loopBreaker: true, wallSeconds: 120 * 60,
+		});
+		assert.equal(lane.allow, true);
+	} finally {
+		Date.now = realNow;
+	}
+});
+
+test("wall layers are inert without the arming env (non-review workflows keep v2 behavior)", () => {
+	const st = newState();
+	const call = { command: "git fetch origin main" };
+	assert.deepEqual(decide("bash", call, st, [], { wallSeconds: 0 }), { allow: true });
+	// same call again, no loopBreaker: allowed (fork-maintenance retries after upstream fixes)
+	assert.deepEqual(decide("bash", call, st, [], { wallSeconds: 0 }), { allow: true });
+	// loopBreaker off even with a wall configured
+	assert.deepEqual(decide("bash", call, st, [], { loopBreaker: false, wallSeconds: 7200 }), { allow: true });
+});
+
+test("margins parse: defaults and explicit values", () => {
+	assert.equal(parseConvergeMargin(undefined), 20 * 60);
+	assert.equal(parseConvergeMargin("600"), 600);
+	assert.equal(parseFinalizeMargin(undefined), 8 * 60);
+	assert.equal(parseWallSeconds("7200"), 7200);
+	assert.equal(parseWallSeconds("abc"), 0);
+});
+
+test("eventArgs: reads input first, parses JSON-string shapes", () => {
+	assert.deepEqual(eventArgs({ input: { command: "ls" } }), { command: "ls" });
+	assert.deepEqual(eventArgs({ args: "{\"command\":\"ls\"}" }), { command: "ls" });
 	assert.deepEqual(eventArgs(undefined), {});
-	assert.deepEqual(eventArgs({}), {});
-});
-
-test("live regression: post-cap write via input-carried command opens the lane", () => {
-	// exact shape from the 55de07e6351f failure: pi delivers the command
-	// under `input`; the heredoc write must be ALLOWED at 33 > 32
-	const d = decide("bash", eventArgs({ input: { command: "cat > /workspace/review.json <<'EOF'\n{}\nEOF" } }), 33, 32, parseAllow("/workspace/review.json"));
-	assert.deepEqual(d, { allow: true });
-	// and a non-lane command still blocks
-	const b = decide("bash", eventArgs({ input: { command: "grep -rn x /workspace/repo" } }), 33, 32, parseAllow("/workspace/review.json"));
-	assert.equal(b.allow, false);
-});
-
-test("parseNudge: absent → budget/2, \"0\" → off, garbage/past-cap → off", () => {
-	assert.equal(parseNudge(undefined, 32), 16);
-	assert.equal(parseNudge("", 32), 16);
-	assert.equal(parseNudge("0", 32), 0);
-	assert.equal(parseNudge("12", 32), 12);
-	assert.equal(parseNudge("32", 32), 0); // at the cap = meaningless
-	assert.equal(parseNudge("40", 32), 0);
-	assert.equal(parseNudge("abc", 32), 0);
-	assert.equal(parseNudge("-4", 32), 0);
-	assert.equal(parseNudge("", 1), 0); // budget 1 has no halfway
-});
-
-test("mid-budget checkpoint: one block at nudgeAt, does not count, fires once", () => {
-	const lane = parseAllow("/workspace/review.json");
-	// before the checkpoint: plain allow
-	assert.deepEqual(decide("bash", { command: "ls" }, 15, 32, lane, { nudgeAt: 16 }), { allow: true });
-	// exactly at 16: the checkpoint — blocked, flagged, shaped message
-	const n = decide("bash", { command: "grep -rn x ." }, 16, 32, lane, { nudgeAt: 16 });
-	assert.equal(n.allow, false);
-	assert.equal(n.nudge, true);
-	assert.match(n.reason ?? "", /Budget checkpoint: 16\/32/);
-	assert.match(n.reason ?? "", /review\.json/);
-	assert.deepEqual(nudgeReason(16, 32, "/workspace/review.json"), n.reason);
-	// after the flag flips: never again at the same count (the block does
-	// not advance `executed` — without the flag this would loop forever)
-	assert.deepEqual(decide("bash", { command: "ls" }, 16, 32, lane, { nudgeAt: 16, nudged: true }), { allow: true });
-	// the checkpoint never fires at/after the cap
-	assert.deepEqual(decide("bash", { command: "ls" }, 16, 16, lane, { nudgeAt: 16 }), { allow: true });
-	// nudged=0 (explicit off): plain behavior
-	assert.deepEqual(decide("bash", { command: "ls" }, 16, 32, lane, { nudgeAt: 0 }), { allow: true });
-	// the checkpoint interrupts WHATEVER call lands at the halfway count —
-	// even a lane write (it is a one-shot interrupt; its message names the
-	// lane). The next call at the same count passes.
-	const lw = decide("bash", { command: "cat > /workspace/review.json" }, 16, 32, lane, { nudgeAt: 16 });
-	assert.equal(lw.nudge, true);
-	assert.deepEqual(decide("bash", { command: "cat > /workspace/review.json" }, 16, 32, lane, { nudgeAt: 16, nudged: true }), { allow: true });
 });

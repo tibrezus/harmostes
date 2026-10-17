@@ -712,3 +712,30 @@ func TestDeleteJobForegroundPropagation(t *testing.T) {
 		t.Fatalf("DeleteJob must pass DeletePropagationForeground, got %v", gotPolicy)
 	}
 }
+
+// TestBuildJobStampsRunStartedMs (#696 r2 4302822712): the wall anchor's
+// PRODUCER side — the dispatcher must emit the Job-creation epoch so the
+// reviewer's conceptual budget measures from the truthful zero. Deleting
+// the emission left the whole v3 arming chain on a drifting anchor with
+// green CI (the consumer tests use synthetic stamps).
+func TestBuildJobStampsRunStartedMs(t *testing.T) {
+	before := time.Now().UnixMilli() - 1000
+	job := BuildJob(AttemptJobParams{Attempt: jobTestAttempt(), WorkflowName: "w", Namespace: "ns", RunBound: 45 * time.Minute})
+	after := time.Now().UnixMilli() + 1000
+	var stamp string
+	for _, e := range job.Spec.Template.Spec.Containers[0].Env {
+		if e.Name == "HARMOSTES_RUN_STARTED_MS" {
+			stamp = e.Value
+		}
+	}
+	if stamp == "" {
+		t.Fatal("HARMOSTES_RUN_STARTED_MS missing — the reviewer's wall clock has no producer")
+	}
+	ms, err := strconv.ParseInt(stamp, 10, 64)
+	if err != nil {
+		t.Fatalf("stamp %q is not an epoch-ms integer: %v", stamp, err)
+	}
+	if ms < before || ms > after {
+		t.Fatalf("stamp %v outside the build window [%v, %v]", ms, before, after)
+	}
+}

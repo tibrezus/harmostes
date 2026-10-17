@@ -2,11 +2,13 @@ package graph
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
+	"github.com/tibrezus/harmostes/internal/worker"
 )
 
 func TestCompileWorkflowProducesScope(t *testing.T) {
@@ -223,5 +225,98 @@ func TestCompileLabelsRealComponents(t *testing.T) {
 	}
 	if labels["deploy"] != "post-review" {
 		t.Errorf("deploy label = %q, want post-review", labels["deploy"])
+	}
+}
+
+// TestCompileWorkflowCarriesPluginRefTimeout (#689): PluginRef.Timeout lands
+// on the compiled node's Timeout — the G8 circuit breaker input. A stalled
+// prepare (clone/rig) must hit a node bound and fail fast ("timed out
+// after…"), releasing the claim for re-dispatch, instead of burning the
+// whole run bound with zero durable work.
+func TestCompileWorkflowCarriesPluginRefTimeout(t *testing.T) {
+	wf := &v1alpha1.Workflow{
+		Spec: v1alpha1.WorkflowSpec{
+			Prepare: v1alpha1.PrepareSpec{
+				Plugin: v1alpha1.PluginRef{Name: "workspace", Timeout: "5m"},
+			},
+			Agent: v1alpha1.AgentSpec{
+				Model:        "none",
+				TaskTemplate: v1alpha1.TaskTemplate{Name: "none"},
+				Gate:         v1alpha1.GateRef{Plugin: v1alpha1.PluginRef{Name: "noop", Timeout: "4m"}},
+			},
+			Deploy: v1alpha1.DeploySpec{
+				Plugin: v1alpha1.PluginRef{Name: "post-review", Timeout: "3m"},
+			},
+		},
+	}
+
+	gs := CompileWorkflow(wf)
+	want := map[string]string{"prepare": "5m", "deploy": "3m"}
+	for _, n := range gs.Nodes {
+		if w, ok := want[n.ID]; ok {
+			if n.Timeout != w {
+				t.Errorf("node %s Timeout = %q, want %q (PluginRef.Timeout must flow to the G8 bound)", n.ID, n.Timeout, w)
+			}
+			delete(want, n.ID)
+		}
+	}
+	for id := range want {
+		t.Errorf("node %s missing from compiled graph", id)
+	}
+
+	// The inline gate's bound rides the agent node CONFIG (there is no
+	// gate node to carry NodeSpec.Timeout): GateNodeConfig.Plugin.Timeout
+	// must be set or the gate leg stays the unbounded prelude (#695 r1).
+	for _, n := range gs.Nodes {
+		if n.ID != "agent" {
+			continue
+		}
+		var acfg AgentNodeConfig
+		if err := json.Unmarshal(n.Config, &acfg); err != nil {
+			t.Fatalf("unmarshal agent config: %v", err)
+		}
+		if acfg.Gate == nil || acfg.Gate.Plugin.Timeout != "4m" {
+			t.Fatalf("gate plugin Timeout = %v, want 4m (an advertised bound the compiler drops is schema-only)", acfg.Gate)
+		}
+	}
+}
+
+// TestAsAgentGateCarriesTimeout (#695 r2 4301287303): the config carrying the
+// bound is not enough — worker.GatePlugin must RECEIVE it. Mutating the
+// AsAgentGate wiring away left the whole suite green; this pins the handoff.
+func TestAsAgentGateCarriesTimeout(t *testing.T) {
+	wf := &v1alpha1.Workflow{
+		Spec: v1alpha1.WorkflowSpec{
+			Agent: v1alpha1.AgentSpec{
+				Model:        "none",
+				TaskTemplate: v1alpha1.TaskTemplate{Name: "none"},
+				Gate:         v1alpha1.GateRef{Plugin: v1alpha1.PluginRef{Name: "noop", Timeout: "4m"}},
+			},
+		},
+	}
+	gs := CompileWorkflow(wf)
+	resolver := &fakeResolver{command: "echo", args: []string{"noop"}}
+	for _, n := range gs.Nodes {
+		if n.ID != "agent" {
+			continue
+		}
+		var acfg AgentNodeConfig
+		if err := json.Unmarshal(n.Config, &acfg); err != nil {
+			t.Fatalf("unmarshal agent config: %v", err)
+		}
+		if acfg.Gate == nil {
+			t.Fatal("agent node has no gate config")
+		}
+		g, err := acfg.Gate.AsAgentGate(context.Background(), resolver, NodeEnv{})
+		if err != nil {
+			t.Fatalf("AsAgentGate: %v", err)
+		}
+		gp, ok := g.(worker.GatePlugin)
+		if !ok {
+			t.Fatalf("AsAgentGate returned %T, want worker.GatePlugin", g)
+		}
+		if gp.Timeout != "4m" {
+			t.Fatalf("GatePlugin.Timeout = %q, want 4m (the bound must reach the runner, not just the config)", gp.Timeout)
+		}
 	}
 }

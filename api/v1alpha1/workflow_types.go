@@ -311,6 +311,14 @@ type PluginRef struct {
 	Image     string   `json:"image,omitempty"`
 	ConfigMap string   `json:"configMap,omitempty"`
 	Args      []string `json:"args,omitempty"`
+	// Timeout bounds the compiled plugin node (G8 circuit breaker, same
+	// semantics as NodeSpec.Timeout — e.g. "5m"). Empty = unbounded, the
+	// historical behavior: a stalled prepare (clone/rig) then burns the
+	// whole run bound with zero durable work (#689: one rhesadox run sat
+	// 120m without ever starting its session). The node fails fast with
+	// "timed out after …", the claim releases, the gate re-dispatches —
+	// minutes lost instead of the wall.
+	Timeout string `json:"timeout,omitempty"`
 }
 
 // EventsSpec names the Dapr pub/sub topics the framework publishes.

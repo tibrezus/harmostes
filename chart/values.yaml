@@ -341,10 +341,20 @@ workflowTemplates:
       # generates hypotheses; chilling its sampling collapsed findings from
       # ~4 to 1-2 on large merges, observed live Oct 8+).
       thinking: high
-      # #680 — uncapped by turns: all nine pillars, all the time needed,
-      # bounded only by `timeout` (the run bound). Findings post as they
-      # are verified, so a long round can never die with unposted work.
-      toolBudget: 0
+      # #689 (measured live 2026-10-16, the #2628 round's session): under
+      # thinking=high the reviewer turns at ~110 calls/h and is
+      # GENERATION-BOUND — 216K output tokens/h ≈ 120% of the 120m run
+      # bound spent purely generating, so an uncapped round dies at the
+      # wall mid-turn: the post-review plugin never runs, no verdict
+      # composes, total loss. Cap at the wall's call budget minus a
+      # finalize margin: (120m − 10m) × 110/60 ≈ 200 calls. Past the cap
+      # the finalize lane keeps the artifact writable and the plugin
+      # composes the verdict from the ledger — a capped round DELIVERS;
+      # a wall-killed round delivers nothing. The converge nudge derives
+      # cap/2 = 100 (dispatch.go carries it), landing the checkpoint with
+      # ~55m of wall left. #680's incrementally-posted findings are
+      # unaffected: exploration still owns the first half of the wall.
+      toolBudget: 200
       timeout: 3600
       tools:
         - read
@@ -353,12 +363,31 @@ workflowTemplates:
     deploy:
       plugin:
         name: post-review
+        # #695 r2: the artifact leg is a node too — a hung forge call in
+        # post-review must not outlive its welcome after the review has
+        # already been delivered.
+        timeout: 10m
     description: PR review (fetch PR → agent → pr-review → post review)
     prepare:
       plugin:
         name: workspace
+        # #689: the clone/rig prelude is unbounded by default — one
+        # rhesadox run sat the FULL 120m wall in prepare (its healthy
+        # sibling took 2m26s) and was killed with zero durable work: no
+        # session, no timeline, no verdict. Bound it: a stalled prepare
+        # fails the node at 5m ("timed out after 5m0s"), the claim
+        # releases, and the gate re-dispatches — minutes lost, not the
+        # wall.
+        timeout: 5m
     reviewReady:
-      dispatchTimeout: 45m
+      # #695 r1: the template must declare the wall its own budget assumes —
+      # runBound absent falls back to OneShotRunBound (30m), against which a
+      # 200-call cap can never bind and the nudge (100) never fires. The
+      # fleet instances override identically (120m/135m); declaring it here
+      # makes the chart render self-consistent. dispatchTimeout >= runBound
+      # + MinDispatchMargin.
+      runBound: 120m
+      dispatchTimeout: 135m
       horizon: 6h
       label: needs-review
     scope:
@@ -506,6 +535,17 @@ tasks:
     Huge: design-level review from the start — architecture, seams,
     invariants — and say explicitly which mechanical claims you did not
     re-verify.
+
+    ## Your turn budget
+
+    The session runs under a tool-call cap with a converge checkpoint at
+    half budget — the enforced values ride in your environment as
+    PI_TOOL_BUDGET and PI_TOOL_BUDGET_NUDGE; never assume a number not
+    in them. This is your wall as well as the run bound: past the cap
+    only the artifact lane stays open, and the round must end composed.
+    Budget accordingly — verify the pillars the diff actually triggers,
+    post each finding the moment it's verified, and treat the checkpoint
+    as the signal to stop exploring and finish synthesis.
 
     ## Posting credentials
 

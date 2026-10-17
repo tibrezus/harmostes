@@ -34,10 +34,11 @@ func CompileWorkflow(wf *v1alpha1.Workflow) v1alpha1.GraphSpec {
 	}
 	nodes := []v1alpha1.NodeSpec{
 		{
-			ID:     "prepare",
-			Type:   "plugin",
-			Label:  prepareLabel, // real component name for the map/canvas
-			Config: prepareCfg,
+			ID:      "prepare",
+			Type:    "plugin",
+			Label:   prepareLabel, // real component name for the map/canvas
+			Config:  prepareCfg,
+			Timeout: wf.Spec.Prepare.Plugin.Timeout, // G8 bound (#689)
 		},
 	}
 
@@ -58,6 +59,7 @@ func CompileWorkflow(wf *v1alpha1.Workflow) v1alpha1.GraphSpec {
 					Name:      wf.Spec.Agent.Gate.Plugin.Name,
 					ConfigMap: wf.Spec.Agent.Gate.Plugin.ConfigMap,
 					Args:      wf.Spec.Agent.Gate.Plugin.Args,
+					Timeout:   wf.Spec.Agent.Gate.Plugin.Timeout,
 				},
 			},
 			Scope: wikiLintScope(wf.Name),
@@ -79,10 +81,11 @@ func CompileWorkflow(wf *v1alpha1.Workflow) v1alpha1.GraphSpec {
 		deployLabel = "deploy"
 	}
 	nodes = append(nodes, v1alpha1.NodeSpec{
-		ID:     "deploy",
-		Type:   "plugin",
-		Label:  deployLabel,
-		Config: deployCfg,
+		ID:      "deploy",
+		Type:    "plugin",
+		Label:   deployLabel,
+		Config:  deployCfg,
+		Timeout: wf.Spec.Deploy.Plugin.Timeout,
 	})
 
 	edges := []v1alpha1.EdgeSpec{

@@ -629,14 +629,16 @@ func TestBudgetPolicy(t *testing.T) {
 	if !slices.Contains(zero, "LITELLM_URL=http://x") {
 		t.Fatal("ToolBudget=0 must not touch unrelated allowlisted env")
 	}
-	// N>0 → the cap is overridden, the rest of the trio forwards.
+	// N>0 → the cap is overridden and the nudge derives N/2 (#689: the pool
+	// always forwards an explicit PI_TOOL_BUDGET_NUDGE, so leaving it alone
+	// would pin the checkpoint at the fleet's 16 calls under a raised cap).
 	five := 5
 	over := mk(&five)
 	if !slices.Contains(over, "PI_TOOL_BUDGET=5") {
 		t.Fatal("ToolBudget=5 must override PI_TOOL_BUDGET=5")
 	}
-	if !slices.Contains(over, "PI_TOOL_BUDGET_NUDGE=16") {
-		t.Fatal("ToolBudget=5 must keep the fleet nudge (cap/2 derivation is the extension's)")
+	if !slices.Contains(over, "PI_TOOL_BUDGET_NUDGE=2") {
+		t.Fatal("ToolBudget=5 must derive the nudge (cap/2) — the pool's explicit 16 would otherwise stick")
 	}
 	// nil policy (tests calling without a workflow): fleet default intact.
 	if !slices.Contains(jobCredentialEnv(nil), "PI_TOOL_BUDGET=32") {

@@ -605,12 +605,13 @@ type budgetPolicyFn = *budgetPolicy
 // budgetPolicy applies AgentSpec.ToolBudget to the attempt Job's env:
 //
 //	nil            → fleet default: forward the pool's cap trio untouched
-//	&N (N > 0)     → override PI_TOOL_BUDGET=N (nudge stays cap/2, allow lane
-//	                 untouched — the extension's own derivation)
+//	&N (N > 0)     → override PI_TOOL_BUDGET=N; the nudge derives N/2 (#689:
+//	                 the pool always forwards an explicit PI_TOOL_BUDGET_NUDGE,
+//	                 so the extension's absent→cap/2 derivation never fires —
+//	                 the override must carry the derived nudge itself or a
+//	                 raised cap would keep the fleet's 16-call checkpoint)
 //	&0             → UNCAPPED: the trio is dropped entirely (absent on a
-//	                 deployment the extension is inert — the declared state
-//	                 for the reviewer: all pillars, all the time needed,
-//	                 bounded only by the run bound)
+//	                 deployment the extension is inert)
 type budgetPolicy struct {
 	workflow *v1alpha1.Workflow
 	attempt  *v1alpha1.Attempt
@@ -640,7 +641,10 @@ func (p *budgetPolicy) overrides() map[string]string {
 	if tb == nil || *tb == 0 {
 		return nil
 	}
-	return map[string]string{"PI_TOOL_BUDGET": strconv.Itoa(*tb)}
+	return map[string]string{
+		"PI_TOOL_BUDGET":       strconv.Itoa(*tb),
+		"PI_TOOL_BUDGET_NUDGE": strconv.Itoa(*tb / 2),
+	}
 }
 
 // dispatchEnv renders the Job's trigger env: the envelope (gate output) when

@@ -82,8 +82,14 @@ DEC=$(python3 -c "import json;print(json.load(open('$REVIEW'))['decision'])")
 #      /repos/{o}/{r}/pulls/{n}/comments/{id}/resolutions — verified
 #      live; GitHub: GraphQL resolveReviewThread).
 #   3. TODOs block their own round — everything is fixed in this PR; the
-#      only escape is the ARCHITECTURE CARRY: a design-scale finding
-#      outliving the diff becomes ONE deduped tracker issue (milestone =
+#      only escape is the ARCHITECTURE CARRY — and minting its tracker
+#      issue is the EXCEPTION, not the default (#700): dedup (fuzzy, open
+#      AND closed) first; generated artifacts never mint; an unmatched
+#      carry mints only when marked severe/structural (severe|security|
+#      data loss|outage|corruption, or an explicit "mint:" marker) —
+#      otherwise the thread resolves as a review-record carry with NO
+#      new issue. A design-scale finding that outlives the diff becomes
+#      ONE deduped tracker issue at most (milestone =
 #      the repo's most recent open milestone), referenced by reply on the
 #      thread, then resolved. Carried threads do not downgrade; the issue
 #      gates nothing. Severe items are never only carried — the skill's
@@ -211,12 +217,19 @@ if [ "$DEC" = "APPROVE" ] && [ "$GATE_STATUS" != "evaluated" ]; then
 fi
 rm -f "$GATE_STATUS_FILE"
 # ── CARRY (CARRY-CLASSIFIER markers — tested verbatim): architecture-
-# scale items escape the PR as ONE deduped tracker issue each. Inputs: the
+# scale items escape the PR as ONE deduped tracker issue AT MOST — minting
+# is exception-gated (#700: rhesadox #2808-#2827 were the same few
+# findings re-minted ~20 times across rounds because dedup was
+# exact-title-only over 50 open issues). Inputs: the
 # ledger (todos[] with disposition "architecture-carry") and the thread
 # listing (open roots whose body opens with the Architecture-carry
 # prefix — the skill's machine-read class grammar; agent-posted threads
-# the agent could not mint for). Dedup: a body-referenced issue or an
-# OPEN issue with the identical title is REFERENCED, never re-minted.
+# the agent could not mint for). Dedup: a body-referenced issue, or an
+# open OR closed issue whose NORMALIZED title matches (class prefixes and
+# round annotations stripped, token/bigram similarity — titles drift per
+# round), is REFERENCED, never re-minted. A carry that dedups against
+# nothing and carries no severity marker resolves as a review-record
+# carry with NO tracker issue.
 # Every carried thread is replied (issue reference) and RESOLVED — the
 # resolve is what keeps it out of the gate's count; the minted issue
 # gates nothing (non-blocking by construction — the whole point of the
@@ -326,35 +339,101 @@ if isinstance(ms,list) and ms:
     if len(ms)>1: notes.append("milestone: %d open, using newest (%s)" % (len(ms), newest.get("title")))
 else:
     notes.append("no open milestone — carried issue minted unmilestoned (assign manually)")
-# 2) open issues for exact-title dedup.
+# 2) issues for dedup — OPEN and CLOSED (#700: a carried problem often
+# has its issue already, sometimes closed after an earlier fix attempt;
+# the dedup listing must see both or every round re-mints).
 if is_fj:
-    _,israw=curl("GET", "/repos/%s/issues?state=open&type=issues&limit=50" % repo)
+    _,israw=curl("GET", "/repos/%s/issues?state=all&type=issues&limit=100" % repo)
 else:
     # GitHub has no type=issues filter on /issues and no limit param (both
     # 422 — probed live #685 r1): per_page + PRs skipped client-side (a
     # same-title PR is not a dedup hit).
-    _,israw=curl("GET", "/repos/%s/issues?state=open&per_page=50" % repo)
-open_titles={}
+    _,israw=curl("GET", "/repos/%s/issues?state=all&per_page=100&sort=created&direction=desc" % repo)
+known=[]
 try:
     issues=json.loads(israw)
     if isinstance(issues,list):
         for i in issues:
             if not is_fj and i.get("pull_request"): continue
             t=(i.get("title") or "").strip()
-            if t: open_titles[t]=i.get("number")
+            n=i.get("number")
+            if t and n: known.append({"number":n,"title":t})
 except Exception:
     pass
+# Round annotations the reviewers append per round ("(6th round,
+# unchanged)", "(narrowed but still open)", "(already minted — do NOT
+# create a sixth)") and the class prefixes are noise: stripped before
+# comparing, so a recurring finding matches the issue it came from.
+ROUND_NOISE=re.compile(r"\([^)]*(?:round|unchanged|narrowed|unaddressed|still open|already minted|do not create)[^)]*\)", re.I)
+CLASS_PREFIX=re.compile(r"^\s*(?:\**(?:architecture|architecture-carry|todo|blocking)\**\s*[:\u2014-]?\s*)+", re.I)
+STOP=set("the a an and or but not is are was were be been being this that these those it its with without for from into over under again further then once here there when where why how all any both each few more most other some such only own same so than too very can will just dont should now still has have had also while".split())
+def norm_tokens(title):
+    s=CLASS_PREFIX.sub("", str(title or ""))
+    s=ROUND_NOISE.sub(" ", s)
+    s=re.sub(r"[^a-z0-9]+"," ", s.lower())
+    return [w for w in s.split() if len(w)>2 and w not in STOP]
+def find_dup(title):
+    # normalized+ranked, not exact: exact-title dedup NEVER matched a
+    # reworded round (#700). Distinctive-token Jaccard catches shared
+    # vocabulary, word-bigram Jaccard catches shared PHRASES, and a
+    # >=4-token subset catches elaborations of an existing title.
+    a=norm_tokens(title)
+    if not a: return None
+    ga=set(zip(a,a[1:])); sa=set(a)
+    for k in known:
+        b=norm_tokens(k["title"])
+        if not b: continue
+        gb=set(zip(b,b[1:])); sb=set(b)
+        if sa&sb and len(sa&sb)/len(sa|sb)>=0.55: return k["number"]
+        if ga and gb and len(ga&gb)/len(ga|gb)>=0.45: return k["number"]
+        if len(a)>=4 and sa<=sb: return k["number"]
+        if len(b)>=4 and sb<=sa: return k["number"]
+    return None
+def best_overlap(title):
+    # fallback reference-picker for DECLARED recurrences: the issue whose
+    # distinctive vocabulary overlaps most (>=2 tokens).
+    a=set(norm_tokens(title))
+    best=None; hits=1
+    for k in known:
+        b=set(norm_tokens(k["title"]))
+        n=len(a&b)
+        if n>hits: hits=n; best=k["number"]
+    return best
+# A recurrence declaration in the carry itself ("(6th round, unchanged)",
+# "narrowed but still open", "already minted — do NOT create a sixth"):
+# the reviewer is TELLING us an issue exists. Never mint on a declared
+# recurrence — reference the best candidate or carry in the record.
+RECURRENCE=re.compile(r"\(\s*\d+(?:st|nd|rd|th)?\s+round|\bround\s+\d+\b|\b(?:unchanged|narrowed|already minted|do not create|recurring)\b", re.I)
+# Minting is the EXCEPTION (#700): a tracker issue is minted only for a
+# severe/structural finding the tracker does not already cover. The skill
+# mirrors this contract (mark "mint:" or name the severity); an unmarked
+# or recurring carry resolves as a review-record carry with NO new issue.
+MINT_WORTHY=re.compile(r"\b(?:severe|security|data[- ]?loss|outage|corruption)\b|^mint:|\smint:", re.I|re.M)
+# Deterministically GENERATED content (arch-sync artifacts and their
+# commits) is owned by its generator — findings about it never mint.
+GENERATED=re.compile(r"raw/arch/|model\.c4|\.mmd|rig\.json|arch[- ]sync|arch graph|update architecture page", re.I)
 def ensure_issue(title, body):
-    if title in open_titles:
-        return open_titles[title], False
+    dup=find_dup(title)
+    if dup is not None:
+        return dup, "referenced"
+    if GENERATED.search(title) or GENERATED.search(body):
+        return None, "generated"
+    if RECURRENCE.search(title) or RECURRENCE.search(body):
+        cand=best_overlap(title)
+        if cand is not None:
+            return cand, "referenced"
+        return None, "recurrence"
+    if not MINT_WORTHY.search(body):
+        return None, "unmarked"
     payload={"title":title,"body":body}
     if milestone is not None: payload["milestone"]=milestone
     ok,resp=curl("POST", "/repos/%s/issues" % repo, payload)
     try: r=json.loads(resp)
     except Exception: r={}
     if ok and isinstance(r,dict) and r.get("number"):
-        return r["number"], True
-    return None, False
+        known.append({"number":r["number"],"title":title})  # in-run dedup
+        return r["number"], "minted"
+    return None, "failed"
 def reply_thread(comment_id, body_text):
     # fork: in_reply_to on the flat comments route (the fork cannot REST
     # a create-review reply); GitHub: the documented /replies route — it
@@ -372,20 +451,36 @@ for idx,t in arch_todos:
     body=str(t.get("body"))
     title=("architecture: "+body.splitlines()[0])[:140]
     ref=t.get("issue")  # the agent may pre-reference an existing issue
+    note=None
     if ref and re.search(r"\d+", str(ref)):
         num=re.search(r"\d+", str(ref)).group(0)
     else:
-        num,minted_here=ensure_issue(title, "from PR #%s — %s\n(carried by the review pipeline; milestone auto-assigned)" % (pr, body))
-        if num is None:
+        num,outcome=ensure_issue(title, "from PR #%s — %s\n(carried by the review pipeline; milestone auto-assigned)" % (pr, body))
+        if outcome=="minted":
+            minted.append({"issue":num,"title":title})
+        elif outcome=="referenced":
+            notes.append("carry references existing issue #%s — no re-mint: %s" % (num, title[:60]))
+        elif outcome=="failed":
             notes.append("carry mint FAILED for: %s" % title[:60])
             continue
-        if minted_here: minted.append({"issue":num,"title":title})
+        elif outcome=="generated":
+            num=None
+            note="carried in the review record — generated artifact, owned by its generator (arch-sync), not the tracker"
+            notes.append("carry SKIPPED mint (generated): %s" % title[:60])
+        elif outcome=="recurrence":
+            num=None
+            note="carried in the review record — declared recurrence with no covering issue found; raise one manually only if this is genuinely new"
+            notes.append("carry SKIPPED mint (recurrence): %s" % title[:60])
+        else:  # unmarked — the exception gate
+            num=None
+            note="carried in the review record — no tracker issue minted (minting is the exception; mark severe/structural or add 'mint:' to promote)"
+            notes.append("carry SKIPPED mint (unmarked): %s" % title[:60])
     tref=t.get("thread_ref")
     if tref:
         rid=str(tref).split("/")[-1]
-        reply_thread(rid, "carried to #%s — tracked as architecture follow-up; the thread closes here" % num)
+        reply_thread(rid, note or ("carried to #%s — tracked as architecture follow-up; the thread closes here" % num))
         if resolve(rid): resolved_ids.append(str(rid))
-        else: notes.append("resolve FAILED for thread %s (issue #%s exists — resolve manually)" % (rid, num))
+        else: notes.append("resolve FAILED for thread %s (%s)" % (rid, ("issue #"+str(num)) if num else "review-record carry"))
     ledger_carried.append(idx)
 # 4) open Architecture-carry THREADS on the PR (agent-posted, unresolved).
 if isinstance(cs,list):
@@ -399,20 +494,36 @@ if isinstance(cs,list):
         if str(c["id"]) in seen: continue
         seen.add(str(c["id"]))
         m=re.search(r"#(\d+)", body)
+        note=None
         if m:
             num=m.group(1)
         else:
             first=body.replace("**Architecture-carry**","").strip()
             first=first.splitlines()[0][:140] if first else "architecture follow-up"
             title="architecture: "+first
-            num,minted_here=ensure_issue(title, "from PR #%s thread %s — %s\n(carried by the review pipeline)" % (pr, c["id"], body))
-            if num is None:
+            num,outcome=ensure_issue(title, "from PR #%s thread %s — %s\n(carried by the review pipeline)" % (pr, c["id"], body))
+            if outcome=="minted":
+                minted.append({"issue":num,"title":title})
+            elif outcome=="referenced":
+                notes.append("carry references existing issue #%s — no re-mint (thread %s)" % (num, c["id"]))
+            elif outcome=="failed":
                 notes.append("carry mint FAILED for thread %s" % c["id"])
                 continue
-            if minted_here: minted.append({"issue":num,"title":title})
-        reply_thread(c["id"], "carried to #%s — tracked as architecture follow-up; the thread closes here" % num)
+            elif outcome=="generated":
+                num=None
+                note="carried in the review record — generated artifact, owned by its generator (arch-sync), not the tracker"
+                notes.append("carry SKIPPED mint (generated) for thread %s" % c["id"])
+            elif outcome=="recurrence":
+                num=None
+                note="carried in the review record — declared recurrence with no covering issue found; raise one manually only if this is genuinely new"
+                notes.append("carry SKIPPED mint (recurrence) for thread %s" % c["id"])
+            else:  # unmarked — the exception gate
+                num=None
+                note="carried in the review record — no tracker issue minted (minting is the exception; mark severe/structural or add 'mint:' to promote)"
+                notes.append("carry SKIPPED mint (unmarked) for thread %s" % c["id"])
+        reply_thread(c["id"], note or ("carried to #%s — tracked as architecture follow-up; the thread closes here" % num))
         if resolve(c["id"]): resolved_ids.append(str(c["id"]))
-        else: notes.append("resolve FAILED for thread %s (issue #%s exists — resolve manually)" % (c["id"], num))
+        else: notes.append("resolve FAILED for thread %s (%s)" % (c["id"], ("issue #"+str(num)) if num else "review-record carry"))
 report={"resolved_ids":resolved_ids,"ledger_carried":ledger_carried,"minted":minted,"notes":notes}
 with open(os.environ["CARRY_JSON_FILE"],"w") as f: json.dump(report,f)
 # CARRY-CLASSIFIER-END

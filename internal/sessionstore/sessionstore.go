@@ -303,19 +303,37 @@ func LinkSharedStore(lineageDir, workflow, mount string, logf func(string, ...an
 	}
 	// The workflow leaf: read scope is per-workflow by default (r5).
 	target := filepath.Join(mount, workflow)
+	// The leaf cannot self-heal (r6): the only writer is the byte-pristine
+	// extension, and it writes THROUGH the link — a missing leaf would
+	// dangle forever (ENOTDIR on every mkdir), with the DEGRADED line
+	// lying that the mount is gone. Create it at arm time — idempotent,
+	// and not the r2 gap: that gap was at <lineage>/sol-pi, where the
+	// extension could manufacture a real directory in place of our link;
+	// here the directory IS the artifact we want.
+	if err := os.MkdirAll(target, 0o700); err != nil {
+		if logf != nil {
+			logf("sol-pi DEGRADED: store %s not mounted — observation-pack will fail open (context stays unpaged) and the reducer will error, until the mount returns", mount)
+		}
+		// Still create the link (dangling): a fresh lineage during an
+		// outage must not fall back to a per-lineage directory that the
+		// legacy guard would later honor forever.
+	}
 	// Existing symlink: idempotent when it already points at the leaf.
 	if existing, err := os.Readlink(link); err == nil {
 		if existing == target {
 			// Liveness before measurement (r4): an outage must name
 			// itself with the same wording on every arm shape, not
 			// render an ABSENT store as an unmeasurably large one.
-			if info, err := os.Stat(target); err != nil || !info.IsDir() {
+			if info, err := os.Stat(mount); err != nil || !info.IsDir() {
 				if logf != nil {
-					logf("sol-pi DEGRADED: store %s not mounted — observation-pack will fail open (context stays unpaged) and the reducer will error, until the mount returns", target)
+					logf("sol-pi DEGRADED: store %s not mounted — observation-pack will fail open (context stays unpaged) and the reducer will error, until the mount returns", mount)
 				}
 				return
 			}
-			logStoreSize(target, logf)
+			// The growth signal measures the MOUNT — the whole repo tree
+			// is what shares the claim's quota; measuring the leaf would
+			// under-report by a factor of N workflows (r6).
+			logStoreSize(mount, logf)
 			return
 		}
 		// Re-point: the atomic rename below replaces the link without a
@@ -347,13 +365,13 @@ func LinkSharedStore(lineageDir, workflow, mount string, logf func(string, ...an
 		}
 		return
 	}
-	if info, err := os.Stat(target); err != nil || !info.IsDir() {
+	if info, err := os.Stat(mount); err != nil || !info.IsDir() {
 		if logf != nil {
-			logf("sol-pi DEGRADED: store %s not mounted — observation-pack will fail open (context stays unpaged) and the reducer will error, until the mount returns", target)
+			logf("sol-pi DEGRADED: store %s not mounted — observation-pack will fail open (context stays unpaged) and the reducer will error, until the mount returns", mount)
 		}
 		return
 	}
-	logStoreSize(target, logf)
+	logStoreSize(mount, logf)
 }
 
 // symlinkStore is the creation seam (probe injection, the walkStore

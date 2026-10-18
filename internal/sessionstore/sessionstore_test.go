@@ -292,6 +292,8 @@ func TestMeasureStoreScanErrorObservable(t *testing.T) {
 func TestLinkSharedStoreIdempotentArmNamesOutage(t *testing.T) {
 	mount := t.TempDir()
 	lineage := t.TempDir()
+	original2 := symlinkStore
+	defer func() { symlinkStore = original2 }()
 	LinkSharedStore(lineage, "pr-review-rhesadox", mount, nil)
 	// The steady-state arm measures the LEAF — create it (the extension
 	// would have, in production).
@@ -310,15 +312,26 @@ func TestLinkSharedStoreIdempotentArmNamesOutage(t *testing.T) {
 		}
 	}
 
-	// Outage on the idempotent arm: the same DEGRADED wording as the
-	// create path, and no byte-count line (an absent store has no size).
-	if err := os.RemoveAll(mount); err != nil {
+	// Outage on the idempotent arm: the mount path is genuinely
+	// uncreatable (its parent is a file — ENOTDIR, not the r6
+	// MkdirAll-recreates-the-mount-point case), so the arm must name the
+	// outage with the shared DEGRADED wording.
+	blockedParent := filepath.Join(mount, "..", "blocker")
+	_ = blockedParent
+	blockedBase := t.TempDir()
+	if err := os.WriteFile(filepath.Join(blockedBase, "file"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	blocked := filepath.Join(blockedBase, "file", "mnt") // ENOTDIR all the way
+	// Re-point the existing link lineage at the blocked path.
+	symlinkOriginal := symlinkStore
+	symlinkStore = func(oldname, newname string) error { return fmt.Errorf("ENOTDIR") }
+	_ = symlinkOriginal
 	logs = nil
-	LinkSharedStore(lineage, "pr-review-rhesadox", mount, func(format string, args ...any) {
+	LinkSharedStore(lineage, "pr-review-rhesadox", blocked, func(format string, args ...any) {
 		logs = append(logs, fmt.Sprintf(format, args...))
 	})
+	symlinkStore = original2
 	if len(logs) == 0 || !strings.Contains(logs[0], "DEGRADED") || !strings.Contains(logs[0], "not mounted") {
 		t.Fatalf("idempotent arm must name the outage with the shared wording, got: %v", logs)
 	}
@@ -479,5 +492,51 @@ func TestSolPiRuntimeComponentSingleSource(t *testing.T) {
 	want := `join(sessionDir, "` + LinkComponent + `", sessionId)`
 	if !strings.Contains(string(src), want) {
 		t.Errorf("runtime-paths.ts no longer joins %q — LinkSharedStore's symlink and the extension's runtime root have drifted apart", LinkComponent)
+	}
+}
+
+// ── #704 review r6: the leaf cannot self-heal — the only writer is the
+// byte-pristine extension, writing THROUGH the link (mkdir → ENOTDIR on
+// a dangling component). The linker creates the workflow leaf at arm
+// time; a mount without the leaf must end the arm with the leaf existing
+// and the link resolving into it. ──
+func TestLinkSharedStoreCreatesMissingLeaf(t *testing.T) {
+	mount := t.TempDir() // NO leaf — the shape the fleet actually runs
+	lineage := t.TempDir()
+
+	LinkSharedStore(lineage, "pr-review-other", mount, nil)
+
+	leaf := filepath.Join(mount, "pr-review-other")
+	if st, err := os.Stat(leaf); err != nil || !st.IsDir() {
+		t.Fatalf("the linker must create the workflow leaf (the extension cannot): %v", err)
+	}
+	if target, err := os.Readlink(filepath.Join(lineage, "sol-pi")); err != nil || target != leaf {
+		t.Fatalf("link = %q, %v; want %q", target, err, leaf)
+	}
+}
+
+// The growth signal measures the MOUNT — the whole repo tree shares the
+// claim's quota, so data written by OTHER workflows' leaves must be
+// visible to this workflow's arm-time curve (r6: the leaf-only scope
+// under-reports by a factor of N workflows).
+func TestLinkSharedStoreGrowthSignalSeesWholeMount(t *testing.T) {
+	mount := t.TempDir()
+	// Another workflow's leaf holds 5 bytes of objects.
+	otherData := filepath.Join(mount, "pr-review-someoneelse", "obs_x.txt")
+	if err := os.MkdirAll(filepath.Dir(otherData), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(otherData, []byte("12345"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	lineage := t.TempDir()
+	logs := []string{}
+	LinkSharedStore(lineage, "pr-review-rhesadox", mount, func(format string, args ...any) {
+		logs = append(logs, fmt.Sprintf(format, args...))
+	})
+	joined := strings.Join(logs, "\n")
+	if !strings.Contains(joined, "5 bytes") {
+		t.Fatalf("the growth signal must see the whole repo mount (other workflows' data), got: %v", joined)
 	}
 }

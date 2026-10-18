@@ -12,7 +12,7 @@
 # as the SKILLS_BUMP_TOKEN secret — PRs created with it carry full CI and
 # can merge on green. Without the secret the PR still opens (drift is
 # visible) but an operator must close/reopen it to start CI.
-name: skills-bump
+name: skills-freshness
 
 on:
   schedule:

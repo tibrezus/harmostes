@@ -45,7 +45,7 @@ func SkillsRepo() string {
 // SkillsRev resolves the PINNED skills revision (#408 item 9): the env set
 // by the chart (values.skills.rev passed through), else "" = track the
 // repo's default branch. Empty is the escape hatch — the fleet pins by
-// default and the skills-bump workflow owns keeping the pin fresh, so an
+// default and the skills-freshness workflow owns keeping the pin fresh, so an
 // operator who wants to live on main says so explicitly.
 func SkillsRev() string {
 	return os.Getenv("HARMOSTES_SKILLS_REV")

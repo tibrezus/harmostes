@@ -2,28 +2,38 @@
  * turn-budget policy — pure decision logic, testable without the pi runtime
  * (the litellm-provider fallbacks.ts pattern).
  *
- * v2 semantics (#484 failure forensics, attempt 57a1232749c0):
+ * v3 semantics (#689 — "caps should be conceptual"): the numeric call cap is
+ * DEMOTED to an emergency stop for workflows that want one; review sessions
+ * are managed by three conceptual layers measured against the live fleet
+ * data (2026-10-16/17 transcripts):
  *
- * v1 blocked everything past the cap except a `write` tool — which DOES NOT
- * EXIST in the fleet's review sessions ("Tool write not found"), so the
- * agent could never produce review.json and the run failed 4 gate attempts
- * in 10 minutes. v1 also counted BLOCKED calls, draining the budget while
- * the agent retried, and 24 was tight mid-analysis.
+ *  1. LOOP BREAKER — a review workspace is STATIC: re-executing an identical
+ *     (tool, args) returns identical bytes. The worst observed offender
+ *     re-read decode_vulkan.zig TEN times (the round that wall-died); 10-12%
+ *     of all calls were repeats-in-window-10. A repeated fingerprint is
+ *     refused with "you already have this output in context". No budget, no
+ *     count — recognition, not arithmetic.
  *
- * v2:
- *  - only EXECUTED calls count (blocked attempts are free — they cost a
- *    model turn, which is punishment enough);
- *  - past the cap the agent gets a FINALIZE LANE, not a brick wall: bash
- *    commands touching the output artifact (default `/workspace/review.json`)
- *    and registered file-writer tools (`write`/`edit`, when a deployment
- *    has them) still execute; everything else is refused with instructions;
- *  - the lane match is inert-substring comparison — the guard compares and
- *    never executes or substitutes (the perf-lab guard posture). It is an
- *    efficiency guard, not containment: an agent that stuffs the magic
- *    substring into unrelated commands only defeats its own budget.
+ *  2. STAGNATION CHECKPOINT — progress = FIRST executions (new information).
+ *     If the last K calls were ALL loop-refusals, the session is cycling,
+ *     not working: fire the converge checkpoint (the one lever the model
+ *     demonstrably obeys — #487). Escalates once; then the loop breaker
+ *     alone holds the line.
+ *
+ *  3. WALL-MARGIN CONVERGENCE — the only hard bound is TIME, the actual
+ *     resource. HARMOSTES_WALL_SECONDS + the session's first-call timestamp
+ *     give remaining wall; at ≤ convergeMargin fire the converge checkpoint
+ *     (once), at ≤ finalizeMargin flip to finalize-lane-only. Call-rate
+ *     noise made the numeric cap untrustworthy: measured 110 calls/h on one
+ *     round and 57/h on another (2×), so a count calibrated to one pace
+ *     binds past the wall on the other. Time does not drift.
+ *
+ * The numeric cap (PI_TOOL_BUDGET) keeps its v2 semantics for workflows
+ * that set it; sessions without it are now MANAGED (layers 1-3) instead of
+ * unmanaged.
  */
 
-/** Tools that produce/modify files — always allowed past the cap so the
+/** Tools that produce/modify files — always allowed past any stop so the
  * agent can emit its artifact. `write` may not be registered in every
  * deployment; allowing a non-existent name here is harmless. */
 export const FILE_TOOLS = new Set(["write", "edit"]);
@@ -33,10 +43,12 @@ export const DEFAULT_ALLOW = "/workspace/review.json";
 export interface Decision {
 	allow: boolean;
 	reason?: string;
-	/** This block was the one-shot mid-budget checkpoint (#487): it does not
-	 * count against the budget and must not re-fire (the caller flips its
-	 * `nudged` flag on seeing it). */
+	/** This block was the converge checkpoint — one-shot per trigger; the
+	 * caller flips the corresponding fired-flag on seeing it. */
 	nudge?: boolean;
+	/** This block was a loop refusal — the caller records the fingerprint as
+	 * seen AND counts it toward stagnation. */
+	loop?: boolean;
 }
 
 /** Parse PI_TOOL_BUDGET: absent/0/unparsable → 0 = inert (mode-3). */
@@ -69,10 +81,103 @@ export function parseNudge(raw: string | undefined, budget: number): number {
 	return Number.isFinite(n) && n > 0 && n < budget ? n : 0;
 }
 
-/** The mid-budget checkpoint message: shape convergence at the halfway mark
- * (name the pillars the diff triggers selected, verify only those, compose),
- * because the prose budget guidance in the prompt is systematically ignored
- * — measured, #484 — while a block is obeyed. */
+/** Parse HARMOSTES_WALL_SECONDS: absent/0/garbage → 0 = wall layers inert
+ * (a deployment without the wall env keeps the pre-#689 behavior). */
+export function parseWallSeconds(raw: string | undefined): number {
+	const n = Number.parseInt((raw ?? "").trim(), 10);
+	return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+/** Parse the converge margin (seconds before the wall): default 20m —
+ * enough for ledger + verdict synthesis at the measured output pace
+ * (~3.4K tokens/min, synthesis ≈ 8-15K tokens). "0" disables. */
+export function parseConvergeMargin(raw: string | undefined): number {
+	const t = (raw ?? "").trim();
+	if (t === "") return 20 * 60;
+	const n = Number.parseInt(t, 10);
+	return Number.isFinite(n) && n >= 0 ? n : 20 * 60;
+}
+
+/** Parse the finalize margin: default 8m — past this only the artifact
+ * lane runs. Must be < the converge margin to mean anything. */
+export function parseFinalizeMargin(raw: string | undefined): number {
+	const t = (raw ?? "").trim();
+	if (t === "") return 8 * 60;
+	const n = Number.parseInt(t, 10);
+	return Number.isFinite(n) && n >= 0 ? n : 8 * 60;
+}
+
+/** Canonicalize a tool call into a loop-comparable fingerprint — over ALL
+ * arguments, sorted (r2 4302417584: a primary-key fingerprint collided
+ * chunked reads — read {path, offset=1} vs {path, offset=201} are DIFFERENT
+ * calls, the documented way past the 2000-line read cap — and every grep
+ * sharing a path collapsed into one). Whitespace-collapsed for shell
+ * readability; volatile noise (tokens, timestamps) is NOT stripped: a
+ * command that differs only in a token is usually a genuinely different
+ * call, and false loop-refusals are worse than missed ones. */
+export function fingerprint(toolName: string, args: Record<string, unknown>): string {
+	const keys = Object.keys(args).sort();
+	const canon = keys.map((k) => {
+		const v = args[k];
+		const str = typeof v === "string" ? v : JSON.stringify(v) ?? "";
+		return `${k}=${str.replace(/\s+/g, " ").trim()}`;
+	}).join("&");
+	return toolName + "::" + canon;
+}
+
+/** Human-facing echo of a call for refusal messages — the primary arg when
+ * it reads well, else the fingerprint tail. */
+export function callEcho(toolName: string, args: Record<string, unknown>): string {
+	for (const k of ["command", "path", "file_path", "pattern"]) {
+		if (typeof args[k] === "string") return (args[k] as string).replace(/\s+/g, " ").slice(0, 60);
+	}
+	return fingerprint(toolName, args).split("::")[1].slice(0, 60);
+}
+
+/** Converge checkpoint message — time-based, not count-based (#689). */
+export function convergeReason(minutesLeft: number, lane: string): string {
+	return (
+		`Convergence checkpoint: ~${minutesLeft}m of wall remain. ` +
+		`Do NOT open new lines of investigation. Compose NOW: verify only what ` +
+		`your findings already depend on, post pending verified findings, and ` +
+		`write your output artifact (bash touching "${lane}" stays open to the ` +
+		`wall). An honest partial review beats no review.`
+	);
+}
+
+/** Finalize-only message — the last belt. */
+export function finalizeReason(lane: string): string {
+	return (
+		`The wall is here. Do NOT investigate further. Your finalize lane is ` +
+		`still open: bash commands touching "${lane}" execute normally — write ` +
+		`your output artifact there now (e.g. a python3 heredoc), verify it, ` +
+		`then stop. Unverified suspicions stay unmentioned — a smaller honest ` +
+		`review beats a bloated speculative one.`
+	);
+}
+
+/** Loop-refusal message — redirect without punishing. */
+export function loopReason(cmd: string): string {
+	return (
+		`Loop: you already executed this exact call and its output is in your ` +
+		`context ("${cmd}"). The workspace does not change under you — re-reading ` +
+		`it returns the same bytes. Synthesize what you have, or make a call ` +
+		`that produces NEW information.`
+	);
+}
+
+/** Stagnation checkpoint — fires after a run of loop-refusals. */
+export function stagnationReason(streak: number, lane: string): string {
+	return (
+		`Stagnation checkpoint: your last ${streak} calls were repeats of work ` +
+		`you already hold in context. The session is cycling, not reviewing. ` +
+		`Step back: name the pillars your findings so far support, verify only ` +
+		`what a NEW claim depends on, and compose the artifact (bash touching ` +
+		`"${lane}" stays open).`
+	);
+}
+
+/** Legacy numeric-cap messages (kept for workflows that set a budget). */
 export function nudgeReason(count: number, budget: number, lane: string): string {
 	return (
 		`Budget checkpoint: ${count}/${budget} calls used, ~${budget - count} left. ` +
@@ -82,7 +187,7 @@ export function nudgeReason(count: number, budget: number, lane: string): string
 	);
 }
 
-export function finalizeReason(count: number, budget: number, lane: string): string {
+export function budgetExhaustedReason(count: number, budget: number, lane: string): string {
 	return (
 		`Tool budget exhausted (${count} calls > ${budget} allowed). ` +
 		`Do NOT investigate further. Your finalize lane is still open: bash commands ` +
@@ -112,41 +217,148 @@ export function eventArgs(event: unknown): Record<string, unknown> {
 	return typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>) : {};
 }
 
-/** Checkpoint state passed by the caller (it owns the flags). */
-export interface DecideOpts {
-	nudgeAt?: number;
-	nudged?: boolean;
+/** Mutable caller state across calls (the extension owns it). */
+export interface BudgetState {
+	/** Fingerprints of EXECUTED calls (loop-breaker memory). */
+	seen: Set<string>;
+	/** Consecutive loop-refusals since the last fresh execution. */
+	loopStreak: number;
+	/** Stagnation checkpoints fired (cap: 2 — after that the loop breaker
+	 * alone holds the line; a third lecture is noise). */
+	stagnationFired: number;
+	/** Wall-converge checkpoint fired (once). */
+	wallConverged: boolean;
+	/** Wall-clock anchor: the session's FIRST tool call (epoch ms). The
+	 * caller sets it on the first decision; the wall layers read it. */
+	startedAtMs?: number;
+	/** Legacy numeric-cap state. */
+	executed: number;
+	nudged: boolean;
 }
 
-/** The cap decision for one tool call. `count` is the number of ALREADY
- * EXECUTED calls in this session (blocked attempts excluded). */
+export function newState(): BudgetState {
+	return { seen: new Set(), loopStreak: 0, stagnationFired: 0, wallConverged: false, executed: 0, nudged: false };
+}
+
+/** Stagnation threshold: consecutive loop-refusals before the checkpoint
+ * fires (data: healthy sessions run <1% consecutive repeats; the wall-died
+ * round ran x10 on one file). */
+export const STAGNATION_THRESHOLD = 4;
+export const STAGNATION_MAX_FIRES = 2;
+
+export interface DecideOpts {
+	/** Legacy numeric cap (0 = no cap — the #689 default for reviews). */
+	budget?: number;
+	nudgeAt?: number;
+	/** Conceptual layers armed? Review-only (dispatch.go): the loop breaker
+	 * assumes a static workspace. */
+	loopBreaker?: boolean;
+	/** Wall layers: seconds of wall + the Job's start epoch ms (the ADS
+	 * clock). Absent stamp → first-call anchoring (approximate). */
+	wallSeconds?: number;
+	runStartedAtMs?: number;
+	convergeMarginSeconds?: number;
+	finalizeMarginSeconds?: number;
+}
+
+/** The single decision point. Order matters:
+ * loop breaker → wall finalize → wall converge → stagnation → numeric cap → allow.
+ * An ALLOWED call records its fingerprint and resets the loop streak; a
+ * refused one never enters memory (a blocked attempt is not work done). */
 export function decide(
 	toolName: string,
 	args: Record<string, unknown>,
-	count: number,
-	budget: number,
+	state: BudgetState,
 	allowSubstrings: string[],
 	opts: DecideOpts = {},
 ): Decision {
-	if (budget <= 0) return { allow: true }; // inert
-	// One-shot mid-budget checkpoint (#487): a single block at the halfway
-	// mark that does NOT count against the budget and fires exactly once.
-	if (
-		opts.nudgeAt !== undefined && opts.nudgeAt > 0 &&
-		!opts.nudged && count === opts.nudgeAt && count < budget
-	) {
-		return {
-			allow: false,
-			nudge: true,
-			reason: nudgeReason(count, budget, allowSubstrings[0] ?? DEFAULT_ALLOW),
-		};
-	}
-	if (count <= budget) return { allow: true };
-	if (FILE_TOOLS.has(toolName)) return { allow: true };
-	if (toolName === "bash") {
-		const cmd = typeof args.command === "string" ? args.command : "";
-		if (allowSubstrings.some((s) => cmd.includes(s))) return { allow: true };
-	}
+	const fp = fingerprint(toolName, args);
 	const lane = allowSubstrings[0] ?? DEFAULT_ALLOW;
-	return { allow: false, reason: finalizeReason(count, budget, lane) };
+	// The lane is where the static-workspace invariant BREAKS: the artifact
+	// changes under the session (the agent writes it), so re-touching it is
+	// legitimate work, not a loop. Targeted access counts — a bash command
+	// naming the lane, or a read/edit/write whose PATH is the lane (r2
+	// 4302821795: refusing a re-read of the reviewer's own ledger
+	// contradicts the invariant's exception). A search whose PATTERN
+	// mentions the lane is not targeting it — searches stay loop-controlled
+	// (the artifact is directly readable, and that read is exempt).
+	const targetArgs = [typeof args.command === "string" ? args.command : "",
+		typeof args.path === "string" ? args.path : "",
+		typeof args.file_path === "string" ? args.file_path : ""];
+	const inLane = FILE_TOOLS.has(toolName) ||
+		allowSubstrings.some((s) => targetArgs.some((v) => v.includes(s)));
+
+	// Wall-clock anchor (r2 4302426988): the dispatcher stamps the Job's
+	// start (HARMOSTES_RUN_STARTED_MS) — the SAME clock ADS enforces. The
+	// session's first tool call would anchor LATE by the prepare prelude
+	// (clone+rig, bounded 5m), firing both checkpoints late and quoting the
+	// model a minutes-left number that is not the truth. First-call
+	// anchoring remains the fallback for a dispatcher that predates the
+	// stamp (documented approximation).
+	if (opts.loopBreaker && (opts.wallSeconds ?? 0) > 0 && state.startedAtMs === undefined) {
+		// Prefer the dispatcher's stamp (the ADS clock); fall back to the
+		// first call (approximate — late by the prepare prelude).
+		state.startedAtMs = opts.runStartedAtMs ?? Date.now();
+	}
+
+	// 1. Loop breaker — but never inside the finalize lane (composing IS the
+	// point; re-reading the ledger to append is legitimate).
+	if (opts.loopBreaker && state.seen.has(fp) && !inLane) {
+		state.loopStreak++;
+		if (state.loopStreak >= STAGNATION_THRESHOLD && state.stagnationFired < STAGNATION_MAX_FIRES) {
+			state.stagnationFired++;
+			state.loopStreak = 0;
+			return { allow: false, nudge: true, loop: true, reason: stagnationReason(STAGNATION_THRESHOLD, lane) };
+		}
+		return { allow: false, loop: true, reason: loopReason(callEcho(toolName, args)) };
+	}
+
+	// 3. Wall-margin convergence — TIME is the resource (#689).
+	const wall = opts.loopBreaker ? (opts.wallSeconds ?? 0) : 0;
+	if (wall > 0 && state.startedAtMs !== undefined) {
+		const elapsedS = (Date.now() - state.startedAtMs) / 1000;
+		const remainingS = wall - elapsedS;
+		const convM = opts.convergeMarginSeconds ?? 20 * 60;
+		const finM = opts.finalizeMarginSeconds ?? 8 * 60;
+		if (remainingS <= finM) {
+			if (!inLane) {
+				return { allow: false, reason: finalizeReason(lane) };
+			}
+		} else if (remainingS <= convM && !state.wallConverged) {
+			state.wallConverged = true;
+			return { allow: false, nudge: true, reason: convergeReason(Math.floor(remainingS / 60), lane) };
+		}
+	}
+
+	// 2. Stagnation is handled in the loop branch above; fall through for
+	// fresh calls.
+
+	// Legacy numeric cap — emergency stop for workflows that set one.
+	const budget = opts.budget ?? 0;
+	if (budget > 0) {
+		if (
+			opts.nudgeAt !== undefined && opts.nudgeAt > 0 &&
+			!state.nudged && state.executed === opts.nudgeAt && state.executed < budget
+		) {
+			state.nudged = true;
+			return { allow: false, nudge: true, reason: nudgeReason(state.executed, budget, lane) };
+		}
+		if (state.executed >= budget && !inLane) {
+			return { allow: false, reason: budgetExhaustedReason(state.executed, budget, lane) };
+		}
+	}
+
+	// ALLOWED — record as work done.
+	state.seen.add(fp);
+	state.loopStreak = 0;
+	state.executed++;
+	return { allow: true };
+}
+
+/** Parse HARMOSTES_RUN_STARTED_MS (the Job's creation, epoch ms): absent or
+ * garbage → undefined = the caller falls back to first-call anchoring (a
+ * documented approximation, r2 4302426988). */
+export function parseRunStartedMs(raw: string | undefined): number | undefined {
+	const n = Number.parseInt((raw ?? "").trim(), 10);
+	return Number.isFinite(n) && n > 0 ? n : undefined;
 }

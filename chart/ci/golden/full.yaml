@@ -4754,6 +4754,21 @@ data:
     invariants — and say explicitly which mechanical claims you did not
     re-verify.
     
+    ## Your turn budget
+    
+    There is no call count to budget — your real constraints are
+    behavioral and temporal. (1) The workspace is static: re-running an
+    identical call returns the same bytes, and the harness REFUSES
+    repeats — every call must produce new information. (2) If your last
+    few calls were refused as repeats, you are cycling: step back,
+    consolidate what you hold, and compose. (3) The wall is real: near
+    its end you will receive one convergence checkpoint (stop exploring,
+    verify only what your findings depend on, post and write the
+    artifact), and past the final margin only artifact writes execute.
+    Post each verified finding the moment you verify it — the verdict is
+    composed from your ledger, and an honest partial review beats no
+    review.
+    
     ## Posting credentials
     
     HARMOSTES_REVIEW_POST_TOKEN is a comment-scoped credential for the
@@ -5994,14 +6009,17 @@ spec:
   deploy:
     plugin:
       name: post-review
+      timeout: 10m
   description: PR review (fetch PR → agent → pr-review → post review)
   prepare:
     plugin:
       name: workspace
+      timeout: 5m
   reviewReady:
-    dispatchTimeout: 45m
+    dispatchTimeout: 135m
     horizon: 6h
     label: needs-review
+    runBound: 120m
   scope:
   - default: needs-review
     description: only act when this label is present on a PR

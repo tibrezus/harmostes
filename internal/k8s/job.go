@@ -224,6 +224,18 @@ func BuildJob(p AttemptJobParams) *batchv1.Job {
 		// so the agent can pace depth against it (#680: the reviewer is
 		// uncapped by turns; the run bound is the only wall).
 		{Name: "HARMOSTES_WALL_SECONDS", Value: strconv.FormatInt(int64(p.runBoundSeconds()/time.Second), 10)},
+		// The wall clock's anchor (#695 r3): the session's conceptual
+		// budget compares against the SAME zero ADS uses — the Job's
+		// creation. A session-side first-call anchor drifts late by the
+		// prepare prelude and quotes the reviewer a minutes-left number
+		// that is not the truth.
+		{Name: "HARMOSTES_RUN_STARTED_MS", Value: strconv.FormatInt(time.Now().UnixMilli(), 10)},
+		// The wall clock's anchor (#695 r3): the session's conceptual
+		// budget compares against the SAME zero ADS uses — the Job's
+		// creation. A session-side first-call anchor drifts late by the
+		// prepare prelude and quotes the reviewer a minutes-left number
+		// that is not the truth.
+
 	}
 	for _, kv := range p.ExtraEnv {
 		if k, v, ok := strings.Cut(kv, "="); ok {
@@ -397,22 +409,36 @@ func BuildJob(p AttemptJobParams) *batchv1.Job {
 // ListActiveJobs returns the workflow's unfinished attempt Jobs — the
 // dispatcher's capacity signal (ADR-0007): one live Job per accepted claim.
 func ListActiveJobs(ctx context.Context, cl client.Client, namespace, workflow string) ([]batchv1.Job, error) {
+	all, err := ListAttemptJobs(ctx, cl, namespace, workflow)
+	if err != nil {
+		return nil, err
+	}
+	live := make([]batchv1.Job, 0, len(all))
+	for _, j := range all {
+		// Live = not finished: a just-created Job reports Active==0 until
+		// the job controller syncs, so counting only active would let
+		// racing wakes double-dispatch inside that window.
+		if j.DeletionTimestamp == nil && j.Status.CompletionTime == nil && !IsJobFailed(&j) {
+			live = append(live, j)
+		}
+	}
+	return live, nil
+}
+
+// ListAttemptJobs lists ALL attempt Jobs for the workflow — finished ones
+// included (#697). The sweep's death pass must classify by FACT: a
+// COMPLETED Job is a successful round (never a loss), a FAILED one is a
+// dead dispatch, and only a truly absent Job is a vanished dispatch. The
+// live-filtered view (ListActiveJobs) cannot make that distinction — it
+// reports success and loss identically.
+func ListAttemptJobs(ctx context.Context, cl client.Client, namespace, workflow string) ([]batchv1.Job, error) {
 	var list batchv1.JobList
 	if err := cl.List(ctx, &list, client.InNamespace(namespace), client.MatchingLabels{
 		"app.kubernetes.io/name": "harmostes", "harmostes.dev/workflow": workflow,
 	}); err != nil {
 		return nil, err
 	}
-	live := make([]batchv1.Job, 0, len(list.Items))
-	for _, j := range list.Items {
-		// Live = not finished: a just-created Job reports Active==0 until
-		// the job controller syncs, so counting only active would let
-		// racing wakes double-dispatch inside that window.
-		if j.DeletionTimestamp == nil && j.Status.CompletionTime == nil && !jobFailed(&j) {
-			live = append(live, j)
-		}
-	}
-	return live, nil
+	return list.Items, nil
 }
 
 // DeleteJob removes the attempt's review Job. FOREGROUND propagation: the
@@ -435,7 +461,7 @@ func DeleteJob(ctx context.Context, cl client.Client, namespace, name string) er
 
 // jobFailed reports whether the Job reached its failed condition
 // (backoffLimit 0 → one pod failure finishes it).
-func jobFailed(j *batchv1.Job) bool {
+func IsJobFailed(j *batchv1.Job) bool {
 	for _, c := range j.Status.Conditions {
 		if c.Type == batchv1.JobFailed && c.Status == corev1.ConditionTrue {
 			return true

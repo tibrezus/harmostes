@@ -14,6 +14,13 @@ type PluginNodeConfig struct {
 	Name      string   `json:"name"`
 	Args      []string `json:"args,omitempty"`
 	ConfigMap string   `json:"configMap,omitempty"`
+	// Timeout bounds a plugin run of this config (duration, e.g. "5m").
+	// Empty = unbounded. For prepare/deploy nodes the node-level G8 bound
+	// (NodeSpec.Timeout, compiled from PluginRef.Timeout) applies; for an
+	// INLINE gate (inside the agent's fix loop there is no node) this
+	// field IS the bound — GateNodeConfig.AsAgentGate hands it to the
+	// GatePlugin (#695 r1: the gate leg was the unbounded prelude).
+	Timeout string `json:"timeout,omitempty"`
 	// Config is the workflow-level plugin config (label, repos, wiki, …)
 	// passed to the plugin as HARMOSTES_SPEC.config. CompileWorkflow copies
 	// it from the spec so declarative Workflows keep their plugin config in

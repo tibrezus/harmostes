@@ -559,12 +559,21 @@ func (e *GraphExecutor) Execute(ctx context.Context, graph v1alpha1.GraphSpec, p
 			if execErr != nil {
 				nodeResult.Status = StatusFailed
 				if nodeResult.Feedback == "" {
-					// Check if the error was a timeout (G8 circuit breaker).
-					if timeoutStr != "" && (execErr == context.DeadlineExceeded || strings.Contains(execErr.Error(), "deadline exceeded")) {
-						nodeResult.Feedback = fmt.Sprintf("timed out after %s", timeoutStr)
-					} else {
-						nodeResult.Feedback = execErr.Error()
-					}
+					nodeResult.Feedback = execErr.Error()
+				}
+			}
+			// Timeout attribution (#695 r1, restructured r2 4301176018): the
+			// deadline is the cause whenever the EXECUTION context expired —
+			// keyed on execCtx.Err() and OUTSIDE the execErr branch, because
+			// result-only executors (PluginExecutor) report a killed run as
+			// StatusFailed+nil-error and an error-nested check never fires
+			// for the one node class this message was written for. The
+			// attribution leads; the tail (output or error) follows.
+			if timeoutStr != "" && execCtx.Err() != nil && nodeResult.Status == StatusFailed {
+				tail := nodeResult.Feedback
+				nodeResult.Feedback = fmt.Sprintf("timed out after %s", timeoutStr)
+				if tail != "" {
+					nodeResult.Feedback += " — last output: " + tail
 				}
 			}
 			if nodeResult.Status == "" {

@@ -10,7 +10,14 @@ package worker
 //     mints ONE issue (title-deduped), assigns the newest open milestone,
 //     replies the issue reference on the thread, RESOLVES the thread, and
 //     reports ledger_carried so the publisher never posts it.
-//   - an OPEN issue with the identical title is REFERENCED, never re-minted.
+//   - an open OR closed issue whose normalized title matches (class
+//     prefixes / round annotations stripped, token+bigram similarity) is
+//     REFERENCED, never re-minted — reworded rounds dedup too (#700).
+//   - minting is EXCEPTION-gated (#700): an unmatched carry only mints
+//     when the todo/thread body is severe/structural (severe|security|
+//     data loss|outage|corruption, or an explicit "mint:" marker);
+//     otherwise it resolves as a review-record carry with NO new issue.
+//     Generated artifacts (arch-sync paths/commits) never mint at all.
 //   - an agent-posted **Architecture-carry** thread discovered in the
 //     listing is carried the same way (body #N reference wins over mint).
 //   - a failed mint leaves the entry out of ledger_carried (the gate then
@@ -204,7 +211,7 @@ func TestPostReviewCarryMintsDedupedAndResolves(t *testing.T) {
 
 	listing := `[{"id":900,"path":"a.md","in_reply_to":0,"resolved":null,"body":"**Architecture-carry** — the proof router needs an ADR (#512)"},`
 	listing += `{"id":901,"path":"b.md","in_reply_to":0,"resolved":null,"body":"unrelated open finding"}]`
-	carryEnv := `[[0,{"path":"c.md","line":3,"body":"proof registry split deserves its own issue","disposition":"architecture-carry","thread_ref":"902"}]]`
+	carryEnv := `[[0,{"path":"c.md","line":3,"body":"mint: proof registry split deserves its own issue","disposition":"architecture-carry","thread_ref":"902"}]]`
 	report := runCarryStep(t, srv, listing, carryEnv)
 
 	if ids, _ := report["resolved_ids"].([]any); len(ids) != 2 {
@@ -262,7 +269,7 @@ func TestPostReviewCarryFailedMintStaysOpen(t *testing.T) {
 	srv := httptest.NewServer(f.mux(t))
 	t.Cleanup(srv.Close)
 
-	carryEnv := `[[0,{"path":"c.md","line":3,"body":"the carry must never lose the thread","disposition":"architecture-carry"}]]`
+	carryEnv := `[[0,{"path":"c.md","line":3,"body":"mint: the carry must never lose the thread","disposition":"architecture-carry"}]]`
 	report := runCarryStep(t, srv, `[]`, carryEnv)
 
 	if lc, _ := report["ledger_carried"].([]any); len(lc) != 0 {
@@ -290,6 +297,137 @@ func TestPostReviewCarryResolveFailureSpeaks(t *testing.T) {
 	joined := strings.Join(mapToStrings(report["notes"]), " ")
 	if !strings.Contains(joined, "resolve FAILED") {
 		t.Fatalf("the resolve failure must be spoken, got %v", report["notes"])
+	}
+}
+
+// #700: the flood's mechanism, pinned. A reworded round ("(6th round,
+// narrowed but still open)" + first-line rewording) of a finding that
+// already has an issue — even with a mint: marker present — must
+// REFERENCE, never re-mint: exact-title dedup could never match this.
+func TestPostReviewCarryRewordedRoundReferencesNotMints(t *testing.T) {
+	f := &carryForge{
+		milestones: []map[string]any{{"id": 7, "title": "v3.2"}},
+		issues: []map[string]any{{
+			"title":  "architecture: the row is still not a plan fact — pfChunkWidth is not a field of MemoryPlan",
+			"number": 2813,
+			"state":  "open",
+		}},
+	}
+	srv := httptest.NewServer(f.mux(t))
+	t.Cleanup(srv.Close)
+
+	carryEnv := `[[0,{"path":"memory_profiler.zig","line":9,"body":"mint: (6th round, narrowed but still open): the width now derives from measured capacity — still not a plan fact","disposition":"architecture-carry","thread_ref":"902"}]]`
+	report := runCarryStep(t, srv, `[]`, carryEnv)
+
+	f.mu.Lock()
+	if f.minted != 0 {
+		t.Fatalf("a reworded round of an existing finding REFERENCES #2813, never re-mints — minted %d", f.minted)
+	}
+	defer f.mu.Unlock()
+	if lc, _ := report["ledger_carried"].([]any); len(lc) != 1 {
+		t.Fatalf("the entry is still carried (tracked by the referenced issue), got %v", report["ledger_carried"])
+	}
+	joined := strings.Join(mapToStrings(report["notes"]), " ")
+	if !strings.Contains(joined, "#2813") {
+		t.Fatalf("the reference must be spoken in notes, got %v", report["notes"])
+	}
+}
+
+// #700: CLOSED issues are dedup hits too — the state=all listing sees a
+// problem minted (and closed) in an earlier round.
+func TestPostReviewCarryClosedIssueIsDedupHit(t *testing.T) {
+	f := &carryForge{
+		milestones: []map[string]any{{"id": 7, "title": "v3.2"}},
+		issues: []map[string]any{{
+			"title":  "architecture: graph-tier FF_PLAN fence consolidation",
+			"number": 2820,
+			"state":  "closed",
+		}},
+	}
+	srv := httptest.NewServer(f.mux(t))
+	t.Cleanup(srv.Close)
+
+	carryEnv := `[[0,{"path":"exec_seq.zig","line":4,"body":"mint: the graph-tier FF_PLAN fence consolidation still has two re-arm points","disposition":"architecture-carry"}]]`
+	report := runCarryStep(t, srv, `[]`, carryEnv)
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.minted != 0 {
+		t.Fatalf("a closed issue covering the finding is REFERENCED, never re-minted — minted %d", f.minted)
+	}
+	if lc, _ := report["ledger_carried"].([]any); len(lc) != 1 {
+		t.Fatalf("carried via the closed issue's reference, got %v", report["ledger_carried"])
+	}
+}
+
+// #700: the exception gate. An unmatched, unmarked carry resolves as a
+// review-record carry — thread resolved, todo consumed, NO new issue.
+func TestPostReviewCarryUnmarkedSkipsMintButCarries(t *testing.T) {
+	f := &carryForge{milestones: []map[string]any{{"id": 7, "title": "v3.2"}}}
+	srv := httptest.NewServer(f.mux(t))
+	t.Cleanup(srv.Close)
+
+	carryEnv := `[[0,{"path":"c.md","line":3,"body":"an ordinary structural nit that outlives the diff","disposition":"architecture-carry","thread_ref":"902"}]]`
+	report := runCarryStep(t, srv, `[]`, carryEnv)
+
+	f.mu.Lock()
+	if f.minted != 0 {
+		t.Fatalf("an unmarked carry must NOT mint (minting is the exception), minted %d", f.minted)
+	}
+	defer f.mu.Unlock()
+	if lc, _ := report["ledger_carried"].([]any); len(lc) != 1 {
+		t.Fatalf("the todo is still consumed (review-record carry), got %v", report["ledger_carried"])
+	}
+	if ids, _ := report["resolved_ids"].([]any); len(ids) != 1 {
+		t.Fatalf("the thread still resolves (review-record carry), got %v", report["resolved_ids"])
+	}
+	joined := strings.Join(mapToStrings(report["notes"]), " ")
+	if !strings.Contains(joined, "unmarked") {
+		t.Fatalf("the skip must be spoken, got %v", report["notes"])
+	}
+}
+
+// #700: the gate OPENS for severity — a severe finding with no existing
+// issue mints exactly one.
+func TestPostReviewCarrySevereMarkerMints(t *testing.T) {
+	f := &carryForge{milestones: []map[string]any{{"id": 7, "title": "v3.2"}}}
+	srv := httptest.NewServer(f.mux(t))
+	t.Cleanup(srv.Close)
+
+	carryEnv := `[[0,{"path":"auth.zig","line":3,"body":"severe: the token scope check bypass lets a forged review post as another user (security)","disposition":"architecture-carry"}]]`
+	runCarryStep(t, srv, `[]`, carryEnv)
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.minted != 1 {
+		t.Fatalf("a severe unmatched carry mints exactly one issue, got %d", f.minted)
+	}
+	if !strings.HasPrefix(f.issues[0]["title"].(string), "architecture: ") {
+		t.Errorf("minted title keeps the architecture: prefix, got %v", f.issues[0]["title"])
+	}
+}
+
+// #700: generated artifacts (arch-sync output) never mint — even with a
+// mint: marker and no dedup hit. The generator owns that content.
+func TestPostReviewCarryGeneratedNeverMints(t *testing.T) {
+	f := &carryForge{milestones: []map[string]any{{"id": 7, "title": "v3.2"}}}
+	srv := httptest.NewServer(f.mux(t))
+	t.Cleanup(srv.Close)
+
+	carryEnv := `[[0,{"path":"wiki/entities/rhesadox.md","line":1,"body":"mint: the raw/arch/rig.json component graph is missing an edge for the new prefill module","disposition":"architecture-carry"}]]`
+	report := runCarryStep(t, srv, `[]`, carryEnv)
+
+	f.mu.Lock()
+	if f.minted != 0 {
+		t.Fatalf("a generated-artifact finding never mints, minted %d", f.minted)
+	}
+	defer f.mu.Unlock()
+	if lc, _ := report["ledger_carried"].([]any); len(lc) != 1 {
+		t.Fatalf("the todo is consumed (review-record carry), got %v", report["ledger_carried"])
+	}
+	joined := strings.Join(mapToStrings(report["notes"]), " ")
+	if !strings.Contains(joined, "generated") {
+		t.Fatalf("the generated skip must be spoken, got %v", report["notes"])
 	}
 }
 
@@ -328,7 +466,7 @@ func TestPostReviewCarryGitHubDialect(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	listing := `[{"id":900,"path":"a.md","in_reply_to":0,"resolved":null,"body":"**Architecture-carry** — the proof router needs an ADR (#512)"}]`
-	carryEnv := `[[1,{"path":"c.md","line":3,"body":"proof registry split deserves its own issue","disposition":"architecture-carry","thread_ref":"902"}]]`
+	carryEnv := `[[1,{"path":"c.md","line":3,"body":"mint: proof registry split deserves its own issue","disposition":"architecture-carry","thread_ref":"902"}]]`
 	report := runCarryStep(t, srv, listing, carryEnv, "IS_FJ=false")
 
 	// resolve went through GraphQL resolveReviewThread (thread ids mapped
@@ -437,7 +575,7 @@ func TestPostReviewCarryMilestoneNewest(t *testing.T) {
 	srv := httptest.NewServer(f.mux(t))
 	t.Cleanup(srv.Close)
 
-	carryEnv := `[[0,{"path":"c.md","line":3,"body":"milestone choice","disposition":"architecture-carry"}]]`
+	carryEnv := `[[0,{"path":"c.md","line":3,"body":"mint: milestone choice","disposition":"architecture-carry"}]]`
 	runCarryStep(t, srv, `[]`, carryEnv, "IS_FJ=false")
 
 	f.mu.Lock()

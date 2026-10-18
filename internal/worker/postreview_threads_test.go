@@ -1674,7 +1674,7 @@ func TestPostReviewMixedLedgerPublishesOnlyUncarried(t *testing.T) {
 		"comments":     []any{},
 		"todos": []any{
 			map[string]any{"path": "a.md", "line": 2, "body": "FIXINPR-todo must publish"},
-			map[string]any{"path": "b.md", "line": 4, "body": "CARRY-todo must NOT publish",
+			map[string]any{"path": "b.md", "line": 4, "body": "mint: CARRY-todo must NOT publish",
 				"disposition": "architecture-carry", "thread_ref": "902"},
 		},
 	}

@@ -222,64 +222,67 @@ func Materialize(dir, id string, l Lineage) (name string, ok bool, err error) {
 	return name, l.Session != "", nil
 }
 
-// LinkSharedStore points the lineage dir's sol-pi runtime at the
-// repository-scoped attachment mount (#704). The vendored SoL-Pi extension
-// derives its runtime root as <lineage>/sol-pi/<session-id>; making the
-// "sol-pi" component a symlink to the shared store lands its
-// content-addressed observation and reducer objects in one store per
-// REPO — shared by every workflow targeting that repo, and immune to the
-// lineage TTL that garbage-collects a quiet PR's research after 14 days.
-// The extension stays byte-pristine (UPSTREAM.md r5): the redirect is
-// filesystem-level.
+// LinkComponent is the lineage-dir component the vendored SoL-Pi
+// extension joins into its runtime root
+// (extensions/sol-pi/src/sol-pi/runtime-paths.ts: join(sessionDir,
+// "sol-pi", sessionId)). The linker redirects exactly this component;
+// TestSolPiRuntimeComponentSingleSource pins the vendored literal so an
+// upstream bump that renames or re-nests it cannot silently de-share
+// every lineage while the arm-time log still reports a healthy store
+// (#704 review r5 — the same wiring claim as piargs.RigGraphPath).
+const LinkComponent = "sol-pi"
+
+// LinkSharedStore points the lineage dir's sol-pi runtime at the shared
+// attachment store (#704). The vendored SoL-Pi extension derives its
+// runtime root as <lineage>/<LinkComponent>/<session-id>; making the
+// component a symlink lands its content-addressed observation and
+// reducer objects OUTSIDE the lineage subtree — immune to the TTL that
+// garbage-collects a quiet PR's research after 14 days, and deduped by
+// content address across the lineage's rounds.
 //
-// RETENTION OWNER (#704 review r1, explicit decision): the store is
-// deliberately NOT garbage-collected by this repo — its durability is the
-// feature, and lineage-TTL pruning (the accidental GC) cannot reach
-// through the symlink. The bound is the claim's quota (sessions = 10Gi
-// by default); the fleet accepts growth until it alarms. The link log
-// below emits the store's byte size whenever the mount resolves, so the
-// growth curve is visible BEFORE exhaustion, not as an inert extension
-// mid-run. A real retention owner (TTL sweep, byte-budget LRU, or a
-// dedicated claim) is tracked as the #704 follow-up and must land before
-// the store is enabled fleet-wide beyond the two pr-review workflows.
-// The retention owner must also own POISON RECOVERY (r2, r4): the
-// extension writes objects with flag wx but NOT atomically — an attempt
-// killed mid-write (the #695 wall terminates attempts) can leave a
-// truncated object at a content-addressed path, and every later dedup
-// of that payload throws instead of repairing. Pre-#704 the lineage TTL
-// gave that poison a half-life; the shared store keeps it forever. The
-// repair unit is the SINGLE OBJECT — unlink the one mismatched
-// obs_<id>.txt / objects/<hash> entry. It is NOT the per-session
-// subtree: <store>/harmostes-<pr> is keyed by session id only and is
-// shared by every workflow that reviews the PR (that is this feature
-// working as designed), so deleting the subtree would heal one
-// workflow's poison by destroying another's healthy, deduped objects —
-// whose receipts in a durable session would then quote archives that
-// no longer exist. Per-object is safe precisely because the payload is
-// in hand and content-addressed: the rewrite is idempotent. The
-// upstream fix (atomic write or repair-on-mismatch) makes the window
-// redundant and is tracked with the follow-up; the fleet accepts it
-// until then.
+// READ SCOPE (r5, deliberate): the store leaf is
+// <mount>/<workflow> — raw tool output is NOT redacted on this path
+// (the durable-session publisher redacts #115-style before writing; the
+// byte-pristine extension cannot be made to), so cross-workflow READS
+// stay disabled until an upstream redaction hook lands. Per-workflow
+// dedup and TTL immunity are live now; flipping the leaf off is the
+// owner's call after the upstream fix.
 //
-// Link discipline (#704 review r2): while the store is DECLARED the
-// symlink is never removed and never left un-created — `os.Symlink`
-// succeeds against a not-yet-present target, so a transient mount
-// failure (CSI failover, SubPath re-create, Flux churn on the
-// declaration) leaves a DANGLING link, which keeps the lineage a
-// shared-store lineage: SoL-Pi's mkdir through the dead component fails
-// (mechanisms inert for that attempt — observable as extension_error),
-// no real directory is born in the gap, and the next healthy arm
-// re-points and recovers automatically. Removing the link instead would
-// let the extension's `mkdir -p` materialize a real sol-pi/ directory,
-// which the legacy guard below would then honor FOREVER — a transient
-// failure permanently de-sharing the lineage. Removal happens only when
-// the store is UNDECLARED: a symlink is the only thing this function
-// ever created at that path, so removing it restores the stock
-// per-lineage store; a REAL directory is pre-#704 legacy data and is
-// kept as-is (the log says exactly that).
-func LinkSharedStore(lineageDir, mount string, logf func(string, ...any)) {
-	const linkName = "sol-pi"
-	link := filepath.Join(lineageDir, linkName)
+// RETENTION OWNER (r1, explicit decision): the store is deliberately
+// NOT garbage-collected by this repo — its durability is the feature,
+// and lineage-TTL pruning cannot reach through the symlink. The bound
+// is the claim's quota; the fleet accepts growth until it alarms. The
+// arm-time byte count is a MONOTONE LOWER BOUND (the walk caps on
+// budget, never freezes at a constant), so the growth curve moves until
+// exhaustion. A real retention owner (TTL sweep, byte-budget LRU, or a
+// dedicated claim) is tracked as the #704 follow-up.
+//
+// POISON RECOVERY (r2, r4): the extension writes objects with flag wx
+// but NOT atomically — a wall-killed attempt can leave a truncated
+// object at a content-addressed path, and later dedups throw instead of
+// repairing; the lineage TTL used to give that poison a half-life. The
+// repair unit is the SINGLE OBJECT (unlink the one mismatched
+// obs_<id>.txt / objects/<hash> entry — safe because the payload is in
+// hand and content-addressed). It is NOT the session subtree: the
+// subtree is shared by every review of the PR (dedup working as
+// designed) and per-object is what the upstream atomic-write fix makes
+// redundant. Tracked with the follow-up; the fleet accepts the window.
+//
+// LINK DISCIPLINE (r2, r5): while the store is declared the component
+// is never left absent and never replaced by a real directory —
+// creation is atomic (symlink to a temp name, rename over the link:
+// rename replaces an existing symlink in one step, so a re-point
+// destroys nothing and a failed create leaves the old link untouched).
+// An outage leaves a DANGLING link: SoL-Pi runs degraded (reducer
+// errors surface as extension_error; observation-pack fails open
+// silently — the arm-time log names it), no real directory is ever
+// born in the gap, and the next healthy arm recovers without
+// migration. Removal happens only when the store is UNDECLARED: the
+// symlink is our artifact and its removal restores the stock
+// per-lineage store; a real directory is pre-#704 legacy data and is
+// kept as-is.
+func LinkSharedStore(lineageDir, workflow, mount string, logf func(string, ...any)) {
+	link := filepath.Join(lineageDir, LinkComponent)
 	if mount == "" {
 		// Undeclared: undo our own artifact if present. A symlink is the
 		// only thing this function ever created at that path — removing
@@ -298,31 +301,25 @@ func LinkSharedStore(lineageDir, mount string, logf func(string, ...any)) {
 		}
 		return
 	}
-	// Declared. Existing symlink: re-point only when the target differs.
+	// The workflow leaf: read scope is per-workflow by default (r5).
+	target := filepath.Join(mount, workflow)
+	// Existing symlink: idempotent when it already points at the leaf.
 	if existing, err := os.Readlink(link); err == nil {
-		if existing == mount {
-			// Idempotent arm — the STEADY state for every re-review (the
-			// lineage persists across Jobs). Liveness before measurement:
-			// during an outage the walk's first entry is the missing root,
-			// and measuring would log a line asserting the opposite of the
-			// state (#704 review r3: "0 bytes … the real total is LARGER"
-			// for an ABSENT store). Same wording as the create path, so one
-			// grep finds the outage on every arm shape.
-			if info, err := os.Stat(mount); err != nil || !info.IsDir() {
+		if existing == target {
+			// Liveness before measurement (r4): an outage must name
+			// itself with the same wording on every arm shape, not
+			// render an ABSENT store as an unmeasurably large one.
+			if info, err := os.Stat(target); err != nil || !info.IsDir() {
 				if logf != nil {
-					logf("sol-pi DEGRADED: store %s not mounted — observation-pack will fail open (context stays unpaged) and the reducer will error, until the mount returns", mount)
+					logf("sol-pi DEGRADED: store %s not mounted — observation-pack will fail open (context stays unpaged) and the reducer will error, until the mount returns", target)
 				}
 				return
 			}
-			logStoreSize(mount, logf)
+			logStoreSize(target, logf)
 			return
 		}
-		if err := os.Remove(link); err != nil {
-			if logf != nil {
-				logf("sol-pi store re-point failed: %v", err)
-			}
-			return
-		}
+		// Re-point: the atomic rename below replaces the link without a
+		// destructive pre-remove.
 	} else if st, err := os.Lstat(link); err == nil && st.IsDir() {
 		// Legacy real directory (pre-#704 lineage): the PR's accumulated
 		// observations stay local; replacing them with a symlink would
@@ -333,30 +330,38 @@ func LinkSharedStore(lineageDir, mount string, logf func(string, ...any)) {
 		}
 		return
 	}
-	// Create (or re-create) the link. os.Symlink succeeds against a
-	// missing target: during a mount outage the link dangles, no
-	// per-lineage directory is manufactured, and SoL-Pi DEGRADES — with
-	// per-mechanism asymmetry that matters for observability (r2):
-	// evidence-preserving-reducer's archive mkdir escapes its handler and
-	// surfaces as extension_error (counted), but observation-pack FAILS
-	// OPEN per message (console.error only) — the agent's context simply
-	// stops being paged, which the wall budget is most sensitive to. That
-	// is why the arm-time log below names the outage explicitly: it is
-	// the only signal the primary mechanism will ever raise.
-	if err := os.Symlink(mount, link); err != nil {
+	// Atomic create/re-point: symlink to a temp name, rename over the
+	// link. A failed create leaves the old link (or absence) exactly as
+	// it was — the extension can never win a gap (r5).
+	tmp := link + ".new"
+	if err := symlinkStore(target, tmp); err != nil {
 		if logf != nil {
 			logf("sol-pi store link failed: %v", err)
 		}
 		return
 	}
-	if info, err := os.Stat(mount); err != nil || !info.IsDir() {
+	if err := os.Rename(tmp, link); err != nil {
+		_ = os.Remove(tmp)
 		if logf != nil {
-			logf("sol-pi DEGRADED: store %s not mounted — observation-pack will fail open (context stays unpaged) and the reducer will error, until the mount returns", mount)
+			logf("sol-pi store link rename failed: %v", err)
 		}
 		return
 	}
-	logStoreSize(mount, logf)
+	if info, err := os.Stat(target); err != nil || !info.IsDir() {
+		if logf != nil {
+			logf("sol-pi DEGRADED: store %s not mounted — observation-pack will fail open (context stays unpaged) and the reducer will error, until the mount returns", target)
+		}
+		return
+	}
+	logStoreSize(target, logf)
 }
+
+// symlinkStore is the creation seam (probe injection, the walkStore
+// pattern): os.Symlink is NOT atomic-with-recovery — a failure leaves
+// the path absent and the byte-pristine extension would materialize a
+// real directory in the gap, so the linker creates through a temp name
+// and renames.
+var symlinkStore = os.Symlink
 
 // measureStore sizes the shared store with a bounded walk. Per-entry
 // errors (an entry removed mid-walk by a concurrent attempt, a CSI blip)
@@ -371,8 +376,22 @@ var walkStore = filepath.WalkDir
 
 var ErrStoreRootMissing = errors.New("sol-pi store root missing (not mounted)")
 
-func measureStore(mount string) (total int64, files int, truncated bool, scanErr error) {
-	const maxFiles = 20000
+// measureStore sizes the shared store with a budgeted walk. The FILE
+// cap stops per-entry Info() (a real lstat each on the RWX claim) but
+// the walk CONTINUES summing sizes past it — a monotone lower bound
+// ("≥ N bytes") keeps the growth curve moving on a huge store, where a
+// frozen constant would read as a store that stopped growing while the
+// claim fills (#704 review r5). Per-entry errors skip that entry and
+// carry scanErr (an under-report must not read as a small store); a
+// root-level error is ErrStoreRootMissing — an ABSENT store is a
+// different state from a partially-scanned one. The injectable walker
+// exists for the probe.
+const (
+	measureMaxFiles     = 20000
+	measureMaxFileBytes = 4 << 30 // stop summing past 4GiB counted — the quota is 10Gi
+)
+
+func measureStore(mount string) (total int64, files int, capped bool, scanErr error) {
 	err := walkStore(mount, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			// The root itself is unreadable: nothing to measure.
@@ -382,29 +401,43 @@ func measureStore(mount string) (total int64, files int, truncated bool, scanErr
 			scanErr = fmt.Errorf("%s: %w", path, err)
 			return nil // keep counting the rest
 		}
-		if files >= maxFiles {
-			truncated = true
-			return fs.SkipAll
+		if capped {
+			// Past the file cap the walk KEEPS SUMMING sizes (monotone
+			// lower bound — the curve must move) and stops only at the
+			// byte budget.
+			if total >= measureMaxFileBytes {
+				return fs.SkipAll
+			}
+			if !d.IsDir() {
+				files++
+				if info, err := d.Info(); err == nil {
+					total += info.Size()
+				}
+			}
+			return nil
 		}
 		if !d.IsDir() {
 			if info, err := d.Info(); err == nil {
 				total += info.Size()
 			}
 			files++
+			if files >= measureMaxFiles {
+				capped = true
+			}
 		}
 		return nil
 	})
 	if err != nil && scanErr == nil {
 		scanErr = err
 	}
-	return total, files, truncated, scanErr
+	return total, files, capped, scanErr
 }
 
 func logStoreSize(mount string, logf func(string, ...any)) {
 	if logf == nil {
 		return
 	}
-	total, files, truncated, scanErr := measureStore(mount)
+	total, files, capped, scanErr := measureStore(mount)
 	if errors.Is(scanErr, ErrStoreRootMissing) {
 		// Mounted-but-unlistable (claim uid/fsGroup mismatch, root_squash):
 		// the store EXISTS — "not mounted" would send the operator to
@@ -414,12 +447,16 @@ func logStoreSize(mount string, logf func(string, ...any)) {
 		logf("sol-pi shared store UNREADABLE at %s (mounted but not listable — check claim uid/fsGroup)", mount)
 		return
 	}
-	marker := ""
-	if truncated {
-		marker = " (truncated at 20000 files)"
+	if capped {
+		// Monotone lower bound: the curve must keep moving past the scan
+		// budget, never freeze at a constant that reads as "stopped
+		// growing" (#704 review r5).
+		logf("sol-pi shared store: >= %d bytes (capped scan: %d files counted)", total, files)
+		return
 	}
+	marker := ""
 	if scanErr != nil {
-		marker += fmt.Sprintf(" (scan INCOMPLETE: %v — the real total is LARGER)", scanErr)
+		marker = fmt.Sprintf(" (scan INCOMPLETE: %v — the real total is LARGER)", scanErr)
 	}
 	logf("sol-pi shared store: %d bytes across %d files%s", total, files, marker)
 }

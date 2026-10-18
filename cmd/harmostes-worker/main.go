@@ -597,12 +597,16 @@ func runOneShot() {
 			logf("session lineage unavailable, per-run persistence: %v", err)
 		} else if dir != "" {
 			lineageDir, sessionID, actorID = dir, id, aid
-			// #704: point the lineage's sol-pi runtime at the
-			// repository-scoped store when the attachment is mounted — the
-			// review's paid-for observations survive lineage TTL pruning and
-			// are one store per repo across workflows. Best-effort: any
-			// failure keeps the stock per-lineage store.
-			sessionstore.LinkSharedStore(dir, os.Getenv("HARMOSTES_SOL_PI_STORE"), logf)
+			// #704: point the lineage's sol-pi runtime at the shared store
+			// when the attachment is mounted — the review's paid-for
+			// observations survive lineage TTL pruning. Best-effort: any
+			// failure keeps the stock per-lineage store. The workflow name
+			// namespaces the leaf inside the repository store (r5): raw tool
+			// output is NOT redacted on this path (the durable-session
+			// publisher redacts, the byte-pristine extension cannot), so
+			// cross-workflow reads stay off until an upstream redaction hook
+			// lands — per-workflow dedup and TTL immunity are live now.
+			sessionstore.LinkSharedStore(dir, workflow, os.Getenv("HARMOSTES_SOL_PI_STORE"), logf)
 			// Durable half (r20 P1): Job pods die with /tmp — the PRLineage
 			// ACTOR owns the lineage (isolated + durable + turn-based);
 			// fetch it and materialize as the local session file, so the

@@ -85,7 +85,7 @@ func TestLinkSharedStore(t *testing.T) {
 	lineage := t.TempDir()
 
 	// Empty mount = undeclared: a strict no-op.
-	LinkSharedStore(lineage, "", logf)
+	LinkSharedStore(lineage, "pr-review-rhesadox", "", logf)
 	if _, err := os.Lstat(filepath.Join(lineage, "sol-pi")); !os.IsNotExist(err) {
 		t.Fatalf("undeclared must not create the link")
 	}
@@ -93,9 +93,9 @@ func TestLinkSharedStore(t *testing.T) {
 	// Declared but the mount directory does not exist yet: the link is
 	// created DANGLING (#704 review r2 — a real directory must never be
 	// born in the gap; the next healthy arm re-points and recovers).
-	LinkSharedStore(lineage, filepath.Join(mount, "missing"), logf)
-	if target, err := os.Readlink(filepath.Join(lineage, "sol-pi")); err != nil || target != filepath.Join(mount, "missing") {
-		t.Fatalf("declared-but-missing must still link: %q, %v", target, err)
+	LinkSharedStore(lineage, "pr-review-rhesadox", filepath.Join(mount, "missing"), logf)
+	if target, err := os.Readlink(filepath.Join(lineage, "sol-pi")); err != nil || target != filepath.Join(mount, "missing", "pr-review-rhesadox") {
+		t.Fatalf("declared-but-missing must still link (at the workflow leaf): %q, %v", target, err)
 	}
 	if err := os.Remove(filepath.Join(lineage, "sol-pi")); err != nil {
 		t.Fatal(err)
@@ -105,25 +105,25 @@ func TestLinkSharedStore(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(mount, "git.rezus.cloud-tibrez-rhesadox-d782cf64"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	LinkSharedStore(lineage, mount, logf)
+	LinkSharedStore(lineage, "pr-review-rhesadox", mount, logf)
 	target, err := os.Readlink(filepath.Join(lineage, "sol-pi"))
-	if err != nil || target != mount {
-		t.Fatalf("link = %q, err = %v; want %q", target, err, mount)
+	if err != nil || target != filepath.Join(mount, "pr-review-rhesadox") {
+		t.Fatalf("link = %q, err = %v; want the workflow leaf", target, err)
 	}
 
 	// Idempotent: a second link to the same mount is a no-op.
-	LinkSharedStore(lineage, mount, logf)
+	LinkSharedStore(lineage, "pr-review-rhesadox", mount, logf)
 	target, err = os.Readlink(filepath.Join(lineage, "sol-pi"))
-	if err != nil || target != mount {
+	if err != nil || target != filepath.Join(mount, "pr-review-rhesadox") {
 		t.Fatalf("relink changed the target: %q, %v", target, err)
 	}
 
 	// Re-pointing: a symlink at a stale mount is corrected.
 	other := t.TempDir()
-	LinkSharedStore(lineage, other, logf)
+	LinkSharedStore(lineage, "pr-review-rhesadox", other, logf)
 	target, err = os.Readlink(filepath.Join(lineage, "sol-pi"))
-	if err != nil || target != other {
-		t.Fatalf("re-point = %q, %v; want %q", target, err, other)
+	if err != nil || target != filepath.Join(other, "pr-review-rhesadox") {
+		t.Fatalf("re-point = %q, %v; want %q", target, err, filepath.Join(other, "pr-review-rhesadox"))
 	}
 
 	// Legacy protection: a REAL directory is left alone — the PR keeps its
@@ -137,7 +137,7 @@ func TestLinkSharedStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	logs = nil
-	LinkSharedStore(legacy, mount, logf)
+	LinkSharedStore(legacy, "pr-review-rhesadox", mount, logf)
 	if st, err := os.Lstat(legacyLink); err != nil || st.Mode()&os.ModeSymlink != 0 {
 		t.Fatalf("legacy dir must stay a real directory: %v, %v", st, err)
 	}
@@ -158,9 +158,10 @@ func TestLinkSharedStore(t *testing.T) {
 func TestLinkSharedStoreLinkDiscipline(t *testing.T) {
 	mount := t.TempDir()
 	lineage := t.TempDir()
-	LinkSharedStore(lineage, mount, nil)
+	leaf := filepath.Join(mount, "pr-review-rhesadox")
+	LinkSharedStore(lineage, "pr-review-rhesadox", mount, nil)
 	link := filepath.Join(lineage, "sol-pi")
-	if target, err := os.Readlink(link); err != nil || target != mount {
+	if target, err := os.Readlink(link); err != nil || target != leaf {
 		t.Fatalf("setup: link = %q, %v", target, err)
 	}
 
@@ -170,8 +171,8 @@ func TestLinkSharedStoreLinkDiscipline(t *testing.T) {
 	if err := os.RemoveAll(mount); err != nil {
 		t.Fatal(err)
 	}
-	LinkSharedStore(lineage, mount, nil)
-	if target, err := os.Readlink(link); err != nil || target != mount {
+	LinkSharedStore(lineage, "pr-review-rhesadox", mount, nil)
+	if target, err := os.Readlink(link); err != nil || target != leaf {
 		t.Fatalf("declared outage must keep the link (dangling is recoverable): %q, %v", target, err)
 	}
 
@@ -180,8 +181,8 @@ func TestLinkSharedStoreLinkDiscipline(t *testing.T) {
 	if err := os.MkdirAll(mount, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	LinkSharedStore(lineage, mount, nil)
-	if target, err := os.Readlink(link); err != nil || target != mount {
+	LinkSharedStore(lineage, "pr-review-rhesadox", mount, nil)
+	if target, err := os.Readlink(link); err != nil || target != leaf {
 		t.Fatalf("recovery relink = %q, %v", target, err)
 	}
 	if st, err := os.Lstat(link); err != nil || st.Mode()&os.ModeSymlink == 0 {
@@ -190,7 +191,7 @@ func TestLinkSharedStoreLinkDiscipline(t *testing.T) {
 
 	// UNDECLARED after having been linked: the stale symlink is removed
 	// (the env is gone — no later arm would ever repair it).
-	LinkSharedStore(lineage, "", nil)
+	LinkSharedStore(lineage, "pr-review-rhesadox", "", nil)
 	if _, err := os.Lstat(link); !os.IsNotExist(err) {
 		t.Fatalf("undeclared must remove our stale symlink: %v", err)
 	}
@@ -202,7 +203,7 @@ func TestLinkSharedStoreLinkDiscipline(t *testing.T) {
 	if err := os.MkdirAll(realLink, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	LinkSharedStore(real, "", nil)
+	LinkSharedStore(real, "pr-review-rhesadox", "", nil)
 	if st, err := os.Lstat(realLink); err != nil || st.Mode()&os.ModeSymlink != 0 {
 		t.Fatalf("legacy real dir must be untouched: %v %v", st, err)
 	}
@@ -213,9 +214,9 @@ func TestLinkSharedStoreLinkDiscipline(t *testing.T) {
 	// store lands.
 	fresh := t.TempDir()
 	broken := filepath.Join(fresh, "not-mounted-yet")
-	LinkSharedStore(fresh, broken, nil)
-	if target, err := os.Readlink(filepath.Join(fresh, "sol-pi")); err != nil || target != broken {
-		t.Fatalf("fresh lineage must get a (dangling) link: %q, %v", target, err)
+	LinkSharedStore(fresh, "pr-review-rhesadox", broken, nil)
+	if target, err := os.Readlink(filepath.Join(fresh, "sol-pi")); err != nil || target != filepath.Join(broken, "pr-review-rhesadox") {
+		t.Fatalf("fresh lineage must get a (dangling) link at the workflow leaf: %q, %v", target, err)
 	}
 }
 
@@ -225,14 +226,14 @@ func TestLinkSharedStoreLinkDiscipline(t *testing.T) {
 func TestLinkSharedStoreLogsStoreSize(t *testing.T) {
 	mount := t.TempDir()
 	lineage := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(mount, "git.rezus.cloud-tibrez-rhesadox-d782cf64", "x"), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(mount, "pr-review-rhesadox", "x"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(mount, "git.rezus.cloud-tibrez-rhesadox-d782cf64", "x", "obs_1.txt"), []byte("0123456789"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(mount, "pr-review-rhesadox", "x", "obs_1.txt"), []byte("0123456789"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	logs := []string{}
-	LinkSharedStore(lineage, mount, func(format string, args ...any) {
+	LinkSharedStore(lineage, "pr-review-rhesadox", mount, func(format string, args ...any) {
 		logs = append(logs, fmt.Sprintf(format, args...))
 	})
 	joined := strings.Join(logs, "\n")
@@ -253,9 +254,9 @@ func TestMeasureStoreScanErrorObservable(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	healthy, files, truncated, scanErr := measureStore(mount)
-	if healthy != 300 || files != 3 || truncated || scanErr != nil {
-		t.Fatalf("healthy store: %d bytes/%d files truncated=%v err=%v", healthy, files, truncated, scanErr)
+	healthy, files, capped, scanErr := measureStore(mount)
+	if healthy != 300 || files != 3 || capped || scanErr != nil {
+		t.Fatalf("healthy store: %d bytes/%d files capped=%v err=%v", healthy, files, capped, scanErr)
 	}
 
 	original := walkStore
@@ -273,14 +274,14 @@ func TestMeasureStoreScanErrorObservable(t *testing.T) {
 			return fn(path, d, err)
 		})
 	}
-	total, files, truncated, scanErr := measureStore(mount)
+	total, files, capped, scanErr := measureStore(mount)
 	if total == 300 {
 		t.Fatalf("a scan that lost entries must not report the healthy total")
 	}
 	if scanErr == nil {
 		t.Fatal("the scan error must be carried, not swallowed")
 	}
-	_, _, _, _ = truncated, files, total, scanErr
+	_, _, _, _ = capped, files, total, scanErr
 }
 
 // ── #704 review r3/r4: the idempotent arm is the COMMON arm (every
@@ -291,11 +292,16 @@ func TestMeasureStoreScanErrorObservable(t *testing.T) {
 func TestLinkSharedStoreIdempotentArmNamesOutage(t *testing.T) {
 	mount := t.TempDir()
 	lineage := t.TempDir()
-	LinkSharedStore(lineage, mount, nil)
+	LinkSharedStore(lineage, "pr-review-rhesadox", mount, nil)
+	// The steady-state arm measures the LEAF — create it (the extension
+	// would have, in production).
+	if err := os.MkdirAll(filepath.Join(mount, "pr-review-rhesadox"), 0o700); err != nil {
+		t.Fatal(err)
+	}
 
 	// Steady state, store present: no DEGRADED line.
 	logs := []string{}
-	LinkSharedStore(lineage, mount, func(format string, args ...any) {
+	LinkSharedStore(lineage, "pr-review-rhesadox", mount, func(format string, args ...any) {
 		logs = append(logs, fmt.Sprintf(format, args...))
 	})
 	for _, l := range logs {
@@ -310,7 +316,7 @@ func TestLinkSharedStoreIdempotentArmNamesOutage(t *testing.T) {
 		t.Fatal(err)
 	}
 	logs = nil
-	LinkSharedStore(lineage, mount, func(format string, args ...any) {
+	LinkSharedStore(lineage, "pr-review-rhesadox", mount, func(format string, args ...any) {
 		logs = append(logs, fmt.Sprintf(format, args...))
 	})
 	if len(logs) == 0 || !strings.Contains(logs[0], "DEGRADED") || !strings.Contains(logs[0], "not mounted") {
@@ -336,7 +342,7 @@ func TestMeasureStoreRootMissingIsItsOwnState(t *testing.T) {
 func TestLogStoreSizeRootMissingRendersUnreadable(t *testing.T) {
 	statable := t.TempDir() // exists, IsDir — passes every Stat guard
 	lineage := t.TempDir()
-	LinkSharedStore(lineage, statable, nil)
+	LinkSharedStore(lineage, "pr-review-rhesadox", statable, nil)
 
 	original := walkStore
 	defer func() { walkStore = original }()
@@ -357,5 +363,121 @@ func TestLogStoreSizeRootMissingRendersUnreadable(t *testing.T) {
 	}
 	if strings.Contains(line, "LARGER") || strings.Contains(line, "not mounted") {
 		t.Fatalf("root-missing must not render as partial-scan or not-mounted: %q", line)
+	}
+}
+
+// ── #704 review r5: creation is atomic. A failing os.Symlink used to
+// leave the component ABSENT — the byte-pristine extension's mkdir -p
+// then materialized a real directory in the gap, the legacy guard
+// honored it forever, and the lineage was permanently de-shared with a
+// log line that read as deliberate. The linker now creates through a
+// temp name and renames: a failed create leaves the old state untouched,
+// and no gap exists. Probed red via the symlinkStore seam. ──
+func TestLinkSharedStoreAtomicCreate(t *testing.T) {
+	mount := t.TempDir()
+	lineage := t.TempDir()
+
+	original := symlinkStore
+	defer func() { symlinkStore = original }()
+
+	// The re-point case is the sharpest: a WORKING link exists, and the
+	// create to the new store fails (EDQUOT/EROFS/EACCES). Atomicity means
+	// the old link still resolves — the non-atomic version removed it
+	// first, leaving the component absent for the extension's mkdir -p to
+	// fill with a real directory (the manufactured-legacy gap).
+	if err := os.MkdirAll(filepath.Join(mount, "pr-review-rhesadox"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	LinkSharedStore(lineage, "pr-review-rhesadox", mount, nil)
+	if _, err := os.Readlink(filepath.Join(lineage, "sol-pi")); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	other := t.TempDir()
+	symlinkStore = func(oldname, newname string) error { return fmt.Errorf("EDQUOT: claim full") }
+	logs := []string{}
+	LinkSharedStore(lineage, "pr-review-rhesadox", other, func(format string, args ...any) {
+		logs = append(logs, fmt.Sprintf(format, args...))
+	})
+	if target, err := os.Readlink(filepath.Join(lineage, "sol-pi")); err != nil || target != filepath.Join(mount, "pr-review-rhesadox") {
+		t.Fatalf("a failed re-point must leave the OLD link resolving (atomic): %q, %v", target, err)
+	}
+
+	// The fresh-lineage case: a failed create leaves the component ABSENT
+	// (never a real directory — the extension would fill the gap).
+	fresh := t.TempDir()
+	symlinkStore = func(oldname, newname string) error { return fmt.Errorf("EROFS: read-only") }
+	LinkSharedStore(fresh, "pr-review-rhesadox", filepath.Join(fresh, "store"), func(format string, args ...any) {
+		logs = append(logs, fmt.Sprintf(format, args...))
+	})
+	if st, err := os.Lstat(filepath.Join(fresh, "sol-pi")); !os.IsNotExist(err) {
+		t.Fatalf("a failed create must leave the component absent (no real dir born): %v %v", st, err)
+	}
+
+	// The extension materializes a real directory in the gap ONLY when the
+	// component is absent and we returned early — with the atomic rename
+	// there is no gap, so simulate the pre-fix failure mode's aftermath
+	// and prove the healthy arm still recovers a lineage that has NO real
+	// dir. (A lineage where a real dir DID get born is pre-#704/legacy —
+	// covered by the legacy tests.)
+	symlinkStore = original
+	LinkSharedStore(lineage, "pr-review-rhesadox", mount, func(format string, args ...any) {
+		logs = append(logs, fmt.Sprintf(format, args...))
+	})
+	target, err := os.Readlink(filepath.Join(lineage, "sol-pi"))
+	if err != nil || target != filepath.Join(mount, "pr-review-rhesadox") {
+		t.Fatalf("the next healthy arm must share: %q, %v", target, err)
+	}
+}
+
+// ── #704 review r5: the growth curve must move past the scan budget —
+// a frozen constant reads as a store that stopped growing while the
+// claim fills. Past the file cap the walk keeps summing and the log
+// reports a monotone LOWER BOUND. Probed red on the frozen version. ──
+func TestMeasureStoreCappedKeepsGrowing(t *testing.T) {
+	mount := t.TempDir()
+	// maxFiles tiny entries…
+	for i := 0; i < measureMaxFiles; i++ {
+		dir := filepath.Join(mount, fmt.Sprintf("d%d", i/500))
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("f%d.txt", i)), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t1, f1, capped1, _ := measureStore(mount)
+	if !capped1 {
+		t.Fatalf("fixture must trip the cap (files=%d)", f1)
+	}
+	// …then one oversized object lands.
+	big := filepath.Join(mount, "zz_big", "obs_big.txt")
+	if err := os.MkdirAll(filepath.Dir(big), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(big, bytes.Repeat([]byte("y"), 1<<20), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t2, _, capped2, _ := measureStore(mount)
+	if !capped2 {
+		t.Fatal("still capped")
+	}
+	if t2 <= t1 {
+		t.Fatalf("the lower bound must INCREASE after new data past the cap: %d -> %d", t1, t2)
+	}
+}
+
+// ── #704 review r5: the "sol-pi" component is a cross-boundary contract
+// with the vendored extension (runtime-paths.ts joins it into the
+// runtime root). Nothing else pins it; an upstream rename would de-share
+// every lineage while the arm-time log still reports a healthy store.
+// Same wiring-claim pattern as TestRigGraphPathSingleSource. ──
+func TestSolPiRuntimeComponentSingleSource(t *testing.T) {
+	src, err := os.ReadFile("../../extensions/sol-pi/src/sol-pi/runtime-paths.ts")
+	if err != nil {
+		t.Skipf("vendored extension not present: %v", err)
+	}
+	want := `join(sessionDir, "` + LinkComponent + `", sessionId)`
+	if !strings.Contains(string(src), want) {
+		t.Errorf("runtime-paths.ts no longer joins %q — LinkSharedStore's symlink and the extension's runtime root have drifted apart", LinkComponent)
 	}
 }

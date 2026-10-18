@@ -71,5 +71,5 @@ jobs:
             --title "chore(skills): bump pinned skills rev to ${upstream:0:7}" \
             --body "Automated bump of \`values.skills.rev\` (#408 item 9): agents main advanced \`${pinned:-<tracking main>}\` → \`$upstream\`.
 
-The fleet serves the pinned rev; merging this PR is the freshness step. Rollback = revert (the previous pin returns)." \
+            The fleet serves the pinned rev; merging this PR is the freshness step. Rollback = revert (the previous pin returns)." \
             --base main --head "chore/skills-bump-$upstream"

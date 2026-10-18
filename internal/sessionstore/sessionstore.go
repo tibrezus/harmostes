@@ -405,6 +405,15 @@ func logStoreSize(mount string, logf func(string, ...any)) {
 		return
 	}
 	total, files, truncated, scanErr := measureStore(mount)
+	if errors.Is(scanErr, ErrStoreRootMissing) {
+		// Mounted-but-unlistable (claim uid/fsGroup mismatch, root_squash):
+		// the store EXISTS — "not mounted" would send the operator to
+		// remount a healthy PVC, and "the real total is LARGER" inverts the
+		// state. Name the actual failure (r4: the sentinel is the contract,
+		// not dead code).
+		logf("sol-pi shared store UNREADABLE at %s (mounted but not listable — check claim uid/fsGroup)", mount)
+		return
+	}
 	marker := ""
 	if truncated {
 		marker = " (truncated at 20000 files)"

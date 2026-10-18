@@ -327,3 +327,35 @@ func TestMeasureStoreRootMissingIsItsOwnState(t *testing.T) {
 		t.Fatalf("root-missing must surface as ErrStoreRootMissing, got: %v", scanErr)
 	}
 }
+
+// ── #704 review r4/r5: the sentinel is a CONTRACT on the rendered line.
+// A mount that stats fine but is not listable (claim uid mismatch,
+// root_squash) makes the walk fail at the ROOT: the arm-time line must
+// say UNREADABLE (check uid/fsGroup) — never "not mounted", never
+// "the real total is LARGER". Probes the caller, not just the producer. ──
+func TestLogStoreSizeRootMissingRendersUnreadable(t *testing.T) {
+	statable := t.TempDir() // exists, IsDir — passes every Stat guard
+	lineage := t.TempDir()
+	LinkSharedStore(lineage, statable, nil)
+
+	original := walkStore
+	defer func() { walkStore = original }()
+	walkStore = func(root string, fn fs.WalkDirFunc) error {
+		return fn(root, nil, ErrStoreRootMissing) // the walk's first error IS the root
+	}
+
+	logs := []string{}
+	logStoreSize(statable, func(format string, args ...any) {
+		logs = append(logs, fmt.Sprintf(format, args...))
+	})
+	if len(logs) != 1 {
+		t.Fatalf("expected exactly one line, got %v", logs)
+	}
+	line := logs[0]
+	if !strings.Contains(line, "UNREADABLE") || !strings.Contains(line, "uid/fsGroup") {
+		t.Fatalf("root-missing must render as UNREADABLE with the uid hint: %q", line)
+	}
+	if strings.Contains(line, "LARGER") || strings.Contains(line, "not mounted") {
+		t.Fatalf("root-missing must not render as partial-scan or not-mounted: %q", line)
+	}
+}

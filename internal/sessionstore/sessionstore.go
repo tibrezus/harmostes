@@ -281,13 +281,28 @@ const LinkComponent = "sol-pi"
 // symlink is our artifact and its removal restores the stock
 // per-lineage store; a real directory is pre-#704 legacy data and is
 // kept as-is.
+// manufacturedMarker names the file LinkSharedStore writes inside a real
+// sol-pi/ directory it had to create as a degraded fallback (creation
+// failure on a fresh lineage). The legacy guard reads it: a real
+// directory WITHOUT the marker is pre-#704 data (kept, never orphaned);
+// WITH the marker it is linker-manufactured — on a healthy arm it is
+// migrated into the store and replaced by the link (r7: the extension's
+// mkdir -p fills an absent component, so "never left absent" means the
+// linker may have to own a real directory and say so).
+const manufacturedMarker = ".harmostes-manufactured"
+
+// JanitorScope note: the shared store lives outside every lineage dir
+// (the link is unlinked, never traversed, by pruning) — retention is the
+// #704 follow-up's contract, not the sessions janitor's.
+
 func LinkSharedStore(lineageDir, workflow, mount string, logf func(string, ...any)) {
 	link := filepath.Join(lineageDir, LinkComponent)
 	if mount == "" {
 		// Undeclared: undo our own artifact if present. A symlink is the
-		// only thing this function ever created at that path — removing
-		// it lets the stock per-lineage store apply. A real directory is
-		// pre-#704 legacy data: kept, untouched.
+		// only link this function ever created at that path — removing it
+		// lets the stock per-lineage store apply. A real directory is
+		// either pre-#704 legacy data or a degraded fallback directory
+		// (see below): both are kept, untouched.
 		if existing, err := os.Readlink(link); err == nil && existing != "" {
 			if err := os.Remove(link); err != nil {
 				if logf != nil {
@@ -301,22 +316,43 @@ func LinkSharedStore(lineageDir, workflow, mount string, logf func(string, ...an
 		}
 		return
 	}
-	// The workflow leaf: read scope is per-workflow by default (r5).
+	// The workflow leaf: read scope is per-workflow by default (r5), and
+	// the READ EXPOSURE is named where the scope is chosen: every Job runs
+	// as the image's uid (root — Dockerfile.worker has no USER), so the
+	// leaf is an organizing boundary, NOT an enforcement boundary; the
+	// payloads are RAW tool output (the durable-session publisher
+	// redacts, the byte-pristine extension cannot). Cross-workflow
+	// sharing of one repo stays disabled by this leaf until an upstream
+	// redaction hook lands; the owner may flip it afterwards.
 	target := filepath.Join(mount, workflow)
 	// The leaf cannot self-heal (r6): the only writer is the byte-pristine
 	// extension, and it writes THROUGH the link — a missing leaf would
-	// dangle forever (ENOTDIR on every mkdir), with the DEGRADED line
-	// lying that the mount is gone. Create it at arm time — idempotent,
-	// and not the r2 gap: that gap was at <lineage>/sol-pi, where the
-	// extension could manufacture a real directory in place of our link;
-	// here the directory IS the artifact we want.
+	// dangle forever (ENOTDIR on every mkdir). Create it at arm time —
+	// idempotent, and not the r2 gap: that gap was at <lineage>/sol-pi,
+	// where the extension could manufacture a real directory in place of
+	// our link; at the store the directory IS the artifact we want.
+	// THREE failure states, named separately (r7): mount missing (the r2
+	// outage — dangling link, DEGRADED), leaf uncreatable on a present
+	// mount (uid/fsGroup — UNWRITABLE, different diagnosis), and
+	// manufactured-fallback (below).
 	if err := os.MkdirAll(target, 0o700); err != nil {
-		if logf != nil {
-			logf("sol-pi DEGRADED: store %s not mounted — observation-pack will fail open (context stays unpaged) and the reducer will error, until the mount returns", mount)
+		mountMissing := false
+		if info, statErr := os.Stat(mount); statErr != nil || !info.IsDir() {
+			mountMissing = true
 		}
-		// Still create the link (dangling): a fresh lineage during an
-		// outage must not fall back to a per-lineage directory that the
-		// legacy guard would later honor forever.
+		// A fresh lineage must never fall back to an unmarked per-lineage
+		// directory (the legacy guard would honor it forever): create the
+		// component as a REAL directory and stamp it manufactured — the
+		// next healthy arm migrates it into the store and links.
+		stampFallback(link, workflow)
+		if logf != nil {
+			if mountMissing {
+				logf("sol-pi DEGRADED: store %s not mounted — observation-pack will fail open (context stays unpaged) and the reducer will error, until the mount returns", mount)
+			} else {
+				logf("sol-pi DEGRADED: store leaf %s uncreatable (%v) — claim uid/fsGroup mismatch? degraded until it is writable", target, err)
+			}
+		}
+		return
 	}
 	// Existing symlink: idempotent when it already points at the leaf.
 	if existing, err := os.Readlink(link); err == nil {
@@ -332,27 +368,52 @@ func LinkSharedStore(lineageDir, workflow, mount string, logf func(string, ...an
 			}
 			// The growth signal measures the MOUNT — the whole repo tree
 			// is what shares the claim's quota; measuring the leaf would
-			// under-report by a factor of N workflows (r6).
+			// under-report by a factor of N workflows (r6). Bounded per
+			// r7: past the file budget the count keeps moving, sizes stop
+			// being measured (no lstat storm before pi spawns).
 			logStoreSize(mount, logf)
 			return
 		}
 		// Re-point: the atomic rename below replaces the link without a
 		// destructive pre-remove.
 	} else if st, err := os.Lstat(link); err == nil && st.IsDir() {
-		// Legacy real directory (pre-#704 lineage): the PR's accumulated
-		// observations stay local; replacing them with a symlink would
-		// orphan them. Distinct log wording — this is deliberate
-		// protection of old data, not an outage artifact.
-		if logf != nil {
-			logf("sol-pi: legacy per-lineage store present — not sharing this PR's runtime")
+		// A real directory: legacy (pre-#704) data — kept — or a
+		// manufactured fallback from a degraded arm (r7) — migrated into
+		// the store and replaced by the link. The marker distinguishes
+		// them; guessing would either orphan old data or honor a
+		// directory this function itself created.
+		markerPath := filepath.Join(link, manufacturedMarker)
+		if _, err := os.Stat(markerPath); err == nil {
+			if n := migrateManufactured(link, target, logf); logf != nil {
+				logf("sol-pi: migrated %d file(s) from the degraded fallback into the shared store", n)
+			}
+			if err := os.RemoveAll(link); err != nil {
+				if logf != nil {
+					logf("sol-pi fallback removal failed: %v", err)
+				}
+				return
+			}
+		} else {
+			if logf != nil {
+				logf("sol-pi: legacy per-lineage store present — not sharing this PR's runtime")
+			}
+			return
 		}
-		return
 	}
-	// Atomic create/re-point: symlink to a temp name, rename over the
-	// link. A failed create leaves the old link (or absence) exactly as
-	// it was — the extension can never win a gap (r5).
+	// Atomic create/re-point: symlink to a UNIQUE temp name (a leftover
+	// from an arm killed between Symlink and Rename must not poison every
+	// later arm with EEXIST — r7), then rename over the link. A failed
+	// create leaves the old link (or the stamped fallback) exactly as it
+	// was — the extension can never win a gap.
 	tmp := link + ".new"
+	_ = os.Remove(tmp)
 	if err := symlinkStore(target, tmp); err != nil {
+		// Fresh lineage (component absent): stamp the manufactured
+		// fallback — the extension's mkdir -p must never find an absent
+		// component to fill with an unmarked real directory (r7).
+		if _, lerr := os.Lstat(link); os.IsNotExist(lerr) {
+			stampFallback(link, workflow)
+		}
 		if logf != nil {
 			logf("sol-pi store link failed: %v", err)
 		}
@@ -372,6 +433,49 @@ func LinkSharedStore(lineageDir, workflow, mount string, logf func(string, ...an
 		return
 	}
 	logStoreSize(mount, logf)
+}
+
+// stampFallback creates the component as a real directory carrying the
+// manufactured marker: the degraded-window runtime, recognizable by the
+// next healthy arm and migrated into the store (never an unmarked real
+// directory the legacy guard would honor forever).
+func stampFallback(link, workflow string) {
+	_ = os.MkdirAll(link, 0o700)
+	_ = os.WriteFile(filepath.Join(link, manufacturedMarker), []byte(workflow), 0o600)
+}
+
+// migrateManufactured copies a degraded-fallback sol-pi directory into
+// the shared store (content-addressed payloads make the copy idempotent:
+// colliding names are identical objects, EEXIST is a no-op) and returns
+// how many files moved. Best-effort per file.
+func migrateManufactured(srcDir, target string, logf func(string, ...any)) int {
+	moved := 0
+	_ = filepath.WalkDir(srcDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(srcDir, path)
+		if err != nil || rel == manufacturedMarker {
+			return nil
+		}
+		dst := filepath.Join(target, rel)
+		if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		if err := os.WriteFile(dst, data, 0o600); err != nil {
+			if logf != nil {
+				logf("sol-pi migration: %s: %v", rel, err)
+			}
+			return nil
+		}
+		moved++
+		return nil
+	})
+	return moved
 }
 
 // symlinkStore is the creation seam (probe injection, the walkStore
@@ -405,8 +509,8 @@ var ErrStoreRootMissing = errors.New("sol-pi store root missing (not mounted)")
 // different state from a partially-scanned one. The injectable walker
 // exists for the probe.
 const (
-	measureMaxFiles     = 20000
-	measureMaxFileBytes = 4 << 30 // stop summing past 4GiB counted — the quota is 10Gi
+	measureMaxFiles  = 20000  // sizes measured up to here (Info per file)
+	measureWalkFiles = 100000 // the walk stops counting here (count-only past the size budget)
 )
 
 func measureStore(mount string) (total int64, files int, capped bool, scanErr error) {
@@ -419,29 +523,28 @@ func measureStore(mount string) (total int64, files int, capped bool, scanErr er
 			scanErr = fmt.Errorf("%s: %w", path, err)
 			return nil // keep counting the rest
 		}
+		if d.IsDir() {
+			return nil
+		}
 		if capped {
-			// Past the file cap the walk KEEPS SUMMING sizes (monotone
-			// lower bound — the curve must move) and stops only at the
-			// byte budget.
-			if total >= measureMaxFileBytes {
+			// Past the size budget: COUNT ONLY — d.Info() is an lstat
+			// round-trip per file on the RWX claim, and the walk runs
+			// before pi spawns on every arm (r7: 180k files measured
+			// 1.7s locally, minutes near quota on network storage). The
+			// count keeps moving; the byte figure is a measured lower
+			// bound with the unmeasured tail named.
+			files++
+			if files >= measureWalkFiles {
 				return fs.SkipAll
-			}
-			if !d.IsDir() {
-				files++
-				if info, err := d.Info(); err == nil {
-					total += info.Size()
-				}
 			}
 			return nil
 		}
-		if !d.IsDir() {
-			if info, err := d.Info(); err == nil {
-				total += info.Size()
-			}
-			files++
-			if files >= measureMaxFiles {
-				capped = true
-			}
+		if info, err := d.Info(); err == nil {
+			total += info.Size()
+		}
+		files++
+		if files >= measureMaxFiles {
+			capped = true
 		}
 		return nil
 	})
@@ -466,10 +569,10 @@ func logStoreSize(mount string, logf func(string, ...any)) {
 		return
 	}
 	if capped {
-		// Monotone lower bound: the curve must keep moving past the scan
-		// budget, never freeze at a constant that reads as "stopped
-		// growing" (#704 review r5).
-		logf("sol-pi shared store: >= %d bytes (capped scan: %d files counted)", total, files)
+		// Monotone signal: the FILE COUNT keeps moving past the size
+		// budget (count-only — no lstat storm), and the line says exactly
+		// what was measured and what was not (#704 review r7).
+		logf("sol-pi shared store: >= %d bytes measured + %d more files (size not measured past %d files)", total, files-measureMaxFiles, measureMaxFiles)
 		return
 	}
 	marker := ""

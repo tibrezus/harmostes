@@ -415,15 +415,21 @@ func TestLinkSharedStoreAtomicCreate(t *testing.T) {
 		t.Fatalf("a failed re-point must leave the OLD link resolving (atomic): %q, %v", target, err)
 	}
 
-	// The fresh-lineage case: a failed create leaves the component ABSENT
-	// (never a real directory — the extension would fill the gap).
+	// The fresh-lineage case (r7 contract): a failed create leaves a
+	// STAMPED real directory — never absent (the extension's mkdir -p
+	// would fill an absent component with an unmarked real dir), never
+	// unmarked (the legacy guard would honor it forever).
 	fresh := t.TempDir()
 	symlinkStore = func(oldname, newname string) error { return fmt.Errorf("EROFS: read-only") }
 	LinkSharedStore(fresh, "pr-review-rhesadox", filepath.Join(fresh, "store"), func(format string, args ...any) {
 		logs = append(logs, fmt.Sprintf(format, args...))
 	})
-	if st, err := os.Lstat(filepath.Join(fresh, "sol-pi")); !os.IsNotExist(err) {
-		t.Fatalf("a failed create must leave the component absent (no real dir born): %v %v", st, err)
+	freshLink := filepath.Join(fresh, "sol-pi")
+	if st, err := os.Lstat(freshLink); err != nil || st.Mode()&os.ModeSymlink != 0 || !st.IsDir() {
+		t.Fatalf("a failed fresh create must leave a stamped real directory: %v %v", st, err)
+	}
+	if _, err := os.Stat(filepath.Join(freshLink, manufacturedMarker)); err != nil {
+		t.Fatalf("the fallback must carry the manufactured marker: %v", err)
 	}
 
 	// The extension materializes a real directory in the gap ONLY when the
@@ -470,12 +476,18 @@ func TestMeasureStoreCappedKeepsGrowing(t *testing.T) {
 	if err := os.WriteFile(big, bytes.Repeat([]byte("y"), 1<<20), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t2, _, capped2, _ := measureStore(mount)
+	t2, f2, capped2, _ := measureStore(mount)
 	if !capped2 {
 		t.Fatal("still capped")
 	}
-	if t2 <= t1 {
-		t.Fatalf("the lower bound must INCREASE after new data past the cap: %d -> %d", t1, t2)
+	// The r7 contract: past the size budget the COUNT keeps moving (the
+	// curve never freezes) while the byte figure is an honest measured
+	// lower bound — no Info() lstat storm before pi spawns.
+	if f2 <= measureMaxFiles {
+		t.Fatalf("the count must keep moving past the size budget: %d", f2)
+	}
+	if t2 < t1 {
+		t.Fatalf("the measured bytes must never go down: %d -> %d", t1, t2)
 	}
 }
 
@@ -538,5 +550,119 @@ func TestLinkSharedStoreGrowthSignalSeesWholeMount(t *testing.T) {
 	joined := strings.Join(logs, "\n")
 	if !strings.Contains(joined, "5 bytes") {
 		t.Fatalf("the growth signal must see the whole repo mount (other workflows' data), got: %v", joined)
+	}
+}
+
+// ── #704 review r7: the degraded fallback is OWNED, not orphaned. A
+// fresh lineage during a creation failure gets a REAL sol-pi directory
+// stamped with the manufactured marker (never absent, never unmarked);
+// the next healthy arm migrates its contents into the shared store and
+// replaces it with the link. ──
+func TestLinkSharedStoreManufacturedFallbackMigrates(t *testing.T) {
+	mount := t.TempDir()
+	lineage := t.TempDir()
+
+	// Arm under a failing symlink on a FRESH lineage: the component must
+	// become a real directory stamped manufactured (never absent).
+	original := symlinkStore
+	defer func() { symlinkStore = original }()
+	symlinkStore = func(oldname, newname string) error { return fmt.Errorf("EROFS: read-only") }
+	LinkSharedStore(lineage, "pr-review-rhesadox", filepath.Join(mount, "gone"), nil)
+	fallback := filepath.Join(lineage, "sol-pi")
+	if st, err := os.Lstat(fallback); err != nil || st.Mode()&os.ModeSymlink != 0 || !st.IsDir() {
+		t.Fatalf("a failed fresh create must leave a stamped real directory (never absent): %v %v", st, err)
+	}
+	if _, err := os.Stat(filepath.Join(fallback, manufacturedMarker)); err != nil {
+		t.Fatalf("the fallback must carry the manufactured marker: %v", err)
+	}
+
+	// The extension writes an observation into the fallback during the
+	// degraded window.
+	obs := filepath.Join(fallback, "harmostes-706", "observation-pack", "objects", "obs_1.txt")
+	if err := os.MkdirAll(filepath.Dir(obs), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(obs, []byte("observed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// The mount returns: the healthy arm migrates the observation into
+	// the shared store and replaces the fallback with the link.
+	symlinkStore = original
+	LinkSharedStore(lineage, "pr-review-rhesadox", mount, nil)
+	if st, err := os.Lstat(fallback); err != nil || st.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("the healthy arm must replace the fallback with the link: %v %v", st, err)
+	}
+	migrated, err := os.ReadFile(filepath.Join(mount, "pr-review-rhesadox", "harmostes-706", "observation-pack", "objects", "obs_1.txt"))
+	if err != nil || string(migrated) != "observed" {
+		t.Fatalf("the degraded-window observation must migrate into the store: %v %q", err, migrated)
+	}
+	if _, err := os.Stat(fallback + ".new"); !os.IsNotExist(err) {
+		t.Fatalf("no stale temp may survive: %v", err)
+	}
+}
+
+// A real directory WITHOUT the marker is pre-#704 legacy data — kept,
+// never migrated (the marker is what makes ownership honest, r7).
+func TestLinkSharedStoreLegacyUntouchedByMigration(t *testing.T) {
+	mount := t.TempDir()
+	lineage := t.TempDir()
+	legacy := filepath.Join(lineage, "sol-pi")
+	if err := os.MkdirAll(filepath.Join(legacy, "harmostes-99"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacy, "harmostes-99", "obs_old.txt"), []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	LinkSharedStore(lineage, "pr-review-rhesadox", mount, nil)
+	if st, err := os.Lstat(legacy); err != nil || st.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("unmarked legacy data must stay local: %v %v", st, err)
+	}
+	if _, err := os.Stat(filepath.Join(mount, "pr-review-rhesadox", "harmostes-99")); !os.IsNotExist(err) {
+		t.Fatal("legacy data must not be migrated")
+	}
+}
+
+// The stale-temp poisoning: a leftover <link>.new from an arm killed
+// between Symlink and Rename must not make every later arm fail EEXIST.
+func TestLinkSharedStoreClearedStaleTemp(t *testing.T) {
+	mount := t.TempDir()
+	lineage := t.TempDir()
+	if err := os.WriteFile(filepath.Join(lineage, "sol-pi.new"), []byte("stale"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	LinkSharedStore(lineage, "pr-review-rhesadox", mount, nil)
+	if target, err := os.Readlink(filepath.Join(lineage, "sol-pi")); err != nil || target != filepath.Join(mount, "pr-review-rhesadox") {
+		t.Fatalf("a stale temp must not block linking: %q, %v", target, err)
+	}
+}
+
+// The three failure states are named separately (r7): uncreatable leaf
+// on a PRESENT mount says UNWRITABLE, never "not mounted" — and does not
+// contradict itself with a healthy byte count in the same arm.
+func TestLinkSharedStoreUnwritableLeafSaysUnwritable(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores mode bits — the unwritable state is not simulatable")
+	}
+	mount := t.TempDir()
+	if err := os.Chmod(mount, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(mount, 0o700) })
+	lineage := t.TempDir()
+	logs := []string{}
+	LinkSharedStore(lineage, "pr-review-rhesadox", mount, func(format string, args ...any) {
+		logs = append(logs, fmt.Sprintf(format, args...))
+	})
+	if len(logs) == 0 || !strings.Contains(logs[0], "uncreatable") {
+		t.Fatalf("an unwritable claim must say UNWRITABLE, got: %v", logs)
+	}
+	for _, l := range logs {
+		if strings.Contains(l, "not mounted") {
+			t.Fatalf("a present-but-unwritable mount must not say 'not mounted': %v", logs)
+		}
+		if strings.Contains(l, "bytes across") {
+			t.Fatalf("a failed leaf creation must not be followed by a healthy byte count: %v", logs)
+		}
 	}
 }

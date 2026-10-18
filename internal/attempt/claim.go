@@ -362,6 +362,25 @@ func MarkClaimDispatched(ctx context.Context, c client.Client, namespace, attemp
 	})
 }
 
+// CompleteDispatchEdge re-stamps the ownership edge for a claim whose Job
+// exists but whose edge never landed (#643, the r9(b) zombie in the #666
+// intent/edge world): Create succeeded, the edge patch hit a blip, and the
+// live-Job dedupe path used to `continue` BEFORE the edge — a RUNNING
+// review with intent-only ledger state, the edge never retried. The
+// reviewer classifies such claims alive by fact (the Job exists), but the
+// edge is the ownership record; the dedupe path is where the retry
+// belongs. Idempotent: a claim whose edge already landed is left alone.
+func CompleteDispatchEdge(ctx context.Context, c client.Client, namespace, attemptName, jobName string) error {
+	var at v1alpha1.Attempt
+	if err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: attemptName}, &at); err != nil {
+		return fmt.Errorf("get attempt %s: %w", attemptName, err)
+	}
+	if at.Status.Review != nil && at.Status.Review.DispatchedJob != "" {
+		return nil
+	}
+	return MarkClaimDispatched(ctx, c, namespace, attemptName, jobName)
+}
+
 // ReleaseClaim frees the claim's capacity slot.
 func ReleaseClaim(ctx context.Context, c client.Client, namespace, attemptName, reason string) error {
 	if err := patchAttemptStatus(ctx, c, namespace, attemptName, func(s *v1alpha1.AttemptStatus) {

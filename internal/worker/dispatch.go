@@ -396,6 +396,20 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req RunRequest) error {
 		}
 		if duplicate {
 			d.logf("dispatch: attempt %s already has a live job — deduped", g.Attempt)
+			// #643: a Job can exist with the ownership edge missing
+			// (Create succeeded, the edge patch hit a rate-limiter blip,
+			// and the old dedupe continued BEFORE the edge — never
+			// retried). The review RUNS while the ledger carries
+			// intent-only state; re-stamp the edge with the live Job's
+			// name. Idempotent.
+			for i := range live {
+				if live[i].Labels["harmostes.dev/attempt"] == g.Attempt {
+					if err := attempt.CompleteDispatchEdge(ctx, d.cl, req.Namespace, g.Attempt, live[i].Name); err != nil {
+						d.logf("dispatch: edge completion for %s failed: %v", g.Attempt, err)
+					}
+					break
+				}
+			}
 			continue
 		}
 		var at v1alpha1.Attempt

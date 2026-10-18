@@ -64,6 +64,7 @@ spec:
                         image: { type: string }
                         configMap: { type: string }
                         args: { type: array, items: { type: string } }
+                        timeout: { type: string }                # G8 node bound (e.g. 5m) — fail fast, release, re-dispatch (#689)
                     detect: { type: string, enum: [changed, conflict, always] }
                     output: { type: string }
                     config:
@@ -123,6 +124,7 @@ spec:
                             image: { type: string }
                             configMap: { type: string }
                             args: { type: array, items: { type: string } }
+                            timeout: { type: string }                # per-attempt gate bound (G8-class; enforced in the gate executor)
                     maxFixes: { type: integer, minimum: 1 }
                     timeout: { type: integer, default: 1800 }
                     scope: { type: string }
@@ -138,6 +140,7 @@ spec:
                         image: { type: string }
                         configMap: { type: string }
                         args: { type: array, items: { type: string } }
+                        timeout: { type: string }                # G8 node bound (e.g. 5m) — fail fast, release, re-dispatch (#689)
                 # Review-Ready Gate (ADR-0006): the event-armed deterministic
                 # trigger for adversarial PR review — proceeds only when the
                 # trigger label is present AND every merge-rule required

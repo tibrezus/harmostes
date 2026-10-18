@@ -89,8 +89,23 @@ func RunPlugin(ctx context.Context, command string, args []string, env PluginEnv
 	var out strings.Builder
 	cmd.Stdout = &out
 	cmd.Stderr = &out
+	setWaitDelay(cmd)
 	runErr := cmd.Run()
 	return lastJSONLine(out.String()), out.String(), runErr
+}
+
+// setWaitDelay (name historical) arms the process-group kill: on context
+// cancel the WHOLE group dies, so pipe-holding grandchildren close their
+// ends and cmd.Run returns. No unconditional WaitDelay here — r2
+// 4301252377 showed WaitDelay re-contracts SUCCESS, reporting an exit-0
+// plugin with daemon children as "WaitDelay expired". The group kill
+// needs no deadline and never touches the happy path.
+
+func setWaitDelay(cmd *exec.Cmd) {
+	cmd.SysProcAttr = sysProcAttrGroup()
+	if cancel := cancelKillGroup(cmd); cancel != nil {
+		cmd.Cancel = cancel
+	}
 }
 
 // GatePlugin adapts a gate plugin (exit 0 = green) to agent.Gate. Its combined
@@ -101,6 +116,11 @@ type GatePlugin struct {
 	Env      PluginEnv
 	ExtraEnv []string
 	Name     string // plugin name (for the plugin.gate.<name> span + metric)
+	// Timeout bounds ONE gate evaluation (duration string, e.g. "2m").
+	// Empty = unbounded (runs on the caller's context — for inline gates
+	// that is the agent task's context). #695 r1: the gate leg was the
+	// unbounded prelude class.
+	Timeout string
 }
 
 func (g GatePlugin) Run(ctx context.Context) (bool, string, error) {
@@ -111,12 +131,20 @@ func (g GatePlugin) Run(ctx context.Context) (bool, string, error) {
 	_, span := observability.Tracer().Start(ctx, "plugin.gate."+name)
 	defer span.End()
 	start := time.Now()
+	if g.Timeout != "" {
+		if d, err := time.ParseDuration(g.Timeout); err == nil && d > 0 {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, d)
+			defer cancel()
+		}
+	}
 	cmd := exec.CommandContext(ctx, g.Command, g.Args...)
 	cmd.Dir = g.Env.Workdir
 	cmd.Env = g.Env.EnvSlice(g.ExtraEnv...)
 	var out strings.Builder
 	cmd.Stdout = &out
 	cmd.Stderr = &out
+	setWaitDelay(cmd)
 	err := cmd.Run()
 	if err != nil {
 		// non-zero exit is a gate-not-green, not a system error — record the code,
@@ -124,6 +152,12 @@ func (g GatePlugin) Run(ctx context.Context) (bool, string, error) {
 		span.SetAttributes(attribute.Int("harmostes.plugin.exit_code", exitCodeFrom(err)))
 	}
 	recordPluginSeconds(ctx, observability.WorkflowFrom(ctx), "gate", name, time.Since(start))
+	// A killed gate is NOT gate feedback — r2 4301258144: green=false
+	// would burn an agent fix attempt on a timeout. Surface the context
+	// error so the node fails with timeout attribution instead.
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return false, strings.TrimSpace(out.String()), ctxErr
+	}
 	return err == nil, strings.TrimSpace(out.String()), nil
 }
 

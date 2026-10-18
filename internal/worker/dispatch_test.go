@@ -629,14 +629,16 @@ func TestBudgetPolicy(t *testing.T) {
 	if !slices.Contains(zero, "LITELLM_URL=http://x") {
 		t.Fatal("ToolBudget=0 must not touch unrelated allowlisted env")
 	}
-	// N>0 → the cap is overridden, the rest of the trio forwards.
+	// N>0 → the cap is overridden and the nudge derives N/2 (#689: the pool
+	// always forwards an explicit PI_TOOL_BUDGET_NUDGE, so leaving it alone
+	// would pin the checkpoint at the fleet's 16 calls under a raised cap).
 	five := 5
 	over := mk(&five)
 	if !slices.Contains(over, "PI_TOOL_BUDGET=5") {
 		t.Fatal("ToolBudget=5 must override PI_TOOL_BUDGET=5")
 	}
-	if !slices.Contains(over, "PI_TOOL_BUDGET_NUDGE=16") {
-		t.Fatal("ToolBudget=5 must keep the fleet nudge (cap/2 derivation is the extension's)")
+	if !slices.Contains(over, "PI_TOOL_BUDGET_NUDGE=2") {
+		t.Fatal("ToolBudget=5 must derive the nudge (cap/2) — the pool's explicit 16 would otherwise stick")
 	}
 	// nil policy (tests calling without a workflow): fleet default intact.
 	if !slices.Contains(jobCredentialEnv(nil), "PI_TOOL_BUDGET=32") {
@@ -664,7 +666,30 @@ func TestPostTokenForwardsOnlyToReviewAttempts(t *testing.T) {
 	if slices.Contains(other, "HARMOSTES_REVIEW_POST_TOKEN=scoped") {
 		t.Fatal("non-review attempts must NOT receive the posting credential (arming is review-scoped)")
 	}
-	if len(review) != len(other)+1 {
-		t.Fatalf("the only delta between review and non-review env must be the post token: %d vs %d", len(review), len(other))
+	// The review-scoped extras are the post token AND the loop breaker
+	// (#695 r3) — exactly two, nothing else.
+	if len(review) != len(other)+2 {
+		t.Fatalf("review env must carry exactly two review-scoped extras (post token + PI_LOOP_BREAKER): %d vs %d", len(review), len(other))
+	}
+}
+
+// TestLoopBreakerArmsReviewAttemptsOnly (#695 r3): the conceptual budget
+// layers assume a STATIC workspace — true for reviews, false for
+// fork-maintenance (retrying an identical command after an upstream fix is
+// legitimate there). PI_LOOP_BREAKER=1 reaches review attempts only.
+func TestLoopBreakerArmsReviewAttemptsOnly(t *testing.T) {
+	t.Setenv("PI_TOOL_BUDGET", "32")
+	t.Setenv("PI_TOOL_BUDGET_ALLOW", "/workspace/review.json")
+	t.Setenv("PI_TOOL_BUDGET_NUDGE", "16")
+	mk := func(kind string) []string {
+		at := &v1alpha1.Attempt{}
+		at.Spec.Objective.Kind = kind
+		return jobCredentialEnv(&budgetPolicy{attempt: at})
+	}
+	if !slices.Contains(mk(v1alpha1.ObjectiveKindPRReview), "PI_LOOP_BREAKER=1") {
+		t.Fatal("review attempts must carry PI_LOOP_BREAKER=1 (conceptual layers)")
+	}
+	if slices.Contains(mk("fork-maintenance"), "PI_LOOP_BREAKER=1") {
+		t.Fatal("fork-maintenance retries identical commands legitimately — no loop breaker there")
 	}
 }

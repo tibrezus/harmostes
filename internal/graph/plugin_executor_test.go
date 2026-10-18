@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
 )
@@ -286,5 +287,67 @@ func TestPluginTailCarriesArtifact(t *testing.T) {
 	}
 	if !strings.Contains(got, "FIX: the tail the marker promises must be recoverable") {
 		t.Fatalf("the artifact field must carry the FULL structured output (carried bodies included), got %s", got)
+	}
+}
+
+// TestPluginNodeTimeoutAttribution (#695 r2 4301176018): a REAL plugin node
+// killed by its G8 bound must come back with the timeout attribution in the
+// feedback — PluginExecutor returns StatusFailed+nil-error for a killed run,
+// so an error-keyed check never fires and the operator sees the output tail
+// ("starting"), indistinguishable from a script that died on its own.
+func TestPluginNodeTimeoutAttribution(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns real processes")
+	}
+	resolver := &fakeResolver{command: "/bin/sh", args: []string{"-c", "echo starting; sleep 30"}}
+	registry := NewRegistry()
+	registry.Register(NewPluginExecutor(resolver))
+	exec := NewGraphExecutor(registry, nil)
+
+	graph := v1alpha1.GraphSpec{
+		Nodes: []v1alpha1.NodeSpec{
+			{ID: "prepare", Type: "plugin", Timeout: "1s", Config: mustJSON(t, PluginNodeConfig{Name: "workspace"})},
+		},
+	}
+	start := time.Now()
+	runResult, err := exec.Execute(context.Background(), graph, "test-prepare-bound")
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if elapsed > 10*time.Second {
+		t.Fatalf("node returned after %s — the bound did not bound", elapsed)
+	}
+	result := runResult.NodeResults["prepare"]
+	if result.Status != StatusFailed {
+		t.Fatalf("status = %q, want failed", result.Status)
+	}
+	if !strings.Contains(result.Feedback, "timed out after 1s") {
+		t.Fatalf("feedback %q lacks the timeout attribution — a circuit-breaker trip reads like a script bug (the #695 r2 4301176018 probe)", result.Feedback)
+	}
+}
+
+// TestPluginConfigTimeoutBoundsGraphNativeNode (#695 r2 4301215249): a
+// graph-native plugin node with ONLY a config timeout (no NodeSpec.Timeout)
+// must be bounded by it.
+func TestPluginConfigTimeoutBoundsGraphNativeNode(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns real processes")
+	}
+	resolver := &fakeResolver{command: "/bin/sh", args: []string{"-c", "echo starting; sleep 30"}}
+	exec := NewPluginExecutor(resolver)
+
+	node := v1alpha1.NodeSpec{
+		ID:     "p",
+		Type:   "plugin",
+		Config: mustJSON(t, PluginNodeConfig{Name: "p", Timeout: "1s"}),
+	}
+	start := time.Now()
+	result, _ := exec.Execute(context.Background(), node, NodeEnv{})
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Fatalf("config.timeout not enforced — still running after %s", elapsed)
+	}
+	if result.Status != StatusFailed {
+		t.Fatalf("status = %q, want failed", result.Status)
 	}
 }

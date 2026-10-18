@@ -684,3 +684,40 @@ func TestCancelOnSupersedeJobListFailureSkips(t *testing.T) {
 		t.Fatal("a failed job list must skip the cancel pass (unknown must fail closed)")
 	}
 }
+
+// ── #698 review r2: the one-list refactor (#697) widened activeJobs() to
+// include finished Jobs; the #402 cancel pass must not inherit that view.
+// Its contract is stopping a RUNNING review — a finished Job's round
+// already ended, and deleting it would count a completed review as a
+// cancellation (the same success/loss collapse #697 exists to stop).
+// Proven red on the inherited-view version. ──
+func TestCancelOnSupersedeSparesFinishedJobs(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := noVerdictServer(t)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	st := &fakeStatus{}
+	disp := time.Now().Add(-30 * time.Minute)
+	claim := releasedClaimFixture(wf, "git.rezus.cloud/tibrez/rhesadox#107", "deadbeef107", "superseded", disp)
+	job := reviewJobFixture(wf, claim)
+	completion := metav1.NewTime(time.Now().Add(-1 * time.Minute))
+	job.Status = batchv1.JobStatus{
+		CompletionTime: &completion,
+		Conditions:     []batchv1.JobCondition{{Type: batchv1.JobComplete, Status: "True"}},
+		Succeeded:      1,
+	}
+	deps, ctx := gateEnv(t, wf, st, claim, job)
+	deps.DisableCancelOnSupersede = false
+
+	if _, err := RunReviewGateSweep(ctx, deps, wf); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+
+	if !jobExists(t, ctx, deps, wf, job.Name) {
+		t.Fatal("a FINISHED Job of a superseded claim must be spared — its run already ended; deleting it rewrites a completed review as a cancellation")
+	}
+	// The cancel counter and timeline row only fire after DeleteJob succeeds,
+	// so the Job surviving already proves no cancellation was emitted for a
+	// finished run.
+}

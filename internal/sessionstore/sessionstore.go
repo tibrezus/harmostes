@@ -236,83 +236,90 @@ func Materialize(dir, id string, l Lineage) (name string, ok bool, err error) {
 // feature, and lineage-TTL pruning (the accidental GC) cannot reach
 // through the symlink. The bound is the claim's quota (sessions = 10Gi
 // by default); the fleet accepts growth until it alarms. The link log
-// below emits the store's byte size on every arm so the growth curve is
-// visible BEFORE exhaustion, not as an inert extension mid-run. A real
-// retention owner (TTL sweep, byte-budget LRU, or a dedicated claim) is
-// tracked as the #704 follow-up and must land before the store is
-// enabled fleet-wide beyond the two pr-review workflows.
+// below emits the store's byte size whenever the mount resolves, so the
+// growth curve is visible BEFORE exhaustion, not as an inert extension
+// mid-run. A real retention owner (TTL sweep, byte-budget LRU, or a
+// dedicated claim) is tracked as the #704 follow-up and must land before
+// the store is enabled fleet-wide beyond the two pr-review workflows.
 //
-// Semantics, in order:
-//   - mount == "" or not a directory: REPAIR — a sol-pi symlink from an
-//     earlier arm would dangle against the vanished mount and silently
-//     disable both SoL-Pi mechanisms for this lineage (mkdir through the
-//     dead link fails, the pack fails open, the reducer errors): remove
-//     the link so the stock per-lineage store applies again. A REAL
-//     directory needs no repair and is kept.
-//   - <lineage>/sol-pi already a symlink: re-pointed idempotently.
-//   - a REAL directory (legacy per-lineage data): left untouched — the
-//     PR keeps its existing observations; sharing starts with fresh
-//     lineages. Non-destructive by design.
+// Link discipline (#704 review r2): while the store is DECLARED the
+// symlink is never removed and never left un-created — `os.Symlink`
+// succeeds against a not-yet-present target, so a transient mount
+// failure (CSI failover, SubPath re-create, Flux churn on the
+// declaration) leaves a DANGLING link, which keeps the lineage a
+// shared-store lineage: SoL-Pi's mkdir through the dead component fails
+// (mechanisms inert for that attempt — observable as extension_error),
+// no real directory is born in the gap, and the next healthy arm
+// re-points and recovers automatically. Removing the link instead would
+// let the extension's `mkdir -p` materialize a real sol-pi/ directory,
+// which the legacy guard below would then honor FOREVER — a transient
+// failure permanently de-sharing the lineage. Removal happens only when
+// the store is UNDECLARED: a symlink is the only thing this function
+// ever created at that path, so removing it restores the stock
+// per-lineage store; a REAL directory is pre-#704 legacy data and is
+// kept as-is (the log says exactly that).
 func LinkSharedStore(lineageDir, mount string, logf func(string, ...any)) {
 	const linkName = "sol-pi"
 	link := filepath.Join(lineageDir, linkName)
-	if mount != "" {
-		if info, err := os.Stat(mount); err == nil && info.IsDir() {
-			relinked := false
-			if existing, err := os.Readlink(link); err == nil {
-				if existing == mount {
-					logStoreSize(mount, logf)
-					return
-				}
-				if err := os.Remove(link); err != nil {
-					if logf != nil {
-						logf("sol-pi store relink failed: %v", err)
-					}
-					return
-				}
-				relinked = true
-			} else if st, err := os.Lstat(link); err == nil && st.IsDir() {
-				// Legacy real directory: the PR's accumulated observations
-				// stay local; replacing them with a symlink would orphan
-				// them.
+	if mount == "" {
+		// Undeclared: undo our own artifact if present. A symlink is the
+		// only thing this function ever created at that path — removing
+		// it lets the stock per-lineage store apply. A real directory is
+		// pre-#704 legacy data: kept, untouched.
+		if existing, err := os.Readlink(link); err == nil && existing != "" {
+			if err := os.Remove(link); err != nil {
 				if logf != nil {
-					logf("sol-pi: legacy per-lineage store present — not sharing this PR's runtime")
+					logf("sol-pi stale link removal failed: %v", err)
 				}
 				return
 			}
-			if err := os.Symlink(mount, link); err != nil {
-				if logf != nil {
-					logf("sol-pi store link failed: %v", err)
-				}
-				return
+			if logf != nil {
+				logf("sol-pi: store undeclared — removed the stale link; stock per-lineage runtime applies")
 			}
-			if logf != nil && !relinked {
-				logf("sol-pi: lineage runtime linked to the repository-shared store %s", mount)
-			}
+		}
+		return
+	}
+	// Declared. Existing symlink: re-point only when the target differs.
+	if existing, err := os.Readlink(link); err == nil {
+		if existing == mount {
 			logStoreSize(mount, logf)
 			return
 		}
-	}
-	// Mount absent (or undeclared): repair a stale link — it is the only
-	// thing this function ever created at that path, so removing it is the
-	// non-destructive half of "keep the per-lineage runtime"; a real
-	// directory IS the per-lineage runtime and stays.
-	if existing, err := os.Readlink(link); err == nil && existing != "" {
 		if err := os.Remove(link); err != nil {
 			if logf != nil {
-				logf("sol-pi stale link removal failed: %v", err)
+				logf("sol-pi store re-point failed: %v", err)
 			}
 			return
 		}
+	} else if st, err := os.Lstat(link); err == nil && st.IsDir() {
+		// Legacy real directory (pre-#704 lineage): the PR's accumulated
+		// observations stay local; replacing them with a symlink would
+		// orphan them. Distinct log wording — this is deliberate
+		// protection of old data, not an outage artifact.
 		if logf != nil {
-			logf("sol-pi: shared store %q gone — removed the stale link; stock per-lineage runtime applies", mount)
+			logf("sol-pi: legacy per-lineage store present — not sharing this PR's runtime")
 		}
+		return
 	}
+	// Create (or re-create) the link. os.Symlink succeeds against a
+	// missing target: during a mount outage the link dangles, SoL-Pi runs
+	// inert (its mkdir through the dead component fails — surfaced as
+	// extension_error), and no per-lineage directory is manufactured.
+	if err := os.Symlink(mount, link); err != nil {
+		if logf != nil {
+			logf("sol-pi store link failed: %v", err)
+		}
+		return
+	}
+	if info, err := os.Stat(mount); err != nil || !info.IsDir() {
+		if logf != nil {
+			logf("sol-pi: linked to %s — store not currently mounted; runtime inert until it returns", mount)
+		}
+		return
+	}
+	logStoreSize(mount, logf)
 }
 
-// logStoreSize emits the store's byte count (bounded walk — a runaway
-// store must not stall the attempt's startup) so the growth curve the
-// shared store introduces is observable at arm time (#704 review r1).
 func logStoreSize(mount string, logf func(string, ...any)) {
 	if logf == nil {
 		return

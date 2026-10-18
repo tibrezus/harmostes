@@ -81,11 +81,21 @@ func TestLinkSharedStore(t *testing.T) {
 	mount := t.TempDir()
 	lineage := t.TempDir()
 
-	// No-op cases: empty mount, missing mount dir.
+	// Empty mount = undeclared: a strict no-op.
 	LinkSharedStore(lineage, "", logf)
-	LinkSharedStore(lineage, filepath.Join(mount, "missing"), logf)
 	if _, err := os.Lstat(filepath.Join(lineage, "sol-pi")); !os.IsNotExist(err) {
-		t.Fatalf("no-op cases must not create the link")
+		t.Fatalf("undeclared must not create the link")
+	}
+
+	// Declared but the mount directory does not exist yet: the link is
+	// created DANGLING (#704 review r2 — a real directory must never be
+	// born in the gap; the next healthy arm re-points and recovers).
+	LinkSharedStore(lineage, filepath.Join(mount, "missing"), logf)
+	if target, err := os.Readlink(filepath.Join(lineage, "sol-pi")); err != nil || target != filepath.Join(mount, "missing") {
+		t.Fatalf("declared-but-missing must still link: %q, %v", target, err)
+	}
+	if err := os.Remove(filepath.Join(lineage, "sol-pi")); err != nil {
+		t.Fatal(err)
 	}
 
 	// The happy path: mount present → symlink created, pointing at it.
@@ -133,14 +143,16 @@ func TestLinkSharedStore(t *testing.T) {
 	}
 }
 
-// ── #704 review r1: the stale-link repair. A lineage whose sol-pi/ is
-// already a symlink MUST NOT keep it when the mount disappears — the link
-// would dangle, mkdir through it fails, and BOTH SoL-Pi mechanisms go
-// silently inert for every later attempt on that lineage. Removing the
-// link restores the stock per-lineage runtime (the link is the only thing
-// this function created at that path). Proven red on the early-return
-// version. ──
-func TestLinkSharedStoreRepairsStaleLink(t *testing.T) {
+// ── #704 review r1+r2: link discipline across mount outages. r1: an
+// UNDECLARED store must not leave a stale symlink behind (it would dangle
+// forever — the env is gone, no later arm repairs it). r2: a DECLARED
+// store must not have its link removed on a transient outage — the
+// extension's `mkdir -p` would materialize a real sol-pi/ directory in
+// the gap, and the legacy guard would honor that FOREVER (a transient
+// failure permanently de-sharing the lineage). The discipline: declared =
+// the link always exists (dangling while the mount is away — inert but
+// recoverable); undeclared = our symlink is removed, real dirs kept. ──
+func TestLinkSharedStoreLinkDiscipline(t *testing.T) {
 	mount := t.TempDir()
 	lineage := t.TempDir()
 	LinkSharedStore(lineage, mount, nil)
@@ -149,36 +161,58 @@ func TestLinkSharedStoreRepairsStaleLink(t *testing.T) {
 		t.Fatalf("setup: link = %q, %v", target, err)
 	}
 
-	// The mount vanishes (rollback of the k8s-config declaration, PVC
-	// rename) — the next attempt must repair, not keep the dangling link.
+	// DECLARED but the mount transiently vanishes (CSI failover): the
+	// link STAYS (dangling) — removing it would let the extension
+	// materialize a real directory and lock the lineage out forever.
 	if err := os.RemoveAll(mount); err != nil {
 		t.Fatal(err)
 	}
 	LinkSharedStore(lineage, mount, nil)
-	if _, err := os.Lstat(link); !os.IsNotExist(err) {
-		t.Fatalf("stale symlink must be removed so the stock per-lineage runtime applies: %v", err)
+	if target, err := os.Readlink(link); err != nil || target != mount {
+		t.Fatalf("declared outage must keep the link (dangling is recoverable): %q, %v", target, err)
 	}
 
-	// And the repaired path is usable again: with the store re-mounted
-	// (the declaration restored), a fresh link cycle works.
+	// The mount returns: the SAME link now resolves — recovery without
+	// migration, no real directory was ever born.
 	if err := os.MkdirAll(mount, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	LinkSharedStore(lineage, mount, nil)
 	if target, err := os.Readlink(link); err != nil || target != mount {
-		t.Fatalf("post-repair relink = %q, %v", target, err)
+		t.Fatalf("recovery relink = %q, %v", target, err)
+	}
+	if st, err := os.Lstat(link); err != nil || st.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("the lineage must still be a symlink (never a manufactured real dir): %v %v", st, err)
 	}
 
-	// A REAL directory under the same conditions is kept (it IS the
-	// per-lineage runtime — nothing to repair).
+	// UNDECLARED after having been linked: the stale symlink is removed
+	// (the env is gone — no later arm would ever repair it).
+	LinkSharedStore(lineage, "", nil)
+	if _, err := os.Lstat(link); !os.IsNotExist(err) {
+		t.Fatalf("undeclared must remove our stale symlink: %v", err)
+	}
+
+	// A REAL directory under the same undeclared condition is kept (it is
+	// pre-#704 legacy data — nothing of ours to remove).
 	real := t.TempDir()
 	realLink := filepath.Join(real, "sol-pi")
 	if err := os.MkdirAll(realLink, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	LinkSharedStore(real, mount, nil)
+	LinkSharedStore(real, "", nil)
 	if st, err := os.Lstat(realLink); err != nil || st.Mode()&os.ModeSymlink != 0 {
-		t.Fatalf("real dir must be untouched when the mount is gone: %v %v", st, err)
+		t.Fatalf("legacy real dir must be untouched: %v %v", st, err)
+	}
+
+	// FRESH lineage + declared-but-broken mount: the link is created
+	// DANGLING (os.Symlink succeeds against a missing target) — no real
+	// directory is born in the gap, and the lineage recovers when the
+	// store lands.
+	fresh := t.TempDir()
+	broken := filepath.Join(fresh, "not-mounted-yet")
+	LinkSharedStore(fresh, broken, nil)
+	if target, err := os.Readlink(filepath.Join(fresh, "sol-pi")); err != nil || target != broken {
+		t.Fatalf("fresh lineage must get a (dangling) link: %q, %v", target, err)
 	}
 }
 

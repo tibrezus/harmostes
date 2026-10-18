@@ -659,6 +659,24 @@ func TestBuildJobAttachments(t *testing.T) {
 			t.Fatalf("HARMOSTES_SOL_PI_STORE set without the sol-pi attachment: %q", e.Value)
 		}
 	}
+	// Negative control (#704 review r1): a sol-pi attachment under a
+	// DIFFERENT scope is not the repository store — arming the linker for
+	// it would silently re-scope the store by declaration. Workflow-scoped
+	// sol-pi (SubPath = the workflow name) must not get the env.
+	wfScoped := BuildJob(AttemptJobParams{
+		WorkflowName: "pr-review-rhesadox",
+		AttemptName:  "attempt-abc",
+		Attempt:      &v1alpha1.Attempt{ObjectMeta: metav1.ObjectMeta{Name: "attempt-abc", Namespace: "default"}},
+		TriggerRepo:  "git.rezus.cloud/tibrez/rhesadox",
+		Attachments: []v1alpha1.SharedAttachment{
+			{Name: "sol-pi", Scope: v1alpha1.AttachmentScopeWorkflow, PVC: "harmostes-worker-sessions"},
+		},
+	})
+	for _, e := range wfScoped.Spec.Template.Spec.Containers[0].Env {
+		if e.Name == "HARMOSTES_SOL_PI_STORE" {
+			t.Fatalf("workflow-scoped sol-pi must not arm the linker: %q", e.Value)
+		}
+	}
 	claims := map[string]string{}
 	for _, v := range job.Spec.Template.Spec.Volumes {
 		if strings.HasPrefix(v.Name, "attach-") {

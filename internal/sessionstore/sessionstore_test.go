@@ -132,3 +132,74 @@ func TestLinkSharedStore(t *testing.T) {
 		t.Fatalf("legacy case must be observable: %v", logs)
 	}
 }
+
+// ── #704 review r1: the stale-link repair. A lineage whose sol-pi/ is
+// already a symlink MUST NOT keep it when the mount disappears — the link
+// would dangle, mkdir through it fails, and BOTH SoL-Pi mechanisms go
+// silently inert for every later attempt on that lineage. Removing the
+// link restores the stock per-lineage runtime (the link is the only thing
+// this function created at that path). Proven red on the early-return
+// version. ──
+func TestLinkSharedStoreRepairsStaleLink(t *testing.T) {
+	mount := t.TempDir()
+	lineage := t.TempDir()
+	LinkSharedStore(lineage, mount, nil)
+	link := filepath.Join(lineage, "sol-pi")
+	if target, err := os.Readlink(link); err != nil || target != mount {
+		t.Fatalf("setup: link = %q, %v", target, err)
+	}
+
+	// The mount vanishes (rollback of the k8s-config declaration, PVC
+	// rename) — the next attempt must repair, not keep the dangling link.
+	if err := os.RemoveAll(mount); err != nil {
+		t.Fatal(err)
+	}
+	LinkSharedStore(lineage, mount, nil)
+	if _, err := os.Lstat(link); !os.IsNotExist(err) {
+		t.Fatalf("stale symlink must be removed so the stock per-lineage runtime applies: %v", err)
+	}
+
+	// And the repaired path is usable again: with the store re-mounted
+	// (the declaration restored), a fresh link cycle works.
+	if err := os.MkdirAll(mount, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	LinkSharedStore(lineage, mount, nil)
+	if target, err := os.Readlink(link); err != nil || target != mount {
+		t.Fatalf("post-repair relink = %q, %v", target, err)
+	}
+
+	// A REAL directory under the same conditions is kept (it IS the
+	// per-lineage runtime — nothing to repair).
+	real := t.TempDir()
+	realLink := filepath.Join(real, "sol-pi")
+	if err := os.MkdirAll(realLink, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	LinkSharedStore(real, mount, nil)
+	if st, err := os.Lstat(realLink); err != nil || st.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("real dir must be untouched when the mount is gone: %v %v", st, err)
+	}
+}
+
+// The arm-time observability: a successful link logs the store's byte
+// count, so the growth curve the shared store introduces is visible
+// before exhaustion (retention decision: claim quota + this curve).
+func TestLinkSharedStoreLogsStoreSize(t *testing.T) {
+	mount := t.TempDir()
+	lineage := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(mount, "git.rezus.cloud-tibrez-rhesadox-d782cf64", "x"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mount, "git.rezus.cloud-tibrez-rhesadox-d782cf64", "x", "obs_1.txt"), []byte("0123456789"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	logs := []string{}
+	LinkSharedStore(lineage, mount, func(format string, args ...any) {
+		logs = append(logs, fmt.Sprintf(format, args...))
+	})
+	joined := strings.Join(logs, "\n")
+	if !strings.Contains(joined, "10 bytes") {
+		t.Fatalf("arm-time log must carry the store size, got: %v", logs)
+	}
+}

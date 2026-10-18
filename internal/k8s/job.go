@@ -330,9 +330,12 @@ func BuildJob(p AttemptJobParams) *batchv1.Job {
 		// session-lineage TTL that today garbage-collects a quiet PR's
 		// research after 14 days. The vendored extension stays byte-pristine
 		// (r5): the redirect is a filesystem symlink, not an extension
-		// change. Gated on the attachment so workflows without it never
-		// arm the linker against a directory nothing mounted.
-		if at.Name == "sol-pi" {
+		// change. Gated on the attachment AND its scope: the linker's
+		// contract is repository sharing — a workflow- or attempt-scoped
+		// sol-pi attachment gets no env (arm-always would silently re-scope
+		// the store by declaration, the opposite of the sharing this
+		// feature promises).
+		if at.Name == "sol-pi" && at.Scope == v1alpha1.AttachmentScopeRepository {
 			env = append(env, corev1.EnvVar{Name: "HARMOSTES_SOL_PI_STORE", Value: mountPath})
 		}
 	}

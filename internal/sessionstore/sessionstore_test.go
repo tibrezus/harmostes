@@ -1,6 +1,7 @@
 package sessionstore
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -67,5 +68,67 @@ func TestSanitizePRTraversalRefused(t *testing.T) {
 	}
 	if SanitizePR("123456789") {
 		t.Fatal("absurdly long pr refused")
+	}
+}
+
+// ── #704: LinkSharedStore — the repository-shared sol-pi store. The
+// lineage's sol-pi/ component becomes a symlink to the attachment mount,
+// so the content-addressed observation objects land in one store per repo
+// (shared across workflows, immune to lineage TTL). ──
+func TestLinkSharedStore(t *testing.T) {
+	logs := []string{}
+	logf := func(format string, args ...any) { logs = append(logs, fmt.Sprintf(format, args...)) }
+	mount := t.TempDir()
+	lineage := t.TempDir()
+
+	// No-op cases: empty mount, missing mount dir.
+	LinkSharedStore(lineage, "", logf)
+	LinkSharedStore(lineage, filepath.Join(mount, "missing"), logf)
+	if _, err := os.Lstat(filepath.Join(lineage, "sol-pi")); !os.IsNotExist(err) {
+		t.Fatalf("no-op cases must not create the link")
+	}
+
+	// The happy path: mount present → symlink created, pointing at it.
+	if err := os.MkdirAll(filepath.Join(mount, "git.rezus.cloud-tibrez-rhesadox-d782cf64"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	LinkSharedStore(lineage, mount, logf)
+	target, err := os.Readlink(filepath.Join(lineage, "sol-pi"))
+	if err != nil || target != mount {
+		t.Fatalf("link = %q, err = %v; want %q", target, err, mount)
+	}
+
+	// Idempotent: a second link to the same mount is a no-op.
+	LinkSharedStore(lineage, mount, logf)
+	target, err = os.Readlink(filepath.Join(lineage, "sol-pi"))
+	if err != nil || target != mount {
+		t.Fatalf("relink changed the target: %q, %v", target, err)
+	}
+
+	// Re-pointing: a symlink at a stale mount is corrected.
+	other := t.TempDir()
+	LinkSharedStore(lineage, other, logf)
+	target, err = os.Readlink(filepath.Join(lineage, "sol-pi"))
+	if err != nil || target != other {
+		t.Fatalf("re-point = %q, %v; want %q", target, err, other)
+	}
+
+	// Legacy protection: a REAL directory is left alone — the PR keeps its
+	// accumulated observations; sharing never orphans them.
+	legacy := t.TempDir()
+	legacyLink := filepath.Join(legacy, "sol-pi")
+	if err := os.MkdirAll(legacyLink, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacyLink, "keep.txt"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	logs = nil
+	LinkSharedStore(legacy, mount, logf)
+	if st, err := os.Lstat(legacyLink); err != nil || st.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("legacy dir must stay a real directory: %v, %v", st, err)
+	}
+	if len(logs) == 0 || !strings.Contains(logs[0], "legacy") {
+		t.Fatalf("legacy case must be observable: %v", logs)
 	}
 }

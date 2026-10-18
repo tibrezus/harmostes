@@ -321,6 +321,20 @@ func BuildJob(p AttemptJobParams) *batchv1.Job {
 			VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: at.PVC}},
 		})
 		mounts = append(mounts, corev1.VolumeMount{Name: volName, SubPath: sub, MountPath: mountPath})
+		// #704: the sol-pi attachment is the REPOSITORY-SHARED STORE for the
+		// extension's runtime data. The attempt's lineage linker
+		// (sessionstore.LinkSharedStore, armed by this env) points the
+		// lineage's sol-pi/ directory at the mount, so the content-addressed
+		// observation/reducer objects land in one store per REPO — shared
+		// across every workflow targeting that repo, and surviving the
+		// session-lineage TTL that today garbage-collects a quiet PR's
+		// research after 14 days. The vendored extension stays byte-pristine
+		// (r5): the redirect is a filesystem symlink, not an extension
+		// change. Gated on the attachment so workflows without it never
+		// arm the linker against a directory nothing mounted.
+		if at.Name == "sol-pi" {
+			env = append(env, corev1.EnvVar{Name: "HARMOSTES_SOL_PI_STORE", Value: mountPath})
+		}
 	}
 	for _, m := range p.ExtraConfigMapMounts {
 		mode := int32(0o755)

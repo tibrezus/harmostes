@@ -219,3 +219,55 @@ func Materialize(dir, id string, l Lineage) (name string, ok bool, err error) {
 	}
 	return name, l.Session != "", nil
 }
+
+// LinkSharedStore points the lineage dir's sol-pi runtime at the
+// repository-scoped attachment mount (#704). The vendored SoL-Pi extension
+// derives its runtime root as <lineage>/sol-pi/<session-id>; making the
+// "sol-pi" component a symlink to the shared store lands its
+// content-addressed observation and reducer objects in one store per
+// REPO — shared by every workflow targeting that repo, and immune to the
+// lineage TTL that garbage-collects a quiet PR's research after 14 days.
+// The extension stays byte-pristine (UPSTREAM.md r5): the redirect is
+// filesystem-level.
+//
+// Semantics, in order:
+//   - mount == "" or not a directory: no-op (attachment not declared — the
+//     stock per-lineage store applies, byte-identical to today).
+//   - <lineage>/sol-pi already a symlink: re-pointed idempotently.
+//   - a REAL directory (legacy per-lineage data): left untouched — the
+//     PR keeps its existing observations; sharing starts with fresh
+//     lineages. Non-destructive by design.
+func LinkSharedStore(lineageDir, mount string, logf func(string, ...any)) {
+	if lineageDir == "" || mount == "" {
+		return
+	}
+	info, err := os.Stat(mount)
+	if err != nil || !info.IsDir() {
+		if logf != nil {
+			logf("sol-pi shared store %s not mounted — keeping the per-lineage runtime", mount)
+		}
+		return
+	}
+	link := filepath.Join(lineageDir, "sol-pi")
+	if existing, err := os.Readlink(link); err == nil {
+		if existing == mount {
+			return
+		}
+		if err := os.Remove(link); err != nil {
+			if logf != nil {
+				logf("sol-pi store relink failed: %v", err)
+			}
+			return
+		}
+	} else if st, err := os.Lstat(link); err == nil && st.IsDir() {
+		// Legacy real directory: the PR's accumulated observations stay
+		// local; replacing them with a symlink would orphan them.
+		if logf != nil {
+			logf("sol-pi: legacy per-lineage store present — not sharing this PR's runtime")
+		}
+		return
+	}
+	if err := os.Symlink(mount, link); err != nil && logf != nil {
+		logf("sol-pi store link failed: %v", err)
+	}
+}

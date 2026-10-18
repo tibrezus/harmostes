@@ -632,8 +632,32 @@ func TestBuildJobAttachments(t *testing.T) {
 	if m := mounts["attach-sol-pi"]; m.SubPath != "git.rezus.cloud-tibrez-rhesadox-d782cf64" || m.MountPath != "/attachments/sol-pi" {
 		t.Fatalf("sol-pi mount: %+v", m)
 	}
+	// #704: the sol-pi attachment arms the lineage linker — the env carries
+	// the mount path so the attempt points the lineage's sol-pi/ at the
+	// repository-scoped store (sessionstore.LinkSharedStore).
+	envs := map[string]string{}
+	for _, e := range job.Spec.Template.Spec.Containers[0].Env {
+		envs[e.Name] = e.Value
+	}
+	if envs["HARMOSTES_SOL_PI_STORE"] != "/attachments/sol-pi" {
+		t.Fatalf("HARMOSTES_SOL_PI_STORE = %q, want the sol-pi mount path", envs["HARMOSTES_SOL_PI_STORE"])
+	}
 	if m := mounts["attach-scratch"]; m.SubPath != "attempt-attempt-abc" || m.MountPath != "/scratch" {
 		t.Fatalf("scratch mount: %+v", m)
+	}
+	// Negative control (#704): without the attachment, sol-pi keeps its
+	// upstream per-session root — the env must be absent, not pointed at a
+	// directory nothing mounted.
+	bare := BuildJob(AttemptJobParams{
+		WorkflowName: "pr-review-rhesadox",
+		AttemptName:  "attempt-abc",
+		Attempt:      &v1alpha1.Attempt{ObjectMeta: metav1.ObjectMeta{Name: "attempt-abc", Namespace: "default"}},
+		TriggerRepo:  "git.rezus.cloud/tibrez/rhesadox",
+	})
+	for _, e := range bare.Spec.Template.Spec.Containers[0].Env {
+		if e.Name == "HARMOSTES_SOL_PI_STORE" {
+			t.Fatalf("HARMOSTES_SOL_PI_STORE set without the sol-pi attachment: %q", e.Value)
+		}
 	}
 	claims := map[string]string{}
 	for _, v := range job.Spec.Template.Spec.Volumes {

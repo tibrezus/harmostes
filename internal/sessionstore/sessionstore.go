@@ -241,6 +241,17 @@ func Materialize(dir, id string, l Lineage) (name string, ok bool, err error) {
 // mid-run. A real retention owner (TTL sweep, byte-budget LRU, or a
 // dedicated claim) is tracked as the #704 follow-up and must land before
 // the store is enabled fleet-wide beyond the two pr-review workflows.
+// The retention owner must also own POISON RECOVERY (r2): the
+// extension writes objects with flag wx but NOT atomically — an attempt
+// killed mid-write (the #695 wall terminates attempts) can leave a
+// truncated object at a content-addressed path, and every later dedup
+// of that payload throws instead of repairing. Pre-#704 the lineage TTL
+// gave that poison a half-life; the shared store keeps it forever. The
+// repair unit is the per-session subtree (<store>/harmostes-<pr> —
+// self-contained, disposable; obs_recall then reports an unknown id and
+// the reviewer re-reads the file). Upstream fix (atomic write or
+// repair-on-mismatch) is tracked with the follow-up; the fleet accepts
+// the window until then.
 //
 // Link discipline (#704 review r2): while the store is DECLARED the
 // symlink is never removed and never left un-created — `os.Symlink`
@@ -302,9 +313,15 @@ func LinkSharedStore(lineageDir, mount string, logf func(string, ...any)) {
 		return
 	}
 	// Create (or re-create) the link. os.Symlink succeeds against a
-	// missing target: during a mount outage the link dangles, SoL-Pi runs
-	// inert (its mkdir through the dead component fails — surfaced as
-	// extension_error), and no per-lineage directory is manufactured.
+	// missing target: during a mount outage the link dangles, no
+	// per-lineage directory is manufactured, and SoL-Pi DEGRADES — with
+	// per-mechanism asymmetry that matters for observability (r2):
+	// evidence-preserving-reducer's archive mkdir escapes its handler and
+	// surfaces as extension_error (counted), but observation-pack FAILS
+	// OPEN per message (console.error only) — the agent's context simply
+	// stops being paged, which the wall budget is most sensitive to. That
+	// is why the arm-time log below names the outage explicitly: it is
+	// the only signal the primary mechanism will ever raise.
 	if err := os.Symlink(mount, link); err != nil {
 		if logf != nil {
 			logf("sol-pi store link failed: %v", err)
@@ -313,22 +330,34 @@ func LinkSharedStore(lineageDir, mount string, logf func(string, ...any)) {
 	}
 	if info, err := os.Stat(mount); err != nil || !info.IsDir() {
 		if logf != nil {
-			logf("sol-pi: linked to %s — store not currently mounted; runtime inert until it returns", mount)
+			logf("sol-pi DEGRADED: store %s not mounted — observation-pack will fail open (context stays unpaged) and the reducer will error, until the mount returns", mount)
 		}
 		return
 	}
 	logStoreSize(mount, logf)
 }
 
-func logStoreSize(mount string, logf func(string, ...any)) {
-	if logf == nil {
-		return
-	}
-	var total int64
-	files := 0
+// measureStore sizes the shared store with a bounded walk. Per-entry
+// errors (an entry removed mid-walk by a concurrent attempt, a CSI blip)
+// SKIP that entry — they never abort the scan and never mask the rest —
+// but they are carried out as scanErr, because an under-report that
+// looks like a small store is exactly how the quota fills unseen
+// (#704 review r2). The injectable walker exists for the probe.
+var walkStore = filepath.WalkDir
+
+func measureStore(mount string) (total int64, files int, truncated bool, scanErr error) {
 	const maxFiles = 20000
-	_ = filepath.WalkDir(mount, func(_ string, d os.DirEntry, err error) error {
-		if err != nil || files >= maxFiles {
+	err := walkStore(mount, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			// The root itself is unreadable: nothing to measure.
+			if path == mount {
+				return err
+			}
+			scanErr = fmt.Errorf("%s: %w", path, err)
+			return nil // keep counting the rest
+		}
+		if files >= maxFiles {
+			truncated = true
 			return fs.SkipAll
 		}
 		if !d.IsDir() {
@@ -339,9 +368,23 @@ func logStoreSize(mount string, logf func(string, ...any)) {
 		}
 		return nil
 	})
-	truncated := ""
-	if files >= maxFiles {
-		truncated = " (truncated at 20000 files)"
+	if err != nil && scanErr == nil {
+		scanErr = err
 	}
-	logf("sol-pi shared store: %d bytes across %d files%s", total, files, truncated)
+	return total, files, truncated, scanErr
+}
+
+func logStoreSize(mount string, logf func(string, ...any)) {
+	if logf == nil {
+		return
+	}
+	total, files, truncated, scanErr := measureStore(mount)
+	marker := ""
+	if truncated {
+		marker = " (truncated at 20000 files)"
+	}
+	if scanErr != nil {
+		marker += fmt.Sprintf(" (scan INCOMPLETE: %v — the real total is LARGER)", scanErr)
+	}
+	logf("sol-pi shared store: %d bytes across %d files%s", total, files, marker)
 }

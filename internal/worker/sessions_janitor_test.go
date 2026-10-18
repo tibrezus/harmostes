@@ -102,3 +102,75 @@ func TestNewestFileMtimeSubtree(t *testing.T) {
 		t.Fatalf("absent dir = zero time, got %v", got)
 	}
 }
+
+// ── #704: the shared sol-pi store must be IMMUNE to the lineage TTL.
+// With the repository-scoped store, <lineage>/sol-pi is a SYMLINK into a
+// store shared by every workflow on the repo. The invariant that makes
+// the feature safe: pruning a lineage unlinks the symlink WITHOUT
+// traversing it — one idle PR's TTL must never delete a repository's
+// shared research. A janitor refactor that follows links (WalkDir with
+// FollowSegment, a resolve-then-remove "cleanup") would do exactly that,
+// failing no existing test — this test is the tripwire. Companion
+// assertion: store writes do not count as lineage activity
+// (newestFileMtime ignores the linked subtree), so a quiet PR's lineage
+// still prunes even though the shared store was touched recently. ──
+func TestJanitorSessionsSparesSharedSolPiStore(t *testing.T) {
+	root := t.TempDir()
+	store := t.TempDir()
+	sentinel := filepath.Join(store, "shared", "obs_1.txt")
+	if err := os.MkdirAll(filepath.Dir(sentinel), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sentinel, []byte("research"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	lineage := filepath.Join(root, "git.rezus.cloud-tibrez-rhesadox-d782cf64~99")
+	if err := os.MkdirAll(lineage, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-400 * time.Hour)
+	if err := os.Chtimes(lineage, old, old); err != nil {
+		t.Fatal(err)
+	}
+	sessionFile := filepath.Join(lineage, "2026-01-01T00-00-00-000Z_harmostes-99.jsonl")
+	if err := os.WriteFile(sessionFile, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(sessionFile, old, old); err != nil {
+		t.Fatal(err)
+	}
+	// The #704 shape: sol-pi is a SYMLINK into the shared store.
+	if err := os.Symlink(store, filepath.Join(lineage, "sol-pi")); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now()
+	removed := JanitorSessions(root, 336*time.Hour, now)
+	if removed != 1 {
+		t.Fatalf("an idle lineage must still prune (removed=%d)", removed)
+	}
+	if _, err := os.Stat(lineage); !os.IsNotExist(err) {
+		t.Fatalf("lineage must be gone: %v", err)
+	}
+	// THE invariant: the shared store survives the prune, byte for byte.
+	got, err := os.ReadFile(sentinel)
+	if err != nil || string(got) != "research" {
+		t.Fatalf("the shared store must survive a lineage prune: %v, %q", err, got)
+	}
+
+	// The other half: the linked subtree does not count as lineage
+	// activity — a recent store write must not resurrect an idle lineage.
+	if err := os.WriteFile(sentinel, []byte("touched-now"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(lineage, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(store, filepath.Join(lineage, "sol-pi")); err != nil {
+		t.Fatal(err)
+	}
+	if m := newestFileMtime(lineage); m.After(old.Add(time.Hour)) {
+		t.Fatalf("newestFileMtime must not follow the shared-store link (got %v)", m)
+	}
+}

@@ -1,7 +1,9 @@
 package sessionstore
 
 import (
+	"bytes"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -236,4 +238,46 @@ func TestLinkSharedStoreLogsStoreSize(t *testing.T) {
 	if !strings.Contains(joined, "10 bytes") {
 		t.Fatalf("arm-time log must carry the store size, got: %v", logs)
 	}
+}
+
+// ── #704 review r2: the growth-curve signal must not under-report
+// silently. A walk error (an entry removed mid-walk on the shared claim,
+// a CSI blip) skips that entry and CARRIES the error — the log marks the
+// scan INCOMPLETE instead of letting a partial total read as a small
+// store. Probed red on the abort-on-first-error version. ──
+func TestMeasureStoreScanErrorObservable(t *testing.T) {
+	mount := t.TempDir()
+	for _, name := range []string{"a.txt", "b.txt", "c.txt"} {
+		if err := os.WriteFile(filepath.Join(mount, name), bytes.Repeat([]byte("x"), 100), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	healthy, files, truncated, scanErr := measureStore(mount)
+	if healthy != 300 || files != 3 || truncated || scanErr != nil {
+		t.Fatalf("healthy store: %d bytes/%d files truncated=%v err=%v", healthy, files, truncated, scanErr)
+	}
+
+	original := walkStore
+	defer func() { walkStore = original }()
+	walkStore = func(root string, fn fs.WalkDirFunc) error {
+		count := 0
+		return filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+			count++
+			// Simulate a mid-walk removal the way the real walker
+			// delivers it: a per-entry error handed TO the callback —
+			// the walk continues iff the callback returns nil.
+			if count == 2 {
+				return fn(path, d, fmt.Errorf("removal race: ENOENT"))
+			}
+			return fn(path, d, err)
+		})
+	}
+	total, files, truncated, scanErr := measureStore(mount)
+	if total == 300 {
+		t.Fatalf("a scan that lost entries must not report the healthy total")
+	}
+	if scanErr == nil {
+		t.Fatal("the scan error must be carried, not swallowed")
+	}
+	_, _, _, _ = truncated, files, total, scanErr
 }

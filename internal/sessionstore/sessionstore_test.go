@@ -2,6 +2,7 @@ package sessionstore
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -280,4 +281,49 @@ func TestMeasureStoreScanErrorObservable(t *testing.T) {
 		t.Fatal("the scan error must be carried, not swallowed")
 	}
 	_, _, _, _ = truncated, files, total, scanErr
+}
+
+// ── #704 review r3/r4: the idempotent arm is the COMMON arm (every
+// re-review), so the outage signal must fire there too — with the same
+// wording as the create path, not a "0 bytes … real total is LARGER"
+// line that asserts the opposite of the state (an ABSENT store is not an
+// unmeasurably large one). ──
+func TestLinkSharedStoreIdempotentArmNamesOutage(t *testing.T) {
+	mount := t.TempDir()
+	lineage := t.TempDir()
+	LinkSharedStore(lineage, mount, nil)
+
+	// Steady state, store present: no DEGRADED line.
+	logs := []string{}
+	LinkSharedStore(lineage, mount, func(format string, args ...any) {
+		logs = append(logs, fmt.Sprintf(format, args...))
+	})
+	for _, l := range logs {
+		if strings.Contains(l, "DEGRADED") {
+			t.Fatalf("healthy steady-state arm must not log DEGRADED: %v", logs)
+		}
+	}
+
+	// Outage on the idempotent arm: the same DEGRADED wording as the
+	// create path, and no byte-count line (an absent store has no size).
+	if err := os.RemoveAll(mount); err != nil {
+		t.Fatal(err)
+	}
+	logs = nil
+	LinkSharedStore(lineage, mount, func(format string, args ...any) {
+		logs = append(logs, fmt.Sprintf(format, args...))
+	})
+	if len(logs) == 0 || !strings.Contains(logs[0], "DEGRADED") || !strings.Contains(logs[0], "not mounted") {
+		t.Fatalf("idempotent arm must name the outage with the shared wording, got: %v", logs)
+	}
+}
+
+// measureStore distinguishes an ABSENT root from a partially-scanned
+// store — the caller must not render the former as "the real total is
+// LARGER".
+func TestMeasureStoreRootMissingIsItsOwnState(t *testing.T) {
+	_, _, _, scanErr := measureStore(filepath.Join(t.TempDir(), "never-created"))
+	if scanErr == nil || !errors.Is(scanErr, ErrStoreRootMissing) {
+		t.Fatalf("root-missing must surface as ErrStoreRootMissing, got: %v", scanErr)
+	}
 }

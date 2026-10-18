@@ -14,6 +14,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -241,17 +242,24 @@ func Materialize(dir, id string, l Lineage) (name string, ok bool, err error) {
 // mid-run. A real retention owner (TTL sweep, byte-budget LRU, or a
 // dedicated claim) is tracked as the #704 follow-up and must land before
 // the store is enabled fleet-wide beyond the two pr-review workflows.
-// The retention owner must also own POISON RECOVERY (r2): the
+// The retention owner must also own POISON RECOVERY (r2, r4): the
 // extension writes objects with flag wx but NOT atomically — an attempt
 // killed mid-write (the #695 wall terminates attempts) can leave a
 // truncated object at a content-addressed path, and every later dedup
 // of that payload throws instead of repairing. Pre-#704 the lineage TTL
 // gave that poison a half-life; the shared store keeps it forever. The
-// repair unit is the per-session subtree (<store>/harmostes-<pr> —
-// self-contained, disposable; obs_recall then reports an unknown id and
-// the reviewer re-reads the file). Upstream fix (atomic write or
-// repair-on-mismatch) is tracked with the follow-up; the fleet accepts
-// the window until then.
+// repair unit is the SINGLE OBJECT — unlink the one mismatched
+// obs_<id>.txt / objects/<hash> entry. It is NOT the per-session
+// subtree: <store>/harmostes-<pr> is keyed by session id only and is
+// shared by every workflow that reviews the PR (that is this feature
+// working as designed), so deleting the subtree would heal one
+// workflow's poison by destroying another's healthy, deduped objects —
+// whose receipts in a durable session would then quote archives that
+// no longer exist. Per-object is safe precisely because the payload is
+// in hand and content-addressed: the rewrite is idempotent. The
+// upstream fix (atomic write or repair-on-mismatch) makes the window
+// redundant and is tracked with the follow-up; the fleet accepts it
+// until then.
 //
 // Link discipline (#704 review r2): while the store is DECLARED the
 // symlink is never removed and never left un-created — `os.Symlink`
@@ -293,6 +301,19 @@ func LinkSharedStore(lineageDir, mount string, logf func(string, ...any)) {
 	// Declared. Existing symlink: re-point only when the target differs.
 	if existing, err := os.Readlink(link); err == nil {
 		if existing == mount {
+			// Idempotent arm — the STEADY state for every re-review (the
+			// lineage persists across Jobs). Liveness before measurement:
+			// during an outage the walk's first entry is the missing root,
+			// and measuring would log a line asserting the opposite of the
+			// state (#704 review r3: "0 bytes … the real total is LARGER"
+			// for an ABSENT store). Same wording as the create path, so one
+			// grep finds the outage on every arm shape.
+			if info, err := os.Stat(mount); err != nil || !info.IsDir() {
+				if logf != nil {
+					logf("sol-pi DEGRADED: store %s not mounted — observation-pack will fail open (context stays unpaged) and the reducer will error, until the mount returns", mount)
+				}
+				return
+			}
 			logStoreSize(mount, logf)
 			return
 		}
@@ -342,8 +363,13 @@ func LinkSharedStore(lineageDir, mount string, logf func(string, ...any)) {
 // SKIP that entry — they never abort the scan and never mask the rest —
 // but they are carried out as scanErr, because an under-report that
 // looks like a small store is exactly how the quota fills unseen
-// (#704 review r2). The injectable walker exists for the probe.
+// (#704 review r2). The injectable walker exists for the probe. A
+// root-level error is reported as ErrStoreRootMissing — an ABSENT store
+// is a different state from a partially-scanned one, and the caller's
+// wording must not invert it (r3).
 var walkStore = filepath.WalkDir
+
+var ErrStoreRootMissing = errors.New("sol-pi store root missing (not mounted)")
 
 func measureStore(mount string) (total int64, files int, truncated bool, scanErr error) {
 	const maxFiles = 20000
@@ -351,7 +377,7 @@ func measureStore(mount string) (total int64, files int, truncated bool, scanErr
 		if err != nil {
 			// The root itself is unreadable: nothing to measure.
 			if path == mount {
-				return err
+				return ErrStoreRootMissing
 			}
 			scanErr = fmt.Errorf("%s: %w", path, err)
 			return nil // keep counting the rest

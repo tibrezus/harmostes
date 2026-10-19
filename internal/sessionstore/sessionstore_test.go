@@ -12,9 +12,13 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	// Tests run on plain temp dirs, not mounts: default the seam to
-	// "is a mountpoint" so the production wording paths under test are
-	// the store paths. The not-a-mountpoint wording has its own pin.
+	// DELIBERATE, package-wide stub (r11): tests run on plain temp dirs,
+	// which are not mounts — without the stub every store-path test
+	// degrades. The production comparison itself is pinned by
+	// TestIsMountPointOnRealMounts (real kernel mounts), the wording by
+	// TestLinkSharedStoreNotAMountpointIsNamed (injected false), and the
+	// WIRING by TestLinkSharedStoreRealMountDetectionWiring (the real
+	// comparison through LinkSharedStore's own path).
 	isMount = func(dir, parent string) bool { return true }
 	os.Exit(m.Run())
 }
@@ -777,5 +781,56 @@ func TestLinkSharedStoreTrailingSlashMount(t *testing.T) {
 	}
 	if len(logs) == 0 || !strings.Contains(logs[len(logs)-1], "bytes") {
 		t.Fatalf("the growth line must measure the cleaned mount, got: %v", logs)
+	}
+}
+
+// ── #704 review r11: the production mountpoint comparison, tested
+// DIRECTLY. TestMain stubs the seam package-wide (deliberate — every
+// store-path test runs on plain temp dirs, which are not mounts, and the
+// not-a-mountpoint wording has its own injected pin), which left
+// isMountPointOn itself unexecuted: a wrong verdict would either silence
+// the growth alarm (false negative on a healthy store) or re-present a
+// per-pod directory as the shared store (false positive — the r8
+// failure). Real mountpoints exist in this environment, so both verdicts
+// are runnable. ──
+func TestIsMountPointOnRealMounts(t *testing.T) {
+	// Known kernel mounts: true.
+	for _, m := range []struct{ dir, parent string }{
+		{"/proc", "/"},
+		{"/dev/shm", "/dev"},
+		{"/sys", "/"},
+	} {
+		if _, err := os.Stat(m.dir); err != nil {
+			t.Skipf("environment lacks %s: %v", m.dir, err)
+		}
+		if !isMountPointOn(m.dir, m.parent) {
+			t.Errorf("isMountPointOn(%q, %q) = false, want true (a real mount)", m.dir, m.parent)
+		}
+	}
+	// Plain directories: false — and the wiring claim: the same helper
+	// LinkSharedStore's seam calls, not a second implementation.
+	dir := t.TempDir()
+	if isMountPointOn(dir, filepath.Dir(dir)) {
+		t.Errorf("isMountPointOn on a plain temp dir = true, want false")
+	}
+}
+
+// The wiring proof (r11): with the PRODUCTION isMount (no stub), a plain
+// temp-dir store must produce the not-a-mountpoint wording through the
+// exact code path the fleet runs — proving TestMain's stub is not
+// masking a wiring error between LinkSharedStore and isMountPointOn.
+func TestLinkSharedStoreRealMountDetectionWiring(t *testing.T) {
+	mount := t.TempDir()
+	lineage := t.TempDir()
+	orig := isMount
+	defer func() { isMount = orig }()
+	isMount = isMountPointOn // the production comparison
+
+	logs := []string{}
+	LinkSharedStore(lineage, "pr-review-rhesadox", mount, func(format string, args ...any) {
+		logs = append(logs, fmt.Sprintf(format, args...))
+	})
+	if len(logs) == 0 || !strings.Contains(logs[0], "NOT a mountpoint") {
+		t.Fatalf("the production comparison must classify a temp-dir store as not-a-mountpoint, got: %v", logs)
 	}
 }

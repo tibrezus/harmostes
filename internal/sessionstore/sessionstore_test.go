@@ -815,10 +815,24 @@ func TestIsMountPointOnRealMounts(t *testing.T) {
 	}
 }
 
-// The wiring proof (r11): with the PRODUCTION isMount (no stub), a plain
-// temp-dir store must produce the not-a-mountpoint wording through the
-// exact code path the fleet runs — proving TestMain's stub is not
-// masking a wiring error between LinkSharedStore and isMountPointOn.
+// The wiring proof (r11/r12): the PACKAGE DEFAULT seam — captured at
+// var-init, before TestMain's stub — must be the production comparison.
+// A test that ASSIGNS the seam proves only what it injected; this one
+// proves the wiring the fleet runs. Under a mis-wired default
+// (isMount = constant stub) it fails on both verdicts.
+func TestWiringCapturesProductionDefault(t *testing.T) {
+	if !defaultIsMountAtVarInit("/proc", "/") {
+		t.Error("the default seam must classify /proc as a mount")
+	}
+	d := t.TempDir()
+	if defaultIsMountAtVarInit(d, filepath.Dir(d)) {
+		t.Error("the default seam must classify a temp dir as NOT a mount")
+	}
+}
+
+// The wording through the fleet path (r11): with the PRODUCTION isMount
+// (no stub), a plain temp-dir store must produce the not-a-mountpoint
+// wording through the exact code path the fleet runs.
 func TestLinkSharedStoreRealMountDetectionWiring(t *testing.T) {
 	mount := t.TempDir()
 	lineage := t.TempDir()

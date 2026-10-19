@@ -526,6 +526,13 @@ var symlinkStore = os.Symlink
 // production implementation is isMountPointOn (device-ID comparison).
 var isMount = isMountPointOn
 
+// defaultIsMountAtVarInit captures the production wiring before
+// TestMain's stub runs (package var initializers execute first), so a
+// test can prove the DEFAULT seam is isMountPointOn — assigning the
+// seam inside a test would re-establish the wiring it claims to verify
+// (r12).
+var defaultIsMountAtVarInit = isMount
+
 // measureStore sizes the shared store with a bounded walk. Per-entry
 // errors (an entry removed mid-walk by a concurrent attempt, a CSI blip)
 // SKIP that entry — they never abort the scan and never mask the rest —

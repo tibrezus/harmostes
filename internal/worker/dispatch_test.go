@@ -746,7 +746,11 @@ func TestValidateAttachments(t *testing.T) {
 func TestLogEffectiveAttachments(t *testing.T) {
 	mkJob := func(withMount bool) *batchv1.Job {
 		j := &batchv1.Job{}
-		j.Name = "attempt-x-abcde"
+		// Production shape: BuildJob sets GenerateName, never Name — the
+		// server assigns it at Create, after the log line. The r3 defect
+		// (an empty key) was invisible because this fixture fabricated a
+		// name.
+		j.GenerateName = "attempt-x-"
 		vols := []corev1.Volume{}
 		mounts := []corev1.VolumeMount{}
 		env := []corev1.EnvVar{{Name: "HARMOSTES_WALL_SECONDS", Value: "60"}}
@@ -763,20 +767,29 @@ func TestLogEffectiveAttachments(t *testing.T) {
 	var lines []string
 	logf := func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) }
 
-	logEffectiveAttachments(logf, mkJob(true), atts)
-	if len(lines) != 1 || !strings.Contains(lines[0], "sol-pi@repository=/attachments/sol-pi sub=repo-hash") ||
+	logEffectiveAttachments(logf, "attempt-x-abcde", mkJob(true), atts)
+	if len(lines) != 1 || !strings.Contains(lines[0], "dispatch: job attempt-x-abcde") ||
+		!strings.Contains(lines[0], "sol-pi@repository=/attachments/sol-pi sub=repo-hash") ||
 		!strings.Contains(lines[0], "claim=harmostes-worker-sessions +store-env") {
-		t.Fatalf("mounted artifact must be reported from the Job, got: %v", lines)
+		t.Fatalf("mounted artifact must be reported from the Job, keyed on the attempt, got: %v", lines)
 	}
 
 	lines = nil
-	logEffectiveAttachments(logf, mkJob(false), atts) // the mount never made the Job
+	logEffectiveAttachments(logf, "attempt-x-abcde", mkJob(false), atts) // the mount never made the Job
 	if len(lines) != 1 || !strings.Contains(lines[0], "sol-pi@repository=ABSENT") {
 		t.Fatalf("an absent mount must be reported, never a resolved path, got: %v", lines)
 	}
 
+	// A Job fresh from BuildJob has NO name (GenerateName) — the line
+	// must key on the attempt, never print an empty identity.
 	lines = nil
-	logEffectiveAttachments(logf, mkJob(true), nil)
+	logEffectiveAttachments(logf, "attempt-x-abcde", mkJob(true), atts)
+	if strings.Contains(lines[0], "dispatch: job  ") || !strings.Contains(lines[0], "attempt-x-abcde") {
+		t.Fatalf("the key must be the attempt name pre-Create, got: %q", lines[0])
+	}
+
+	lines = nil
+	logEffectiveAttachments(logf, "attempt-x-abcde", mkJob(true), nil)
 	if len(lines) != 0 {
 		t.Fatalf("no attachments → no log line, got: %v", lines)
 	}
@@ -840,5 +853,118 @@ func TestDispatchAttachmentsFlowsFromTemplateDefaults(t *testing.T) {
 	}
 	if env["HARMOSTES_SOL_PI_STORE"] != mount.MountPath {
 		t.Fatalf("HARMOSTES_SOL_PI_STORE = %q, want the mount path %q", env["HARMOSTES_SOL_PI_STORE"], mount.MountPath)
+	}
+}
+
+// r3: the CALL SITES are part of the contract — correct functions that
+// Dispatch never calls pin nothing. (1) A malformed template
+// declaration must fail Dispatch before any artifact or intent; (2) the
+// effective-mounts line must flow through the dispatcher's own logf
+// keyed on the attempt; (3) the non-gated (nil-envelope) path must
+// report ABSENT for a repository-scoped declaration.
+func TestDispatchAttachmentsCallSitesWired(t *testing.T) {
+	clearTriggerEnv(t)
+
+	// (1) Validator wired at the merged-spec seam: bad declaration →
+	// dispatch-time error, zero Jobs, zero dispatch intents.
+	srv := greenPRServer(t)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	bad := &v1alpha1.WorkflowTemplate{ObjectMeta: metav1.ObjectMeta{Name: "pr-review-tmpl", Namespace: "default"}}
+	bad.Spec.ReviewReady = &v1alpha1.ReviewReadySpec{Label: "needs-review", Horizon: "6h"}
+	bad.Spec.Attachments = []v1alpha1.SharedAttachment{{Name: "Bad/Name", PVC: "harmostes-worker-sessions"}}
+	badWf := gatedDispatchWorkflow()
+	badWf.Spec.ReviewReady = nil
+	badWf.Spec.TemplateRef = "pr-review-tmpl"
+	d, ctx := newTestDispatcher(t, badWf, bad)
+	err := d.Dispatch(ctx, dispatchRequest())
+	if err == nil || !strings.Contains(err.Error(), "attachments invalid") {
+		t.Fatalf("a malformed declaration must fail dispatch naming the seam, got %v", err)
+	}
+	var jobs batchv1.JobList
+	if err := d.cl.List(ctx, &jobs); err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs.Items) != 0 {
+		t.Fatalf("no Job may exist for an invalid declaration, got %d", len(jobs.Items))
+	}
+	var attempts v1alpha1.AttemptList
+	if err := d.cl.List(ctx, &attempts); err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range attempts.Items {
+		if a.Status.Review != nil && a.Status.Review.DispatchedAt != nil {
+			t.Fatalf("no dispatch intent may be recorded for an invalid declaration (the #666 state), attempt %s has one", a.Name)
+		}
+	}
+
+	// (2)+(3): the log line through the dispatcher's own logf.
+	good := &v1alpha1.WorkflowTemplate{ObjectMeta: metav1.ObjectMeta{Name: "pr-review-tmpl", Namespace: "default"}}
+	good.Spec.ReviewReady = &v1alpha1.ReviewReadySpec{Label: "needs-review", Horizon: "6h"}
+	good.Spec.Attachments = []v1alpha1.SharedAttachment{{Name: "sol-pi", Scope: "repository", PVC: "harmostes-worker-sessions"}}
+	goodWf := gatedDispatchWorkflow()
+	goodWf.Spec.ReviewReady = nil
+	goodWf.Spec.TemplateRef = "pr-review-tmpl"
+	var lines []string
+	d2, ctx2 := newTestDispatcher(t, goodWf, good)
+	d2.logf = func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) }
+	if err := d2.Dispatch(ctx2, dispatchRequest()); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	found := false
+	for _, l := range lines {
+		if !strings.Contains(l, "attachments=[") {
+			continue
+		}
+		found = true
+		// Keyed on the attempt (never an empty job.Name), resolved mount,
+		// claim, and the store env attributed to the mounting attachment.
+		if !strings.Contains(l, "dispatch: job attempt-pr-review-harmostes-") ||
+			strings.Contains(l, "dispatch: job  ") ||
+			!strings.Contains(l, "sol-pi@repository=/attachments/sol-pi sub=") ||
+			!strings.Contains(l, "claim=harmostes-worker-sessions +store-env") {
+			t.Fatalf("the effective-mounts line must be attempt-keyed and resolved, got: %q", l)
+		}
+	}
+	if !found {
+		t.Fatalf("the dispatcher must log the effective mounts through its own logf, got: %v", lines)
+	}
+
+	// (3) Non-gated, nil envelope: the repository-scoped declaration
+	// cannot resolve → the Job carries no mount and the line says ABSENT.
+	ng := &v1alpha1.WorkflowTemplate{ObjectMeta: metav1.ObjectMeta{Name: "ng-tmpl", Namespace: "default"}}
+	ng.Spec.Attachments = []v1alpha1.SharedAttachment{{Name: "sol-pi", Scope: "repository", PVC: "harmostes-worker-sessions"}}
+	ngWf := gatedDispatchWorkflow()
+	ngWf.Spec.ReviewReady = nil
+	ngWf.Spec.TemplateRef = "ng-tmpl"
+	var ngLines []string
+	d3, ctx3 := newTestDispatcher(t, ngWf, ng)
+	d3.logf = func(format string, args ...any) { ngLines = append(ngLines, fmt.Sprintf(format, args...)) }
+	req := dispatchRequest()
+	req.Action = ""
+	req.Pr = ""
+	if err := d3.Dispatch(ctx3, req); err != nil {
+		t.Fatalf("non-gated dispatch: %v", err)
+	}
+	var ngJobs batchv1.JobList
+	if err := d3.cl.List(ctx3, &ngJobs); err != nil {
+		t.Fatal(err)
+	}
+	if len(ngJobs.Items) != 1 {
+		t.Fatalf("exactly one Job, got %d", len(ngJobs.Items))
+	}
+	for _, v := range ngJobs.Items[0].Spec.Template.Spec.Volumes {
+		if v.Name == "attach-sol-pi" {
+			t.Fatal("a repository-scoped attachment without a trigger repo must not mount")
+		}
+	}
+	absent := false
+	for _, l := range ngLines {
+		if strings.Contains(l, "sol-pi@repository=ABSENT") {
+			absent = true
+		}
+	}
+	if !absent {
+		t.Fatalf("the nil-envelope path must log ABSENT for the unresolvable scope, got: %v", ngLines)
 	}
 }

@@ -344,13 +344,24 @@ func ValidateAttachments(atts []v1alpha1.SharedAttachment) error {
 // a confident, resolved path the attempt never gets — worse than
 // silence, because the misleading evidence was the remedy's own output.
 // Every fact printed here is read off job.Spec.Template.Spec.
-func logEffectiveAttachments(logf func(string, ...any), job *batchv1.Job, atts []v1alpha1.SharedAttachment) {
+//
+// Keyed on the ATTEMPT (r3): BuildJob sets GenerateName only — job.Name
+// is server-assigned at Create, which happens AFTER this line, so the
+// r2 line read "dispatch: job  attachments=[…]" with no run identity.
+// The store env is attributed per attachment (matched by mount path),
+// not sprayed across the line.
+func logEffectiveAttachments(logf func(string, ...any), attemptName string, job *batchv1.Job, atts []v1alpha1.SharedAttachment) {
 	if len(atts) == 0 {
 		return
 	}
+	key := job.Name
+	if key == "" {
+		key = attemptName + " (job name pending Create)"
+	}
 	spec := job.Spec.Template.Spec
 	claims := map[string]string{}
-	mounts := map[string]string{}
+	mountPaths := map[string]string{}
+	mountSubs := map[string]string{}
 	envs := map[string]string{}
 	for _, v := range spec.Volumes {
 		if v.PersistentVolumeClaim != nil {
@@ -359,7 +370,8 @@ func logEffectiveAttachments(logf func(string, ...any), job *batchv1.Job, atts [
 	}
 	for _, c := range spec.Containers {
 		for _, m := range c.VolumeMounts {
-			mounts[m.Name] = m.MountPath + " sub=" + m.SubPath
+			mountPaths[m.Name] = m.MountPath
+			mountSubs[m.Name] = m.SubPath
 		}
 		for _, e := range c.Env {
 			envs[e.Name] = e.Value
@@ -368,18 +380,18 @@ func logEffectiveAttachments(logf func(string, ...any), job *batchv1.Job, atts [
 	parts := make([]string, 0, len(atts))
 	for _, at := range atts {
 		vol := "attach-" + at.Name
-		m, ok := mounts[vol]
+		mp, ok := mountPaths[vol]
 		if !ok {
 			parts = append(parts, fmt.Sprintf("%s@%s=ABSENT(no mount on the Job)", at.Name, at.Scope))
 			continue
 		}
-		p := fmt.Sprintf("%s@%s=%s claim=%s", at.Name, at.Scope, m, claims[vol])
-		if envs["HARMOSTES_SOL_PI_STORE"] != "" {
+		p := fmt.Sprintf("%s@%s=%s sub=%s claim=%s", at.Name, at.Scope, mp, mountSubs[vol], claims[vol])
+		if store := envs["HARMOSTES_SOL_PI_STORE"]; store != "" && store == mp {
 			p += " +store-env"
 		}
 		parts = append(parts, p)
 	}
-	logf("dispatch: job %s attachments=[%s]", job.Name, strings.Join(parts, " "))
+	logf("dispatch: job %s attachments=[%s]", key, strings.Join(parts, " "))
 }
 
 // Dispatch processes one trigger event: gate → capacity → Attempt+Job.
@@ -515,7 +527,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req RunRequest) error {
 		job := k8s.BuildJob(d.cfg.JobParams(&at, req.Workflow, req.Namespace, runBound, cache, wf.Spec.Sessions,
 			wf.Spec.Attachments, triggerRepo,
 			append(jobCredentialEnv(&budgetPolicy{workflow: wf, attempt: &at}), dispatchEnv(req, &at, g.Envelope)...)))
-		logEffectiveAttachments(d.logf, job, wf.Spec.Attachments)
+		logEffectiveAttachments(d.logf, at.Name, job, wf.Spec.Attachments)
 		// #666 intent-before-side-effect: the INTENT is committed BEFORE
 		// the Job exists (record-then-act; a failed record aborts dispatch
 		// so no side effect can precede its ledger entry). The Job's NAME

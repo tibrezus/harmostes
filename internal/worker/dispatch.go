@@ -350,14 +350,18 @@ func ValidateAttachments(atts []v1alpha1.SharedAttachment) error {
 		if at.MountPath != "" && !filepath.IsAbs(at.MountPath) {
 			return fmt.Errorf("attachment %q: mountPath %q must be absolute", at.Name, at.MountPath)
 		}
-		if at.MountPath == "/" {
-			return fmt.Errorf("attachment %q: mountPath must not be \"/\" — it would mount the shared claim over the container root", at.Name)
-		}
 		effective := at.MountPath
 		if effective == "" {
 			effective = "/attachments/" + at.Name // the builder's default
 		}
 		effective = filepath.Clean(effective)
+		if effective == "/" {
+			// Checked on the CLEANED path (r6): the raw "/" rule missed
+			// traversal shapes ("/workspace/.." cleans to "/" and passed
+			// both the raw root check and the reserved check, mounting
+			// the shared claim over the whole filesystem).
+			return fmt.Errorf("attachment %q: mountPath %q resolves to the container root", at.Name, at.MountPath)
+		}
 		if seenPaths[effective] {
 			// Distinct names CAN collide on the effective path (explicit
 			// vs default, trailing slash): two mounts at one path is the

@@ -778,9 +778,22 @@ func TestValidateAttachments(t *testing.T) {
 		}
 	}
 
+	// r6: traversal shapes clean to the container root — the root rule
+	// must be evaluated on the CLEANED path, or "/workspace/.." passes
+	// the raw check and the reserved check and mounts the shared claim
+	// over the whole filesystem.
+	for _, p := range []string{"/workspace/..", "/data/../", "/x/y/../.."} {
+		err := ValidateAttachments([]v1alpha1.SharedAttachment{{Name: "ok", PVC: "c", MountPath: p}})
+		if err == nil || !strings.Contains(err.Error(), "resolves to the container root") {
+			t.Errorf("mountPath %q must be rejected as root-resolving, got %v", p, err)
+		}
+	}
+
 	// r5: reserved builder mounts — the shared claim must never shadow
 	// them (data integrity: /workspace is the attempt's working dir).
-	for _, p := range append([]string{"/workspace", "/skills", "/cache", "/sessions", "/workspace/sub"}, k8s.ReservedAttemptMountPaths()...) {
+	// r6: /plugins is the fifth fixed home (plugin ConfigMaps, when a
+	// deployment sets pluginConfigMaps).
+	for _, p := range append([]string{"/workspace", "/skills", "/cache", "/sessions", "/workspace/sub", "/plugins", "/plugins/harmostes-tasks"}, k8s.ReservedAttemptMountPaths()...) {
 		err := ValidateAttachments([]v1alpha1.SharedAttachment{{Name: "ok", PVC: "c", MountPath: p}})
 		if err == nil || !strings.Contains(err.Error(), "shadows") {
 			t.Errorf("mountPath %q must be rejected as reserved, got %v", p, err)

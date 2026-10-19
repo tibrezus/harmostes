@@ -173,8 +173,15 @@ func AttachmentSubPath(scope, workflow, repo, attempt string) (string, bool) {
 // shared RWX claim over it writes one run's working tree into a claim
 // other workflows read) and duplicates a mount path in the PodSpec.
 func ReservedAttemptMountPaths() []string {
-	return []string{"/workspace", "/skills", "/cache", "/sessions"}
+	return []string{"/workspace", "/skills", "/cache", "/sessions", pluginsMountPrefix}
 }
+
+// pluginsMountPrefix is the fixed home the builder mounts plugin
+// ConfigMaps under (/plugins/<cm> when HARMOSTES_PLUGIN_CONFIGMAPS is
+// set — empty on the shipped chart, real for deployments that set it).
+// One literal, consumed by the builder and the reserved list (r6: the
+// list originally forgot it).
+const pluginsMountPrefix = "/plugins"
 
 // ConfigMapMount is one additional ConfigMap volume: name (the ConfigMap and
 // volume name) and the absolute MountPath. Mode is the volume defaultMode
@@ -377,7 +384,7 @@ func BuildJob(p AttemptJobParams) *batchv1.Job {
 				DefaultMode: ptr.To(int32(0o755)),
 			}},
 		})
-		mounts = append(mounts, corev1.VolumeMount{Name: vol, MountPath: "/plugins/" + cm, ReadOnly: true})
+		mounts = append(mounts, corev1.VolumeMount{Name: vol, MountPath: pluginsMountPrefix + "/" + cm, ReadOnly: true})
 	}
 
 	return &batchv1.Job{

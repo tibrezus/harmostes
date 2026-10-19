@@ -239,13 +239,18 @@ const LinkComponent = "sol-pi"
 // garbage-collects a quiet PR's research after 14 days, and deduped by
 // content address across the lineage's rounds.
 //
-// READ SCOPE (r5, deliberate): the store leaf is
-// <mount>/<workflow> — raw tool output is NOT redacted on this path
-// (the durable-session publisher redacts #115-style before writing; the
-// byte-pristine extension cannot be made to), so cross-workflow READS
-// stay disabled until an upstream redaction hook lands. Per-workflow
-// dedup and TTL immunity are live now; flipping the leaf off is the
-// owner's call after the upstream fix.
+// READ SCOPE (r5, r10 — the actual position, stated plainly): the
+// store leaf <mount>/<workflow> is a CONVENTION, not an enforcement
+// boundary. Every Job runs as the image's uid (root — Dockerfile.worker
+// has no USER, no securityContext anywhere), so cross-workflow READS of
+// one repo's raw tool output are POSSIBLE TODAY, and the payloads are
+// unredacted (the durable-session publisher redacts #115-style; the
+// byte-pristine extension cannot) and permanent (no GC — by design).
+// ACCEPTED for the two pr-review workflows because they share a trust
+// domain (one reviewer identity per repo). Adding a THIRD workflow to a
+// repo mount requires the redaction hook first (#707 — upstream
+// material; per-workflow dedup and TTL immunity are live now and do not
+// depend on it).
 //
 // RETENTION OWNER (r1, explicit decision): the store is deliberately
 // NOT garbage-collected by this repo — its durability is the feature,

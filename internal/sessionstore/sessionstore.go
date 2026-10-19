@@ -323,6 +323,7 @@ func LinkSharedStore(lineageDir, workflow, mount string, logf func(string, ...an
 	// redacts, the byte-pristine extension cannot). Cross-workflow
 	// sharing of one repo stays disabled by this leaf until an upstream
 	// redaction hook lands; the owner may flip it afterwards.
+	mount = filepath.Clean(mount) // a trailing slash inverts the device-ID mountpoint check (r9)
 	target := filepath.Join(mount, workflow)
 	// The leaf cannot self-heal (r6): the only writer is the byte-pristine
 	// extension, and it writes THROUGH the link — a missing leaf would
@@ -393,8 +394,24 @@ func LinkSharedStore(lineageDir, workflow, mount string, logf func(string, ...an
 		// directory this function itself created.
 		markerPath := filepath.Join(link, manufacturedMarker)
 		if _, err := os.Stat(markerPath); err == nil {
-			if n := migrateManufactured(link, target, logf); logf != nil {
-				logf("sol-pi: migrated %d file(s) from the degraded fallback into the shared store", n)
+			// Migration must be ALL-OR-NOTHING on the delete: a leaf that
+			// exists but is unwritable (uid/fsGroup) fails every write —
+			// "migrated 0" followed by RemoveAll destroyed research and
+			// delivered nothing (r9). Keep the fallback on any loss; the
+			// store is not written either way, so the next arm retries.
+			moved, total, migErr := migrateManufactured(link, target)
+			if migErr != nil || moved != total {
+				if logf != nil {
+					if migErr != nil {
+						logf("sol-pi: fallback migration incomplete (%d/%d, %v) — keeping the local copy; the store leaf is not writable", moved, total, migErr)
+					} else {
+						logf("sol-pi: fallback migration incomplete (%d/%d) — keeping the local copy; the store leaf is not writable", moved, total)
+					}
+				}
+				return
+			}
+			if logf != nil {
+				logf("sol-pi: migrated %d file(s) from the degraded fallback into the shared store", moved)
 			}
 			if err := os.RemoveAll(link); err != nil {
 				if logf != nil {
@@ -463,34 +480,34 @@ func stampFallback(link, workflow string) {
 // the shared store (content-addressed payloads make the copy idempotent:
 // colliding names are identical objects, EEXIST is a no-op) and returns
 // how many files moved. Best-effort per file.
-func migrateManufactured(srcDir, target string, logf func(string, ...any)) int {
-	moved := 0
-	_ = filepath.WalkDir(srcDir, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
+func migrateManufactured(srcDir, target string) (moved, total int, err error) {
+	_ = filepath.WalkDir(srcDir, func(path string, d os.DirEntry, werr error) error {
+		if werr != nil || d.IsDir() {
 			return nil
 		}
-		rel, err := filepath.Rel(srcDir, path)
-		if err != nil || rel == manufacturedMarker {
+		rel, rerr := filepath.Rel(srcDir, path)
+		if rerr != nil || rel == manufacturedMarker {
+			return nil
+		}
+		total++
+		data, rerr := os.ReadFile(path)
+		if rerr != nil {
+			err = rerr
 			return nil
 		}
 		dst := filepath.Join(target, rel)
-		if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
+		if rerr := os.MkdirAll(filepath.Dir(dst), 0o700); rerr != nil {
+			err = rerr
 			return nil
 		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return nil
-		}
-		if err := os.WriteFile(dst, data, 0o600); err != nil {
-			if logf != nil {
-				logf("sol-pi migration: %s: %v", rel, err)
-			}
+		if rerr := os.WriteFile(dst, data, 0o600); rerr != nil {
+			err = rerr
 			return nil
 		}
 		moved++
 		return nil
 	})
-	return moved
+	return moved, total, err
 }
 
 // symlinkStore is the creation seam (probe injection, the walkStore

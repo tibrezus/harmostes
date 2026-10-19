@@ -695,3 +695,87 @@ func TestLinkSharedStoreNotAMountpointIsNamed(t *testing.T) {
 		t.Fatalf("a non-mountpoint store must be named, got: %v", logs)
 	}
 }
+
+// Migration is all-or-nothing on the delete (r9): a leaf that exists
+// but is unwritable fails every write — the fallback must SURVIVE a
+// partial migration (research destroyed + nothing delivered was the
+// finding), and no link may be created pointing at a store that never
+// received the files.
+func TestLinkSharedStoreKeepsFallbackOnPartialMigration(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes through mode bits — the unwritable leaf is not simulatable")
+	}
+	mount := t.TempDir()
+	lineage := t.TempDir()
+	// A marked fallback holding research…
+	fallback := filepath.Join(lineage, "sol-pi")
+	if err := os.MkdirAll(filepath.Join(fallback, "harmostes-706"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fallback, manufacturedMarker), []byte("pr-review-rhesadox"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fallback, "harmostes-706", "obs_1.txt"), []byte("RESEARCH"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// …and an UNWRITABLE store leaf (MkdirAll returns nil — the dir exists).
+	leaf := filepath.Join(mount, "pr-review-rhesadox")
+	if err := os.MkdirAll(leaf, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(leaf, 0o700) })
+
+	LinkSharedStore(lineage, "pr-review-rhesadox", mount, nil)
+
+	if st, err := os.Lstat(fallback); err != nil || st.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("a partial migration must KEEP the fallback (research survives): %v %v", st, err)
+	}
+	if data, err := os.ReadFile(filepath.Join(fallback, "harmostes-706", "obs_1.txt")); err != nil || string(data) != "RESEARCH" {
+		t.Fatalf("fallback research must survive: %v %q", err, data)
+	}
+	if st, err := os.Lstat(filepath.Join(lineage, "sol-pi")); err == nil && st.Mode()&os.ModeSymlink != 0 {
+		t.Fatal("no link may point at a store that never received the files")
+	}
+}
+
+// The Clean pin: a trailing-slash mount must not invert the device-ID
+// mountpoint check (Dir("…/mnt/") == "…/mnt" vs Cleaned — the check
+// compares dir against ITS OWN cleaned parent, which with a trailing
+// slash is the dir itself).
+func TestLinkSharedStoreTrailingSlashMount(t *testing.T) {
+	mount := t.TempDir() + "/"
+	lineage := t.TempDir()
+	logs := []string{}
+	origMount := isMount
+	var gotDir, gotParent string
+	isMount = func(dir, parent string) bool {
+		gotDir, gotParent = dir, parent
+		return origMount(dir, parent)
+	}
+	defer func() { isMount = origMount }()
+	LinkSharedStore(lineage, "pr-review-rhesadox", mount, func(format string, args ...any) {
+		logs = append(logs, fmt.Sprintf(format, args...))
+	})
+	target, err := os.Readlink(filepath.Join(lineage, "sol-pi"))
+	if err != nil {
+		t.Fatalf("trailing-slash mount must link: %v", err)
+	}
+	if gotDir != filepath.Clean(mount) || gotParent != filepath.Dir(filepath.Clean(mount)) {
+		t.Fatalf("the mountpoint check must see the CLEANED mount: dir=%q parent=%q", gotDir, gotParent)
+	}
+	if target != filepath.Clean(mount)+"/pr-review-rhesadox" {
+		t.Fatalf("link target must be the cleaned leaf: %q", target)
+	}
+	// Without the Clean, the mountpoint check compares Dir(mount) — which
+	// cleans to mount itself — with mount: a directory against ITSELF,
+	// always the same device, always "not a mountpoint". Capture the call
+	// args and assert the cleaned pair was used.
+	for _, l := range logs {
+		if strings.Contains(l, "DEGRADED") {
+			t.Fatalf("a healthy trailing-slash arm must not degrade: %v", logs)
+		}
+	}
+	if len(logs) == 0 || !strings.Contains(logs[len(logs)-1], "bytes") {
+		t.Fatalf("the growth line must measure the cleaned mount, got: %v", logs)
+	}
+}

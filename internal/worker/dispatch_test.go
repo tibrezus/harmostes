@@ -749,6 +749,43 @@ func TestValidateAttachments(t *testing.T) {
 	if err := ValidateAttachments(dup); err == nil || !strings.Contains(err.Error(), "duplicate name") {
 		t.Errorf("duplicate names must be rejected naming the collision, got %v", err)
 	}
+
+	// r5: pvc is a claimName — validated server-side as a label; the
+	// validator is already imported (the r2 class one field over).
+	for _, pvc := range []string{"harmostes worker-sessions", "Harmostes/Worker"} {
+		err := ValidateAttachments([]v1alpha1.SharedAttachment{{Name: "ok", PVC: pvc}})
+		if err == nil || !strings.Contains(err.Error(), "pvc") {
+			t.Errorf("pvc %q must be rejected as a non-label, got %v", pvc, err)
+		}
+	}
+
+	// r5: the EFFECTIVE path (builder default when unset, cleaned) is
+	// unique across entries — explicit-vs-default and trailing-slash
+	// shapes collide on one mount path in the PodSpec.
+	for name, atts := range map[string][]v1alpha1.SharedAttachment{
+		"default-vs-explicit": {
+			{Name: "sol-pi", Scope: "repository", PVC: "c1"},
+			{Name: "other", Scope: "workflow", PVC: "c2", MountPath: "/attachments/sol-pi"},
+		},
+		"trailing-slash": {
+			{Name: "a", PVC: "c1", MountPath: "/data"},
+			{Name: "b", PVC: "c2", MountPath: "/data/"},
+		},
+	} {
+		err := ValidateAttachments(atts)
+		if err == nil || !strings.Contains(err.Error(), "collides") {
+			t.Errorf("%s: effective-path collision must be rejected, got %v", name, err)
+		}
+	}
+
+	// r5: reserved builder mounts — the shared claim must never shadow
+	// them (data integrity: /workspace is the attempt's working dir).
+	for _, p := range append([]string{"/workspace", "/skills", "/cache", "/sessions", "/workspace/sub"}, k8s.ReservedAttemptMountPaths()...) {
+		err := ValidateAttachments([]v1alpha1.SharedAttachment{{Name: "ok", PVC: "c", MountPath: p}})
+		if err == nil || !strings.Contains(err.Error(), "shadows") {
+			t.Errorf("mountPath %q must be rejected as reserved, got %v", p, err)
+		}
+	}
 }
 
 // r2: the log reads the COMPILED JOB — the artifact, not the intent. A

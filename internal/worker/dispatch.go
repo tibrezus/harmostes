@@ -313,22 +313,30 @@ func DispatcherFromEnv(logf func(string, ...any)) (*Dispatcher, error) {
 // DNS-1123 label per Kubernetes' own validator (the fact's one home — a
 // hand-rolled length bound was off by the prefix: a 57-char name passed
 // while the apiserver rejects the 64-char volume name, r2), the PVC must
-// be named (nothing to mount otherwise), and mountPath must be absolute
-// but never "/" (the shared RWX claim must not shadow the container
-// root). Same doctrine as ExtraConfigMapMounts: malformed config is an
-// ERROR at dispatch time, never a skip and never a post-intent Create
-// rejection.
+// be a named DNS-1123 label (claimName is validated server-side too —
+// the r2 class one field over, r5), and mountPath must be absolute but
+// never "/" (the shared RWX claim must not shadow the container root).
+// Entries are also validated AS A SET (r4/r5): name is identity, and the
+// CLEANED EFFECTIVE mount path (the builder's default
+// /attachments/<name> when unset) is unique across entries and never at
+// or under a builder-reserved path (k8s.ReservedAttemptMountPaths —
+// shadowing /workspace hands one run's working tree to every workflow
+// reading the shared claim). Same doctrine as ExtraConfigMapMounts:
+// malformed config is an ERROR at dispatch time, never a skip and never
+// a post-intent Create rejection.
 func ValidateAttachments(atts []v1alpha1.SharedAttachment) error {
-	seen := map[string]bool{}
+	seenNames := map[string]bool{}
+	seenPaths := map[string]bool{}
+	reserved := k8s.ReservedAttemptMountPaths()
 	for _, at := range atts {
-		if seen[at.Name] {
+		if seenNames[at.Name] {
 			// Name is identity (volume name, mount-path tail, store env):
 			// a duplicate collides on all three in the PodSpec and would
 			// be rejected by the apiserver at Create — after the intent
 			// (r4; the copy-paste shape, the likeliest values.yaml typo).
 			return fmt.Errorf("attachment %q: duplicate name — names are identity", at.Name)
 		}
-		seen[at.Name] = true
+		seenNames[at.Name] = true
 		vol := "attach-" + at.Name
 		if msgs := utilvalidation.IsDNS1123Label(vol); len(msgs) > 0 {
 			return fmt.Errorf("attachment %q: volume name %q is not a DNS-1123 label: %s", at.Name, vol, strings.Join(msgs, "; "))
@@ -336,11 +344,32 @@ func ValidateAttachments(atts []v1alpha1.SharedAttachment) error {
 		if at.PVC == "" {
 			return fmt.Errorf("attachment %q: pvc is required", at.Name)
 		}
+		if msgs := utilvalidation.IsDNS1123Label(at.PVC); len(msgs) > 0 {
+			return fmt.Errorf("attachment %q: pvc %q is not a DNS-1123 label: %s", at.Name, at.PVC, strings.Join(msgs, "; "))
+		}
 		if at.MountPath != "" && !filepath.IsAbs(at.MountPath) {
 			return fmt.Errorf("attachment %q: mountPath %q must be absolute", at.Name, at.MountPath)
 		}
 		if at.MountPath == "/" {
 			return fmt.Errorf("attachment %q: mountPath must not be \"/\" — it would mount the shared claim over the container root", at.Name)
+		}
+		effective := at.MountPath
+		if effective == "" {
+			effective = "/attachments/" + at.Name // the builder's default
+		}
+		effective = filepath.Clean(effective)
+		if seenPaths[effective] {
+			// Distinct names CAN collide on the effective path (explicit
+			// vs default, trailing slash): two mounts at one path is the
+			// r4 ambiguity again, and the store-env-by-value lookup
+			// misattributes the linker env (r5).
+			return fmt.Errorf("attachment %q: effective mountPath %q collides with another attachment", at.Name, effective)
+		}
+		seenPaths[effective] = true
+		for _, r := range reserved {
+			if effective == r || strings.HasPrefix(effective, r+"/") {
+				return fmt.Errorf("attachment %q: mountPath %q shadows the builder-reserved mount %s", at.Name, effective, r)
+			}
 		}
 	}
 	return nil

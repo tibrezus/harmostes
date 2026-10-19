@@ -165,6 +165,17 @@ func AttachmentSubPath(scope, workflow, repo, attempt string) (string, bool) {
 	}
 }
 
+// ReservedAttemptMountPaths lists the mount paths the builder itself
+// places in every attempt Job (/workspace the working dir, /skills,
+// /cache, /sessions). The attachment validator consumes this — one
+// home, next to the mounts it describes: an attachment shadowing any of
+// these is a data-integrity hazard (/workspace is HARMOSTES_WORKDIR; a
+// shared RWX claim over it writes one run's working tree into a claim
+// other workflows read) and duplicates a mount path in the PodSpec.
+func ReservedAttemptMountPaths() []string {
+	return []string{"/workspace", "/skills", "/cache", "/sessions"}
+}
+
 // ConfigMapMount is one additional ConfigMap volume: name (the ConfigMap and
 // volume name) and the absolute MountPath. Mode is the volume defaultMode
 // (0o755 when nil — mounts exist so the one-shot worker can exec their

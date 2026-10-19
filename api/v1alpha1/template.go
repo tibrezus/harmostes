@@ -109,6 +109,16 @@ func ApplyTemplateDefaults(wf *Workflow, tmpl *WorkflowTemplate) {
 		s.Sessions = t.Sessions
 	}
 
+	// Attachments: same whole-struct inherit — the shared-store claim
+	// (#704) is one storage decision, declared on the template, not a
+	// per-instance knob. Without this the template's attachments never
+	// reach the Workflow spec, dispatch builds Jobs without the mount or
+	// the store env, and the declaration is inert (found live: the
+	// WorkflowTemplate carried the field, the compiled Job didn't).
+	if len(s.Attachments) == 0 {
+		s.Attachments = t.Attachments
+	}
+
 	// Instance scope wins PER KEY: spec.config overlays prepare.config —
 	// instance-set fields win, template fields survive. (The wholesale
 	// replace shipped earlier contradicted the overlay contract: any

@@ -84,6 +84,14 @@ type WorkflowTemplateSpec struct {
 	// template references it, the environment renders it; instances
 	// inherit whole-struct like Cache.
 	Sessions *SessionsSpec `json:"sessions,omitempty"`
+
+	// Attachments declares the scoped shared storage components the
+	// per-Attempt Jobs mount (#516 C2, #704): sandboxes stay isolated
+	// per attempt, while named stores are shared at the declared scope
+	// (workflow | repository | attempt). The template references the
+	// deployment fact (the claim must exist); instances inherit
+	// whole-struct like Sessions.
+	Attachments []SharedAttachment `json:"attachments,omitempty"`
 }
 
 // ScopeParam is one instance-level configuration parameter.

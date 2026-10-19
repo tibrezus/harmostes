@@ -5,13 +5,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	batchv1 "k8s.io/api/batch/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
+	utilvalidation "k8s.io/apimachinery/pkg/util/validation"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -305,6 +308,134 @@ func DispatcherFromEnv(logf func(string, ...any)) (*Dispatcher, error) {
 	return NewDispatcher(context.Background(), cfg, logf)
 }
 
+// ValidateAttachments enforces the declaration contract at the merged-spec
+// seam (#704): the COMPOSED volume name ("attach-" + name) must be a
+// DNS-1123 label per Kubernetes' own validator (the fact's one home — a
+// hand-rolled length bound was off by the prefix: a 57-char name passed
+// while the apiserver rejects the 64-char volume name, r2), the PVC must
+// be a named DNS-1123 label (claimName is validated server-side too —
+// the r2 class one field over, r5), and mountPath must be absolute but
+// never "/" (the shared RWX claim must not shadow the container root).
+// Entries are also validated AS A SET (r4/r5): name is identity, and the
+// CLEANED EFFECTIVE mount path (the builder's default
+// /attachments/<name> when unset) is unique across entries and never at
+// or under a builder-reserved path (k8s.ReservedAttemptMountPaths —
+// shadowing /workspace hands one run's working tree to every workflow
+// reading the shared claim). Same doctrine as ExtraConfigMapMounts:
+// malformed config is an ERROR at dispatch time, never a skip and never
+// a post-intent Create rejection.
+func ValidateAttachments(atts []v1alpha1.SharedAttachment) error {
+	seenNames := map[string]bool{}
+	seenPaths := map[string]bool{}
+	reserved := k8s.ReservedAttemptMountPaths()
+	for _, at := range atts {
+		if seenNames[at.Name] {
+			// Name is identity (volume name, mount-path tail, store env):
+			// a duplicate collides on all three in the PodSpec and would
+			// be rejected by the apiserver at Create — after the intent
+			// (r4; the copy-paste shape, the likeliest values.yaml typo).
+			return fmt.Errorf("attachment %q: duplicate name — names are identity", at.Name)
+		}
+		seenNames[at.Name] = true
+		vol := "attach-" + at.Name
+		if msgs := utilvalidation.IsDNS1123Label(vol); len(msgs) > 0 {
+			return fmt.Errorf("attachment %q: volume name %q is not a DNS-1123 label: %s", at.Name, vol, strings.Join(msgs, "; "))
+		}
+		if at.PVC == "" {
+			return fmt.Errorf("attachment %q: pvc is required", at.Name)
+		}
+		if msgs := utilvalidation.IsDNS1123Label(at.PVC); len(msgs) > 0 {
+			return fmt.Errorf("attachment %q: pvc %q is not a DNS-1123 label: %s", at.Name, at.PVC, strings.Join(msgs, "; "))
+		}
+		if at.MountPath != "" && !filepath.IsAbs(at.MountPath) {
+			return fmt.Errorf("attachment %q: mountPath %q must be absolute", at.Name, at.MountPath)
+		}
+		effective := at.MountPath
+		if effective == "" {
+			effective = "/attachments/" + at.Name // the builder's default
+		}
+		effective = filepath.Clean(effective)
+		if effective == "/" {
+			// Checked on the CLEANED path (r6): the raw "/" rule missed
+			// traversal shapes ("/workspace/.." cleans to "/" and passed
+			// both the raw root check and the reserved check, mounting
+			// the shared claim over the whole filesystem).
+			return fmt.Errorf("attachment %q: mountPath %q resolves to the container root", at.Name, at.MountPath)
+		}
+		if seenPaths[effective] {
+			// Distinct names CAN collide on the effective path (explicit
+			// vs default, trailing slash): two mounts at one path is the
+			// r4 ambiguity again, and the store-env-by-value lookup
+			// misattributes the linker env (r5).
+			return fmt.Errorf("attachment %q: effective mountPath %q collides with another attachment", at.Name, effective)
+		}
+		seenPaths[effective] = true
+		for _, r := range reserved {
+			if effective == r || strings.HasPrefix(effective, r+"/") {
+				return fmt.Errorf("attachment %q: mountPath %q shadows the builder-reserved mount %s", at.Name, effective, r)
+			}
+		}
+	}
+	return nil
+}
+
+// logEffectiveAttachments renders the per-attempt effective mounts FROM
+// THE COMPILED JOB — log the artifact, not the intent (r2): the line is
+// true iff the mount exists. The r1 version re-derived the SubPath from
+// the declaration, so a dropped hop between declaration and Job printed
+// a confident, resolved path the attempt never gets — worse than
+// silence, because the misleading evidence was the remedy's own output.
+// Every fact printed here is read off job.Spec.Template.Spec.
+//
+// Keyed on the ATTEMPT (r3): BuildJob sets GenerateName only — job.Name
+// is server-assigned at Create, which happens AFTER this line, so the
+// r2 line read "dispatch: job  attachments=[…]" with no run identity.
+// The store env is attributed per attachment (matched by mount path),
+// not sprayed across the line.
+func logEffectiveAttachments(logf func(string, ...any), attemptName string, job *batchv1.Job, atts []v1alpha1.SharedAttachment) {
+	if len(atts) == 0 {
+		return
+	}
+	key := job.Name
+	if key == "" {
+		key = attemptName + " (job name pending Create)"
+	}
+	spec := job.Spec.Template.Spec
+	claims := map[string]string{}
+	mountPaths := map[string]string{}
+	mountSubs := map[string]string{}
+	envs := map[string]string{}
+	for _, v := range spec.Volumes {
+		if v.PersistentVolumeClaim != nil {
+			claims[v.Name] = v.PersistentVolumeClaim.ClaimName
+		}
+	}
+	for _, c := range spec.Containers {
+		for _, m := range c.VolumeMounts {
+			mountPaths[m.Name] = m.MountPath
+			mountSubs[m.Name] = m.SubPath
+		}
+		for _, e := range c.Env {
+			envs[e.Name] = e.Value
+		}
+	}
+	parts := make([]string, 0, len(atts))
+	for _, at := range atts {
+		vol := "attach-" + at.Name
+		mp, ok := mountPaths[vol]
+		if !ok {
+			parts = append(parts, fmt.Sprintf("%s@%s=ABSENT(no mount on the Job)", at.Name, at.Scope))
+			continue
+		}
+		p := fmt.Sprintf("%s@%s=%s sub=%s claim=%s", at.Name, at.Scope, mp, mountSubs[vol], claims[vol])
+		if store := envs["HARMOSTES_SOL_PI_STORE"]; store != "" && store == mp {
+			p += " +store-env"
+		}
+		parts = append(parts, p)
+	}
+	logf("dispatch: job %s attachments=[%s]", key, strings.Join(parts, " "))
+}
+
 // Dispatch processes one trigger event: gate → capacity → Attempt+Job.
 // A nil return ACKs the event (the armed state is the durable queue —
 // waiting/standdown/capacity all re-evaluate on the next wake or sweep).
@@ -322,6 +453,21 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req RunRequest) error {
 	// bound, so the wall and the margin cannot disagree.
 	rr := wf.Spec.ReviewReady
 	runBound := rr.RunBoundDuration()
+	// Attachments (#704): the merged spec's declaration is the EFFECTIVE
+	// list — validate it where the other config facts are validated.
+	// Malformed entries are ERRORS (#311's doctrine, not a skip): before
+	// template inheritance a typo'd declaration was inert; now it is
+	// fleet-wide, and an invalid volume name would fail the Job Create
+	// AFTER the ledger committed the dispatch intent — the exact
+	// intent-without-artifact state #666 exists to prevent. A template
+	// typo must be a dispatch-time error with the offending field named,
+	// not an apiserver rejection. The per-attempt EFFECTIVE mounts (with
+	// drop reasons) log beside the Job build, where the scope identities
+	// are known.
+	if err := ValidateAttachments(wf.Spec.Attachments); err != nil {
+		return fmt.Errorf("workflow %s attachments invalid: %w", req.Workflow, err)
+	}
+
 	// Cache (#336) resolves at the same merged-spec seam: templates carry
 	// it for whole fleets of review workflows (one claim, SubPath-
 	// isolated per workflow by the builder).
@@ -423,6 +569,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req RunRequest) error {
 		job := k8s.BuildJob(d.cfg.JobParams(&at, req.Workflow, req.Namespace, runBound, cache, wf.Spec.Sessions,
 			wf.Spec.Attachments, triggerRepo,
 			append(jobCredentialEnv(&budgetPolicy{workflow: wf, attempt: &at}), dispatchEnv(req, &at, g.Envelope)...)))
+		logEffectiveAttachments(d.logf, at.Name, job, wf.Spec.Attachments)
 		// #666 intent-before-side-effect: the INTENT is committed BEFORE
 		// the Job exists (record-then-act; a failed record aborts dispatch
 		// so no side effect can precede its ledger entry). The Job's NAME

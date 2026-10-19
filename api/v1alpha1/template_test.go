@@ -281,3 +281,36 @@ func TestApplyTemplateDefaultsSessionsInherit(t *testing.T) {
 		t.Fatalf("instance sessions must win, got %+v", own.Spec.Sessions)
 	}
 }
+
+// #704: the shared-store declaration inherits whole-struct like Sessions
+// — one storage decision (component + scope + claim), declared on the
+// template. Without the inherit the template's attachments never reach
+// the Workflow spec: dispatch builds Jobs with neither the mount nor the
+// store env, and the declaration is inert (found LIVE: the
+// WorkflowTemplate carried the field, the compiled Job didn't).
+func TestApplyTemplateDefaultsAttachmentsInherit(t *testing.T) {
+	tmpl := &WorkflowTemplate{}
+	tmpl.Spec.Attachments = []SharedAttachment{
+		{Name: "sol-pi", Scope: "repository", PVC: "harmostes-worker-sessions"},
+	}
+
+	wf := &Workflow{} // instance sets nothing → inherits whole
+	ApplyTemplateDefaults(wf, tmpl)
+	if len(wf.Spec.Attachments) != 1 || wf.Spec.Attachments[0].Name != "sol-pi" ||
+		wf.Spec.Attachments[0].Scope != "repository" || wf.Spec.Attachments[0].PVC != "harmostes-worker-sessions" {
+		t.Fatalf("attachments must inherit whole-struct from template, got %+v", wf.Spec.Attachments)
+	}
+
+	own := &Workflow{}
+	own.Spec.Attachments = []SharedAttachment{{Name: "other"}} // instance wins
+	ApplyTemplateDefaults(own, tmpl)
+	if len(own.Spec.Attachments) != 1 || own.Spec.Attachments[0].Name != "other" {
+		t.Fatalf("instance attachments must win, got %+v", own.Spec.Attachments)
+	}
+
+	none := &Workflow{}
+	ApplyTemplateDefaults(none, &WorkflowTemplate{}) // no template declaration → stays nil
+	if len(none.Spec.Attachments) != 0 {
+		t.Fatalf("absent attachments must stay empty, got %+v", none.Spec.Attachments)
+	}
+}

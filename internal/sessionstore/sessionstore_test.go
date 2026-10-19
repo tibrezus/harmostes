@@ -821,6 +821,9 @@ func TestIsMountPointOnRealMounts(t *testing.T) {
 // proves the wiring the fleet runs. Under a mis-wired default
 // (isMount = constant stub) it fails on both verdicts.
 func TestWiringCapturesProductionDefault(t *testing.T) {
+	if _, err := os.Stat("/proc"); err != nil {
+		t.Skipf("environment lacks /proc: %v", err)
+	}
 	if !defaultIsMountAtVarInit("/proc", "/") {
 		t.Error("the default seam must classify /proc as a mount")
 	}

@@ -325,9 +325,11 @@ func LinkSharedStore(lineageDir, workflow, mount string, logf func(string, ...an
 	// as the image's uid (root — Dockerfile.worker has no USER), so the
 	// leaf is an organizing boundary, NOT an enforcement boundary; the
 	// payloads are RAW tool output (the durable-session publisher
-	// redacts, the byte-pristine extension cannot). Cross-workflow
-	// sharing of one repo stays disabled by this leaf until an upstream
-	// redaction hook lands; the owner may flip it afterwards.
+	// redacts, the byte-pristine extension cannot). Cross-workflow READS
+	// of one repo are therefore POSSIBLE TODAY (uid 0 reads any leaf);
+	// accepted because the workflows on one repo mount share a trust
+	// domain (one reviewer identity per repo). Widening to a third
+	// workflow requires the upstream redaction hook first (#707).
 	mount = filepath.Clean(mount) // a trailing slash inverts the device-ID mountpoint check (r9)
 	target := filepath.Join(mount, workflow)
 	// The leaf cannot self-heal (r6): the only writer is the byte-pristine

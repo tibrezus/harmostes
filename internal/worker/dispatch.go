@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -305,6 +307,57 @@ func DispatcherFromEnv(logf func(string, ...any)) (*Dispatcher, error) {
 	return NewDispatcher(context.Background(), cfg, logf)
 }
 
+// dns1123Label matches the Kubernetes volume-name constraint the builder
+// feeds attachment names into ("attach-" + name).
+var dns1123Label = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
+
+// ValidateAttachments enforces the declaration contract at the merged-spec
+// seam (#704): name must be a DNS-1123 label (it becomes volume
+// "attach-<name>"; anything else is an apiserver Create rejection AFTER
+// the dispatch intent is recorded), the PVC must be named (nothing to
+// mount otherwise), and mountPath must be absolute but never "/" (the
+// shared RWX claim must not shadow the container root). Same doctrine as
+// ExtraConfigMapMounts: malformed config is an ERROR, never a skip.
+func ValidateAttachments(atts []v1alpha1.SharedAttachment) error {
+	for _, at := range atts {
+		if len(at.Name) == 0 || len(at.Name) > 63 || !dns1123Label.MatchString(at.Name) {
+			return fmt.Errorf("attachment %q: name must be a DNS-1123 label (lowercase alphanumerics and '-', 1-63 chars)", at.Name)
+		}
+		if at.PVC == "" {
+			return fmt.Errorf("attachment %q: pvc is required", at.Name)
+		}
+		if !filepath.IsAbs(at.MountPath) && at.MountPath != "" {
+			return fmt.Errorf("attachment %q: mountPath %q must be absolute", at.Name, at.MountPath)
+		}
+		if at.MountPath == "/" {
+			return fmt.Errorf("attachment %q: mountPath must not be \"/\" — it would mount the shared claim over the container root", at.Name)
+		}
+	}
+	return nil
+}
+
+// logEffectiveAttachments renders the per-attempt effective mounts beside
+// the Job build — the scope identities (workflow name, trigger repo,
+// attempt name) are known only here, so this is the honest seam for the
+// drop reasons. Mirrors the runBound degradation log: a dropped
+// declaration must be visible in the dispatch logs, not discoverable by
+// reading a compiled Job by hand (#704's inert-declaration incident).
+func logEffectiveAttachments(logf func(string, ...any), workflow, attemptName string, atts []v1alpha1.SharedAttachment, triggerRepo string) {
+	if len(atts) == 0 {
+		return
+	}
+	parts := make([]string, 0, len(atts))
+	for _, at := range atts {
+		sub, ok := k8s.AttachmentSubPath(at.Scope, workflow, triggerRepo, attemptName)
+		if !ok {
+			parts = append(parts, fmt.Sprintf("%s@%s=DROPPED(scope identity unavailable on this run)", at.Name, at.Scope))
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s@%s→%s", at.Name, at.Scope, sub))
+	}
+	logf("dispatch: attempt %s attachments=[%s]", attemptName, strings.Join(parts, " "))
+}
+
 // Dispatch processes one trigger event: gate → capacity → Attempt+Job.
 // A nil return ACKs the event (the armed state is the durable queue —
 // waiting/standdown/capacity all re-evaluate on the next wake or sweep).
@@ -322,6 +375,21 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req RunRequest) error {
 	// bound, so the wall and the margin cannot disagree.
 	rr := wf.Spec.ReviewReady
 	runBound := rr.RunBoundDuration()
+	// Attachments (#704): the merged spec's declaration is the EFFECTIVE
+	// list — validate it where the other config facts are validated.
+	// Malformed entries are ERRORS (#311's doctrine, not a skip): before
+	// template inheritance a typo'd declaration was inert; now it is
+	// fleet-wide, and an invalid volume name would fail the Job Create
+	// AFTER the ledger committed the dispatch intent — the exact
+	// intent-without-artifact state #666 exists to prevent. A template
+	// typo must be a dispatch-time error with the offending field named,
+	// not an apiserver rejection. The per-attempt EFFECTIVE mounts (with
+	// drop reasons) log beside the Job build, where the scope identities
+	// are known.
+	if err := ValidateAttachments(wf.Spec.Attachments); err != nil {
+		return fmt.Errorf("workflow %s attachments invalid: %w", req.Workflow, err)
+	}
+
 	// Cache (#336) resolves at the same merged-spec seam: templates carry
 	// it for whole fleets of review workflows (one claim, SubPath-
 	// isolated per workflow by the builder).
@@ -420,6 +488,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req RunRequest) error {
 		if g.Envelope != nil {
 			triggerRepo = g.Envelope.Repo
 		}
+		logEffectiveAttachments(d.logf, req.Workflow, at.Name, wf.Spec.Attachments, triggerRepo)
 		job := k8s.BuildJob(d.cfg.JobParams(&at, req.Workflow, req.Namespace, runBound, cache, wf.Spec.Sessions,
 			wf.Spec.Attachments, triggerRepo,
 			append(jobCredentialEnv(&budgetPolicy{workflow: wf, attempt: &at}), dispatchEnv(req, &at, g.Envelope)...)))

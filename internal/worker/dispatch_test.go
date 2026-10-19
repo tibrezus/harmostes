@@ -693,3 +693,67 @@ func TestLoopBreakerArmsReviewAttemptsOnly(t *testing.T) {
 		t.Fatal("fork-maintenance retries identical commands legitimately — no loop breaker there")
 	}
 }
+
+// ── #704 review r1 on the inherit PR: the declaration became fleet-wide,
+// so the consumer seam must honor it HONESTLY — malformed declarations
+// fail dispatch (never a post-intent Create rejection), and the
+// effective mounts log with drop reasons (the #311/#314 doctrine: a
+// config fact must not drop silently). ──
+func TestValidateAttachments(t *testing.T) {
+	valid := []v1alpha1.SharedAttachment{{Name: "sol-pi", Scope: "repository", PVC: "harmostes-worker-sessions"}}
+	if err := ValidateAttachments(valid); err != nil {
+		t.Fatalf("valid declaration rejected: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		att  v1alpha1.SharedAttachment
+		want string
+	}{
+		{"bad name (volume label)", v1alpha1.SharedAttachment{Name: "Bad/Name", PVC: "c"}, "DNS-1123"},
+		{"empty name", v1alpha1.SharedAttachment{PVC: "c"}, "DNS-1123"},
+		{"missing pvc", v1alpha1.SharedAttachment{Name: "ok"}, "pvc is required"},
+		{"relative mountPath", v1alpha1.SharedAttachment{Name: "ok", PVC: "c", MountPath: "attachments/x"}, "must be absolute"},
+		{"root mountPath", v1alpha1.SharedAttachment{Name: "ok", PVC: "c", MountPath: "/"}, "container root"},
+	} {
+		err := ValidateAttachments([]v1alpha1.SharedAttachment{tc.att})
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: err = %v, want containing %q", tc.name, err, tc.want)
+		}
+	}
+
+	// Default mountPath ("" → the builder derives /attachments/<name>) is legal.
+	if err := ValidateAttachments([]v1alpha1.SharedAttachment{{Name: "ok", PVC: "c", MountPath: ""}}); err != nil {
+		t.Errorf("empty mountPath must stay legal (builder default), got %v", err)
+	}
+}
+
+func TestLogEffectiveAttachments(t *testing.T) {
+	atts := []v1alpha1.SharedAttachment{
+		{Name: "sol-pi", Scope: "repository", PVC: "c"},
+		{Name: "ws", Scope: "workflow", PVC: "c"},
+	}
+	var lines []string
+	logf := func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) }
+
+	logEffectiveAttachments(logf, "pr-review-rhesadox", "attempt-1", atts, "github.com-tibrez-rhesadox")
+	if len(lines) != 1 || !strings.Contains(lines[0], "sol-pi@repository→github.com-tibrez-rhesadox") ||
+		!strings.Contains(lines[0], "ws@workflow→pr-review-rhesadox") {
+		t.Fatalf("effective mounts must resolve with the identities, got: %v", lines)
+	}
+
+	lines = nil
+	logEffectiveAttachments(logf, "pr-review-rhesadox", "attempt-2", atts, "") // non-gated: nil envelope
+	if len(lines) != 1 || !strings.Contains(lines[0], "sol-pi@repository=DROPPED") {
+		t.Fatalf("repository scope without a trigger repo must log its drop, got: %v", lines)
+	}
+	if strings.Contains(lines[0], "ws@workflow=DROPPED") {
+		t.Fatalf("workflow scope resolves without a repo, got: %v", lines)
+	}
+
+	lines = nil
+	logEffectiveAttachments(logf, "pr-review-rhesadox", "attempt-3", nil, "r")
+	if len(lines) != 0 {
+		t.Fatalf("no attachments → no log line, got: %v", lines)
+	}
+}

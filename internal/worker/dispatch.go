@@ -6,14 +6,15 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	batchv1 "k8s.io/api/batch/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
+	utilvalidation "k8s.io/apimachinery/pkg/util/validation"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -307,26 +308,26 @@ func DispatcherFromEnv(logf func(string, ...any)) (*Dispatcher, error) {
 	return NewDispatcher(context.Background(), cfg, logf)
 }
 
-// dns1123Label matches the Kubernetes volume-name constraint the builder
-// feeds attachment names into ("attach-" + name).
-var dns1123Label = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
-
 // ValidateAttachments enforces the declaration contract at the merged-spec
-// seam (#704): name must be a DNS-1123 label (it becomes volume
-// "attach-<name>"; anything else is an apiserver Create rejection AFTER
-// the dispatch intent is recorded), the PVC must be named (nothing to
-// mount otherwise), and mountPath must be absolute but never "/" (the
-// shared RWX claim must not shadow the container root). Same doctrine as
-// ExtraConfigMapMounts: malformed config is an ERROR, never a skip.
+// seam (#704): the COMPOSED volume name ("attach-" + name) must be a
+// DNS-1123 label per Kubernetes' own validator (the fact's one home — a
+// hand-rolled length bound was off by the prefix: a 57-char name passed
+// while the apiserver rejects the 64-char volume name, r2), the PVC must
+// be named (nothing to mount otherwise), and mountPath must be absolute
+// but never "/" (the shared RWX claim must not shadow the container
+// root). Same doctrine as ExtraConfigMapMounts: malformed config is an
+// ERROR at dispatch time, never a skip and never a post-intent Create
+// rejection.
 func ValidateAttachments(atts []v1alpha1.SharedAttachment) error {
 	for _, at := range atts {
-		if len(at.Name) == 0 || len(at.Name) > 63 || !dns1123Label.MatchString(at.Name) {
-			return fmt.Errorf("attachment %q: name must be a DNS-1123 label (lowercase alphanumerics and '-', 1-63 chars)", at.Name)
+		vol := "attach-" + at.Name
+		if msgs := utilvalidation.IsDNS1123Label(vol); len(msgs) > 0 {
+			return fmt.Errorf("attachment %q: volume name %q is not a DNS-1123 label: %s", at.Name, vol, strings.Join(msgs, "; "))
 		}
 		if at.PVC == "" {
 			return fmt.Errorf("attachment %q: pvc is required", at.Name)
 		}
-		if !filepath.IsAbs(at.MountPath) && at.MountPath != "" {
+		if at.MountPath != "" && !filepath.IsAbs(at.MountPath) {
 			return fmt.Errorf("attachment %q: mountPath %q must be absolute", at.Name, at.MountPath)
 		}
 		if at.MountPath == "/" {
@@ -336,26 +337,49 @@ func ValidateAttachments(atts []v1alpha1.SharedAttachment) error {
 	return nil
 }
 
-// logEffectiveAttachments renders the per-attempt effective mounts beside
-// the Job build — the scope identities (workflow name, trigger repo,
-// attempt name) are known only here, so this is the honest seam for the
-// drop reasons. Mirrors the runBound degradation log: a dropped
-// declaration must be visible in the dispatch logs, not discoverable by
-// reading a compiled Job by hand (#704's inert-declaration incident).
-func logEffectiveAttachments(logf func(string, ...any), workflow, attemptName string, atts []v1alpha1.SharedAttachment, triggerRepo string) {
+// logEffectiveAttachments renders the per-attempt effective mounts FROM
+// THE COMPILED JOB — log the artifact, not the intent (r2): the line is
+// true iff the mount exists. The r1 version re-derived the SubPath from
+// the declaration, so a dropped hop between declaration and Job printed
+// a confident, resolved path the attempt never gets — worse than
+// silence, because the misleading evidence was the remedy's own output.
+// Every fact printed here is read off job.Spec.Template.Spec.
+func logEffectiveAttachments(logf func(string, ...any), job *batchv1.Job, atts []v1alpha1.SharedAttachment) {
 	if len(atts) == 0 {
 		return
 	}
+	spec := job.Spec.Template.Spec
+	claims := map[string]string{}
+	mounts := map[string]string{}
+	envs := map[string]string{}
+	for _, v := range spec.Volumes {
+		if v.PersistentVolumeClaim != nil {
+			claims[v.Name] = v.PersistentVolumeClaim.ClaimName
+		}
+	}
+	for _, c := range spec.Containers {
+		for _, m := range c.VolumeMounts {
+			mounts[m.Name] = m.MountPath + " sub=" + m.SubPath
+		}
+		for _, e := range c.Env {
+			envs[e.Name] = e.Value
+		}
+	}
 	parts := make([]string, 0, len(atts))
 	for _, at := range atts {
-		sub, ok := k8s.AttachmentSubPath(at.Scope, workflow, triggerRepo, attemptName)
+		vol := "attach-" + at.Name
+		m, ok := mounts[vol]
 		if !ok {
-			parts = append(parts, fmt.Sprintf("%s@%s=DROPPED(scope identity unavailable on this run)", at.Name, at.Scope))
+			parts = append(parts, fmt.Sprintf("%s@%s=ABSENT(no mount on the Job)", at.Name, at.Scope))
 			continue
 		}
-		parts = append(parts, fmt.Sprintf("%s@%s→%s", at.Name, at.Scope, sub))
+		p := fmt.Sprintf("%s@%s=%s claim=%s", at.Name, at.Scope, m, claims[vol])
+		if envs["HARMOSTES_SOL_PI_STORE"] != "" {
+			p += " +store-env"
+		}
+		parts = append(parts, p)
 	}
-	logf("dispatch: attempt %s attachments=[%s]", attemptName, strings.Join(parts, " "))
+	logf("dispatch: job %s attachments=[%s]", job.Name, strings.Join(parts, " "))
 }
 
 // Dispatch processes one trigger event: gate → capacity → Attempt+Job.
@@ -488,10 +512,10 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req RunRequest) error {
 		if g.Envelope != nil {
 			triggerRepo = g.Envelope.Repo
 		}
-		logEffectiveAttachments(d.logf, req.Workflow, at.Name, wf.Spec.Attachments, triggerRepo)
 		job := k8s.BuildJob(d.cfg.JobParams(&at, req.Workflow, req.Namespace, runBound, cache, wf.Spec.Sessions,
 			wf.Spec.Attachments, triggerRepo,
 			append(jobCredentialEnv(&budgetPolicy{workflow: wf, attempt: &at}), dispatchEnv(req, &at, g.Envelope)...)))
+		logEffectiveAttachments(d.logf, job, wf.Spec.Attachments)
 		// #666 intent-before-side-effect: the INTENT is committed BEFORE
 		// the Job exists (record-then-act; a failed record aborts dispatch
 		// so no side effect can precede its ledger entry). The Job's NAME

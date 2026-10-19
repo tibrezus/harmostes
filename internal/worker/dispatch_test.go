@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/tibrezus/harmostes/internal/attempt"
+	"github.com/tibrezus/harmostes/internal/k8s"
 	"github.com/tibrezus/harmostes/internal/review"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -712,11 +713,22 @@ func TestValidateAttachments(t *testing.T) {
 	}{
 		{"bad name (volume label)", v1alpha1.SharedAttachment{Name: "Bad/Name", PVC: "c"}, "DNS-1123"},
 		{"empty name", v1alpha1.SharedAttachment{PVC: "c"}, "DNS-1123"},
+		// r2: the composed volume name is what the apiserver validates —
+		// a 57-char name yields a 64-char "attach-<name>" and must be
+		// rejected HERE, not at Create-after-intent.
+		{"57-char name (volume name over 63)", v1alpha1.SharedAttachment{Name: strings.Repeat("a", 57), PVC: "c"}, "DNS-1123"},
+		{"56-char name (volume name at 63) is legal", v1alpha1.SharedAttachment{Name: strings.Repeat("a", 56), PVC: "c"}, ""},
 		{"missing pvc", v1alpha1.SharedAttachment{Name: "ok"}, "pvc is required"},
 		{"relative mountPath", v1alpha1.SharedAttachment{Name: "ok", PVC: "c", MountPath: "attachments/x"}, "must be absolute"},
 		{"root mountPath", v1alpha1.SharedAttachment{Name: "ok", PVC: "c", MountPath: "/"}, "container root"},
 	} {
 		err := ValidateAttachments([]v1alpha1.SharedAttachment{tc.att})
+		if tc.want == "" {
+			if err != nil {
+				t.Errorf("%s: unexpected err %v", tc.name, err)
+			}
+			continue
+		}
 		if err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: err = %v, want containing %q", tc.name, err, tc.want)
 		}
@@ -728,32 +740,105 @@ func TestValidateAttachments(t *testing.T) {
 	}
 }
 
+// r2: the log reads the COMPILED JOB — the artifact, not the intent. A
+// Job without the volume must log ABSENT, and a mounted sol-pi
+// attachment must show the store env.
 func TestLogEffectiveAttachments(t *testing.T) {
-	atts := []v1alpha1.SharedAttachment{
-		{Name: "sol-pi", Scope: "repository", PVC: "c"},
-		{Name: "ws", Scope: "workflow", PVC: "c"},
+	mkJob := func(withMount bool) *batchv1.Job {
+		j := &batchv1.Job{}
+		j.Name = "attempt-x-abcde"
+		vols := []corev1.Volume{}
+		mounts := []corev1.VolumeMount{}
+		env := []corev1.EnvVar{{Name: "HARMOSTES_WALL_SECONDS", Value: "60"}}
+		if withMount {
+			vols = append(vols, corev1.Volume{Name: "attach-sol-pi",
+				VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: "harmostes-worker-sessions"}}})
+			mounts = append(mounts, corev1.VolumeMount{Name: "attach-sol-pi", MountPath: "/attachments/sol-pi", SubPath: "repo-hash"})
+			env = append(env, corev1.EnvVar{Name: "HARMOSTES_SOL_PI_STORE", Value: "/attachments/sol-pi"})
+		}
+		j.Spec.Template.Spec = corev1.PodSpec{Volumes: vols, Containers: []corev1.Container{{Name: "run", VolumeMounts: mounts, Env: env}}}
+		return j
 	}
+	atts := []v1alpha1.SharedAttachment{{Name: "sol-pi", Scope: "repository", PVC: "harmostes-worker-sessions"}}
 	var lines []string
 	logf := func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) }
 
-	logEffectiveAttachments(logf, "pr-review-rhesadox", "attempt-1", atts, "github.com-tibrez-rhesadox")
-	if len(lines) != 1 || !strings.Contains(lines[0], "sol-pi@repository→github.com-tibrez-rhesadox") ||
-		!strings.Contains(lines[0], "ws@workflow→pr-review-rhesadox") {
-		t.Fatalf("effective mounts must resolve with the identities, got: %v", lines)
+	logEffectiveAttachments(logf, mkJob(true), atts)
+	if len(lines) != 1 || !strings.Contains(lines[0], "sol-pi@repository=/attachments/sol-pi sub=repo-hash") ||
+		!strings.Contains(lines[0], "claim=harmostes-worker-sessions +store-env") {
+		t.Fatalf("mounted artifact must be reported from the Job, got: %v", lines)
 	}
 
 	lines = nil
-	logEffectiveAttachments(logf, "pr-review-rhesadox", "attempt-2", atts, "") // non-gated: nil envelope
-	if len(lines) != 1 || !strings.Contains(lines[0], "sol-pi@repository=DROPPED") {
-		t.Fatalf("repository scope without a trigger repo must log its drop, got: %v", lines)
-	}
-	if strings.Contains(lines[0], "ws@workflow=DROPPED") {
-		t.Fatalf("workflow scope resolves without a repo, got: %v", lines)
+	logEffectiveAttachments(logf, mkJob(false), atts) // the mount never made the Job
+	if len(lines) != 1 || !strings.Contains(lines[0], "sol-pi@repository=ABSENT") {
+		t.Fatalf("an absent mount must be reported, never a resolved path, got: %v", lines)
 	}
 
 	lines = nil
-	logEffectiveAttachments(logf, "pr-review-rhesadox", "attempt-3", nil, "r")
+	logEffectiveAttachments(logf, mkJob(true), nil)
 	if len(lines) != 0 {
 		t.Fatalf("no attachments → no log line, got: %v", lines)
+	}
+}
+
+// The hop pin (#704, found live): the template's declaration must reach
+// the COMPILED Job — asserted against the artifact. Two hops are pinned:
+// the ApplyTemplateDefaults inherit and the JobParams struct-copy —
+// deleting either kept the whole unit tier green before this test.
+func TestDispatchAttachmentsFlowsFromTemplateDefaults(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := greenPRServer(t)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+
+	tmpl := &v1alpha1.WorkflowTemplate{ObjectMeta: metav1.ObjectMeta{Name: "pr-review-tmpl", Namespace: "default"}}
+	tmpl.Spec.ReviewReady = &v1alpha1.ReviewReadySpec{Label: "needs-review", Horizon: "6h"}
+	tmpl.Spec.Attachments = []v1alpha1.SharedAttachment{{Name: "sol-pi", Scope: "repository", PVC: "harmostes-worker-sessions"}} // TEMPLATE-side only
+
+	wf := gatedDispatchWorkflow()
+	wf.Spec.ReviewReady = nil
+	wf.Spec.TemplateRef = "pr-review-tmpl"
+
+	d, ctx := newTestDispatcher(t, wf, tmpl)
+	if err := d.Dispatch(ctx, dispatchRequest()); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	var jobs batchv1.JobList
+	if err := d.cl.List(ctx, &jobs); err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs.Items) != 1 {
+		t.Fatalf("exactly one Job must be dispatched, got %d", len(jobs.Items))
+	}
+	spec := jobs.Items[0].Spec.Template.Spec
+
+	var vol *corev1.Volume
+	for i := range spec.Volumes {
+		if spec.Volumes[i].Name == "attach-sol-pi" {
+			vol = &spec.Volumes[i]
+		}
+	}
+	if vol == nil || vol.PersistentVolumeClaim == nil || vol.PersistentVolumeClaim.ClaimName != "harmostes-worker-sessions" {
+		t.Fatalf("template attachment must reach the Job volume with its claim, got %+v", vol)
+	}
+
+	var mount *corev1.VolumeMount
+	for i := range spec.Containers[0].VolumeMounts {
+		if spec.Containers[0].VolumeMounts[i].Name == "attach-sol-pi" {
+			mount = &spec.Containers[0].VolumeMounts[i]
+		}
+	}
+	wantSub, _ := k8s.AttachmentSubPath(v1alpha1.AttachmentScopeRepository, "pr-review-harmostes", "git.rezus.cloud/tibrez/rhesadox", "x")
+	if mount == nil || mount.SubPath != wantSub {
+		t.Fatalf("attachment mount must carry the repository SubPath %q, got %+v", wantSub, mount)
+	}
+
+	env := map[string]string{}
+	for _, e := range spec.Containers[0].Env {
+		env[e.Name] = e.Value
+	}
+	if env["HARMOSTES_SOL_PI_STORE"] != mount.MountPath {
+		t.Fatalf("HARMOSTES_SOL_PI_STORE = %q, want the mount path %q", env["HARMOSTES_SOL_PI_STORE"], mount.MountPath)
 	}
 }

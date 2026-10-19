@@ -46,10 +46,14 @@ func JanitorSessions(root string, ttl time.Duration, now time.Time) int {
 // the sol-pi/ subtree — dozens of small files at most) and returns the
 // newest file mtime. An empty dir returns the zero time: an empty
 // lineage dir is gone in every sense that matters, so it prunes first.
+// Symlink entries are skipped (#704): the sol-pi link is this repo's
+// pointer into the repository-shared store — its creation mtime is not
+// conversation activity, and the shared store's own writes (touched by
+// OTHER PRs' reviews) must never resurrect an idle lineage.
 func newestFileMtime(dir string) time.Time {
 	var newest time.Time
 	_ = filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
+		if err != nil || d.IsDir() || d.Type()&fs.ModeSymlink != 0 {
 			return nil
 		}
 		if fi, err := d.Info(); err == nil && fi.ModTime().After(newest) {

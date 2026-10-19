@@ -319,7 +319,16 @@ func DispatcherFromEnv(logf func(string, ...any)) (*Dispatcher, error) {
 // ERROR at dispatch time, never a skip and never a post-intent Create
 // rejection.
 func ValidateAttachments(atts []v1alpha1.SharedAttachment) error {
+	seen := map[string]bool{}
 	for _, at := range atts {
+		if seen[at.Name] {
+			// Name is identity (volume name, mount-path tail, store env):
+			// a duplicate collides on all three in the PodSpec and would
+			// be rejected by the apiserver at Create — after the intent
+			// (r4; the copy-paste shape, the likeliest values.yaml typo).
+			return fmt.Errorf("attachment %q: duplicate name — names are identity", at.Name)
+		}
+		seen[at.Name] = true
 		vol := "attach-" + at.Name
 		if msgs := utilvalidation.IsDNS1123Label(vol); len(msgs) > 0 {
 			return fmt.Errorf("attachment %q: volume name %q is not a DNS-1123 label: %s", at.Name, vol, strings.Join(msgs, "; "))

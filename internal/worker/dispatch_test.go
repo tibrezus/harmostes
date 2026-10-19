@@ -738,6 +738,17 @@ func TestValidateAttachments(t *testing.T) {
 	if err := ValidateAttachments([]v1alpha1.SharedAttachment{{Name: "ok", PVC: "c", MountPath: ""}}); err != nil {
 		t.Errorf("empty mountPath must stay legal (builder default), got %v", err)
 	}
+
+	// r4: name is identity — a duplicate (the copy-paste typo) collides
+	// on volume name, mount path, and store env, and would be an
+	// apiserver Create rejection after the intent.
+	dup := []v1alpha1.SharedAttachment{
+		{Name: "sol-pi", Scope: "repository", PVC: "claim-a"},
+		{Name: "sol-pi", Scope: "repository", PVC: "claim-b"},
+	}
+	if err := ValidateAttachments(dup); err == nil || !strings.Contains(err.Error(), "duplicate name") {
+		t.Errorf("duplicate names must be rejected naming the collision, got %v", err)
+	}
 }
 
 // r2: the log reads the COMPILED JOB — the artifact, not the intent. A

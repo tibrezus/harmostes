@@ -11,6 +11,14 @@ import (
 	"testing"
 )
 
+func TestMain(m *testing.M) {
+	// Tests run on plain temp dirs, not mounts: default the seam to
+	// "is a mountpoint" so the production wording paths under test are
+	// the store paths. The not-a-mountpoint wording has its own pin.
+	isMount = func(dir, parent string) bool { return true }
+	os.Exit(m.Run())
+}
+
 func TestLineageDirDeterministicAndIsolated(t *testing.T) {
 	a1 := LineageDir("/s", "git.rezus.cloud/tibrez/rhesadox", "99")
 	a2 := LineageDir("/s", "git.rezus.cloud/tibrez/rhesadox", "99")
@@ -664,5 +672,26 @@ func TestLinkSharedStoreUnwritableLeafSaysUnwritable(t *testing.T) {
 		if strings.Contains(l, "bytes across") {
 			t.Fatalf("a failed leaf creation must not be followed by a healthy byte count: %v", logs)
 		}
+	}
+}
+
+// ── #704 review r7/r8: a store path that is NOT a mountpoint (plain
+// dirs on the container's ephemeral layer — the MkdirAll-manufactured
+// shape during a SubPath re-create window, or a local/e2e run) must say
+// so: data written there dies with the Job, and presenting it as the
+// shared store is the exact silent failure #704 exists to prevent. ──
+func TestLinkSharedStoreNotAMountpointIsNamed(t *testing.T) {
+	mount := t.TempDir()
+	lineage := t.TempDir()
+	orig := isMount
+	defer func() { isMount = orig }()
+	isMount = func(dir, parent string) bool { return false }
+
+	logs := []string{}
+	LinkSharedStore(lineage, "pr-review-rhesadox", mount, func(format string, args ...any) {
+		logs = append(logs, fmt.Sprintf(format, args...))
+	})
+	if len(logs) == 0 || !strings.Contains(logs[0], "NOT a mountpoint") || !strings.Contains(logs[0], "dies with the Job") {
+		t.Fatalf("a non-mountpoint store must be named, got: %v", logs)
 	}
 }

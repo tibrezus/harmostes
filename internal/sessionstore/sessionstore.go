@@ -16,7 +16,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -335,6 +334,7 @@ func LinkSharedStore(lineageDir, workflow, mount string, logf func(string, ...an
 	// outage — dangling link, DEGRADED), leaf uncreatable on a present
 	// mount (uid/fsGroup — UNWRITABLE, different diagnosis), and
 	// manufactured-fallback (below).
+	mountOK := isMount(mount, filepath.Dir(mount))
 	if err := os.MkdirAll(target, 0o700); err != nil {
 		mountMissing := false
 		if info, statErr := os.Stat(mount); statErr != nil || !info.IsDir() {
@@ -346,9 +346,12 @@ func LinkSharedStore(lineageDir, workflow, mount string, logf func(string, ...an
 		// next healthy arm migrates it into the store and links.
 		stampFallback(link, workflow)
 		if logf != nil {
-			if mountMissing {
+			switch {
+			case mountMissing:
 				logf("sol-pi DEGRADED: store %s not mounted — observation-pack will fail open (context stays unpaged) and the reducer will error, until the mount returns", mount)
-			} else {
+			case !mountOK:
+				logf("sol-pi DEGRADED: store path %s is NOT a mountpoint (manufactured on the pod's ephemeral layer) — data written now dies with the Job; the shared store returns when the mount does", mount)
+			default:
 				logf("sol-pi DEGRADED: store leaf %s uncreatable (%v) — claim uid/fsGroup mismatch? degraded until it is writable", target, err)
 			}
 		}
@@ -363,6 +366,12 @@ func LinkSharedStore(lineageDir, workflow, mount string, logf func(string, ...an
 			if info, err := os.Stat(mount); err != nil || !info.IsDir() {
 				if logf != nil {
 					logf("sol-pi DEGRADED: store %s not mounted — observation-pack will fail open (context stays unpaged) and the reducer will error, until the mount returns", mount)
+				}
+				return
+			}
+			if !isMount(mount, filepath.Dir(mount)) {
+				if logf != nil {
+					logf("sol-pi DEGRADED: store path %s is NOT a mountpoint — data written now dies with the Job; the shared store returns when the mount does", mount)
 				}
 				return
 			}
@@ -432,6 +441,12 @@ func LinkSharedStore(lineageDir, workflow, mount string, logf func(string, ...an
 		}
 		return
 	}
+	if !isMount(mount, filepath.Dir(mount)) {
+		if logf != nil {
+			logf("sol-pi DEGRADED: store path %s is NOT a mountpoint — data written now dies with the Job; the shared store returns when the mount does", mount)
+		}
+		return
+	}
 	logStoreSize(mount, logf)
 }
 
@@ -485,6 +500,10 @@ func migrateManufactured(srcDir, target string, logf func(string, ...any)) int {
 // and renames.
 var symlinkStore = os.Symlink
 
+// isMount is the mountpoint-check seam (probe/test injection): the
+// production implementation is isMountPointOn (device-ID comparison).
+var isMount = isMountPointOn
+
 // measureStore sizes the shared store with a bounded walk. Per-entry
 // errors (an entry removed mid-walk by a concurrent attempt, a CSI blip)
 // SKIP that entry — they never abort the scan and never mask the rest —
@@ -508,10 +527,11 @@ var ErrStoreRootMissing = errors.New("sol-pi store root missing (not mounted)")
 // root-level error is ErrStoreRootMissing — an ABSENT store is a
 // different state from a partially-scanned one. The injectable walker
 // exists for the probe.
-const (
-	measureMaxFiles  = 20000  // sizes measured up to here (Info per file)
-	measureWalkFiles = 100000 // the walk stops counting here (count-only past the size budget)
-)
+// measureMaxFiles: sizes are measured (Info per file) up to here; past
+// it the walk is count-only (readdir floor — the lstat storm must not
+// run before pi spawns) and the count keeps moving to the tree end, so
+// the arm-time line can never freeze into a constant (r8).
+const measureMaxFiles = 20000
 
 func measureStore(mount string) (total int64, files int, capped bool, scanErr error) {
 	err := walkStore(mount, func(path string, d os.DirEntry, err error) error {
@@ -528,15 +548,14 @@ func measureStore(mount string) (total int64, files int, capped bool, scanErr er
 		}
 		if capped {
 			// Past the size budget: COUNT ONLY — d.Info() is an lstat
-			// round-trip per file on the RWX claim, and the walk runs
-			// before pi spawns on every arm (r7: 180k files measured
-			// 1.7s locally, minutes near quota on network storage). The
-			// count keeps moving; the byte figure is a measured lower
-			// bound with the unmeasured tail named.
+			// round-trip per file on the RWX claim (r7: 1.7s per 180k
+			// files locally, minutes near quota on network storage).
+			// Counting continues to the tree end: the walk is
+			// readdir-floor cheap, and a hard stop re-freezes the line —
+			// byte-identical output no matter how the store grows is the
+			// exact reads-as-stopped-growing failure this signal exists
+			// to prevent (r8).
 			files++
-			if files >= measureWalkFiles {
-				return fs.SkipAll
-			}
 			return nil
 		}
 		if info, err := d.Info(); err == nil {

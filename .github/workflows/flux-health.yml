@@ -1,0 +1,65 @@
+name: Flux Health
+
+# The silent-rollback watcher's receiver half (#614 class: dev 276 failed
+# rollout and nothing flagged it for 18h). The clusters' notification-api
+# Alert objects (k8s-config, infrastructure/flux-operator + platform/dev
+# trios) dispatch HelmRelease/Kustomization reconciliation ERRORS here via
+# the githubdispatch provider; this workflow upserts ONE tracking issue per
+# degraded object — an open issue is the unresolved signal, never silence.
+# Recurring identical errors are folded into the same issue (no
+# comment-per-reconcile spam); the operator closes the issue after triage.
+
+on:
+  repository_dispatch:
+
+permissions:
+  issues: write
+
+concurrency:
+  group: flux-health-${{ github.event.action }}
+  cancel-in-progress: false
+
+jobs:
+  file:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Upsert the tracking issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTION: ${{ github.event.action }}
+          SEVERITY: ${{ github.event.client_payload.severity }}
+          MESSAGE: ${{ github.event.client_payload.message }}
+          TIMESTAMP: ${{ github.event.client_payload.timestamp }}
+          REASON: ${{ github.event.client_payload.reason }}
+          REVISION: ${{ github.event.client_payload.metadata.fluxcd\.io/revision }}
+        run: |
+          set -euo pipefail
+          case "$ACTION" in
+            HelmRelease/*|Kustomization/*) ;;
+            *) echo "not a flux-health dispatch ($ACTION) — ignoring"; exit 0 ;;
+          esac
+          title="[flux-health] $ACTION"
+          body=$(printf '**%s** `%s`\n\n> %s\n\nfirst seen %s — resolve the cluster-side cause, then close this issue; it reopens on the next occurrence after closure if the object degrades again.' \
+            "${SEVERITY:-error}" "${REASON:-ReconciliationFailed}" "$MESSAGE" "${TIMESTAMP:-$(date -u +%FT%TZ)}")
+          # The upsert: one open issue per degraded object, ever. Fold
+          # recurring identical errors into the existing issue (the
+          # reconciler re-fires every interval — a comment per fire is spam).
+          existing="$(gh issue list -R tibrezus/harmostes --state open \
+            --search "$title in:title" --json number --jq '.[0].number' 2>/dev/null || true)"
+          if [ -n "$existing" ]; then
+            if gh issue view "$existing" -R tibrezus/harmostes --json comments \
+                 --jq '.comments[-1].body' 2>/dev/null | grep -qF "$MESSAGE"; then
+              echo "issue #$existing already carries this occurrence — folded"
+              exit 0
+            fi
+            gh issue comment "$existing" -R tibrezus/harmostes \
+              --body "recurrence $(date -u +%FT%TZ): $MESSAGE"
+            echo "appended recurrence to #$existing"
+          else
+            gh issue create -R tibrezus/harmostes \
+              --title "$title" --body "$body" \
+              --label "flux-health" 2>/dev/null \
+            || gh issue create -R tibrezus/harmostes --title "$title" --body "$body"
+            echo "filed the tracking issue"
+          fi

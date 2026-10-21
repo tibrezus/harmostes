@@ -580,3 +580,97 @@ func TestRunDetailTimingWaterfallZeroDurations(t *testing.T) {
 		t.Error("exactly the in-flight lane must carry Live=true")
 	}
 }
+
+// End-to-end: the RENDERED page carries the tooltip — a long node label in
+// the spec produces a truncated lane label whose <title> holds the full
+// name (the #569 "agent · lit…" ghost class, now recoverable on hover).
+func TestRunDetailTimingWaterfallTruncatedLabelTooltip(t *testing.T) {
+	const full = "agent · litellm-x7"
+	att := wallReviewAttempt("attempt-pr-review-x-1", "pr-review-x")
+	base := time.Date(2026, 9, 1, 8, 0, 0, 0, time.UTC)
+	att.CreationTimestamp = metav1.NewTime(base)
+	spec := graphTestSpec()
+	for i := range spec.Nodes {
+		if spec.Nodes[i].ID == "agent" {
+			spec.Nodes[i].Label = full
+		}
+	}
+	wf := graphSeedWorkflow("pr-review-x")
+	wf.Spec.Graph = ptrGraphSpec(spec) // the seed builds its own fresh spec — inject OURS
+	env := func(node string, produced time.Time, durSec int64) v1alpha1.NodeResultEnvelope {
+		e := graphEnvelope(node, "ok", metav1.NewTime(produced))
+		e.DurationMs = durSec * 1000
+		return e
+	}
+	att.Status.NodeResults = []v1alpha1.NodeResultEnvelope{
+		env("prepare", base.Add(10*time.Second), 5),
+		env("agent", base.Add(10*time.Second+13*time.Minute+time.Second), 13*60),
+		env("deploy", base.Add(10*time.Second+13*time.Minute+6*time.Second), 5),
+	}
+	s := newAttemptTestServer(t, wf, att)
+
+	req := httptest.NewRequest(http.MethodGet, "/runs/attempt-pr-review-x-1", nil)
+	req.Header.Set("X-Authentik-Username", "alice")
+	rec := httptest.NewRecorder()
+	s.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	body := rec.Body.String()
+	stripStart := strings.Index(body, "rg-timing-title")
+	strip := body[stripStart : stripStart+strings.Index(body[stripStart:], "</svg>")]
+	if !strings.Contains(strip, "agent · lit…") {
+		t.Fatalf("the long label was not truncated to the gutter form; strip=%.300s", strip)
+	}
+	if !strings.Contains(strip, "<title>"+full+"</title>") {
+		t.Error("the truncated lane label carries no full-name tooltip — the ghost class is back")
+	}
+}
+
+// The 12-rune gutter truncation carries its recovery (#569 residue): a
+// truncated lane label's <title> holds the FULL name — "agent · lit…"
+// ghosts had none. Short labels emit NO title (an identical tooltip over
+// an untruncated label is noise). Direct unit test: the fixture's labels
+// are all short, so the fixture page can never exercise the cut.
+func TestTimingStripTruncatedLabelCarriesFullTooltip(t *testing.T) {
+	long := "agent · litellm/prod/long-model-name" // 36 runes — cut at 12
+	nodes := []graphNodeView{
+		{ID: "prepare", Label: "prepare", Status: "succeeded"},
+		{ID: "agent", Label: long, Status: "succeeded"},
+	}
+	now := time.Now()
+	latest := map[string]v1alpha1.NodeResultEnvelope{
+		"prepare": {ProducedAt: metav1.NewTime(now.Add(-2 * time.Minute)), DurationMs: 30000},
+		"agent":   {ProducedAt: metav1.NewTime(now), DurationMs: 60000},
+	}
+	segs := buildTimingStrip(nodes, latest, nil)
+	if len(segs) != 2 {
+		t.Fatalf("segments = %d, want 2", len(segs))
+	}
+	byLabel := map[string]timingSegment{}
+	for _, s := range segs {
+		byLabel[s.Label] = s
+	}
+	cut, ok := byLabel[truncateRunes(long, 12)]
+	if !ok {
+		t.Fatalf("the long lane's truncated label missing; have %v", keys(segs))
+	}
+	if cut.Full != long {
+		t.Fatalf("the truncated lane must carry the FULL label as its tooltip title, got %q", cut.Full)
+	}
+	short, ok := byLabel["prepare"]
+	if !ok {
+		t.Fatal("the short lane missing")
+	}
+	if short.Full != "" {
+		t.Fatalf("an untruncated label must emit NO tooltip (noise), got %q", short.Full)
+	}
+}
+
+func keys(segs []timingSegment) []string {
+	out := make([]string, 0, len(segs))
+	for _, s := range segs {
+		out = append(out, s.Label)
+	}
+	return out
+}

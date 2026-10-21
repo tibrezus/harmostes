@@ -419,13 +419,21 @@ func TestWorkspaceCoverageCarry(t *testing.T) {
 		run("init", "-q", "-b", "main")
 		run("config", "user.email", "t@t")
 		run("config", "user.name", "t")
-		os.WriteFile(filepath.Join(dir, "a.go"), []byte("one\n"), 0o644)
-		os.WriteFile(filepath.Join(dir, "b.go"), []byte("frontier\n"), 0o644)
+		if err := os.WriteFile(filepath.Join(dir, "a.go"), []byte("one\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "b.go"), []byte("frontier\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
 		run("add", "-A")
 		run("commit", "-qm", "last")
 		lastSha = run("rev-parse", "HEAD") // -q commit prints nothing; the sha comes from rev-parse
-		os.WriteFile(filepath.Join(dir, "a.go"), []byte("two\n"), 0o644)
-		os.WriteFile(filepath.Join(dir, "c.go"), []byte("new\n"), 0o644)
+		if err := os.WriteFile(filepath.Join(dir, "a.go"), []byte("two\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "c.go"), []byte("new\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
 		run("add", "-A")
 		run("commit", "-qm", "head")
 		headSha = run("rev-parse", "HEAD")

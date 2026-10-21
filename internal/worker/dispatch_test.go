@@ -1049,3 +1049,38 @@ func TestDispatchAttachmentsCallSitesWired(t *testing.T) {
 		t.Fatalf("the nil-envelope path must log ABSENT for the unresolvable scope, got: %v", ngLines)
 	}
 }
+
+// #726 r1 (round TODO): config.repoWiki is the one config key consumed
+// as a typed scalar — a non-string shape must be a dispatch-time error
+// naming the field, never a silent absent or a runtime clone failure.
+func TestValidateRepoWikiConfig(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cfg  string
+		want string // "" = legal
+	}{
+		{"absent", ``, ""},
+		{"empty object", `{}`, ""},
+		{"unrelated keys", `{"label":"needs-review","wiki":"https://x"}`, ""},
+		{"string url", `{"repoWiki":"ssh://git@git.rezus.cloud/tibrez/rhesadox.wiki.git"}`, ""},
+		{"null", `{"repoWiki":null}`, ""},
+		{"structured value (the typo'd nesting survivor)", `{"repoWiki":{"url":"https://x"}}`, "config.repoWiki must be a string"},
+		{"number", `{"repoWiki":42}`, "config.repoWiki must be a string"},
+	} {
+		err := ValidateRepoWikiConfig(json.RawMessage(tc.cfg))
+		if tc.want == "" {
+			if err != nil {
+				t.Errorf("%s: unexpected err %v", tc.name, err)
+			}
+			continue
+		}
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: err = %v, want containing %q", tc.name, err, tc.want)
+		}
+	}
+	// non-object config (free-form JSON allows it): no repoWiki key to
+	// validate — not this validator's error.
+	if err := ValidateRepoWikiConfig(json.RawMessage(`["a","b"]`)); err != nil {
+		t.Errorf("non-object config must pass (nothing to validate), got %v", err)
+	}
+}

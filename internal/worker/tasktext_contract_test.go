@@ -258,7 +258,7 @@ func TestTaskTextTeachesTheShippedResearchContract(t *testing.T) {
 		for _, needle := range []string{
 			"/workspace/research",
 			"research-out.md",
-			"LEAD, not ground", // staleness semantics: verify before relying
+			"LEAD, not ground",                     // staleness semantics: verify before relying
 			"re-derive nothing it already answers", // the economy: no rediscovery
 		} {
 			if !strings.Contains(text, needle) {

@@ -660,19 +660,24 @@ func TestWorkspaceCoverageCarry(t *testing.T) {
 		run("init", "-q", "-b", "main")
 		run("config", "user.email", "t@t")
 		run("config", "user.name", "t")
-		os.WriteFile(filepath.Join(repo, "a.go"), []byte("one\n"), 0o644)
-		os.WriteFile(filepath.Join(repo, "b.go"), []byte("one\n"), 0o644)
+		write := func(name, content string) {
+			if err := os.WriteFile(filepath.Join(repo, name), []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		write("a.go", "one\n")
+		write("b.go", "one\n")
 		run("add", "-A")
 		run("commit", "-qm", "covered-at")
 		coveredAt := run("rev-parse", "HEAD")
 		// a real (reachable) commit changes a.go…
-		os.WriteFile(filepath.Join(repo, "a.go"), []byte("two\n"), 0o644)
+		write("a.go", "two\n")
 		run("add", "-A")
 		run("commit", "-qm", "real-change")
 		// …and an orphaned one would have changed b.go — reset away, so
 		// last_reviewed_sha (taken here, then faked unreachable in the
 		// ledger) has no reachable counterpart.
-		os.WriteFile(filepath.Join(repo, "b.go"), []byte("two\n"), 0o644)
+		write("b.go", "two\n")
 		run("add", "-A")
 		run("commit", "-qm", "forced-away")
 		run("reset", "--hard", "HEAD~1")

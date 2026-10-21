@@ -1157,6 +1157,8 @@ n=len(fs)
 # an APPROVE. Absent coverage block → no coverage line (legacy shape).
 try: cov=json.load(open(os.environ["COV_FILE"]))
 except Exception: cov={}
+cov_declared = bool(cov) and bool(
+    cov.get("downgraded") or (cov.get("covered_now") or 0) + (cov.get("frontier_now") or 0) > 0)
 # The publisher's true counts + everything it could not land (#685 r5):
 # rejected anchors, lineless findings, and the 20-thread cap overage all
 # ride here — the verdict may not claim a thread the forge never took.
@@ -1188,7 +1190,7 @@ else:
         parts.append(f"{len(carried)} could not anchor (line not in the diff or beyond the cap: {c_f} findings, {c_t} TODOs) and are carried below")
         line="; ".join(parts)+"; close them, then re-arm with the label to re-review."
     else:
-        if n==0:
+        if n==0 and (review.get("coverage") or {}).get("frontier"):
             # The frontier-only round (#704): zero findings, the declared
             # frontier IS the blocking statement — "close them" would lie.
             nf=len((review.get("coverage") or {}).get("frontier") or [])
@@ -1225,11 +1227,17 @@ if carried:
 # bounded at 10 entries like the carried list). When the frontier
 # downgraded an APPROVE, the note says so — the verdict must not look
 # like a thread-driven REQUEST_CHANGES when the driver was coverage.
-if cov:
-    covline="\n\ncoverage (round %s): %d file(s) covered at this head" % (cov.get("rounds") or "?", cov.get("covered_now") or 0)
-    if cov.get("carried"):
-        covline+=", %d accumulated in the ledger" % (cov.get("covered_total") or 0)
-    body+=covline
+# Coverage projection (#704): the counts ride THE LINE (r7 briefness —
+# the verdict is one line + trailer; body newlines are earned by DATA,
+# like the carried-findings list above). The frontier list (what the
+# author and the next round need) rides the body, bounded at 10 entries.
+# The carried branch builds its own composite line — the counts clause
+# splices only there; the frontier list still appends after the carried
+# entries (data, not counts).
+if cov_declared and not carried:
+    line += "; coverage: %d file(s) covered at this head, frontier %d" % (cov.get("covered_now") or 0, cov.get("frontier_now") or 0)
+    body = line
+if cov_declared:
     if cov.get("downgraded"):
         body+="\n\nDowngraded from APPROVE: the declared frontier means the surface was not fully reviewed — the next round spends its budget there first."
     frontier=review.get("coverage",{}).get("frontier") or []

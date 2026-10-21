@@ -361,8 +361,10 @@ func TestPostReviewVerdictComposeCoverage(t *testing.T) {
 		if !strings.Contains(out, "**big.go** — wall reached") || !strings.Contains(out, "**huge.go** — not examined") {
 			t.Errorf("the frontier list with defaulted reason must ride the body: %s", out)
 		}
-		if !strings.Contains(out, "coverage (round 2): 3 file(s) covered at this head, 5 accumulated in the ledger") {
-			t.Errorf("the coverage projection line must speak rounds+counts: %s", out)
+		// r7 briefness: the counts ride THE LINE (before the body blocks);
+		// only data lists earn body newlines.
+		if !strings.Contains(out, "frontier 2\n\nFrontier") && !strings.Contains(out, "coverage: 3 file(s) covered at this head, frontier 2") {
+			t.Errorf("the coverage counts must ride the one-line verdict: %s", out)
 		}
 		if !strings.Contains(out, "<!-- pr-review: REQUEST_CHANGES @ aaaa -->") {
 			t.Errorf("trailer must carry the final decision: %s", out)
@@ -377,6 +379,25 @@ func TestPostReviewVerdictComposeCoverage(t *testing.T) {
 			map[string]any{})
 		if !strings.Contains(out, "Downgraded from APPROVE") {
 			t.Errorf("a coverage-downgraded verdict must explain itself: %s", out)
+		}
+	})
+
+	t.Run("zero findings without a declared frontier keeps the legacy line", func(t *testing.T) {
+		// the R7-downgrade shape: a thread-driven REQUEST_CHANGES with no
+		// coverage block must NOT inherit the frontier wording (nothing
+		// was declared; "coverage incomplete: 0" would be noise).
+		out := run(t,
+			map[string]any{"decision": "REQUEST_CHANGES", "reviewed_sha": "dddd", "findings": []any{}},
+			map[string]any{},
+			map[string]any{})
+		if strings.Contains(out, "coverage incomplete") {
+			t.Errorf("no declared coverage — the legacy zero-findings line must stand: %s", out)
+		}
+		if strings.Contains(out, "; coverage: 0 file(s)") {
+			t.Errorf("cov_declared must gate the counts clause (a coverage-less round carries no coverage noise): %s", out)
+		}
+		if !strings.Contains(out, "0 blocking findings posted as review threads; close them") {
+			t.Errorf("legacy zero-findings wording must be preserved: %s", out)
 		}
 	})
 

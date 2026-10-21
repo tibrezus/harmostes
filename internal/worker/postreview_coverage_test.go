@@ -57,13 +57,23 @@ func extractCoverageMerge(t *testing.T) string {
 	if pyStart < 0 || pyEnd < 0 || pyEnd <= pyStart {
 		t.Fatalf("coverage-merge block lost its PYCOV heredoc shape")
 	}
-	body := seg[pyStart+len("<< 'PYCOV'")+1 : pyEnd+1]
+	// the non-fatal guard rides the OPENER line ("<< 'PYCOV' || { … }") —
+	// start the body at the newline AFTER the opener, never inside it.
+	bodyStart := strings.Index(seg[pyStart:], "\n")
+	if bodyStart < 0 {
+		t.Fatal("PYCOV opener line not newline-terminated")
+	}
+	body := seg[pyStart+bodyStart+1 : pyEnd+1]
 	return body
 }
 
 // runCoverageMerge runs the extracted program with REVIEW/COV_FILE/store
 // env the way the script wires it, and returns the projection JSON.
 func runCoverageMerge(t *testing.T, review map[string]any, storeDir string, prNum string) (proj map[string]any) {
+	return runCoverageMergeOpen(t, review, storeDir, prNum, "")
+}
+
+func runCoverageMergeOpen(t *testing.T, review map[string]any, storeDir string, prNum string, totalOpen string) (proj map[string]any) {
 	t.Helper()
 	dir := t.TempDir()
 	rj, err := json.Marshal(review)
@@ -87,6 +97,9 @@ func runCoverageMerge(t *testing.T, review map[string]any, storeDir string, prNu
 		t.Fatal(err)
 	}
 	cmd := exec.Command(py, script, reviewPath, projPath, storeDir, prNum)
+	if totalOpen != "" {
+		cmd.Env = append(cmd.Env, "TOTAL_OPEN="+totalOpen)
+	}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("coverage merge crashed: %v — %s", err, out)
@@ -132,8 +145,9 @@ func TestPostReviewCoverageLedger(t *testing.T) {
 			t.Fatal(err)
 		}
 		// round 2: covers c.go (the old frontier) + redeclares a.go at the
-		// new sha; new frontier d.go; findings resolved down to 1.
-		proj := runCoverageMerge(t, map[string]any{
+		// new sha; new frontier d.go; findings resolved down to 1 (the one
+		// remainder rides TOTAL_OPEN — the metric, #704 r1).
+		proj := runCoverageMergeOpen(t, map[string]any{
 			"decision":     "REQUEST_CHANGES",
 			"reviewed_sha": "2222222222222222222222222222222222222222",
 			"findings":     []any{map[string]any{"path": "d.go", "body": "Blocking: x"}},
@@ -141,7 +155,7 @@ func TestPostReviewCoverageLedger(t *testing.T) {
 				"covered":  []any{map[string]any{"path": "a.go"}, map[string]any{"path": "c.go", "note": "the old frontier, now read"}},
 				"frontier": []any{map[string]any{"path": "d.go", "reason": "wall reached"}},
 			},
-		}, store, "691")
+		}, store, "691", "1")
 		if proj["carried"] != true || proj["rounds"] != float64(2) {
 			t.Fatalf("projection must speak carried+rounds=2, got %v", proj)
 		}
@@ -412,6 +426,114 @@ func TestPostReviewVerdictComposeCoverage(t *testing.T) {
 		}
 		if !strings.Contains(out, "1 blocking finding posted as review threads") {
 			t.Errorf("legacy line must be unchanged: %s", out)
+		}
+	})
+}
+
+// #704 r1 fixes, pinned at the shipped block: the ledger-reset window
+// (undeclared rounds must not touch the ledger), the convergence metric
+// (findings_open = TOTAL_OPEN, the open-thread count — not the raw
+// findings-array length), the shell's DEC following the coverage
+// downgrade, and the non-fatal guard on the whole block.
+func TestPostReviewCoverageLedgerIntegrity(t *testing.T) {
+	t.Run("an undeclared round does not write the ledger (no frontier erase)", func(t *testing.T) {
+		store := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(store, "coverage"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		// round 3 left a real frontier: files nobody examined
+		r3 := map[string]any{
+			"version": 1, "pr": 800, "rounds": 3, "last_reviewed_sha": "3333333333333333333333333333333333333333",
+			"covered":       []any{map[string]any{"path": "a.go", "sha": "3333333333333333333333333333333333333333", "round": 3}},
+			"frontier":      []any{map[string]any{"path": "big.go", "reason": "wall reached"}, map[string]any{"path": "huge.go", "reason": "never reached"}},
+			"findings_open": 2,
+		}
+		b, _ := json.Marshal(r3)
+		ledgerPath := filepath.Join(store, "coverage", "800.json")
+		if err := os.WriteFile(ledgerPath, b, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		// round 4 = legacy REQUEST_CHANGES, no coverage key
+		proj := runCoverageMerge(t, map[string]any{
+			"decision":     "REQUEST_CHANGES",
+			"reviewed_sha": "4444444444444444444444444444444444444444",
+			"findings":     []any{map[string]any{"path": "a.go", "body": "Blocking: x"}},
+		}, store, "800")
+		if proj["carried"] != false {
+			t.Fatalf("an undeclared round carries nothing new, got %v", proj)
+		}
+		after, err := os.ReadFile(ledgerPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var led map[string]any
+		_ = json.Unmarshal(after, &led)
+		if led["frontier"] == nil || len(led["frontier"].([]any)) != 2 {
+			t.Fatalf("the frontier must survive an undeclared round (the ledger-reset window), got %v", led["frontier"])
+		}
+		if led["rounds"] != float64(3) || led["last_reviewed_sha"] != "3333333333333333333333333333333333333333" {
+			t.Errorf("an undeclared round is read-only on the ledger, got rounds=%v sha=%v", led["rounds"], led["last_reviewed_sha"])
+		}
+	})
+
+	t.Run("a declared round with an empty frontier replaces it (the agent examined everything)", func(t *testing.T) {
+		store := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(store, "coverage"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		r1, _ := json.Marshal(map[string]any{
+			"version": 1, "pr": 801, "rounds": 1, "last_reviewed_sha": "1111111111111111111111111111111111111111",
+			"covered": []any{}, "frontier": []any{map[string]any{"path": "x.go", "reason": "wall"}}, "findings_open": 1,
+		})
+		if err := os.WriteFile(filepath.Join(store, "coverage", "801.json"), r1, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		runCoverageMerge(t, map[string]any{
+			"decision":     "REQUEST_CHANGES",
+			"reviewed_sha": "2222222222222222222222222222222222222222",
+			"findings":     []any{},
+			"coverage":     map[string]any{"covered": []any{map[string]any{"path": "x.go"}}, "frontier": []any{}},
+		}, store, "801")
+		led := readStoreLedger(t, store, "801")
+		if f := led["frontier"].([]any); len(f) != 0 {
+			t.Errorf("a DECLARED empty frontier is the fresh statement — replaces, got %v", f)
+		}
+	})
+
+	t.Run("findings_open is TOTAL_OPEN (the convergence metric), not len(findings)", func(t *testing.T) {
+		store := t.TempDir()
+		proj := runCoverageMergeOpen(t, map[string]any{
+			"decision":     "REQUEST_CHANGES",
+			"reviewed_sha": "5555555555555555555555555555555555555555",
+			"findings":     []any{map[string]any{"path": "a.go", "body": "Blocking: x"}},
+			"coverage":     map[string]any{"covered": []any{map[string]any{"path": "a.go"}}, "frontier": []any{}},
+		}, store, "802", "4")
+		if proj["carried"] != true {
+			t.Fatalf("declared round must carry, got %v", proj)
+		}
+		led := readStoreLedger(t, store, "802")
+		if led["findings_open"] != float64(4) {
+			t.Errorf("findings_open must be TOTAL_OPEN (4 open threads), got %v", led["findings_open"])
+		}
+	})
+
+	t.Run("wiring pins: the DEC follow, the non-fatal guard, the TOTAL_OPEN feed", func(t *testing.T) {
+		raw, err := os.ReadFile(filepath.Join("..", "..", "plugins", "post-review", "post-review.sh"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		script := string(raw)
+		for _, pin := range []struct{ why, needle string }{
+			{"the coverage downgrade must move the shell DEC (native review + merge status + artifact read $DEC, not review.json)",
+				`if grep -q '"downgraded": true' "$COV_FILE"`},
+			{"the block must be non-fatal under set -euo pipefail (a crash must not skip the verdict/label/artifact)",
+				`|| { echo '{}' > "$COV_FILE"`},
+			{"the merge must receive TOTAL_OPEN (the convergence metric is the open-thread count)",
+				`TOTAL_OPEN="$TOTAL_OPEN" python3`},
+		} {
+			if !strings.Contains(script, pin.needle) {
+				t.Errorf("wiring pin lost (%s):\n  %s", pin.why, pin.needle)
+			}
 		}
 	})
 }

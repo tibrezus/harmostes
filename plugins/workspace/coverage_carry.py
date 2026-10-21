@@ -64,6 +64,34 @@ def git(*args):
                           capture_output=True, text=True)
 
 
+def reachable(sha):
+    """True when the (possibly shallow) clone holds the commit."""
+    if git("cat-file", "-e", sha + "^{commit}").returncode == 0:
+        return True
+    git("fetch", "--quiet", "--depth", "50", "origin", sha)
+    return git("cat-file", "-e", sha + "^{commit}").returncode == 0
+
+
+def files_changed_since(sha, cache={}):
+    """Set of files changed sha..head, or None when unknowable.
+
+    Per-SHA (#704 r1): covered entries carry the sha they were covered at;
+    computing touched only against last_reviewed_sha missed entries covered
+    at OLDER shas (multi-round ledgers) and degraded to all-false when the
+    global sha was unreachable (rebase/force-push) — while files HAD changed
+    since their own coverage sha. None = cannot prove unchanged; the caller
+    treats it as touched (re-verify) — the conservative direction.
+    """
+    if sha in cache:
+        return cache[sha]
+    if not sha or not reachable(sha):
+        cache[sha] = None
+        return None
+    names = git("diff", "--name-only", sha, HEAD_SHA)
+    cache[sha] = set(ln for ln in names.stdout.splitlines() if ln.strip()) if names.returncode == 0 else None
+    return cache[sha]
+
+
 def main():
     if not LEDGER_PATH or not os.path.isfile(LEDGER_PATH):
         log("no coverage ledger (%s) — full-surface round" % ("store unset" if not LEDGER_PATH else "first round"))
@@ -111,13 +139,19 @@ def main():
         else:
             warn("last_reviewed_sha %s not reachable (shallow clone) — no delta; frontier still carries" % last_sha[:10])
 
-    # ── agent-readable ledger with touched flags ──────────────────────────
-    delta_set = set(delta_files)
+    # ── agent-readable ledger with touched flags (per covered sha) ────
     carried = dict(ledger)
     covered = []
     for c in ledger.get("covered") or []:
         entry = dict(c)
-        entry["touched"] = (not same_head) and entry.get("path") in delta_set
+        changed = files_changed_since(entry.get("sha") or last_sha)
+        if changed is None:
+            # cannot prove the file unchanged since its coverage sha —
+            # the conservative direction is re-verification, not trust.
+            entry["touched"] = True
+            entry["touched_unknown"] = True
+        else:
+            entry["touched"] = entry.get("path") in changed
         covered.append(entry)
     carried["covered"] = covered
     carried["delta_emitted"] = delta_emitted

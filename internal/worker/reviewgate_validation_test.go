@@ -318,3 +318,128 @@ func TestReviewGateCoverageContract(t *testing.T) {
 		}
 	})
 }
+
+// #704 r1: two gate additions that make "APPROVE = coverage complete" and
+// the ledger's integrity mechanical — (1) an APPROVE's coverage must
+// account for the WHOLE changed surface (files_changed ⊆ covered ∪
+// frontier); (2) once the workspace carried a ledger (pr-context carries
+// the coverage fact block), a round that declares NOTHING would reset it
+// in the deploy's merge — the declaration is mandatory exactly there.
+func TestReviewGateCoverageCompletenessAndCarryMandatory(t *testing.T) {
+	ctxWith := func(files ...string) map[string]any {
+		fs := make([]any, len(files))
+		for i, f := range files {
+			fs[i] = map[string]any{"filename": f, "status": "modified"}
+		}
+		return map[string]any{"head_sha": sha40, "files_changed": fs}
+	}
+	run := func(review map[string]any, ctx map[string]any) (string, int) {
+		dir := t.TempDir()
+		rj, _ := json.Marshal(review)
+		if err := os.WriteFile(filepath.Join(dir, "review.json"), rj, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		cj, _ := json.Marshal(ctx)
+		if err := os.WriteFile(filepath.Join(dir, "pr-context.json"), cj, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		script, _ := filepath.Abs(filepath.Join("..", "..", "plugins", "pr-review", "pr-review.sh"))
+		cmd := exec.Command("bash", script)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "HARMOSTES_WORKDIR="+dir, "HARMOSTES_PR_HEAD_SHA="+sha40)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Logf("rejected: %s", out)
+		}
+		return string(out), exitCode(err)
+	}
+
+	t.Run("APPROVE over a partial coverage declaration is refused", func(t *testing.T) {
+		out, code := run(map[string]any{
+			"decision":     "APPROVE",
+			"reviewed_sha": sha40,
+			"findings":     []any{},
+			"coverage": map[string]any{
+				"covered":  []any{map[string]any{"path": "a.go"}},
+				"frontier": []any{},
+			},
+		}, ctxWith("a.go", "b.go", "c.go"))
+		if code == 0 {
+			t.Fatal("APPROVE with 1 of 3 changed files declared must be refused")
+		}
+		if !strings.Contains(out, "2 changed file(s) neither covered nor frontiered") || !strings.Contains(out, "b.go") {
+			t.Errorf("refusal must name the count and the missing files, got:\n%s", out)
+		}
+	})
+
+	t.Run("APPROVE over the complete surface passes", func(t *testing.T) {
+		out, code := run(map[string]any{
+			"decision":     "APPROVE",
+			"reviewed_sha": sha40,
+			"findings":     []any{},
+			"coverage": map[string]any{
+				"covered":  []any{map[string]any{"path": "a.go"}, map[string]any{"path": "b.go"}},
+				"frontier": []any{map[string]any{"path": "c.go", "reason": "docs-only, skimmed"}},
+			},
+		}, ctxWith("a.go", "b.go", "c.go"))
+		if code == 0 {
+			t.Fatalf("the complete declaration must pass, rc=%d out=%s", code, out)
+		}
+	})
+
+	t.Run("REQUEST_CHANGES may declare partial coverage honestly", func(t *testing.T) {
+		_, code := run(map[string]any{
+			"decision":     "REQUEST_CHANGES",
+			"reviewed_sha": sha40,
+			"findings":     []any{map[string]any{"path": "a.go", "body": "Blocking: x"}},
+			"coverage": map[string]any{
+				"covered":  []any{map[string]any{"path": "a.go"}},
+				"frontier": []any{},
+			},
+		}, ctxWith("a.go", "b.go"))
+		if code != 0 {
+			t.Fatal("partial coverage under REQUEST_CHANGES is honest — passes")
+		}
+	})
+
+	t.Run("carry happened + no declaration is refused (the ledger-reset window)", func(t *testing.T) {
+		ctx := ctxWith("a.go")
+		ctx["coverage"] = map[string]any{"last_reviewed_sha": "1111", "rounds": 2}
+		out, code := run(map[string]any{
+			"decision":     "REQUEST_CHANGES",
+			"reviewed_sha": sha40,
+			"findings":     []any{map[string]any{"path": "a.go", "body": "Blocking: x"}},
+		}, ctx)
+		if code == 0 {
+			t.Fatal("a carried round that declares nothing resets the ledger — refused")
+		}
+		if !strings.Contains(out, "declared no coverage block") {
+			t.Errorf("refusal must name the missing declaration, got:\n%s", out)
+		}
+	})
+
+	t.Run("carry happened + declared passes", func(t *testing.T) {
+		ctx := ctxWith("a.go")
+		ctx["coverage"] = map[string]any{"last_reviewed_sha": "1111", "rounds": 2}
+		out, code := run(map[string]any{
+			"decision":     "REQUEST_CHANGES",
+			"reviewed_sha": sha40,
+			"findings":     []any{},
+			"coverage":     map[string]any{"covered": []any{}, "frontier": []any{map[string]any{"path": "a.go"}}},
+		}, ctx)
+		if code != 0 {
+			t.Fatalf("a declared round over a carried ledger passes, rc=%d out=%s", code, out)
+		}
+	})
+
+	t.Run("no carry + no declaration is the legacy shape (passes)", func(t *testing.T) {
+		out, code := run(map[string]any{
+			"decision":     "REQUEST_CHANGES",
+			"reviewed_sha": sha40,
+			"findings":     []any{map[string]any{"path": "a.go", "body": "Blocking: x"}},
+		}, ctxWith("a.go"))
+		if code != 0 {
+			t.Fatalf("legacy rounds (no carried ledger) are untouched, rc=%d out=%s", code, out)
+		}
+	})
+}

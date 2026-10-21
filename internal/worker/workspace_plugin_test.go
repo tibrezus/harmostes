@@ -619,6 +619,194 @@ func TestWorkspaceCoverageCarry(t *testing.T) {
 		if !strings.Contains(string(b), "delta_emitted\": false") && !strings.Contains(string(b), "\"delta_emitted\":false") {
 			t.Errorf("delta_emitted must be false, got %s", b)
 		}
+		// #704 r1: the entry's own sha is ALSO unreachable — touched must
+		// degrade to TRUE (cannot prove unchanged → re-verify), never the
+		// all-false trust default.
+		var led struct {
+			Covered []struct {
+				Path           string `json:"path"`
+				Touched        bool   `json:"touched"`
+				TouchedUnknown bool   `json:"touched_unknown"`
+			} `json:"covered"`
+		}
+		if err := json.Unmarshal(b, &led); err != nil {
+			t.Fatal(err)
+		}
+		if len(led.Covered) != 1 || !led.Covered[0].Touched || !led.Covered[0].TouchedUnknown {
+			t.Errorf("an unknowable coverage sha must pin touched=true (conservative), got %+v", led.Covered)
+		}
+	})
+
+	t.Run("global sha unreachable but the entry's own sha reachable: per-sha verdict is real", func(t *testing.T) {
+		// rebase/force-push killed last_reviewed_sha, but the entry's
+		// coverage sha survives: the per-sha computation still answers
+		// (changed → true, unknown flag ABSENT), while a global-only
+		// computation would degrade every entry to conservative-true.
+		dir := t.TempDir()
+		repo := filepath.Join(dir, "repo")
+		if err := os.MkdirAll(repo, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		run := func(args ...string) string {
+			cmd := exec.Command(gitBin, args...)
+			cmd.Dir = repo
+			cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("git %v: %v — %s", args, err, out)
+			}
+			return strings.TrimSpace(string(out))
+		}
+		run("init", "-q", "-b", "main")
+		run("config", "user.email", "t@t")
+		run("config", "user.name", "t")
+		os.WriteFile(filepath.Join(repo, "a.go"), []byte("one\n"), 0o644)
+		os.WriteFile(filepath.Join(repo, "b.go"), []byte("one\n"), 0o644)
+		run("add", "-A")
+		run("commit", "-qm", "covered-at")
+		coveredAt := run("rev-parse", "HEAD")
+		// a real (reachable) commit changes a.go…
+		os.WriteFile(filepath.Join(repo, "a.go"), []byte("two\n"), 0o644)
+		run("add", "-A")
+		run("commit", "-qm", "real-change")
+		// …and an orphaned one would have changed b.go — reset away, so
+		// last_reviewed_sha (taken here, then faked unreachable in the
+		// ledger) has no reachable counterpart.
+		os.WriteFile(filepath.Join(repo, "b.go"), []byte("two\n"), 0o644)
+		run("add", "-A")
+		run("commit", "-qm", "forced-away")
+		run("reset", "--hard", "HEAD~1")
+		head := run("rev-parse", "HEAD")
+
+		store := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(store, "coverage"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		lb, _ := json.Marshal(map[string]any{
+			"version": 1, "pr": 5, "rounds": 1, "last_reviewed_sha": "0000000000000000000000000000000000000000",
+			"covered": []any{
+				map[string]any{"path": "a.go", "sha": coveredAt, "round": 1},
+				map[string]any{"path": "b.go", "sha": coveredAt, "round": 1},
+			},
+			"frontier": []any{},
+		})
+		if err := os.WriteFile(filepath.Join(store, "coverage", "5.json"), lb, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "pr-context.json"), []byte(`{}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		runCarry(t, dir, store, "5", head)
+		b, err := os.ReadFile(filepath.Join(dir, "coverage-ledger.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var led struct {
+			Covered []struct {
+				Path           string `json:"path"`
+				Touched        bool   `json:"touched"`
+				TouchedUnknown bool   `json:"touched_unknown"`
+			} `json:"covered"`
+		}
+		if err := json.Unmarshal(b, &led); err != nil {
+			t.Fatal(err)
+		}
+		byPath := map[string]struct {
+			touched, unknown bool
+		}{}
+		for _, e := range led.Covered {
+			byPath[e.Path] = struct {
+				touched, unknown bool
+			}{e.Touched, e.TouchedUnknown}
+		}
+		if got := byPath["a.go"]; !got.touched || got.unknown {
+			t.Errorf("a.go changed since its coverage sha — real per-sha verdict required (touched=true, not the conservative unknown), got %+v", got)
+		}
+		if got := byPath["b.go"]; got.touched || got.unknown {
+			t.Errorf("b.go unchanged since its coverage sha — the per-sha answer must be false (global-only would say conservative-true), got %+v", got)
+		}
+	})
+
+	t.Run("per-entry touched: an entry at an OLDER sha is judged against its own sha", func(t *testing.T) {
+		// two rounds ago S1 covered a.go; last round S2 covered b.go; head
+		// S3 changed b.go only. Global delta S2..S3 misses a.go is fine
+		// (untouched — its own sha agrees); b.go must read touched=true
+		// against S2 even though a last_reviewed_sha-only computation at an
+		// unreachable S2 would have said false.
+		dir := t.TempDir()
+		repo := filepath.Join(dir, "repo")
+		if err := os.MkdirAll(repo, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		run := func(args ...string) string {
+			cmd := exec.Command(gitBin, args...)
+			cmd.Dir = repo
+			cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("git %v: %v — %s", args, err, out)
+			}
+			return strings.TrimSpace(string(out))
+		}
+		run("init", "-q", "-b", "main")
+		run("config", "user.email", "t@t")
+		run("config", "user.name", "t")
+		os.WriteFile(filepath.Join(repo, "a.go"), []byte("one\n"), 0o644)
+		os.WriteFile(filepath.Join(repo, "b.go"), []byte("one\n"), 0o644)
+		run("add", "-A")
+		run("commit", "-qm", "s1")
+		s1 := run("rev-parse", "HEAD")
+		os.WriteFile(filepath.Join(repo, "b.go"), []byte("two\n"), 0o644)
+		run("add", "-A")
+		run("commit", "-qm", "s2")
+		s2 := run("rev-parse", "HEAD")
+		os.WriteFile(filepath.Join(repo, "b.go"), []byte("three\n"), 0o644)
+		run("add", "-A")
+		run("commit", "-qm", "s3")
+		s3 := run("rev-parse", "HEAD")
+
+		store := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(store, "coverage"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		lb, _ := json.Marshal(map[string]any{
+			"version": 1, "pr": 4, "rounds": 2, "last_reviewed_sha": s2,
+			"covered": []any{
+				map[string]any{"path": "a.go", "sha": s1, "round": 1},
+				map[string]any{"path": "b.go", "sha": s2, "round": 2},
+			},
+			"frontier": []any{},
+		})
+		if err := os.WriteFile(filepath.Join(store, "coverage", "4.json"), lb, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "pr-context.json"), []byte(`{}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		runCarry(t, dir, store, "4", s3)
+		b, err := os.ReadFile(filepath.Join(dir, "coverage-ledger.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var led struct {
+			Covered []struct {
+				Path    string `json:"path"`
+				Touched bool   `json:"touched"`
+			} `json:"covered"`
+		}
+		if err := json.Unmarshal(b, &led); err != nil {
+			t.Fatal(err)
+		}
+		byPath := map[string]bool{}
+		for _, e := range led.Covered {
+			byPath[e.Path] = e.Touched
+		}
+		if byPath["a.go"] {
+			t.Error("a.go unchanged since its OWN coverage sha (s1) — touched must be false")
+		}
+		if !byPath["b.go"] {
+			t.Error("b.go changed since its coverage sha (s2) — touched must be true (a last_reviewed_sha-only computation would miss it when s2 is unreachable)")
+		}
 	})
 
 	t.Run("wiring pin: workspace.sh invokes the carry and clears stale artifacts", func(t *testing.T) {

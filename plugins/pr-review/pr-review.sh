@@ -53,6 +53,31 @@ if cov is not None:
     if d=="APPROVE" and frontier_count:
         print(f"ERROR: APPROVE with a declared frontier ({frontier_count} file(s) not examined) — the surface was not fully reviewed; "
               "either examine the frontier or declare REQUEST_CHANGES carrying it",file=sys.stderr);sys.exit(1)
+# Completeness (#704 r1): an APPROVE's coverage must account for the WHOLE
+# changed surface — every file in pr-context.json's files_changed is either
+# covered or frontiered. Declaring 1 of 12 and approving is the coverage
+# lie the frontier contract exists to prevent. (REQUEST_CHANGES may
+# honestly declare partial coverage — only APPROVE claims the whole.)
+ctx_path=os.path.join(os.path.dirname(path),"pr-context.json")  # defined later for the sha check; needed here first
+ctx=None
+try:
+    with open(ctx_path) as f: ctx=json.load(f)
+except (FileNotFoundError, json.JSONDecodeError): ctx=None
+if cov is not None and d=="APPROVE" and isinstance(ctx,dict):
+    changed={f.get("filename") for f in (ctx.get("files_changed") or []) if isinstance(f,dict)}
+    declared={e.get("path") for e in cov.get("covered") or []}|{e.get("path") for e in cov.get("frontier") or []}
+    missing=sorted(changed-declared)
+    if missing:
+        print(f"ERROR: APPROVE coverage incomplete — {len(missing)} changed file(s) neither covered nor frontiered "
+              f"(first: {', '.join(missing[:3])}) — examine them, declare them frontier, or do not APPROVE",file=sys.stderr);sys.exit(1)
+# Mandatory declaration after carry (#704 r1): when the workspace carried a
+# ledger (pr-context carries the coverage fact block — only happens when a
+# ledger existed), a round that declares NOTHING would silently reset it in
+# the deploy's merge. The advisory becomes a requirement exactly there.
+if cov is None and isinstance(ctx,dict) and isinstance(ctx.get("coverage"),dict):
+    print("ERROR: this round carried a coverage ledger but declared no coverage block — "
+          "write coverage {covered:[], frontier:[]} with the round's honest statement "
+          "(an undeclared round resets the ledger and the next round loses the frontier)",file=sys.stderr);sys.exit(1)
 if d=="REQUEST_CHANGES" and not findings and not frontier_count:
     print("ERROR: REQUEST_CHANGES requires at least one blocking finding in findings (threads are the review) — or a coverage frontier when the round ran out of budget before the surface (the frontier is the blocking statement)",file=sys.stderr);sys.exit(1)
 for i,c in enumerate(findings):

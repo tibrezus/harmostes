@@ -640,18 +640,32 @@ fi
 COV_FILE="$WORKDIR/.coverage-carry.json"
 rm -f "$COV_FILE"
 COV_STORE="${HARMOSTES_SOL_PI_STORE:-}"
-python3 - "$REVIEW" "$COV_FILE" "$COV_STORE" "$PR_NUM" << 'PYCOV'
+# TOTAL_OPEN rides in (#704 r1): the ledger's findings_open is the
+# convergence metric (#704 item 5) — it must be OPEN THREADS (listed open
+# roots + this round's remainders + uncarried todos), not the raw length
+# of the round's findings array, or the metric lies in both directions.
+TOTAL_OPEN="$TOTAL_OPEN" python3 - "$REVIEW" "$COV_FILE" "$COV_STORE" "$PR_NUM" << 'PYCOV' || { echo '{}' > "$COV_FILE" 2>/dev/null; log "WARN: coverage merge crashed (non-fatal — the verdict, label consume and artifact stand; the ledger write is skipped)"; }
 import json, os, sys, tempfile
 from datetime import datetime, timezone
 
 review_path, out_path, store, pr_num = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 with open(review_path) as f:
     review = json.load(f)
-cov = review.get("coverage") or {}
+cov_raw = review.get("coverage")
+# `declared` (#704 r1): a round that declares NO coverage block must not
+# touch the ledger at all — merging an empty declaration ERASES the prior
+# frontier (files nobody examined would carry frontier_count 0 into the
+# next round's carry). Undeclared = the ledger is read-only this round.
+declared = cov_raw is not None
+cov = cov_raw if isinstance(cov_raw, dict) else {}
 covered_now = cov.get("covered") or []
 frontier_now = cov.get("frontier") or []
 sha = review.get("reviewed_sha", "")
 findings = review.get("findings", review.get("comments") or []) or []
+try:
+    open_threads = int(os.environ.get("TOTAL_OPEN") or 0)
+except ValueError:
+    open_threads = 0
 
 # ── the downgrade: an APPROVE plus a declared frontier is a coverage lie.
 # Mirrors the thread downgrade above: rewrite review.json's decision (the
@@ -674,7 +688,7 @@ proj = {
     "covered_total": len(covered_now),
 }
 
-if store:
+if store and declared:
     ledger_path = os.path.join(store, "coverage", "%s.json" % pr_num)
     try:
         with open(ledger_path) as f:
@@ -714,7 +728,7 @@ if store:
                 ({"path": e["path"], **({"reason": e["reason"]} if isinstance(e.get("reason"), str) and e["reason"].strip() else {"reason": "not examined"})}
                  for e in frontier_now if isinstance(e, dict) and isinstance(e.get("path"), str)),
                 key=lambda e: e["path"]),
-            "findings_open": len(findings),
+            "findings_open": open_threads,
         }
         os.makedirs(os.path.dirname(ledger_path), exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=os.path.dirname(ledger_path), prefix=".cov-")
@@ -723,7 +737,7 @@ if store:
         os.replace(tmp, ledger_path)
         proj.update({"carried": True, "rounds": rnd, "covered_total": len(ledger_out["covered"])})
         print(f"[post-review] coverage ledger written: rounds={rnd} covered={len(ledger_out['covered'])} "
-              f"frontier={len(ledger_out['frontier'])} findings_open={len(findings)}", file=sys.stderr)
+              f"frontier={len(ledger_out['frontier'])} findings_open={open_threads}", file=sys.stderr)
     except Exception as e:
         # non-fatal by contract: the carry is an optimization layered on a
         # complete round; losing it costs the next round its delta.
@@ -732,6 +746,18 @@ if store:
 with open(out_path, "w") as f:
     json.dump(proj, f)
 PYCOV
+# The coverage downgrade must move the SHELL's decision too (#704 r1):
+# every downstream consumer — the native review event (a coverage-
+# downgraded APPROVE otherwise posts a native APPROVED review), the
+# pr-review/verdict merge status (otherwise success) and the round
+# artifact — reads $DEC, not review.json. Mirrors the thread downgrade:
+# the compose differs (cov.downgraded speaks in the coverage branch), so
+# DOWNGRADED stays untouched.
+if grep -q '"downgraded": true' "$COV_FILE" 2>/dev/null; then
+  log "coverage downgrade: DEC follows review.json to REQUEST_CHANGES (native review, merge status, artifact)"
+  DEC="REQUEST_CHANGES"
+  export COV_DOWNGRADED=1
+fi
 export COV_FILE
 # COVERAGE-MERGE-END
 fi   # IS_GITLAB guard closes: the listing/carry/gate are wired dialects only

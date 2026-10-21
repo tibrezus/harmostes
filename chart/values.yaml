@@ -609,7 +609,10 @@ tasks:
     the APPROVE — either examine what remains or declare REQUEST_CHANGES
     carrying the frontier. On a same-head re-arm (thread re-check round)
     declare the threads you re-verified as covered paths — that is the
-    round's honest statement, and it keeps the ledger alive.
+    round's honest statement, and it keeps the ledger alive. The carried
+    frontier carries itself forward: a path a prior round named as never
+    examined stays in the frontier until a round covers it — the deploy
+    merges per-path, so an unmentioned frontier file is never lost.
 
     `findings` carries ONLY blocking findings (CRITICAL or verified
     MAJOR) — each posted as a native anchored thread as it is verified

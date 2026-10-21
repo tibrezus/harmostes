@@ -506,6 +506,47 @@ func TestPostReviewCoverageLedgerIntegrity(t *testing.T) {
 		}
 	})
 
+	t.Run("per-path frontier: a same-head round that ignores the carried frontier does NOT erase it (#716 r2)", func(t *testing.T) {
+		// prior rounds covered values.yaml+golden, frontier heavy.go; the
+		// same-head round declares only the threads it re-verified — the
+		// unmentioned never-examined file must survive in the frontier.
+		store := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(store, "coverage"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		r3, _ := json.Marshal(map[string]any{
+			"version": 1, "pr": 901, "rounds": 3, "last_reviewed_sha": "3333333333333333333333333333333333333333",
+			"covered":       []any{map[string]any{"path": "values.yaml", "sha": "3333333333333333333333333333333333333333", "round": 3}},
+			"frontier":      []any{map[string]any{"path": "internal/ui/heavy.go", "reason": "wall reached"}},
+			"findings_open": 2,
+		})
+		if err := os.WriteFile(filepath.Join(store, "coverage", "901.json"), r3, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		runCoverageMerge(t, map[string]any{
+			"decision":     "REQUEST_CHANGES",
+			"reviewed_sha": "4444444444444444444444444444444444444444",
+			"findings":     []any{},
+			"coverage":     map[string]any{"covered": []any{map[string]any{"path": "values.yaml"}}, "frontier": []any{}},
+		}, store, "901")
+		led := readStoreLedger(t, store, "901")
+		f := led["frontier"].([]any)
+		if len(f) != 1 || f[0].(map[string]any)["path"] != "internal/ui/heavy.go" {
+			t.Fatalf("the unmentioned carried frontier must survive the round, got %v", f)
+		}
+		// examined this round → it leaves the frontier
+		runCoverageMerge(t, map[string]any{
+			"decision":     "REQUEST_CHANGES",
+			"reviewed_sha": "5555555555555555555555555555555555555555",
+			"findings":     []any{},
+			"coverage":     map[string]any{"covered": []any{map[string]any{"path": "internal/ui/heavy.go", "note": "the old frontier, now read"}}, "frontier": []any{}},
+		}, store, "901")
+		led = readStoreLedger(t, store, "901")
+		if f := led["frontier"].([]any); len(f) != 0 {
+			t.Fatalf("a frontier path covered this round leaves the frontier, got %v", f)
+		}
+	})
+
 	t.Run("a declared round with an empty frontier replaces it (the agent examined everything)", func(t *testing.T) {
 		store := t.TempDir()
 		if err := os.MkdirAll(filepath.Join(store, "coverage"), 0o755); err != nil {

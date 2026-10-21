@@ -720,8 +720,22 @@ if store and declared:
             if isinstance(e.get("note"), str) and e["note"].strip():
                 entry["note"] = e["note"]
             by_path[e["path"]] = entry
-        # the frontier is REPLACED wholesale — the freshest statement of
-        # what remains unexamined is the only current one.
+        # The frontier is per-path (#716 r2): a carried frontier path
+        # leaves ONLY by being examined (declared covered this round). The
+        # old wholesale replace let an obedient same-head round — "declare
+        # the threads you re-verified" — silently erase files a prior
+        # round named as never examined: the exact failure the frontier
+        # exists to prevent. Declared frontier paths join as-is; carried
+        # paths survive until covered.
+        declared_covered = {e["path"] for e in covered_now if isinstance(e, dict) and isinstance(e.get("path"), str)}
+        frontier_out = [
+            {"path": e["path"], **({"reason": e["reason"]} if isinstance(e.get("reason"), str) and e["reason"].strip() else {"reason": "not examined"})}
+            for e in frontier_now if isinstance(e, dict) and isinstance(e.get("path"), str)
+        ]
+        frontier_paths = {e["path"] for e in frontier_out}
+        for pe in ledger.get("frontier") or []:
+            if isinstance(pe, dict) and isinstance(pe.get("path"), str) and pe["path"] not in declared_covered and pe["path"] not in frontier_paths:
+                frontier_out.append({"path": pe["path"], "reason": pe.get("reason") or "not examined"})
         ledger_out = {
             "version": 1,
             "pr": int(pr_num) if str(pr_num).isdigit() else pr_num,
@@ -729,10 +743,7 @@ if store and declared:
             "last_reviewed_sha": sha,
             "updated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "covered": sorted(by_path.values(), key=lambda e: e["path"]),
-            "frontier": sorted(
-                ({"path": e["path"], **({"reason": e["reason"]} if isinstance(e.get("reason"), str) and e["reason"].strip() else {"reason": "not examined"})}
-                 for e in frontier_now if isinstance(e, dict) and isinstance(e.get("path"), str)),
-                key=lambda e: e["path"]),
+            "frontier": sorted(frontier_out, key=lambda e: e["path"]),
             "findings_open": open_threads,
         }
         os.makedirs(os.path.dirname(ledger_path), exist_ok=True)

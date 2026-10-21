@@ -4818,11 +4818,16 @@ data:
     prior rounds' untouched files, which stand — but a file the carry
     stamped `touched: true` has EXPIRED: re-verify it or declare it in
     the frontier, the gate refuses to inherit it). `frontier` = files you
-    saw but did not examine. The frontier is honest, not shameful — it is
-    how the next round finds what you didn't. An APPROVE, though, claims
-    the WHOLE surface: every changed file must be covered or frontiered,
-    and a declared frontier refuses the APPROVE — either examine what
-    remains or declare REQUEST_CHANGES carrying the frontier.
+    saw but did not examine. The declaration must name at least one path
+    in one of the two lists — an empty block does nothing (the deploy
+    treats it as no statement, and the ledger freezes). The frontier is
+    honest, not shameful — it is how the next round finds what you
+    didn't. An APPROVE, though, claims the WHOLE surface: every changed
+    file must be covered or frontiered, and a declared frontier refuses
+    the APPROVE — either examine what remains or declare REQUEST_CHANGES
+    carrying the frontier. On a same-head re-arm (thread re-check round)
+    declare the threads you re-verified as covered paths — that is the
+    round's honest statement, and it keeps the ledger alive.
     
     `findings` carries ONLY blocking findings (CRITICAL or verified
     MAJOR) — each posted as a native anchored thread as it is verified
@@ -4840,9 +4845,15 @@ data:
     PR, reply+resolve — they block the verdict like any thread. Only a
     design/architecture-scale item that outlives this diff goes out as
     disposition architecture-carry (**Architecture-carry** prefix): the
-    pipeline mints one deduped tracker issue (milestone-assigned),
-    replies the reference, resolves the thread — carried items never
-    block. A reply alone never closes a thread: resolve is the close-out.
+    deploy dedups against the tracker (open AND closed) and replies the
+    reference, resolves the thread — carried items never block. Minting
+    an issue is the EXCEPTION, not the default (#71): only a
+    severe/structural finding (security, data loss, outage, corruption —
+    or an explicit `mint:` marker in the body) with NO existing issue
+    covering it mints, and the minted issue carries NO milestone (#712).
+    Everything else resolves as a review-record carry: reply + resolve,
+    no issue. A reply alone never closes a thread: resolve is the
+    close-out.
     
     Then verify it parses:
     python3 -c "import json; r=json.load(open('/workspace/review.json')); print('OK', r['decision'])"

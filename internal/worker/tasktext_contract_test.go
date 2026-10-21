@@ -1,0 +1,157 @@
+package worker
+
+// #714/#716 r1: the reviewer's task text (chart/values.yaml
+// tasks."pr-review.txt") teaches contracts the plugins enforce — and
+// nothing pinned the text to the code, which is how stale wording
+// (milestone-assigned carries, empty-declaration remediation) shipped
+// while CI stayed green. This test reads the SHIPPED text and the
+// SHIPPED plugins and pins the pair: the vocabulary the text names must
+// exist in the code, the refusals the text promises must fire from the
+// shipped gate, and neither surface may teach a shape the other
+// contradicts.
+
+import (
+	"encoding/json"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+// taskText extracts tasks."pr-review.txt" from chart/values.yaml (a
+// literal block scalar at two-space indent, content at four).
+func taskText(t *testing.T) string {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("..", "..", "chart", "values.yaml"))
+	if err != nil {
+		t.Fatalf("read chart/values.yaml: %v", err)
+	}
+	lines := strings.Split(string(raw), "\n")
+	start := -1
+	for i, ln := range lines {
+		if strings.HasPrefix(ln, "  pr-review.txt: |") {
+			start = i + 1
+			break
+		}
+	}
+	if start < 0 {
+		t.Fatal("tasks.\"pr-review.txt\" block not found in chart/values.yaml")
+	}
+	var out []string
+	for _, ln := range lines[start:] {
+		if strings.TrimSpace(ln) == "" {
+			out = append(out, "")
+			continue
+		}
+		if !strings.HasPrefix(ln, "    ") {
+			break
+		}
+		out = append(out, strings.TrimPrefix(ln, "    "))
+	}
+	for len(out) > 0 && out[len(out)-1] == "" {
+		out = out[:len(out)-1]
+	}
+	return strings.Join(out, "\n")
+}
+
+func pluginSource(t *testing.T, rel string) string {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("..", "..", rel))
+	if err != nil {
+		t.Fatalf("read %s: %v", rel, err)
+	}
+	return string(raw)
+}
+
+func TestTaskTextTeachesTheShippedCoverageContract(t *testing.T) {
+	text := taskText(t)
+	if len(text) < 500 {
+		t.Fatalf("task text extraction collapsed (%d bytes) — the extractor drifted from chart/values.yaml's shape", len(text))
+	}
+
+	t.Run("the vocabulary the text names exists in the shipped code", func(t *testing.T) {
+		for _, needle := range []string{"coverage-ledger.json", "review-delta.patch", "touched"} {
+			if !strings.Contains(text, needle) {
+				t.Errorf("task text names %q — it must (the agent reads only this)", needle)
+			}
+		}
+		carry := pluginSource(t, "plugins/workspace/coverage_carry.py")
+		for _, needle := range []string{"coverage-ledger.json", "review-delta.patch", "touched_unknown"} {
+			if !strings.Contains(carry, needle) {
+				t.Errorf("coverage_carry.py lost %q — the text teaches it", needle)
+			}
+		}
+	})
+
+	t.Run("the empty declaration: the text and the deploy must agree it does nothing", func(t *testing.T) {
+		if !strings.Contains(text, "name at least one path") && !strings.Contains(text, "an empty block does nothing") {
+			t.Errorf("the text must teach that the declaration names a real path (the empty shape is read-only on the ledger)")
+		}
+		deploy := pluginSource(t, "plugins/post-review/post-review.sh")
+		if !strings.Contains(deploy, "declared = cov_raw is not None and bool(covered_now or frontier_now)") {
+			t.Errorf("the deploy's read-only gate for the empty shape drifted — the text's 'does nothing' claim is now false")
+		}
+		gate := pluginSource(t, "plugins/pr-review/pr-review.sh")
+		if strings.Contains(gate, "write coverage {covered:[], frontier:[]}") {
+			t.Errorf("the gate's remediation string must not teach the empty shape (the deploy treats it as no statement)")
+		}
+	})
+
+	t.Run("the carries paragraph matches the shipped mint semantics (#712)", func(t *testing.T) {
+		if strings.Contains(text, "milestone-assigned") {
+			t.Error("the text must not promise milestone-assigned carries — #712 mints unmilestoned (post-review.sh: 'deliberately NOT fetched or assigned')")
+		}
+		deploy := pluginSource(t, "plugins/post-review/post-review.sh")
+		if !strings.Contains(deploy, "milestone=None") {
+			t.Errorf("post-review.sh drifted from unmilestoned mints — revisit the text with it")
+		}
+		for _, want := range []string{"EXCEPTION", "mint:"} {
+			if !strings.Contains(text, want) {
+				t.Errorf("the carries paragraph must carry the exception-gated mint semantics (#71/#712): missing %q", want)
+			}
+		}
+	})
+
+	t.Run("the refusals the text promises fire from the shipped gate", func(t *testing.T) {
+		if !strings.Contains(text, "the gate refuses an undeclared round") {
+			t.Errorf("the text must teach the undeclared-after-carry refusal (the contract it exists for)")
+		}
+		carried := map[string]any{"head_sha": sha40, "coverage": map[string]any{"last_reviewed_sha": "1111", "rounds": 2}}
+		out, code := runReviewGate(t, map[string]any{
+			"decision":     "REQUEST_CHANGES",
+			"reviewed_sha": sha40,
+			"findings":     []any{map[string]any{"path": "a.go", "body": "Blocking: x"}},
+		}, sha40)
+		_ = out
+		// runReviewGate's fixture ctx has no coverage block — the refusal
+		// needs the carried ctx; drive the shipped script directly:
+		dir := t.TempDir()
+		write := func(name string, v any) {
+			b, err := json.Marshal(v)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, name), b, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		write("review.json", map[string]any{
+			"decision":     "REQUEST_CHANGES",
+			"reviewed_sha": sha40,
+			"findings":     []any{map[string]any{"path": "a.go", "body": "Blocking: x"}},
+		})
+		write("pr-context.json", carried)
+		script, _ := filepath.Abs(filepath.Join("..", "..", "plugins", "pr-review", "pr-review.sh"))
+		cmd := exec.Command("bash", script)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "HARMOSTES_WORKDIR="+dir, "HARMOSTES_PR_HEAD_SHA="+sha40)
+		gateOut, err := cmd.CombinedOutput()
+		if err == nil {
+			t.Fatalf("the shipped gate no longer refuses an undeclared round after carry — the text's promise is false (%s)", gateOut)
+		}
+		if code != 0 {
+			t.Errorf("sanity: the legacy fixture (no carried ctx) must pass the gate — out=%s", gateOut)
+		}
+	})
+}

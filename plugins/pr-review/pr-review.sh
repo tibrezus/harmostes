@@ -92,7 +92,8 @@ if cov is not None and d=="APPROVE" and isinstance(ctx,dict):
 # the deploy's merge. The advisory becomes a requirement exactly there.
 if cov is None and isinstance(ctx,dict) and isinstance(ctx.get("coverage"),dict):
     print("ERROR: this round carried a coverage ledger but declared no coverage block — "
-          "write coverage {covered:[], frontier:[]} with the round's honest statement "
+          "write coverage {covered:[<paths fully reviewed>], frontier:[<paths not examined>]} "
+          "naming at least one real path — an empty block is treated as no statement "
           "(an undeclared round resets the ledger and the next round loses the frontier)",file=sys.stderr);sys.exit(1)
 if d=="REQUEST_CHANGES" and not findings and not frontier_count:
     print("ERROR: REQUEST_CHANGES requires at least one blocking finding in findings (threads are the review) — or a coverage frontier when the round ran out of budget before the surface (the frontier is the blocking statement)",file=sys.stderr);sys.exit(1)

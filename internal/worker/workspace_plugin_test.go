@@ -756,16 +756,21 @@ func TestWorkspaceCoverageCarry(t *testing.T) {
 		run("init", "-q", "-b", "main")
 		run("config", "user.email", "t@t")
 		run("config", "user.name", "t")
-		os.WriteFile(filepath.Join(repo, "a.go"), []byte("one\n"), 0o644)
-		os.WriteFile(filepath.Join(repo, "b.go"), []byte("one\n"), 0o644)
+		write := func(name, content string) {
+			if err := os.WriteFile(filepath.Join(repo, name), []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		write("a.go", "one\n")
+		write("b.go", "one\n")
 		run("add", "-A")
 		run("commit", "-qm", "s1")
 		s1 := run("rev-parse", "HEAD")
-		os.WriteFile(filepath.Join(repo, "b.go"), []byte("two\n"), 0o644)
+		write("b.go", "two\n")
 		run("add", "-A")
 		run("commit", "-qm", "s2")
 		s2 := run("rev-parse", "HEAD")
-		os.WriteFile(filepath.Join(repo, "b.go"), []byte("three\n"), 0o644)
+		write("b.go", "three\n")
 		run("add", "-A")
 		run("commit", "-qm", "s3")
 		s3 := run("rev-parse", "HEAD")

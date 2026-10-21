@@ -7,7 +7,8 @@ package worker
 //
 // Contract under test:
 //   - a ledger todo with disposition=architecture-carry and thread_ref:
-//     mints ONE issue (title-deduped), NEVER assigns a milestone (#712 —
+//     mints ONE issue (title-deduped), joins the repo's architecture
+//     tracker milestone when declared (#717), else NO milestone (#712 —
 //     replies the issue reference on the thread, RESOLVES the thread, and
 //     reports ledger_carried so the publisher never posts it.
 //   - an open OR closed issue whose normalized title matches (class
@@ -27,7 +28,7 @@ package worker
 //     index inverts mixed ledgers — the carried item published, the
 //     fix-in-pr item dropped).
 //   - the GitHub dialect resolves via GraphQL resolveReviewThread, replies
-//     via /comments/{id}/replies, mints unmilestoned (#712), dedups via
+//     via /comments/{id}/replies, milestone exact-title opt-in, dedups via
 //     per_page — the fork verbs 404/422 on GitHub (#685 r1).
 
 import (
@@ -562,16 +563,17 @@ func TestPostReviewCarryGitHubResolveLostSpeaks(t *testing.T) {
 	}
 }
 
-// TestPostReviewCarryMintNeverMilestones pins #712: even with open
-// milestones on the host, a minted carry carries NO milestone. The old
-// #685-r2 rule ("newest-created open") tracked whatever arc was running
-// when the review minted — on rhesadox it dumped 56 carries into the
-// Zig 0.17 migration milestone. Scoping a carried issue is a maintainer
-// decision, never a mint-time default.
-func TestPostReviewCarryMintNeverMilestones(t *testing.T) {
+// TestPostReviewCarryMintNoTrackerUnmilestoned pins #712/#717: with open
+// milestones but NO "Architecture & Design improvements" among them, the
+// mint stays unmilestoned — the old #685-r2 rule ("newest-created open")
+// tracked whatever arc was running when the review minted (rhesadox: 56
+// carries in the Zig 0.17 milestone) and is never coming back.
+func TestPostReviewCarryMintNoTrackerUnmilestoned(t *testing.T) {
+	// the NEWEST-created milestone is an arc milestone, not the tracker —
+	// it must be ignored.
 	f := &carryForge{milestones: []map[string]any{
 		{"id": 9, "number": 4, "title": "v0.6.0", "created_at": "2026-07-16T10:00:00Z"},
-		{"id": 5, "number": 6, "title": "pi 1.x runtime program", "created_at": "2026-10-10T10:00:00Z"},
+		{"id": 5, "number": 6, "title": "Zig 0.17 migration", "created_at": "2026-10-07T10:00:00Z"},
 	}}
 	srv := httptest.NewServer(f.mux(t))
 	t.Cleanup(srv.Close)
@@ -585,9 +587,54 @@ func TestPostReviewCarryMintNeverMilestones(t *testing.T) {
 		t.Fatalf("one mint, got %d", len(f.mintPayloads))
 	}
 	if ms, ok := f.mintPayloads[0]["milestone"]; ok {
-		t.Fatalf("mint must carry NO milestone (#712), got %v", ms)
+		t.Fatalf("without a declared tracker the mint must carry NO milestone, got %v", ms)
 	}
-	if n := f.msCalls; n > 0 {
-		t.Fatalf("the carry must not even fetch milestones (#712), got %d calls", n)
+}
+
+// TestPostReviewCarryMintIntoTrackerMilestone pins #717: a declared
+// "Architecture & Design improvements" milestone receives the mint —
+// even when it is NOT the newest-created open milestone (the tracker is
+// matched by exact title, never by recency).
+func TestPostReviewCarryMintIntoTrackerMilestone(t *testing.T) {
+	f := &carryForge{milestones: []map[string]any{
+		{"id": 12, "number": 9, "title": "Architecture & Design improvements", "created_at": "2026-07-16T10:00:00Z"},
+		{"id": 5, "number": 6, "title": "Zig 0.17 migration", "created_at": "2026-10-07T10:00:00Z"},
+	}}
+	srv := httptest.NewServer(f.mux(t))
+	t.Cleanup(srv.Close)
+
+	carryEnv := `[[0,{"path":"c.md","line":3,"body":"mint: milestone choice","disposition":"architecture-carry"}]]`
+	runCarryStep(t, srv, `[]`, carryEnv, "IS_FJ=false")
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.mintPayloads) != 1 {
+		t.Fatalf("one mint, got %d", len(f.mintPayloads))
+	}
+	if ms, _ := f.mintPayloads[0]["milestone"].(float64); int(ms) != 9 {
+		t.Fatalf("milestone = %v, want the tracker's GitHub NUMBER 9 (not the id 12, not the newer arc milestone)", f.mintPayloads[0]["milestone"])
+	}
+}
+
+// TestPostReviewCarryMintTrackerForgejoId is the fork dialect: the same
+// exact-title match mints the milestone by .id, not .number.
+func TestPostReviewCarryMintTrackerForgejoId(t *testing.T) {
+	f := &carryForge{milestones: []map[string]any{
+		{"id": 51, "title": "Architecture & Design improvements", "created_at": "2026-07-16T10:00:00Z"},
+		{"id": 50, "title": "Zig 0.17 migration", "created_at": "2026-10-07T10:00:00Z"},
+	}}
+	srv := httptest.NewServer(f.mux(t))
+	t.Cleanup(srv.Close)
+
+	carryEnv := `[[0,{"path":"c.md","line":3,"body":"mint: milestone choice","disposition":"architecture-carry"}]]`
+	runCarryStep(t, srv, `[]`, carryEnv, "IS_FJ=true")
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.mintPayloads) != 1 {
+		t.Fatalf("one mint, got %d", len(f.mintPayloads))
+	}
+	if ms, _ := f.mintPayloads[0]["milestone"].(float64); int(ms) != 51 {
+		t.Fatalf("milestone = %v, want the tracker's Forgejo ID 51", f.mintPayloads[0]["milestone"])
 	}
 }

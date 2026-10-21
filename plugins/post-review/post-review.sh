@@ -862,7 +862,7 @@ RESEARCH_STORE="${HARMOSTES_SOL_PI_STORE:-}"
 if [ -s "$RESEARCH_OUT" ] && [ -n "$RESEARCH_STORE" ]; then
   RESEARCH_DIR_PUBLISH="$RESEARCH_STORE/_shared/research"
   if mkdir -p "$RESEARCH_DIR_PUBLISH" 2>/dev/null; then
-    python3 - "$RESEARCH_OUT" "$RESEARCH_DIR_PUBLISH" "$PR_NUM" "${HARMOSTES_WORKFLOW:-unknown}" "${HARMOSTES_SOURCE:-}" << 'PYRES' || log "WARN: research publish failed (non-fatal — carry lost for the next round)"
+    python3 - "$RESEARCH_OUT" "$RESEARCH_DIR_PUBLISH" "$PR_NUM" "${HARMOSTES_WORKFLOW:-unknown}" "${HARMOSTES_TRIGGER_REPO:-${HARMOSTES_SOURCE:-unknown}}" << 'PYRES' || log "WARN: research publish failed (non-fatal — carry lost for the next round)"
 import json, os, sys, tempfile
 from datetime import datetime, timezone
 

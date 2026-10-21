@@ -248,6 +248,14 @@ func TestWorkspaceResearchLink(t *testing.T) {
 		}
 	})
 
+	// Provenance wiring (found live on the first production round): the
+	// repo field must come from the TRIGGER envelope — HARMOSTES_SOURCE
+	// is the workflow's SOURCE name ("fast-poll"), not the repo, and the
+	// stamped frontmatter said so on both first production notes.
+	if src := pluginSource(t, "plugins/post-review/post-review.sh"); !strings.Contains(src, "${HARMOSTES_TRIGGER_REPO:-${HARMOSTES_SOURCE:-unknown}}") {
+		t.Error("research publish must stamp repo from HARMOSTES_TRIGGER_REPO (HARMOSTES_SOURCE is the workflow source name, not a repo)")
+	}
+
 	// The staging path is cleaned per round: a stale research-out.md
 	// from a previous round must never republish (source pin — the
 	// cleanup line runs before the block re-links).

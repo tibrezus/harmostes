@@ -166,18 +166,40 @@ jq --argjson t "$TOOLS" '. + {tools:$t}' "$WORKDIR/pr-context.json" > "$WORKDIR/
 # ground truth, never the round itself.
 # REPO-WIKI-START (tested verbatim by TestWorkspaceRepoWiki — keep this
 # block between the markers so the golden test runs the shipped code)
+REPO_WIKI_DIR="$WORKDIR/repo-wiki"
+rm -rf "$REPO_WIKI_DIR" # UNCONDITIONAL: the reviewer reads this path by
+  # contract — a conditional clear (inside the declared-guard) left a
+  # previous round's docs readable with no signal they are foreign.
 REPO_WIKI_URL=""
+REPO_WIKI_STATE="absent"
 if [ -n "$SPEC" ]; then
-  REPO_WIKI_URL=$(echo "$SPEC" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('config',{}).get('repoWiki',''))" 2>/dev/null || echo "")
+  # Parse failures are LOUD (review r1): a typo'd key or malformed
+  # config JSON collapsing to "absent" silently is indistinguishable
+  # from undeclared — and the field is declared in ANOTHER repo
+  # (k8s-config), so nobody local sees the mistake.
+  if ! REPO_WIKI_URL=$(echo "$SPEC" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('config',{}).get('repoWiki',''))" 2>/dev/null); then
+    REPO_WIKI_URL=""
+    REPO_WIKI_STATE="spec-unparsable"
+    log "WARN: repo-wiki: SPEC config is not valid JSON — treated as undeclared (check the workflow instance)"
+  fi
 fi
 if [ -n "$REPO_WIKI_URL" ]; then
-  REPO_WIKI_DIR="$WORKDIR/repo-wiki"; rm -rf "$REPO_WIKI_DIR"
   RW_URL=$(host::https_url "$REPO_WIKI_URL")
   if git clone --quiet --depth 50 "$RW_URL" "$REPO_WIKI_DIR" 2>/dev/null; then
+    REPO_WIKI_STATE="cloned"
     log "repo-wiki cloned ($REPO_WIKI_DIR): $(ls -1 "$REPO_WIKI_DIR" 2>/dev/null | wc -l | tr -d ' ') top-level entries"
   else
-    log "WARN: repo-wiki clone failed — target-architecture docs unavailable this round (non-fatal)"
+    REPO_WIKI_STATE="clone-failed"
+    log "WARN: repo-wiki clone failed — target-architecture docs unavailable this round (check config.repoWiki: $REPO_WIKI_URL)"
   fi
+else
+  [ "$REPO_WIKI_STATE" = "absent" ] && log "repo-wiki: not declared"
+fi
+# The fact block (beside wiki_dir): the reviewer reads the STATE, never
+# infers it from ls — absent vs clone-failed vs cloned is the difference
+# between "not configured" and "configured and broken".
+if [ -f "$WORKDIR/pr-context.json" ]; then
+  jq --arg d "$REPO_WIKI_DIR" --arg s "$REPO_WIKI_STATE" '. + {repo_wiki_dir:$d, repo_wiki_state:$s}' "$WORKDIR/pr-context.json" > "$WORKDIR/pr-context.json.tmp" 2>/dev/null && mv "$WORKDIR/pr-context.json.tmp" "$WORKDIR/pr-context.json" || rm -f "$WORKDIR/pr-context.json.tmp"
 fi
 # REPO-WIKI-END
 log "workspace ready → $WORKDIR/pr-context.json"

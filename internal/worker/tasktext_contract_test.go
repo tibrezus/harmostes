@@ -260,6 +260,7 @@ func TestTaskTextTeachesTheShippedRepoWikiContract(t *testing.T) {
 			"DESIGN.md", "TOBE.md", "ARCHITECTURE.md",
 			"read the standard docs",     // consult-first ordering
 			"TOWARD the documented TOBE", // context-not-gospel: direction beats AS-IS divergence
+			"repo_wiki_state",            // the state fact: cloned vs absent vs clone-failed
 		} {
 			if !strings.Contains(text, needle) {
 				t.Errorf("task text lost %q — the agent reads only this", needle)

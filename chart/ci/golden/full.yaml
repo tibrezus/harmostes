@@ -4749,7 +4749,10 @@ data:
       repository's own architecture documentation (a different artifact
       from /workspace/wiki): DESIGN.md, TOBE.md, ARCHITECTURE.md and
       the other top-level *.md files describe the repo's documented
-      target architecture. When it exists, read the standard docs
+      target architecture. pr-context.json's `repo_wiki_state` says
+      which of cloned / absent / clone-failed this round has — never
+      trust a repo-wiki directory the state does not vouch for. When
+      cloned, read the standard docs
       FIRST — before structural grepping — and gather context from
       them: they are the cheapest orientation you own after the
       research layer. Judge against the documented architecture: a

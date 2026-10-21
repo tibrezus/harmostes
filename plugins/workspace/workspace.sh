@@ -155,5 +155,30 @@ fi
 
 # record tools into the context
 jq --argjson t "$TOOLS" '. + {tools:$t}' "$WORKDIR/pr-context.json" > "$WORKDIR/pr-context.json.tmp" && mv "$WORKDIR/pr-context.json.tmp" "$WORKDIR/pr-context.json"
+
+# ── Repository wiki (#726): the reviewed repo's OWN target-architecture ──
+# docs — a DIFFERENT artifact from config.wiki (the cross-repo llm-wiki
+# above): DESIGN.md/TOBE.md/ARCHITECTURE.md and siblings describe the
+# repo's documented architecture, and the reviewer consults them FIRST
+# (#726: findings may cite the doc a change deviates from). Declared
+# per workflow instance as config.repoWiki; clone-or-skip is
+# NON-FATAL — an unreachable wiki costs the round its architecture
+# ground truth, never the round itself.
+# REPO-WIKI-START (tested verbatim by TestWorkspaceRepoWiki — keep this
+# block between the markers so the golden test runs the shipped code)
+REPO_WIKI_URL=""
+if [ -n "$SPEC" ]; then
+  REPO_WIKI_URL=$(echo "$SPEC" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('config',{}).get('repoWiki',''))" 2>/dev/null || echo "")
+fi
+if [ -n "$REPO_WIKI_URL" ]; then
+  REPO_WIKI_DIR="$WORKDIR/repo-wiki"; rm -rf "$REPO_WIKI_DIR"
+  RW_URL=$(host::https_url "$REPO_WIKI_URL")
+  if git clone --quiet --depth 50 "$RW_URL" "$REPO_WIKI_DIR" 2>/dev/null; then
+    log "repo-wiki cloned ($REPO_WIKI_DIR): $(ls -1 "$REPO_WIKI_DIR" 2>/dev/null | wc -l | tr -d ' ') top-level entries"
+  else
+    log "WARN: repo-wiki clone failed — target-architecture docs unavailable this round (non-fatal)"
+  fi
+fi
+# REPO-WIKI-END
 log "workspace ready → $WORKDIR/pr-context.json"
 echo "{\"changed\":true,\"artifact\":\"$WORKDIR/pr-context.json\",\"status\":\"ok\",\"event\":{\"host\":\"$HOST\",\"repo\":\"$REPO\",\"number\":$PR_NUM,\"head_sha\":\"$HEAD_SHA\"}}"

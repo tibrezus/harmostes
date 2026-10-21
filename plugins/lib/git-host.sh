@@ -84,6 +84,36 @@ host::clone_url() { # <host> <owner/name> → authenticated clone URL
   esac
 }
 
+host::https_url() { # <any git URL> → authenticated https URL (#726)
+  # Declarative wiki fields carry whatever shape the operator wrote —
+  # ssh://git@host/path.git, https://host/path, git@host:path. Normalizing
+  # here (one home, beside the credential chain it reuses) lets the
+  # consumers clone with the SAME token chain as the main repo.
+  local url="$1" rest host path
+  case "$url" in
+    ssh://git@*) rest="${url#ssh://git@}";;
+    ssh://*)     rest="${url#ssh://}";;
+    https://*)   rest="${url#https://}";;
+    git@*)       rest="${url#git@}";;
+    *)           echo "$url"; return 0;; # unknown scheme: passthrough
+  esac
+  host="${rest%%/*}"
+  case "$host" in
+    *:*) path="${rest#*:}"; host="${host%%:*}";; # scp: path follows the colon
+    *)   path="${rest#*/}";;                      # plain: path follows the slash
+  esac
+  [ -z "$path" ] && { echo "$url"; return 0; }
+  case "$host" in
+    github.com)
+      echo "https://x-access-token:$(host::token github.com)@github.com/${path%.git}.git";;
+    git.rezus.cloud)
+      echo "https://${HARMOSTES_RZC_USERNAME:-tibrez}:$(host::token git.rezus.cloud)@git.rezus.cloud/${path%.git}.git";;
+    codeberg.org)
+      echo "https://$(host::token codeberg.org)@codeberg.org/${path%.git}.git";;
+    *) echo "https://$host/$path";; # unknown host: anonymous https
+  esac
+}
+
 host::is_gitlab() { # <host> → "true"|"false" (GitLab-shaped API?)
   case "$1" in
     gitlab.com|*.gitlab.com) echo "true";;

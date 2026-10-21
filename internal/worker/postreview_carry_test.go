@@ -7,7 +7,7 @@ package worker
 //
 // Contract under test:
 //   - a ledger todo with disposition=architecture-carry and thread_ref:
-//     mints ONE issue (title-deduped), assigns the newest open milestone,
+//     mints ONE issue (title-deduped), NEVER assigns a milestone (#712 —
 //     replies the issue reference on the thread, RESOLVES the thread, and
 //     reports ledger_carried so the publisher never posts it.
 //   - an open OR closed issue whose normalized title matches (class
@@ -27,7 +27,7 @@ package worker
 //     index inverts mixed ledgers — the carried item published, the
 //     fix-in-pr item dropped).
 //   - the GitHub dialect resolves via GraphQL resolveReviewThread, replies
-//     via /comments/{id}/replies, mints milestone by NUMBER, dedups via
+//     via /comments/{id}/replies, mints unmilestoned (#712), dedups via
 //     per_page — the fork verbs 404/422 on GitHub (#685 r1).
 
 import (
@@ -73,12 +73,14 @@ type carryForge struct {
 	forceResF     bool   // force resolution failure
 	ghThreadMap   string // reviewThreads map for the GitHub resolve path
 	forceResGH404 bool   // GraphQL mutation answers 200-but-empty (resolve lost)
+	msCalls       int    // /milestones endpoint hits (#712: must stay 0)
 }
 
 func (f *carryForge) mux(t *testing.T) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/repos/tibrez/rhesadox/milestones", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
+		f.msCalls++
 		out, _ := json.Marshal(f.milestones)
 		f.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
@@ -232,8 +234,8 @@ func TestPostReviewCarryMintsDedupedAndResolves(t *testing.T) {
 	if len(f.issues) != 1 {
 		t.Fatalf("the open-issue list gained exactly the minted issue, got %d", len(f.issues))
 	}
-	if ms, _ := f.issues[0]["milestone"].(float64); int(ms) != 7 {
-		t.Errorf("minted issue must carry the NEWEST open milestone (id 7), got %v", f.issues[0]["milestone"])
+	if ms, ok := f.issues[0]["milestone"]; ok {
+		t.Errorf("minted issue must carry NO milestone (#712), got %v", ms)
 	}
 	if !strings.HasPrefix(f.issues[0]["title"].(string), "architecture: ") {
 		t.Errorf("minted issue title must open with the architecture: prefix, got %v", f.issues[0]["title"])
@@ -499,11 +501,11 @@ func TestPostReviewCarryGitHubDialect(t *testing.T) {
 	if f.minted != 1 {
 		t.Fatalf("the ledger carry mints despite the same-title PR in /issues (PRs are not dedup hits), got %d", f.minted)
 	}
-	// milestone: the NUMBER (2), never the id (7) — ids are 422-invalid on
-	// GitHub (probed live).
+	// milestone: NONE — a minted carry is never scoped into a milestone
+	// (#712); "newest open" tracked the running arc, not the finding.
 	for i, mp := range f.mintPayloads {
-		if ms, _ := mp["milestone"].(float64); int(ms) != 2 {
-			t.Errorf("mint %d milestone = %v, want the GitHub NUMBER 2 (not the id 7)", i, mp["milestone"])
+		if ms, ok := mp["milestone"]; ok {
+			t.Errorf("mint %d must carry NO milestone (#712), got %v", i, ms)
 		}
 	}
 	// ledger identity: the pair index survives — full-space [1].
@@ -560,16 +562,15 @@ func TestPostReviewCarryGitHubResolveLostSpeaks(t *testing.T) {
 	}
 }
 
-// TestPostReviewCarryMilestoneNewest pins the #685 r2 milestone choice:
-// "most recent open" = newest CREATED — computed client-side, because
-// GitHub's /milestones default sort is due_on ASC (ms[0] is the OLDEST,
-// verified live on this very repo) and no cross-host sort param exists.
-func TestPostReviewCarryMilestoneNewest(t *testing.T) {
-	// ordered as GitHub actually returns them (oldest first); the newest
-	// CREATED (pi 1.x, 2026-10-10) sits LAST.
+// TestPostReviewCarryMintNeverMilestones pins #712: even with open
+// milestones on the host, a minted carry carries NO milestone. The old
+// #685-r2 rule ("newest-created open") tracked whatever arc was running
+// when the review minted — on rhesadox it dumped 56 carries into the
+// Zig 0.17 migration milestone. Scoping a carried issue is a maintainer
+// decision, never a mint-time default.
+func TestPostReviewCarryMintNeverMilestones(t *testing.T) {
 	f := &carryForge{milestones: []map[string]any{
 		{"id": 9, "number": 4, "title": "v0.6.0", "created_at": "2026-07-16T10:00:00Z"},
-		{"id": 7, "number": 2, "title": "ui-v3", "created_at": "2026-08-02T10:00:00Z"},
 		{"id": 5, "number": 6, "title": "pi 1.x runtime program", "created_at": "2026-10-10T10:00:00Z"},
 	}}
 	srv := httptest.NewServer(f.mux(t))
@@ -583,7 +584,10 @@ func TestPostReviewCarryMilestoneNewest(t *testing.T) {
 	if len(f.mintPayloads) != 1 {
 		t.Fatalf("one mint, got %d", len(f.mintPayloads))
 	}
-	if ms, _ := f.mintPayloads[0]["milestone"].(float64); int(ms) != 6 {
-		t.Fatalf("milestone = %v, want the NEWEST-created (number 6, 'pi 1.x runtime program') — not ms[0] (number 4)", f.mintPayloads[0]["milestone"])
+	if ms, ok := f.mintPayloads[0]["milestone"]; ok {
+		t.Fatalf("mint must carry NO milestone (#712), got %v", ms)
+	}
+	if n := f.msCalls; n > 0 {
+		t.Fatalf("the carry must not even fetch milestones (#712), got %d calls", n)
 	}
 }

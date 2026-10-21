@@ -89,9 +89,10 @@ DEC=$(python3 -c "import json;print(json.load(open('$REVIEW'))['decision'])")
 #      data loss|outage|corruption, or an explicit "mint:" marker) —
 #      otherwise the thread resolves as a review-record carry with NO
 #      new issue. A design-scale finding that outlives the diff becomes
-#      ONE deduped tracker issue at most (milestone =
-#      the repo's most recent open milestone), referenced by reply on the
-#      thread, then resolved. Carried threads do not downgrade; the issue
+#      ONE deduped tracker issue at most, referenced by reply on the
+#      thread, then resolved. The mint carries NO milestone (#712):
+#      "newest open" tracked the running arc, not the finding's scope —
+#      scoping a carried issue is a maintainer decision. Carried threads do not downgrade; the issue
 #      gates nothing. Severe items are never only carried — the skill's
 #      dual-thread rule keeps a Blocking quick fix in the PR.
 # The listing feeds THREE consumers (carry scan, gate, artifact) — one
@@ -321,24 +322,11 @@ def resolve(comment_id):
     except Exception:
         performed=None
     return performed is True
-# 1) open milestones — the carry assigns the most recent open one.
-_,msraw=curl("GET", "/repos/%s/milestones?state=open" % repo)
-try: ms=json.loads(msraw)
-except Exception: ms=[]
+# 1) milestones — deliberately NOT fetched or assigned (#712): the
+#    previous "newest-created open" rule tracked whatever arc was
+#    running when the review minted (rhesadox: 56 carries landed in the
+#    Zig 0.17 milestone), which is scope-noise, not scoping.
 milestone=None
-if isinstance(ms,list) and ms:
-    # "most recent open" = newest CREATED — NOT ms[0]: GitHub's /milestones
-    # default sort is due_on ASC (ms[0] is the OLDEST — verified live #685
-    # r2 on this very repo) and no cross-host sort param exists, so the
-    # ordering is computed client-side from the serialized timestamps
-    # (#685 r2: both wired hosts carry created_at on milestone objects).
-    def _ms_key(m):
-        return str(m.get("created_at") or m.get("updated_at") or "")
-    newest=max(ms, key=_ms_key)
-    milestone=newest.get("id") if is_fj else newest.get("number")
-    if len(ms)>1: notes.append("milestone: %d open, using newest (%s)" % (len(ms), newest.get("title")))
-else:
-    notes.append("no open milestone — carried issue minted unmilestoned (assign manually)")
 # 2) issues for dedup — OPEN and CLOSED (#700: a carried problem often
 # has its issue already, sometimes closed after an earlier fix attempt;
 # the dedup listing must see both or every round re-mints).
@@ -425,8 +413,7 @@ def ensure_issue(title, body):
         return None, "recurrence"
     if not MINT_WORTHY.search(body):
         return None, "unmarked"
-    payload={"title":title,"body":body}
-    if milestone is not None: payload["milestone"]=milestone
+    payload={"title":title,"body":body}  # no milestone key — #712
     ok,resp=curl("POST", "/repos/%s/issues" % repo, payload)
     try: r=json.loads(resp)
     except Exception: r={}
@@ -455,7 +442,7 @@ for idx,t in arch_todos:
     if ref and re.search(r"\d+", str(ref)):
         num=re.search(r"\d+", str(ref)).group(0)
     else:
-        num,outcome=ensure_issue(title, "from PR #%s — %s\n(carried by the review pipeline; milestone auto-assigned)" % (pr, body))
+        num,outcome=ensure_issue(title, "from PR #%s — %s\n(carried by the review pipeline)" % (pr, body))
         if outcome=="minted":
             minted.append({"issue":num,"title":title})
         elif outcome=="referenced":

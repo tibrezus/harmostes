@@ -24,6 +24,7 @@ import (
 	"github.com/tibrezus/harmostes/internal/gate"
 	"github.com/tibrezus/harmostes/internal/k8s"
 	"github.com/tibrezus/harmostes/internal/review"
+	"github.com/tibrezus/harmostes/internal/sessionstore"
 	"github.com/tibrezus/harmostes/internal/timeline"
 
 	"github.com/tibrezus/harmostes/internal/agent"
@@ -324,10 +325,27 @@ func DispatcherFromEnv(logf func(string, ...any)) (*Dispatcher, error) {
 // reading the shared claim). Same doctrine as ExtraConfigMapMounts:
 // malformed config is an ERROR at dispatch time, never a skip and never
 // a post-intent Create rejection.
-func ValidateAttachments(atts []v1alpha1.SharedAttachment) error {
+//
+// WORKFLOW NAME × STORE NAMESPACE (#725): a repository-scoped
+// attachment mounts the repo slice, whose root carries shared
+// namespaces (sessionstore.ReservedStoreNames — the coverage ledgers,
+// the _shared research layer) alongside one leaf per workflow. A
+// workflow named like a reserved namespace would join the slice AT
+// that namespace and shadow it — refuse at this seam, naming the
+// collision (an error here, never the linker's silent skip).
+func ValidateAttachments(atts []v1alpha1.SharedAttachment, workflow string) error {
 	seenNames := map[string]bool{}
 	seenPaths := map[string]bool{}
 	reserved := k8s.ReservedAttemptMountPaths()
+	repoScoped := false
+	for _, at := range atts {
+		if at.Scope == v1alpha1.AttachmentScopeRepository {
+			repoScoped = true
+		}
+	}
+	if repoScoped && sessionstore.IsReservedStoreName(workflow) {
+		return fmt.Errorf("workflow %q names a reserved store namespace (%v) while declaring a repository-scoped attachment — the workflow leaf would shadow the shared %s namespace; rename the workflow", workflow, sessionstore.ReservedStoreNames(), workflow)
+	}
 	for _, at := range atts {
 		if seenNames[at.Name] {
 			// Name is identity (volume name, mount-path tail, store env):
@@ -464,7 +482,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req RunRequest) error {
 	// not an apiserver rejection. The per-attempt EFFECTIVE mounts (with
 	// drop reasons) log beside the Job build, where the scope identities
 	// are known.
-	if err := ValidateAttachments(wf.Spec.Attachments); err != nil {
+	if err := ValidateAttachments(wf.Spec.Attachments, req.Workflow); err != nil {
 		return fmt.Errorf("workflow %s attachments invalid: %w", req.Workflow, err)
 	}
 

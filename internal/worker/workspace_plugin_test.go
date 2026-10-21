@@ -380,3 +380,253 @@ func execGit(t *testing.T, dir string, args ...string) string {
 	}
 	return string(out)
 }
+
+// #704 coverage carry: the workspace feeds the per-PR ledger from the
+// shared store into the round — coverage-ledger.json (with touched flags
+// computed against the review delta), review-delta.patch (the fix diff:
+// last-reviewed-sha..head), and a `coverage` fact block in
+// pr-context.json. The tests run the shipped coverage_carry.py against a
+// real git fixture, plus a wiring pin on workspace.sh (the #706 r12
+// lesson: a test that assembles its own wiring proves only what it
+// injected — the INVOCATION in the shipped script is pinned verbatim).
+func TestWorkspaceCoverageCarry(t *testing.T) {
+	py, err := exec.LookPath("python3")
+	if err != nil {
+		if os.Getenv("CI") != "" {
+			t.Fatalf("python3 missing in CI — the coverage carry is the ledger's reader and must be tested")
+		}
+		t.Skip("python3 not available locally")
+	}
+	gitBin, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git not available")
+	}
+
+	// fixture repo: LAST commits a.go; HEAD modifies a.go and adds c.go —
+	// b.go (the frontier) is untouched by the delta.
+	last := func(t *testing.T, dir string) (lastSha, headSha string) {
+		t.Helper()
+		run := func(args ...string) string {
+			cmd := exec.Command(gitBin, args...)
+			cmd.Dir = dir
+			cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("git %v: %v — %s", args, err, out)
+			}
+			return strings.TrimSpace(string(out))
+		}
+		run("init", "-q", "-b", "main")
+		run("config", "user.email", "t@t")
+		run("config", "user.name", "t")
+		os.WriteFile(filepath.Join(dir, "a.go"), []byte("one\n"), 0o644)
+		os.WriteFile(filepath.Join(dir, "b.go"), []byte("frontier\n"), 0o644)
+		run("add", "-A")
+		run("commit", "-qm", "last")
+		lastSha = run("rev-parse", "HEAD") // -q commit prints nothing; the sha comes from rev-parse
+		os.WriteFile(filepath.Join(dir, "a.go"), []byte("two\n"), 0o644)
+		os.WriteFile(filepath.Join(dir, "c.go"), []byte("new\n"), 0o644)
+		run("add", "-A")
+		run("commit", "-qm", "head")
+		headSha = run("rev-parse", "HEAD")
+		return lastSha, headSha
+	}
+
+	runCarry := func(t *testing.T, workdir, store, prNum, headSha string) {
+		t.Helper()
+		script, err := filepath.Abs(filepath.Join("..", "..", "plugins", "workspace", "coverage_carry.py"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.Command(py, script)
+		cmd.Dir = workdir
+		cmd.Env = append(os.Environ(),
+			"HARMOSTES_WORKDIR="+workdir,
+			"HARMOSTES_SOL_PI_STORE="+store,
+			"HARMOSTES_TRIGGER_PR="+prNum,
+			"HARMOSTES_TRIGGER_SHA="+headSha,
+		)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("coverage_carry crashed: %v — %s", err, out)
+		}
+	}
+
+	t.Run("ledger carried: touched flags, delta patch, context stamp", func(t *testing.T) {
+		dir := t.TempDir()
+		repo := filepath.Join(dir, "repo")
+		if err := os.MkdirAll(repo, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		lastSha, headSha := last(t, repo)
+		store := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(store, "coverage"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		lb, _ := json.Marshal(map[string]any{
+			"version": 1, "pr": 1, "rounds": 1, "last_reviewed_sha": lastSha,
+			"covered":       []any{map[string]any{"path": "a.go", "sha": lastSha, "round": 1}},
+			"frontier":      []any{map[string]any{"path": "b.go", "reason": "never reached"}},
+			"findings_open": 1,
+		})
+		if err := os.WriteFile(filepath.Join(store, "coverage", "1.json"), lb, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "pr-context.json"), []byte("{}"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		runCarry(t, dir, store, "1", headSha)
+
+		// the agent-readable ledger: touched computed against the delta
+		b, err := os.ReadFile(filepath.Join(dir, "coverage-ledger.json"))
+		if err != nil {
+			t.Fatalf("coverage-ledger.json not carried: %v", err)
+		}
+		var led map[string]any
+		if err := json.Unmarshal(b, &led); err != nil {
+			t.Fatal(err)
+		}
+		covered, _ := led["covered"].([]any)
+		if len(covered) != 1 {
+			t.Fatalf("one covered entry expected, got %v", covered)
+		}
+		entry := covered[0].(map[string]any)
+		if entry["touched"] != true {
+			t.Errorf("a.go changed since last review — touched must be true, got %v", entry)
+		}
+		if led["delta_emitted"] != true {
+			t.Errorf("delta must be emitted, got %v", led["delta_emitted"])
+		}
+
+		// the delta patch: the fix diff LAST..HEAD
+		delta, err := os.ReadFile(filepath.Join(dir, "review-delta.patch"))
+		if err != nil {
+			t.Fatalf("review-delta.patch not emitted: %v", err)
+		}
+		if !strings.Contains(string(delta), "diff --git a/a.go") || !strings.Contains(string(delta), "b/c.go") {
+			t.Errorf("delta must be last..head (a.go modified, c.go added), got:\n%s", delta[:min(len(delta), 300)])
+		}
+
+		// the context fact block
+		cb, err := os.ReadFile(filepath.Join(dir, "pr-context.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var ctx map[string]any
+		if err := json.Unmarshal(cb, &ctx); err != nil {
+			t.Fatal(err)
+		}
+		cov, ok := ctx["coverage"].(map[string]any)
+		if !ok {
+			t.Fatalf("pr-context.json must carry the coverage fact block, got %v", ctx)
+		}
+		if cov["delta_patch"] != "review-delta.patch" || cov["covered_total"] != float64(1) ||
+			cov["frontier_count"] != float64(1) || cov["rounds"] != float64(1) || cov["same_head"] != false {
+			t.Errorf("coverage fact block wrong: %v", cov)
+		}
+	})
+
+	t.Run("no store: clean no-op (full-surface round)", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "pr-context.json"), []byte(`{}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		runCarry(t, dir, "", "1", "deadbeef")
+		if _, err := os.Stat(filepath.Join(dir, "coverage-ledger.json")); !os.IsNotExist(err) {
+			t.Error("no ledger must be written without a store")
+		}
+		if _, err := os.Stat(filepath.Join(dir, "review-delta.patch")); !os.IsNotExist(err) {
+			t.Error("no delta must be emitted without a store")
+		}
+	})
+
+	t.Run("same head: no delta, same_head stamped", func(t *testing.T) {
+		dir := t.TempDir()
+		repo := filepath.Join(dir, "repo")
+		if err := os.MkdirAll(repo, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		lastSha, headSha := last(t, repo)
+		store := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(store, "coverage"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		lb, _ := json.Marshal(map[string]any{
+			"version": 1, "pr": 2, "rounds": 1, "last_reviewed_sha": headSha,
+			"covered":  []any{map[string]any{"path": "a.go", "sha": headSha, "round": 1}},
+			"frontier": []any{map[string]any{"path": "b.go"}},
+		})
+		if err := os.WriteFile(filepath.Join(store, "coverage", "2.json"), lb, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "pr-context.json"), []byte(`{}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		_ = lastSha
+		runCarry(t, dir, store, "2", headSha)
+		b, err := os.ReadFile(filepath.Join(dir, "pr-context.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var ctx map[string]any
+		_ = json.Unmarshal(b, &ctx)
+		cov := ctx["coverage"].(map[string]any)
+		if cov["same_head"] != true || cov["delta_patch"] != nil {
+			t.Errorf("same-head round: no delta, same_head true — got %v", cov)
+		}
+		if _, err := os.Stat(filepath.Join(dir, "review-delta.patch")); !os.IsNotExist(err) {
+			t.Error("a same-head round must not emit a delta patch")
+		}
+	})
+
+	t.Run("last-reviewed sha unreachable: no delta, ledger still carried", func(t *testing.T) {
+		dir := t.TempDir()
+		repo := filepath.Join(dir, "repo")
+		if err := os.MkdirAll(repo, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		_, headSha := last(t, repo)
+		store := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(store, "coverage"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		lb, _ := json.Marshal(map[string]any{
+			"version": 1, "pr": 3, "rounds": 1, "last_reviewed_sha": "0000000000000000000000000000000000000000",
+			"covered":  []any{map[string]any{"path": "a.go", "sha": "0000000000000000000000000000000000000000", "round": 1}},
+			"frontier": []any{},
+		})
+		if err := os.WriteFile(filepath.Join(store, "coverage", "3.json"), lb, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "pr-context.json"), []byte(`{}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		runCarry(t, dir, store, "3", headSha) // must exit 0 despite the unreachable sha
+		if _, err := os.Stat(filepath.Join(dir, "review-delta.patch")); !os.IsNotExist(err) {
+			t.Error("an unreachable last-reviewed sha must not fabricate a delta")
+		}
+		b, err := os.ReadFile(filepath.Join(dir, "coverage-ledger.json"))
+		if err != nil {
+			t.Fatalf("the ledger must still carry (the frontier guides the round): %v", err)
+		}
+		if !strings.Contains(string(b), "delta_emitted\": false") && !strings.Contains(string(b), "\"delta_emitted\":false") {
+			t.Errorf("delta_emitted must be false, got %s", b)
+		}
+	})
+
+	t.Run("wiring pin: workspace.sh invokes the carry and clears stale artifacts", func(t *testing.T) {
+		raw, err := os.ReadFile(filepath.Join("..", "..", "plugins", "workspace", "workspace.sh"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		script := string(raw)
+		inv := `python3 "$(dirname "$0")/coverage_carry.py"`
+		if !strings.Contains(script, inv) {
+			t.Fatalf("workspace.sh lost the coverage-carry invocation (%q) — the ledger never reaches the round", inv)
+		}
+		for _, stale := range []string{"review-delta.patch", "coverage-ledger.json"} {
+			if !strings.Contains(script, `"$WORKDIR/`+stale+`"`) {
+				t.Fatalf("workspace.sh must clear stale %s in the provisioning rm (a foreign round's carry would mislead the agent)", stale)
+			}
+		}
+	})
+}

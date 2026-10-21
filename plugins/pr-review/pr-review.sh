@@ -25,8 +25,36 @@ if "comments" in review:
 if d not in {"APPROVE","REQUEST_CHANGES","COMMENT"}:
     print(f'ERROR: decision must be APPROVE/REQUEST_CHANGES/COMMENT, got "{d}"',file=sys.stderr);sys.exit(1)
 if not isinstance(findings,list): print("ERROR: findings must be a list",file=sys.stderr);sys.exit(1)
-if d=="REQUEST_CHANGES" and not findings:
-    print("ERROR: REQUEST_CHANGES requires at least one blocking finding in findings (threads are the review)",file=sys.stderr);sys.exit(1)
+# Coverage block (#704): OPTIONAL — absent means the round makes no
+# coverage claim (legacy rounds, full back-compat). Present, it is the
+# round's honest statement of what it examined:
+#   covered  — files FULLY reviewed at reviewed_sha (path required)
+#   frontier — files seen but not examined, or never reached (path
+#              required; reason free-text, defaulted downstream)
+# The APPROVE contract: a declared frontier means the surface was NOT
+# fully reviewed — APPROVE is refused (declare REQUEST_CHANGES with the
+# frontier, or examine it). Symmetrically, a frontier-only round (no
+# findings) is a legitimate REQUEST_CHANGES: the unfinished coverage IS
+# the blocking statement, and the next round spends its budget there.
+cov=review.get("coverage")
+frontier_count=0
+if cov is not None:
+    if not isinstance(cov,dict):
+        print('ERROR: coverage must be an object {covered:[], frontier:[]}',file=sys.stderr);sys.exit(1)
+    for key in ("covered","frontier"):
+        entries=cov.get(key,[])
+        if entries is None: entries=[]
+        if not isinstance(entries,list):
+            print(f"ERROR: coverage.{key} must be a list",file=sys.stderr);sys.exit(1)
+        for i,e in enumerate(entries):
+            if not isinstance(e,dict) or not isinstance(e.get("path"),str) or not e.get("path").strip():
+                print(f"ERROR: coverage.{key}[{i}] must have a non-empty path",file=sys.stderr);sys.exit(1)
+    frontier_count=len(cov.get("frontier") or [])
+    if d=="APPROVE" and frontier_count:
+        print(f"ERROR: APPROVE with a declared frontier ({frontier_count} file(s) not examined) — the surface was not fully reviewed; "
+              "either examine the frontier or declare REQUEST_CHANGES carrying it",file=sys.stderr);sys.exit(1)
+if d=="REQUEST_CHANGES" and not findings and not frontier_count:
+    print("ERROR: REQUEST_CHANGES requires at least one blocking finding in findings (threads are the review) — or a coverage frontier when the round ran out of budget before the surface (the frontier is the blocking statement)",file=sys.stderr);sys.exit(1)
 for i,c in enumerate(findings):
     if not isinstance(c,dict) or not c.get("path") or not c.get("body"):
         print(f"ERROR: findings[{i}] must have path+body",file=sys.stderr);sys.exit(1)

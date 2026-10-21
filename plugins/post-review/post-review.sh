@@ -637,6 +637,116 @@ r["decision"]=newdec
 json.dump(r, open(p,"w"))
 PYEOF
 fi
+
+# ── Coverage ledger (#704): merge this round's coverage block into the
+# per-PR ledger in the repository-scoped shared store, downgrade an
+# APPROVE that slipped a declared frontier past the gate (belt and braces
+# — pr-review.sh already refuses it; the artifact must never lie even if
+# a future caller bypasses the gate), and hand the verdict a compact
+# coverage projection (COV_FILE, the THREADS_FILE pattern: a file path,
+# never a blob through envp). The store write is NON-FATAL: the ledger
+# is cross-round carry; losing it costs the next round its delta, never
+# this round its verdict.
+# COVERAGE-MERGE-START (tested verbatim by TestPostReviewCoverageLedger —
+# keep this block between the markers so the golden test runs the
+# shipped code)
+COV_FILE="$WORKDIR/.coverage-carry.json"
+rm -f "$COV_FILE"
+COV_STORE="${HARMOSTES_SOL_PI_STORE:-}"
+python3 - "$REVIEW" "$COV_FILE" "$COV_STORE" "$PR_NUM" << 'PYCOV'
+import json, os, sys, tempfile
+from datetime import datetime, timezone
+
+review_path, out_path, store, pr_num = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+with open(review_path) as f:
+    review = json.load(f)
+cov = review.get("coverage") or {}
+covered_now = cov.get("covered") or []
+frontier_now = cov.get("frontier") or []
+sha = review.get("reviewed_sha", "")
+findings = review.get("findings", review.get("comments") or []) or []
+
+# ── the downgrade: an APPROVE plus a declared frontier is a coverage lie.
+# Mirrors the thread downgrade above: rewrite review.json's decision (the
+# verdict compose and the merge status both read it) and speak via the
+# artifact file.
+downgraded = False
+if str(review.get("decision","")).upper() == "APPROVE" and frontier_now:
+    review["decision"] = "REQUEST_CHANGES"
+    json.dump(review, open(review_path, "w"))
+    downgraded = True
+    print(f"[post-review] APPROVE downgraded: coverage incomplete — frontier names "
+          f"{len(frontier_now)} file(s) never fully examined", file=sys.stderr)
+
+proj = {
+    "downgraded": downgraded,
+    "covered_now": len(covered_now),
+    "frontier_now": len(frontier_now),
+    "carried": False,
+    "rounds": 0,
+    "covered_total": len(covered_now),
+}
+
+if store:
+    ledger_path = os.path.join(store, "coverage", "%s.json" % pr_num)
+    try:
+        with open(ledger_path) as f:
+            ledger = json.load(f)
+        if not isinstance(ledger, dict):
+            ledger = {}
+    except Exception:
+        ledger = {}
+    try:
+        prev_covered = ledger.get("covered") or []
+        if not isinstance(prev_covered, list):
+            prev_covered = []
+        # path-keyed accumulation: this round's declarations win (newest
+        # sha/round); older entries for paths NOT re-declared survive —
+        # they were covered at their own sha and the delta tells the next
+        # round whether that still holds.
+        by_path = {}
+        for e in prev_covered:
+            if isinstance(e, dict) and isinstance(e.get("path"), str):
+                by_path[e["path"]] = e
+        rnd = int(ledger.get("rounds") or 0) + 1
+        for e in covered_now:
+            entry = {"path": e["path"], "sha": sha, "round": rnd}
+            if isinstance(e.get("note"), str) and e["note"].strip():
+                entry["note"] = e["note"]
+            by_path[e["path"]] = entry
+        # the frontier is REPLACED wholesale — the freshest statement of
+        # what remains unexamined is the only current one.
+        ledger_out = {
+            "version": 1,
+            "pr": int(pr_num) if str(pr_num).isdigit() else pr_num,
+            "rounds": rnd,
+            "last_reviewed_sha": sha,
+            "updated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "covered": sorted(by_path.values(), key=lambda e: e["path"]),
+            "frontier": sorted(
+                ({"path": e["path"], **({"reason": e["reason"]} if isinstance(e.get("reason"), str) and e["reason"].strip() else {"reason": "not examined"})}
+                 for e in frontier_now if isinstance(e, dict) and isinstance(e.get("path"), str)),
+                key=lambda e: e["path"]),
+            "findings_open": len(findings),
+        }
+        os.makedirs(os.path.dirname(ledger_path), exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(ledger_path), prefix=".cov-")
+        with os.fdopen(fd, "w") as f:
+            json.dump(ledger_out, f, indent=2)
+        os.replace(tmp, ledger_path)
+        proj.update({"carried": True, "rounds": rnd, "covered_total": len(ledger_out["covered"])})
+        print(f"[post-review] coverage ledger written: rounds={rnd} covered={len(ledger_out['covered'])} "
+              f"frontier={len(ledger_out['frontier'])} findings_open={len(findings)}", file=sys.stderr)
+    except Exception as e:
+        # non-fatal by contract: the carry is an optimization layered on a
+        # complete round; losing it costs the next round its delta.
+        print(f"[post-review] WARN: coverage ledger not written ({e}) — next round re-reviews full-surface", file=sys.stderr)
+
+with open(out_path, "w") as f:
+    json.dump(proj, f)
+PYCOV
+export COV_FILE
+# COVERAGE-MERGE-END
 fi   # IS_GITLAB guard closes: the listing/carry/gate are wired dialects only
 
 # ── Native inline threads (deterministic, #429): the agent never reliably
@@ -1041,6 +1151,12 @@ with open(os.environ["REVIEW"]) as f: review=json.load(f)
 dec=review["decision"]; sha=review.get("reviewed_sha","")
 fs=review.get("findings", review.get("comments",[]) or []) or []
 n=len(fs)
+# Coverage projection (#704): the round's coverage statement rides the
+# verdict — files covered at this head, the declared frontier (bounded
+# like the carried list), and a downgrade note when the frontier refused
+# an APPROVE. Absent coverage block → no coverage line (legacy shape).
+try: cov=json.load(open(os.environ["COV_FILE"]))
+except Exception: cov={}
 # The publisher's true counts + everything it could not land (#685 r5):
 # rejected anchors, lineless findings, and the 20-thread cap overage all
 # ride here — the verdict may not claim a thread the forge never took.
@@ -1072,7 +1188,14 @@ else:
         parts.append(f"{len(carried)} could not anchor (line not in the diff or beyond the cap: {c_f} findings, {c_t} TODOs) and are carried below")
         line="; ".join(parts)+"; close them, then re-arm with the label to re-review."
     else:
-        line=f"{dec} at {sha} — {n} blocking {plural} posted as review threads; close them, then re-arm with the label to re-review."
+        if n==0:
+            # The frontier-only round (#704): zero findings, the declared
+            # frontier IS the blocking statement — "close them" would lie.
+            nf=len((review.get("coverage") or {}).get("frontier") or [])
+            line=(f"{dec} at {sha} — no new blocking findings; coverage incomplete: {nf} file(s) "
+                  "never fully examined (frontier below). Re-arm to spend the next round on it.")
+        else:
+            line=f"{dec} at {sha} — {n} blocking {plural} posted as review threads; close them, then re-arm with the label to re-review."
 body=line
 if carried:
     body+="\n\nUnanchorable this round (the host rejected the inline anchor) — the finding stands:\n"
@@ -1097,6 +1220,26 @@ if carried:
         body+="\n\n(carried budget: %d bodies CUT at 1600 chars — the run record holds the same cut text; counts above are exact)" % int(th.get("budget_capped"))
     if int(th.get("artifact_bound") or 0):
         body+="\n\n(artifact bound: %d carried entries beyond the list budget appear as count-only rows — no body text)" % int(th.get("artifact_bound"))
+# Coverage projection (#704): one compact block — what this round declares
+# examined (at this head) and what it explicitly does NOT (the frontier,
+# bounded at 10 entries like the carried list). When the frontier
+# downgraded an APPROVE, the note says so — the verdict must not look
+# like a thread-driven REQUEST_CHANGES when the driver was coverage.
+if cov:
+    covline="\n\ncoverage (round %s): %d file(s) covered at this head" % (cov.get("rounds") or "?", cov.get("covered_now") or 0)
+    if cov.get("carried"):
+        covline+=", %d accumulated in the ledger" % (cov.get("covered_total") or 0)
+    body+=covline
+    if cov.get("downgraded"):
+        body+="\n\nDowngraded from APPROVE: the declared frontier means the surface was not fully reviewed — the next round spends its budget there first."
+    frontier=review.get("coverage",{}).get("frontier") or []
+    if frontier:
+        body+="\n\nFrontier (not examined this round — carried to the next):"
+        for e in frontier[:10]:
+            r=e.get("reason") or "not examined"
+            body+="\n- **%s** — %s" % (e.get("path","?"), r)
+        if len(frontier)>10:
+            body+="\n- … %d more (full list in the round's coverage-ledger.json on the shared store)" % (len(frontier)-10)
 print(json.dumps({"body": body+"\n\n<!-- pr-review: "+dec+" @ "+sha+" -->"}))
 PYEOF
 )

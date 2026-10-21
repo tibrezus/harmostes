@@ -202,3 +202,119 @@ func TestReviewGateRejectsNonStringIssue(t *testing.T) {
 	}
 	_ = out
 }
+
+// #704: the coverage block is optional (legacy rounds pass untouched);
+// present, it is shape-checked and it gates APPROVE — an approval over a
+// declared frontier claims a full-surface review that the round itself
+// denies. Symmetrically, a frontier-only REQUEST_CHANGES (no findings) is
+// legitimate: the unfinished coverage IS the blocking statement.
+func TestReviewGateCoverageContract(t *testing.T) {
+	coverage := func(cov any) map[string]any {
+		return map[string]any{
+			"decision":     "APPROVE",
+			"reviewed_sha": sha40,
+			"findings":     []any{},
+			"coverage":     cov,
+		}
+	}
+
+	t.Run("APPROVE with a declared frontier is refused", func(t *testing.T) {
+		out, code := runReviewGate(t, coverage(map[string]any{
+			"covered":  []any{map[string]any{"path": "a.go"}},
+			"frontier": []any{map[string]any{"path": "b.go", "reason": "wall reached"}},
+		}), sha40)
+		if code == 0 {
+			t.Fatal("APPROVE with a non-empty frontier must be refused — the surface was not fully reviewed")
+		}
+		if !strings.Contains(out, "frontier") {
+			t.Errorf("refusal must name the frontier, got:\n%s", out)
+		}
+	})
+
+	t.Run("APPROVE with complete coverage passes", func(t *testing.T) {
+		out, code := runReviewGate(t, coverage(map[string]any{
+			"covered":  []any{map[string]any{"path": "a.go"}, map[string]any{"path": "b.go"}},
+			"frontier": []any{},
+		}), sha40)
+		if code != 0 {
+			t.Fatalf("APPROVE over complete coverage must pass, rc=%d out=%s", code, out)
+		}
+	})
+
+	t.Run("no coverage block passes (legacy shape)", func(t *testing.T) {
+		out, code := runReviewGate(t, map[string]any{
+			"decision":     "APPROVE",
+			"reviewed_sha": sha40,
+			"findings":     []any{},
+		}, sha40)
+		if code != 0 {
+			t.Fatalf("legacy rounds must pass untouched, rc=%d out=%s", code, out)
+		}
+	})
+
+	t.Run("frontier-only REQUEST_CHANGES is legitimate", func(t *testing.T) {
+		dir := t.TempDir()
+		review := map[string]any{
+			"decision":     "REQUEST_CHANGES",
+			"reviewed_sha": sha40,
+			"findings":     []any{},
+			"coverage": map[string]any{
+				"covered":  []any{map[string]any{"path": "a.go"}},
+				"frontier": []any{map[string]any{"path": "b.go", "reason": "never reached"}},
+			},
+		}
+		rj, _ := json.Marshal(review)
+		if err := os.WriteFile(filepath.Join(dir, "review.json"), rj, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		cj, _ := json.Marshal(map[string]any{"head_sha": sha40})
+		if err := os.WriteFile(filepath.Join(dir, "pr-context.json"), cj, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		script, _ := filepath.Abs(filepath.Join("..", "..", "plugins", "pr-review", "pr-review.sh"))
+		cmd := exec.Command("bash", script)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "HARMOSTES_WORKDIR="+dir, "HARMOSTES_PR_HEAD_SHA="+sha40)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("frontier-only REQUEST_CHANGES must pass, rc out=%s", out)
+		}
+		// the coverage block rides through the gate's rewrite (the deploy
+		// and the coverage-merge both read it from review.json)
+		b, _ := os.ReadFile(filepath.Join(dir, "review.json"))
+		var got map[string]any
+		if err := json.Unmarshal(b, &got); err != nil {
+			t.Fatal(err)
+		}
+		if got["coverage"] == nil {
+			t.Fatal("coverage block must survive the gate's rewrite (the deploy reads it)")
+		}
+	})
+
+	t.Run("REQUEST_CHANGES with neither findings nor frontier is still refused", func(t *testing.T) {
+		out, code := runReviewGate(t, map[string]any{
+			"decision":     "REQUEST_CHANGES",
+			"reviewed_sha": sha40,
+			"findings":     []any{},
+			"coverage":     map[string]any{"covered": []any{map[string]any{"path": "a.go"}}, "frontier": []any{}},
+		}, sha40)
+		if code == 0 {
+			t.Fatal("a REQUEST_CHANGES with nothing blocking and no frontier states nothing — refused")
+		}
+		_ = out
+	})
+
+	t.Run("malformed coverage entries are refused", func(t *testing.T) {
+		for name, cov := range map[string]any{
+			"non-object":                 "covered a.go",
+			"covered entry without path": map[string]any{"covered": []any{map[string]any{"note": "x"}}},
+			"frontier entry empty path":  map[string]any{"frontier": []any{map[string]any{"path": "  "}}},
+			"covered not a list":         map[string]any{"covered": "a.go"},
+		} {
+			out, code := runReviewGate(t, coverage(cov), sha40)
+			if code == 0 {
+				t.Errorf("%s: malformed coverage must be refused (out=%s)", name, out)
+			}
+		}
+	})
+}

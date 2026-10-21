@@ -49,7 +49,7 @@ export HOST REPO PR_NUM HEAD_SHA API_BASE IS_FJ WIKI_URL TRIG_CONTEXTS WORKDIR G
 # stale review.json/review-diff.patch from another repo's review
 # confuses the agent (observed live: reviewers disregarding foreign
 # files instead of reading fresh ones).
-rm -f "$WORKDIR/review.json" "$WORKDIR/review-diff.patch" "$WORKDIR/pr-context.json" "$WORKDIR/pr-diff.patch" "$WORKDIR/.head_ref" "$WORKDIR/.pr-meta.json"
+rm -f "$WORKDIR/review.json" "$WORKDIR/review-diff.patch" "$WORKDIR/pr-context.json" "$WORKDIR/pr-diff.patch" "$WORKDIR/review-delta.patch" "$WORKDIR/coverage-ledger.json" "$WORKDIR/.head_ref" "$WORKDIR/.pr-meta.json"
 log "provisioning workspace for $HOST/$REPO#$PR_NUM (head=${HEAD_SHA:0:8}, base=$TRIG_BASE)"
 
 # ── PR metadata + head ref (pr_context.py meta — network tier) ────────────
@@ -102,6 +102,12 @@ git -C "$REPO_DIR" fetch --quiet --depth 50 origin "$TRIG_BASE" 2>/dev/null || t
 # CI/issue/metadata come from the API; merge state and the gate's verified
 # contexts are stated as facts.
 python3 "$(dirname "$0")/pr_context.py" context
+
+# ── Coverage carry (#704): the per-PR ledger from the shared store → the
+# agent's workspace: coverage-ledger.json (with touched flags),
+# review-delta.patch (last-reviewed..head) and a `coverage` fact block in
+# pr-context.json. Deterministic, non-fatal, no-op without the store.
+python3 "$(dirname "$0")/coverage_carry.py" || log "WARN: coverage carry failed (non-fatal — full-surface round)"
 
 # ── Wiki + RIG (architecture graph for the Architect stance) ──────────────
 if [ -n "$WIKI_URL" ]; then

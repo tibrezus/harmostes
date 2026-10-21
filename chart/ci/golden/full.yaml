@@ -4745,6 +4745,16 @@ data:
       headers instead of reading end-to-end.
     - **Code**: /workspace/repo — checked out at the reviewed head SHA.
     - **Wiki**: /workspace/wiki — project design docs, if configured.
+    - **Coverage carry (#704)**: when a prior round left a coverage
+      ledger, your workspace carries /workspace/coverage-ledger.json
+      (files prior rounds fully reviewed, at which SHA, stamped
+      `touched: true` when the file changed since — those are EXPIRED and
+      must be re-verified) and /workspace/review-delta.patch (the diff
+      since the last-reviewed SHA — fix verification is cheap there).
+      pr-context.json's `coverage` block says at a glance whether carry
+      happened. Spend the budget frontier-first: open threads, the delta
+      and its touched entries, the frontier — then the rest (the skill's
+      coverage section has the full contract).
     
     ## Scope classes
     
@@ -4791,6 +4801,28 @@ data:
          "todos": [
            {"path": "...", "line": N, "body": "<what is completely missing>",
             "disposition": "fix-in-pr|architecture-carry"}]}
+    
+    ## Coverage — the round's closing statement
+    
+    When the workspace carried a ledger (pr-context.json has a
+    `coverage` block), you MUST close review.json with the coverage
+    block — the gate refuses an undeclared round, because an undeclared
+    round would reset the ledger:
+    
+        "coverage": {
+          "covered":  [{"path": "...", "note": "what full review meant"}],
+          "frontier": [{"path": "...", "reason": "why it was not examined"}]
+        }
+    
+    `covered` = files you FULLY reviewed at this round's head (plus the
+    prior rounds' untouched files, which stand — but a file the carry
+    stamped `touched: true` has EXPIRED: re-verify it or declare it in
+    the frontier, the gate refuses to inherit it). `frontier` = files you
+    saw but did not examine. The frontier is honest, not shameful — it is
+    how the next round finds what you didn't. An APPROVE, though, claims
+    the WHOLE surface: every changed file must be covered or frontiered,
+    and a declared frontier refuses the APPROVE — either examine what
+    remains or declare REQUEST_CHANGES carrying the frontier.
     
     `findings` carries ONLY blocking findings (CRITICAL or verified
     MAJOR) — each posted as a native anchored thread as it is verified

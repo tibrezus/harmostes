@@ -1696,13 +1696,13 @@ func TestPostReviewMixedLedgerPublishesOnlyUncarried(t *testing.T) {
 	if todoPosts != 1 {
 		t.Fatalf("exactly the fix-in-pr todo publishes (got %d posts; comments now %d)", todoPosts, len(f.comments))
 	}
-	// the carry: issue minted under the GitHub milestone NUMBER, thread
+	// the carry: issue minted with NO milestone (#712), thread
 	// resolved via the GraphQL mutation (never the fork's /resolutions).
 	if len(f.issues) != 1 {
 		t.Fatalf("the carried item mints exactly one tracker issue, got %v", f.issues)
 	}
-	if ms, _ := f.issues[0]["milestone"].(float64); int(ms) != 2 {
-		t.Errorf("GitHub mint milestone = %v, want the NUMBER 2 (not the id 7)", f.issues[0]["milestone"])
+	if ms, ok := f.issues[0]["milestone"]; ok {
+		t.Errorf("mint must carry NO milestone (#712), got %v", ms)
 	}
 	if len(f.resolvedGH) != 1 || len(f.resolutions) != 0 {
 		t.Errorf("resolve via GraphQL mutation only (resolvedGH=%v resolutions=%v)", f.resolvedGH, f.resolutions)

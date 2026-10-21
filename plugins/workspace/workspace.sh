@@ -49,7 +49,7 @@ export HOST REPO PR_NUM HEAD_SHA API_BASE IS_FJ WIKI_URL TRIG_CONTEXTS WORKDIR G
 # stale review.json/review-diff.patch from another repo's review
 # confuses the agent (observed live: reviewers disregarding foreign
 # files instead of reading fresh ones).
-rm -f "$WORKDIR/review.json" "$WORKDIR/review-diff.patch" "$WORKDIR/pr-context.json" "$WORKDIR/pr-diff.patch" "$WORKDIR/review-delta.patch" "$WORKDIR/coverage-ledger.json" "$WORKDIR/.head_ref" "$WORKDIR/.pr-meta.json"
+rm -f "$WORKDIR/review.json" "$WORKDIR/review-diff.patch" "$WORKDIR/pr-context.json" "$WORKDIR/pr-diff.patch" "$WORKDIR/review-delta.patch" "$WORKDIR/coverage-ledger.json" "$WORKDIR/.head_ref" "$WORKDIR/.pr-meta.json" "$WORKDIR/research-out.md" "$WORKDIR/research"
 log "provisioning workspace for $HOST/$REPO#$PR_NUM (head=${HEAD_SHA:0:8}, base=$TRIG_BASE)"
 
 # ── PR metadata + head ref (pr_context.py meta — network tier) ────────────
@@ -109,6 +109,29 @@ python3 "$(dirname "$0")/pr_context.py" context
 # pr-context.json. Deterministic, non-fatal, no-op without the store.
 python3 "$(dirname "$0")/coverage_carry.py" || log "WARN: coverage carry failed (non-fatal — full-surface round)"
 
+# ── Research layer (#725): cross-workflow orientation notes ─────────────
+# RESEARCH-LINK-START (tested verbatim by TestWorkspaceResearchLink —
+# keep this block between the markers so the golden test runs the
+# shipped code). The repository-scoped sol-pi store carries
+# _shared/research — orientation notes prior rounds and OTHER
+# workflows on this repository published (the deploy node stamps
+# provenance; filenames are <PR>-<sha8>.md, newest heads win the
+# agent's attention by recency of their frontmatter). Read-oriented
+# surfacing: the agent READS /workspace/research; it writes NEW notes
+# to research-out.md in the WORKDIR, never into the store — direct
+# writes would bypass the publish path's provenance stamping.
+if [ -n "${HARMOSTES_SOL_PI_STORE:-}" ]; then
+  RESEARCH_SRC="${HARMOSTES_SOL_PI_STORE%/}/_shared/research"
+  if mkdir -p "$RESEARCH_SRC" 2>/dev/null; then
+    ln -sfn "$RESEARCH_SRC" "$WORKDIR/research"
+    N=$(ls -1 "$RESEARCH_SRC" 2>/dev/null | wc -l | tr -d ' ')
+    log "research layer linked: $WORKDIR/research -> $RESEARCH_SRC ($N note(s))"
+  else
+    log "WARN: research store leaf uncreatable — cold orientation this round (non-fatal)"
+  fi
+fi
+# RESEARCH-LINK-END
+
 # ── Wiki + RIG (architecture graph for the Architect stance) ──────────────
 if [ -n "$WIKI_URL" ]; then
   WIKI_DIR="$WORKDIR/wiki"; rm -rf "$WIKI_DIR"
@@ -155,5 +178,52 @@ fi
 
 # record tools into the context
 jq --argjson t "$TOOLS" '. + {tools:$t}' "$WORKDIR/pr-context.json" > "$WORKDIR/pr-context.json.tmp" && mv "$WORKDIR/pr-context.json.tmp" "$WORKDIR/pr-context.json"
+
+# ── Repository wiki (#726): the reviewed repo's OWN target-architecture ──
+# docs — a DIFFERENT artifact from config.wiki (the cross-repo llm-wiki
+# above): DESIGN.md/TOBE.md/ARCHITECTURE.md and siblings describe the
+# repo's documented architecture, and the reviewer consults them FIRST
+# (#726: findings may cite the doc a change deviates from). Declared
+# per workflow instance as config.repoWiki; clone-or-skip is
+# NON-FATAL — an unreachable wiki costs the round its architecture
+# ground truth, never the round itself.
+# REPO-WIKI-START (tested verbatim by TestWorkspaceRepoWiki — keep this
+# block between the markers so the golden test runs the shipped code)
+REPO_WIKI_DIR="$WORKDIR/repo-wiki"
+rm -rf "$REPO_WIKI_DIR" # UNCONDITIONAL: the reviewer reads this path by
+  # contract — a conditional clear (inside the declared-guard) left a
+  # previous round's docs readable with no signal they are foreign.
+REPO_WIKI_URL=""
+REPO_WIKI_STATE="absent"
+if [ -n "$SPEC" ]; then
+  # Parse failures are LOUD (review r1): a typo'd key or malformed
+  # config JSON collapsing to "absent" silently is indistinguishable
+  # from undeclared — and the field is declared in ANOTHER repo
+  # (k8s-config), so nobody local sees the mistake.
+  if ! REPO_WIKI_URL=$(echo "$SPEC" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('config',{}).get('repoWiki',''))" 2>/dev/null); then
+    REPO_WIKI_URL=""
+    REPO_WIKI_STATE="spec-unparsable"
+    log "WARN: repo-wiki: SPEC config is not valid JSON — treated as undeclared (check the workflow instance)"
+  fi
+fi
+if [ -n "$REPO_WIKI_URL" ]; then
+  RW_URL=$(host::https_url "$REPO_WIKI_URL")
+  if git clone --quiet --depth 50 "$RW_URL" "$REPO_WIKI_DIR" 2>/dev/null; then
+    REPO_WIKI_STATE="cloned"
+    log "repo-wiki cloned ($REPO_WIKI_DIR): $(ls -1 "$REPO_WIKI_DIR" 2>/dev/null | wc -l | tr -d ' ') top-level entries"
+  else
+    REPO_WIKI_STATE="clone-failed"
+    log "WARN: repo-wiki clone failed — target-architecture docs unavailable this round (check config.repoWiki: $REPO_WIKI_URL)"
+  fi
+else
+  [ "$REPO_WIKI_STATE" = "absent" ] && log "repo-wiki: not declared"
+fi
+# The fact block (beside wiki_dir): the reviewer reads the STATE, never
+# infers it from ls — absent vs clone-failed vs cloned is the difference
+# between "not configured" and "configured and broken".
+if [ -f "$WORKDIR/pr-context.json" ]; then
+  jq --arg d "$REPO_WIKI_DIR" --arg s "$REPO_WIKI_STATE" '. + {repo_wiki_dir:$d, repo_wiki_state:$s}' "$WORKDIR/pr-context.json" > "$WORKDIR/pr-context.json.tmp" 2>/dev/null && mv "$WORKDIR/pr-context.json.tmp" "$WORKDIR/pr-context.json" || rm -f "$WORKDIR/pr-context.json.tmp"
+fi
+# REPO-WIKI-END
 log "workspace ready → $WORKDIR/pr-context.json"
 echo "{\"changed\":true,\"artifact\":\"$WORKDIR/pr-context.json\",\"status\":\"ok\",\"event\":{\"host\":\"$HOST\",\"repo\":\"$REPO\",\"number\":$PR_NUM,\"head_sha\":\"$HEAD_SHA\"}}"

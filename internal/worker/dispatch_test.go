@@ -14,6 +14,7 @@ import (
 	"github.com/tibrezus/harmostes/internal/attempt"
 	"github.com/tibrezus/harmostes/internal/k8s"
 	"github.com/tibrezus/harmostes/internal/review"
+	"github.com/tibrezus/harmostes/internal/sessionstore"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -702,7 +703,7 @@ func TestLoopBreakerArmsReviewAttemptsOnly(t *testing.T) {
 // config fact must not drop silently). ──
 func TestValidateAttachments(t *testing.T) {
 	valid := []v1alpha1.SharedAttachment{{Name: "sol-pi", Scope: "repository", PVC: "harmostes-worker-sessions"}}
-	if err := ValidateAttachments(valid); err != nil {
+	if err := ValidateAttachments(valid, "pr-review-x"); err != nil {
 		t.Fatalf("valid declaration rejected: %v", err)
 	}
 
@@ -722,7 +723,7 @@ func TestValidateAttachments(t *testing.T) {
 		{"relative mountPath", v1alpha1.SharedAttachment{Name: "ok", PVC: "c", MountPath: "attachments/x"}, "must be absolute"},
 		{"root mountPath", v1alpha1.SharedAttachment{Name: "ok", PVC: "c", MountPath: "/"}, "container root"},
 	} {
-		err := ValidateAttachments([]v1alpha1.SharedAttachment{tc.att})
+		err := ValidateAttachments([]v1alpha1.SharedAttachment{tc.att}, "pr-review-x")
 		if tc.want == "" {
 			if err != nil {
 				t.Errorf("%s: unexpected err %v", tc.name, err)
@@ -735,7 +736,7 @@ func TestValidateAttachments(t *testing.T) {
 	}
 
 	// Default mountPath ("" → the builder derives /attachments/<name>) is legal.
-	if err := ValidateAttachments([]v1alpha1.SharedAttachment{{Name: "ok", PVC: "c", MountPath: ""}}); err != nil {
+	if err := ValidateAttachments([]v1alpha1.SharedAttachment{{Name: "ok", PVC: "c", MountPath: ""}}, "pr-review-x"); err != nil {
 		t.Errorf("empty mountPath must stay legal (builder default), got %v", err)
 	}
 
@@ -746,14 +747,14 @@ func TestValidateAttachments(t *testing.T) {
 		{Name: "sol-pi", Scope: "repository", PVC: "claim-a"},
 		{Name: "sol-pi", Scope: "repository", PVC: "claim-b"},
 	}
-	if err := ValidateAttachments(dup); err == nil || !strings.Contains(err.Error(), "duplicate name") {
+	if err := ValidateAttachments(dup, "pr-review-x"); err == nil || !strings.Contains(err.Error(), "duplicate name") {
 		t.Errorf("duplicate names must be rejected naming the collision, got %v", err)
 	}
 
 	// r5: pvc is a claimName — validated server-side as a label; the
 	// validator is already imported (the r2 class one field over).
 	for _, pvc := range []string{"harmostes worker-sessions", "Harmostes/Worker"} {
-		err := ValidateAttachments([]v1alpha1.SharedAttachment{{Name: "ok", PVC: pvc}})
+		err := ValidateAttachments([]v1alpha1.SharedAttachment{{Name: "ok", PVC: pvc}}, "pr-review-x")
 		if err == nil || !strings.Contains(err.Error(), "pvc") {
 			t.Errorf("pvc %q must be rejected as a non-label, got %v", pvc, err)
 		}
@@ -772,7 +773,7 @@ func TestValidateAttachments(t *testing.T) {
 			{Name: "b", PVC: "c2", MountPath: "/data/"},
 		},
 	} {
-		err := ValidateAttachments(atts)
+		err := ValidateAttachments(atts, "pr-review-x")
 		if err == nil || !strings.Contains(err.Error(), "collides") {
 			t.Errorf("%s: effective-path collision must be rejected, got %v", name, err)
 		}
@@ -783,9 +784,28 @@ func TestValidateAttachments(t *testing.T) {
 	// the raw check and the reserved check and mounts the shared claim
 	// over the whole filesystem.
 	for _, p := range []string{"/workspace/..", "/data/../", "/x/y/../.."} {
-		err := ValidateAttachments([]v1alpha1.SharedAttachment{{Name: "ok", PVC: "c", MountPath: p}})
+		err := ValidateAttachments([]v1alpha1.SharedAttachment{{Name: "ok", PVC: "c", MountPath: p}}, "pr-review-x")
 		if err == nil || !strings.Contains(err.Error(), "resolves to the container root") {
 			t.Errorf("mountPath %q must be rejected as root-resolving, got %v", p, err)
+		}
+	}
+
+	// #725: the workflow name joins a repository-scoped store as its
+	// LEAF — a name colliding with a reserved store namespace
+	// (coverage ledgers, _shared research layer) would shadow a shared
+	// namespace every other workflow on the repo reads. Refused HERE
+	// (the #311 doctrine: error at dispatch, never the linker's silent
+	// skip). Workflow-scoped-only declarations keep any name — their
+	// subPath is a root of their own, not a leaf in a shared slice.
+	for _, wf := range sessionstore.ReservedStoreNames() {
+		repoAtts := []v1alpha1.SharedAttachment{{Name: "sol-pi", Scope: "repository", PVC: "c"}}
+		err := ValidateAttachments(repoAtts, wf)
+		if err == nil || !strings.Contains(err.Error(), "reserved store namespace") {
+			t.Errorf("workflow %q with a repository-scoped attachment must be refused naming the reserved namespace, got %v", wf, err)
+		}
+		wfAtts := []v1alpha1.SharedAttachment{{Name: "cache", Scope: "workflow", PVC: "c"}}
+		if err := ValidateAttachments(wfAtts, wf); err != nil {
+			t.Errorf("workflow %q with only workflow-scoped attachments must stay legal (own root, no shared slice), got %v", wf, err)
 		}
 	}
 
@@ -794,7 +814,7 @@ func TestValidateAttachments(t *testing.T) {
 	// r6: /plugins is the fifth fixed home (plugin ConfigMaps, when a
 	// deployment sets pluginConfigMaps).
 	for _, p := range append([]string{"/workspace", "/skills", "/cache", "/sessions", "/workspace/sub", "/plugins", "/plugins/harmostes-tasks"}, k8s.ReservedAttemptMountPaths()...) {
-		err := ValidateAttachments([]v1alpha1.SharedAttachment{{Name: "ok", PVC: "c", MountPath: p}})
+		err := ValidateAttachments([]v1alpha1.SharedAttachment{{Name: "ok", PVC: "c", MountPath: p}}, "pr-review-x")
 		if err == nil || !strings.Contains(err.Error(), "shadows") {
 			t.Errorf("mountPath %q must be rejected as reserved, got %v", p, err)
 		}
@@ -1027,5 +1047,40 @@ func TestDispatchAttachmentsCallSitesWired(t *testing.T) {
 	}
 	if !absent {
 		t.Fatalf("the nil-envelope path must log ABSENT for the unresolvable scope, got: %v", ngLines)
+	}
+}
+
+// #726 r1 (round TODO): config.repoWiki is the one config key consumed
+// as a typed scalar — a non-string shape must be a dispatch-time error
+// naming the field, never a silent absent or a runtime clone failure.
+func TestValidateRepoWikiConfig(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cfg  string
+		want string // "" = legal
+	}{
+		{"absent", ``, ""},
+		{"empty object", `{}`, ""},
+		{"unrelated keys", `{"label":"needs-review","wiki":"https://x"}`, ""},
+		{"string url", `{"repoWiki":"ssh://git@git.rezus.cloud/tibrez/rhesadox.wiki.git"}`, ""},
+		{"null", `{"repoWiki":null}`, ""},
+		{"structured value (the typo'd nesting survivor)", `{"repoWiki":{"url":"https://x"}}`, "config.repoWiki must be a string"},
+		{"number", `{"repoWiki":42}`, "config.repoWiki must be a string"},
+	} {
+		err := ValidateRepoWikiConfig(json.RawMessage(tc.cfg))
+		if tc.want == "" {
+			if err != nil {
+				t.Errorf("%s: unexpected err %v", tc.name, err)
+			}
+			continue
+		}
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: err = %v, want containing %q", tc.name, err, tc.want)
+		}
+	}
+	// non-object config (free-form JSON allows it): no repoWiki key to
+	// validate — not this validator's error.
+	if err := ValidateRepoWikiConfig(json.RawMessage(`["a","b"]`)); err != nil {
+		t.Errorf("non-object config must pass (nothing to validate), got %v", err)
 	}
 }

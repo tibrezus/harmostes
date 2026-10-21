@@ -24,6 +24,7 @@ import (
 	"github.com/tibrezus/harmostes/internal/gate"
 	"github.com/tibrezus/harmostes/internal/k8s"
 	"github.com/tibrezus/harmostes/internal/review"
+	"github.com/tibrezus/harmostes/internal/sessionstore"
 	"github.com/tibrezus/harmostes/internal/timeline"
 
 	"github.com/tibrezus/harmostes/internal/agent"
@@ -308,6 +309,30 @@ func DispatcherFromEnv(logf func(string, ...any)) (*Dispatcher, error) {
 	return NewDispatcher(context.Background(), cfg, logf)
 }
 
+// ValidateRepoWikiConfig checks the one config key the workspace plugin
+// consumes as a typed scalar (#726): config.repoWiki must be a string
+// (a git URL) when present. The config block is otherwise free-form
+// JSON — this is not a schema, it is the typed contract of the ONE key
+// whose non-string shape would otherwise surface as a runtime clone
+// failure instead of a dispatch-time error.
+func ValidateRepoWikiConfig(cfg json.RawMessage) error {
+	if len(cfg) == 0 {
+		return nil
+	}
+	var m map[string]any
+	if err := json.Unmarshal(cfg, &m); err != nil {
+		return nil // non-object config: no repoWiki key to validate
+	}
+	v, ok := m["repoWiki"]
+	if !ok || v == nil {
+		return nil
+	}
+	if _, ok := v.(string); !ok {
+		return fmt.Errorf("config.repoWiki must be a string (a git URL), got %T — fix the workflow instance (or template) config", v)
+	}
+	return nil
+}
+
 // ValidateAttachments enforces the declaration contract at the merged-spec
 // seam (#704): the COMPOSED volume name ("attach-" + name) must be a
 // DNS-1123 label per Kubernetes' own validator (the fact's one home — a
@@ -324,10 +349,27 @@ func DispatcherFromEnv(logf func(string, ...any)) (*Dispatcher, error) {
 // reading the shared claim). Same doctrine as ExtraConfigMapMounts:
 // malformed config is an ERROR at dispatch time, never a skip and never
 // a post-intent Create rejection.
-func ValidateAttachments(atts []v1alpha1.SharedAttachment) error {
+//
+// WORKFLOW NAME × STORE NAMESPACE (#725): a repository-scoped
+// attachment mounts the repo slice, whose root carries shared
+// namespaces (sessionstore.ReservedStoreNames — the coverage ledgers,
+// the _shared research layer) alongside one leaf per workflow. A
+// workflow named like a reserved namespace would join the slice AT
+// that namespace and shadow it — refuse at this seam, naming the
+// collision (an error here, never the linker's silent skip).
+func ValidateAttachments(atts []v1alpha1.SharedAttachment, workflow string) error {
 	seenNames := map[string]bool{}
 	seenPaths := map[string]bool{}
 	reserved := k8s.ReservedAttemptMountPaths()
+	repoScoped := false
+	for _, at := range atts {
+		if at.Scope == v1alpha1.AttachmentScopeRepository {
+			repoScoped = true
+		}
+	}
+	if repoScoped && sessionstore.IsReservedStoreName(workflow) {
+		return fmt.Errorf("workflow %q names a reserved store namespace (%v) while declaring a repository-scoped attachment — the workflow leaf would shadow the shared %s namespace; rename the workflow", workflow, sessionstore.ReservedStoreNames(), workflow)
+	}
 	for _, at := range atts {
 		if seenNames[at.Name] {
 			// Name is identity (volume name, mount-path tail, store env):
@@ -464,8 +506,17 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req RunRequest) error {
 	// not an apiserver rejection. The per-attempt EFFECTIVE mounts (with
 	// drop reasons) log beside the Job build, where the scope identities
 	// are known.
-	if err := ValidateAttachments(wf.Spec.Attachments); err != nil {
+	if err := ValidateAttachments(wf.Spec.Attachments, req.Workflow); err != nil {
 		return fmt.Errorf("workflow %s attachments invalid: %w", req.Workflow, err)
+	}
+	// #726: config.repoWiki is consumed by the workspace plugin as a git
+	// URL STRING. A non-string shape (structured value, typo'd nesting
+	// that survived the template merge) would reach `git clone` as a
+	// printed dict — a loud-ish clone-fail, but the declaration is
+	// malformed config and gets the #311 doctrine: error at the
+	// merged-spec seam, naming the field.
+	if err := ValidateRepoWikiConfig(wf.Spec.Config); err != nil {
+		return fmt.Errorf("workflow %s config invalid: %w", req.Workflow, err)
 	}
 
 	// Cache (#336) resolves at the same merged-spec seam: templates carry

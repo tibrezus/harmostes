@@ -231,6 +231,32 @@ func Materialize(dir, id string, l Lineage) (name string, ok bool, err error) {
 // (#704 review r5 — the same wiring claim as piargs.RigGraphPath).
 const LinkComponent = "sol-pi"
 
+// ReservedStoreNames are the names at a REPOSITORY-scoped store's root
+// that are not workflow leaves: "coverage" holds the per-PR coverage
+// ledgers (#714/#716, written by the deploy node), "_shared" holds the
+// cross-workflow research layer (#725 — orientation notes every
+// workflow reviewing the repo reads, and the deploy node publishes
+// with provenance under _shared/research/). A workflow whose NAME is
+// reserved would join the store at LinkSharedStore's leaf and shadow a
+// shared namespace — the dispatcher refuses it at the merged-spec seam
+// (ValidateAttachments) and LinkSharedStore skips the link as the
+// mechanical backstop. Workflow names live in DNS-1123 grammar
+// (lowercase alphanumerics, '-', '.'), so "_shared" cannot collide
+// from a name; "coverage" can. Single source: both consumers import.
+func ReservedStoreNames() []string { return []string{"coverage", "_shared"} }
+
+// IsReservedStoreName reports whether name is a reserved store-root
+// namespace (ReservedStoreNames) — the one predicate both the dispatch
+// seam and the lineage linker consult.
+func IsReservedStoreName(name string) bool {
+	for _, r := range ReservedStoreNames() {
+		if name == r {
+			return true
+		}
+	}
+	return false
+}
+
 // LinkSharedStore points the lineage dir's sol-pi runtime at the shared
 // attachment store (#704). The vendored SoL-Pi extension derives its
 // runtime root as <lineage>/<LinkComponent>/<session-id>; making the
@@ -300,6 +326,18 @@ const manufacturedMarker = ".harmostes-manufactured"
 // #704 follow-up's contract, not the sessions janitor's.
 
 func LinkSharedStore(lineageDir, workflow, mount string, logf func(string, ...any)) {
+	// Reserved store namespace (#725): a workflow named "coverage" or
+	// "_shared" would join the repo slice AT a shared namespace's root,
+	// shadowing the coverage ledgers or the research layer. The dispatch
+	// seam refuses the declaration outright; this guard is the backstop
+	// for any path that reaches the linker unvalidated — no link, the
+	// stock per-lineage store applies, the round proceeds unshared.
+	if IsReservedStoreName(workflow) {
+		if logf != nil {
+			logf("sol-pi: workflow name %q is a reserved store namespace — store link skipped (the dispatch seam should have refused this declaration)", workflow)
+		}
+		return
+	}
 	link := filepath.Join(lineageDir, LinkComponent)
 	if mount == "" {
 		// Undeclared: undo our own artifact if present. A symlink is the

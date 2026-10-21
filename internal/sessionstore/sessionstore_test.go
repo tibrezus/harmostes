@@ -96,6 +96,26 @@ func TestLinkSharedStore(t *testing.T) {
 	mount := t.TempDir()
 	lineage := t.TempDir()
 
+	// #725 reserved namespace: a workflow named like a shared store
+	// namespace (coverage ledgers, _shared research) must never join the
+	// slice AT that namespace — no link, no leaf creation, the stock
+	// per-lineage store applies. The dispatch seam refuses the
+	// declaration outright; this is the mechanical backstop for any
+	// unvalidated path, and it must be observable in the log.
+	for _, reserved := range ReservedStoreNames() {
+		before := len(logs)
+		LinkSharedStore(lineage, reserved, mount, logf)
+		if _, err := os.Lstat(filepath.Join(lineage, "sol-pi")); !os.IsNotExist(err) {
+			t.Fatalf("reserved workflow %q must not link (would shadow the shared namespace)", reserved)
+		}
+		if err := os.Mkdir(filepath.Join(mount, reserved), 0o700); err != nil && !os.IsExist(err) {
+			t.Fatal(err)
+		}
+		if len(logs) == before {
+			t.Fatalf("reserved workflow %q skipped silently — the backstop must log its refusal", reserved)
+		}
+	}
+
 	// Empty mount = undeclared: a strict no-op.
 	LinkSharedStore(lineage, "pr-review-rhesadox", "", logf)
 	if _, err := os.Lstat(filepath.Join(lineage, "sol-pi")); !os.IsNotExist(err) {

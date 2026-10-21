@@ -1,11 +1,11 @@
 # Upstream provenance
 
-Vendored from https://github.com/NVlabs/SoL-Pi at commit `219568034f` (main, 2026-10-18 — the Pi-1.x compat line, #711), pruned to
+Vendored from https://github.com/NVlabs/SoL-Pi at commit `219568034fa54ed121ede80961655e33dfb9d0e3` (main, 2026-10-18 — the Pi-1.x compat line, #711), pruned to
 the files the fleet needs (source, tests, schema + compat checkers, tsconfig,
 license/notices, docs). Not a subtree/pin tool — bump by replacing this
 directory from the upstream commit and recording the new SHA here.
 
-Bump history: `22277b7` (2026-09-11) → `219568034f` (2026-10-18). The
+Bump history: `22277b7` (2026-09-11) → `219568034fa54ed121ede80961655e33dfb9d0e3` (2026-10-18). The
 22277b7 prune had accidentally dropped upstream's `tsconfig.json` and
 `scripts/check-pi-compat.mjs` while KEEPING package.json's
 `typecheck`/`check` scripts and the docs that call them — a documented
@@ -28,7 +28,7 @@ upstream); the type + public-API gates are armed in `make test-sol-pi`.
 
 ## Pi pairing
 
-Upstream tests against pi 1.x (peer `*`; the 219568034f line carries the
+Upstream tests against pi 1.x (peer `*`; the Pi-1.x line carries the
 Pi-1.x compat fixes — `bash` structured exit codes, codemode). The fleet
 pins `PI_VERSION` (1.3.0) — `make test-sol-pi` runs the upstream type +
 public-API + suite gates against the fleet's pi packages; treat any

@@ -622,6 +622,46 @@ func TestPostReviewCoverageLedgerIntegrity(t *testing.T) {
 		}
 	})
 
+	t.Run("an empty-but-present files_changed is UNKNOWABLE — nothing retires (#716 r3)", func(t *testing.T) {
+		// derive_from_git yields an empty diff when merge_base==head
+		// (base renamed/deleted, shallow clone). Reading that as
+		// "nothing on the surface" would retire the ENTIRE frontier —
+		// the silent erasure this whole arc exists to stop.
+		store := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(store, "coverage"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		r3, _ := json.Marshal(map[string]any{
+			"version": 1, "pr": 904, "rounds": 3, "last_reviewed_sha": "3333333333333333333333333333333333333333",
+			"covered": []any{},
+			"frontier": []any{
+				map[string]any{"path": "heavy.go", "reason": "never reached"},
+				map[string]any{"path": "x.sh", "reason": "wall reached"},
+			},
+			"findings_open": 1,
+		})
+		if err := os.WriteFile(filepath.Join(store, "coverage", "904.json"), r3, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		dir := t.TempDir()
+		writeJSON(t, filepath.Join(dir, "review.json"), map[string]any{
+			"decision":     "REQUEST_CHANGES",
+			"reviewed_sha": "4444444444444444444444444444444444444444",
+			"findings":     []any{map[string]any{"path": "a.go", "body": "Blocking: x"}},
+			"coverage":     map[string]any{"covered": []any{map[string]any{"path": "a.go"}}, "frontier": []any{}},
+		})
+		writeJSON(t, filepath.Join(dir, "pr-context.json"), map[string]any{
+			"head_sha":      "4444444444444444444444444444444444444444",
+			"files_changed": []any{}, // the degraded derive_from_git shape
+		})
+		runCoverageMergeAt(t, dir, store, "904")
+		led := readStoreLedger(t, store, "904")
+		f := led["frontier"].([]any)
+		if len(f) != 2 {
+			t.Fatalf("an empty changed surface is unknowable — nothing may retire, got %v", f)
+		}
+	})
+
 	t.Run("a frontier path still in the changed surface survives an unmentioned round", func(t *testing.T) {
 		store := t.TempDir()
 		if err := os.MkdirAll(filepath.Join(store, "coverage"), 0o755); err != nil {

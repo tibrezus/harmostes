@@ -735,7 +735,16 @@ if store and declared:
                 review_ctx = json.load(f)
             changed_surface = {f.get("filename") for f in (review_ctx.get("files_changed") or []) if isinstance(f, dict)}
         except (OSError, json.JSONDecodeError, ValueError):
-            changed_surface = None  # unknowable surface → nothing retires
+            changed_surface = None  # unreadable ctx → nothing retires
+        if not changed_surface:
+            # empty/absent files_changed is ALSO unknowable (#716 r3):
+            # derive_from_git yields an empty diff when merge_base==head
+            # (base renamed/deleted, shallow clone), and reading that as
+            # "nothing on the surface" would retire the ENTIRE frontier —
+            # the silent erasure r2 existed to stop. The gate already
+            # treats an empty surface as nothing-to-claim; the merge reads
+            # it the same way: nothing retires.
+            changed_surface = None
         frontier_out = [
             {"path": e["path"], **({"reason": e["reason"]} if isinstance(e.get("reason"), str) and e["reason"].strip() else {"reason": "not examined"})}
             for e in frontier_now if isinstance(e, dict) and isinstance(e.get("path"), str)

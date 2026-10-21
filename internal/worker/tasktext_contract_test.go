@@ -171,6 +171,12 @@ func TestTaskTextTeachesTheShippedCoverageContract(t *testing.T) {
 		if !strings.Contains(deploy, "changed_surface") {
 			t.Errorf("the deploy lost the files_changed retirement — the honest exit for a same-head round is gone")
 		}
+		// the empty-surface inversion: files_changed [] is UNKNOWABLE, not
+		// "nothing on the surface" — reading it as authoritative retires
+		// the whole frontier. The guard line is the behavior's home.
+		if !strings.Contains(deploy, "if not changed_surface:") {
+			t.Errorf("the deploy lost the empty-surface guard — a degraded files_changed would erase the whole frontier")
+		}
 		if !strings.Contains(text, "carries itself forward") || !strings.Contains(text, "until a round covers it") {
 			t.Errorf("the self-carry sentence must name the retirement condition's shape")
 		}

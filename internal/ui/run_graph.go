@@ -245,7 +245,7 @@ func (s *Server) buildRunGraph(ctx context.Context, att *v1alpha1.Attempt) runGr
 // timingSegment is one bar in the waterfall strip: a node's execution window
 // (start = producedAt - duration, end = producedAt).
 type timingSegment struct {
-	Label  string `json:"label"`
+	Label string `json:"label"`
 	// Full is the UNTRUNCATED label, emitted as the lane label's <title>
 	// tooltip (#569 residue: the 12-rune gutter truncation turned long node
 	// names into "agent · lit…" ghosts with no recovery — the bar's title

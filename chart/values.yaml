@@ -24,7 +24,12 @@ skills:
   # GitHub mint takes the milestone NUMBER. The verbs are now executable
   # verbatim on every wired host. Prior: f44b548 (order fix, verb still
   # .id), c1382e7 (the #680 rewrite), 3707bc7 (r18 doctrine).
-  rev: "abc8f42a89a916bacedf64ed44df2f52763e96c1"
+  # 84d1cf6: pr-review playbook gains the pillar-scan discipline
+  # (#727): breadth-first pillar walk, post each PROVEN finding
+  # immediately then switch pillars; proof bar never moves; posted
+  # threads carry thread_ref which the gate counts exactly once.
+  # Prior: abc8f42 (carry-mint milestone).
+  rev: "84d1cf6d99d150a3e250fc2d99bc28ed6676368e"
 
 agent:
   # Hard tool-call cap per agent session (#484): past the cap only the

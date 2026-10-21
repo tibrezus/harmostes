@@ -308,6 +308,30 @@ func DispatcherFromEnv(logf func(string, ...any)) (*Dispatcher, error) {
 	return NewDispatcher(context.Background(), cfg, logf)
 }
 
+// ValidateRepoWikiConfig checks the one config key the workspace plugin
+// consumes as a typed scalar (#726): config.repoWiki must be a string
+// (a git URL) when present. The config block is otherwise free-form
+// JSON — this is not a schema, it is the typed contract of the ONE key
+// whose non-string shape would otherwise surface as a runtime clone
+// failure instead of a dispatch-time error.
+func ValidateRepoWikiConfig(cfg json.RawMessage) error {
+	if len(cfg) == 0 {
+		return nil
+	}
+	var m map[string]any
+	if err := json.Unmarshal(cfg, &m); err != nil {
+		return nil // non-object config: no repoWiki key to validate
+	}
+	v, ok := m["repoWiki"]
+	if !ok || v == nil {
+		return nil
+	}
+	if _, ok := v.(string); !ok {
+		return fmt.Errorf("config.repoWiki must be a string (a git URL), got %T — fix the workflow instance (or template) config", v)
+	}
+	return nil
+}
+
 // ValidateAttachments enforces the declaration contract at the merged-spec
 // seam (#704): the COMPOSED volume name ("attach-" + name) must be a
 // DNS-1123 label per Kubernetes' own validator (the fact's one home — a
@@ -466,6 +490,15 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req RunRequest) error {
 	// are known.
 	if err := ValidateAttachments(wf.Spec.Attachments); err != nil {
 		return fmt.Errorf("workflow %s attachments invalid: %w", req.Workflow, err)
+	}
+	// #726: config.repoWiki is consumed by the workspace plugin as a git
+	// URL STRING. A non-string shape (structured value, typo'd nesting
+	// that survived the template merge) would reach `git clone` as a
+	// printed dict — a loud-ish clone-fail, but the declaration is
+	// malformed config and gets the #311 doctrine: error at the
+	// merged-spec seam, naming the field.
+	if err := ValidateRepoWikiConfig(wf.Spec.Config); err != nil {
+		return fmt.Errorf("workflow %s config invalid: %w", req.Workflow, err)
 	}
 
 	// Cache (#336) resolves at the same merged-spec seam: templates carry

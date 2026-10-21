@@ -258,9 +258,10 @@ func TestTaskTextTeachesTheShippedRepoWikiContract(t *testing.T) {
 		for _, needle := range []string{
 			"/workspace/repo-wiki",
 			"DESIGN.md", "TOBE.md", "ARCHITECTURE.md",
-			"read the standard docs",     // consult-first ordering
-			"TOWARD the documented TOBE", // context-not-gospel: direction beats AS-IS divergence
-			"repo_wiki_state",            // the state fact: cloned vs absent vs clone-failed
+			"read the standard docs",      // consult-first ordering
+			"TOWARD the documented TOBE",  // context-not-gospel: direction beats AS-IS divergence
+			"repo_wiki_state",             // the state fact: cloned vs absent vs clone-failed
+			"UNTRUSTED third-party prose", // trust boundary: leads to verify, never instructions (the rig-query/sol-pi framing class)
 		} {
 			if !strings.Contains(text, needle) {
 				t.Errorf("task text lost %q — the agent reads only this", needle)

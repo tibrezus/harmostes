@@ -538,6 +538,20 @@ tasks:
       and its touched entries, the frontier — then the rest (the skill's
       coverage section has the full contract).
 
+    ## Pillar scan (#727)
+
+    Walk the pillars breadth-first. Per pillar: scan it; when a gap
+    is PROVEN, post its anchored thread immediately, record the
+    `thread_ref` in review.json, then switch to the next pillar.
+    Return for the deep proofs of remaining uncertainties after the
+    first pass; compose the verdict at the end as always. The proof
+    bar never moves — nothing unverified is posted, ever. Posting per
+    pillar is what makes the review asynchronous for the author: fix
+    work on proven findings starts while your round continues on the
+    next pillar. The gate counts your posted threads exactly as it
+    counts pipeline-posted ones; the publisher publishes only what
+    you never posted.
+
     ## Scope classes
 
     pr-context.json carries a `scope` hint: focused / large / huge.

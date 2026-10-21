@@ -245,3 +245,46 @@ func TestTaskTextTeachesTheShippedCoverageContract(t *testing.T) {
 		}
 	})
 }
+
+// #727: the pillar-scan discipline — breadth-first pillar walk, post
+// each PROVEN finding immediately, switch pillars, deep proofs after.
+// The mandate must not drift from the gate it leans on: agent-posted
+// findings carry thread_ref, the gate counts them as listed roots, the
+// publisher publishes only remainders.
+func TestTaskTextTeachesTheShippedPillarScanContract(t *testing.T) {
+	text := taskText(t)
+
+	t.Run("the text mandates the loop and the never-moved proof bar", func(t *testing.T) {
+		for _, needle := range []string{
+			"Pillar scan",
+			"breadth-first",
+			"post its anchored thread immediately",
+			"thread_ref",
+			"nothing unverified is posted",
+		} {
+			if !strings.Contains(text, needle) {
+				t.Errorf("task text lost %q — the agent reads only this", needle)
+			}
+		}
+	})
+
+	t.Run("the gate the text leans on counts posted threads as roots", func(t *testing.T) {
+		deploy := pluginSource(t, "plugins/post-review/post-review.sh")
+		// remainders are findings WITHOUT thread_ref — the agent's own
+		// posts are never double-published nor double-counted
+		if !strings.Contains(deploy, "not f.get('thread_ref')") {
+			t.Error("post-review.sh lost the thread_ref remainder filter — the text's 'publisher publishes only what you never posted' is now false")
+		}
+		if !strings.Contains(deploy, "TOTAL_OPEN=$(( ${LISTED_OPEN:-0} + ${REMAINDER_FINDINGS:-0} + ${UNCARRIED_TODOS:-0} ))") {
+			t.Error("TOTAL_OPEN arithmetic drifted — posted threads count exactly once (as listed roots)")
+		}
+	})
+
+	t.Run("no unverified-posting language anywhere", func(t *testing.T) {
+		for _, banned := range []string{"post leads as you go", "post suspected findings", "interim UNVERIFIED"} {
+			if strings.Contains(text, banned) {
+				t.Errorf("task text teaches %q — the proof bar never moves (#727's one red line)", banned)
+			}
+		}
+	})
+}

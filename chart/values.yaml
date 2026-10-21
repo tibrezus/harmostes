@@ -24,7 +24,7 @@ skills:
   # GitHub mint takes the milestone NUMBER. The verbs are now executable
   # verbatim on every wired host. Prior: f44b548 (order fix, verb still
   # .id), c1382e7 (the #680 rewrite), 3707bc7 (r18 doctrine).
-  rev: "4814ad44954879bba2ed25b05f0e5b0ea8f1926d"
+  rev: "abc8f42a89a916bacedf64ed44df2f52763e96c1"
 
 agent:
   # Hard tool-call cap per agent session (#484): past the cap only the

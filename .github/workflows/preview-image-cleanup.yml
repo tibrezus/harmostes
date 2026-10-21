@@ -1,0 +1,85 @@
+name: Preview Image Cleanup
+
+# preview-artifacts.yml pushes pr-<id>-<sha> images per preview-labeled PR;
+# nothing deleted them — every closed PR left three dead GHCR versions
+# forever (the ResourceSet prunes the preview NAMESPACE, not the packages).
+# Purges versions whose EVERY tag is a pr-<id>-<sha> tag of a CLOSED PR.
+# Versions carrying any non-preview tag (latest, semver, a release tag) are
+# never touched even when they also carry a pr-* tag (shared versions must
+# survive); untagged versions are kept (manual digest references); open-PR
+# and unknown-PR images are kept. Fork PRs never pushed images
+# (preview-artifacts skips forks) — no fork concern.
+#
+# Credential contract: HARMOSTES_GITHUB_TOKEN needs read:packages +
+# delete:packages on the tibrezus/* user namespace. The push proves
+# packages:write only — the list call below fails LOUD naming the missing
+# scopes before any delete can be considered (#504: fail loudly, name the
+# cause). First runs ship with dry_run: true; the listing is the review
+# artifact.
+
+on:
+  schedule:
+    - cron: "17 4 * * 1" # weekly, Monday 04:17 UTC
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "List what would be deleted without deleting"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+env:
+  PACKAGES: harmostes-controller harmostes-ui harmostes-worker
+  REPO: tibrezus/harmostes
+
+jobs:
+  purge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Purge closed-PR preview images
+        env:
+          GH_TOKEN: ${{ secrets.HARMOSTES_GITHUB_TOKEN }}
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'true' }}
+        run: |
+          set -euo pipefail
+          for pkg in $PACKAGES; do
+            page=1
+            while :; do
+              versions="$(gh api "users/tibrezus/packages/container/${pkg}/versions?per_page=100&page=${page}")" \
+                || { echo "::error::listing ${pkg} versions failed — HARMOSTES_GITHUB_TOKEN needs read:packages (and delete:packages for the real run) on the tibrezus/* user namespace; extend the PAT and re-dispatch"; exit 1; }
+              if [ "$(echo "$versions" | jq 'length')" -eq 0 ]; then
+                break
+              fi
+              while read -r v; do
+                id="$(echo "$v" | jq -r '.id')"
+                tags="$(echo "$v" | jq -r '.metadata.container.tags // [] | join(" ")')"
+                if [ -z "$tags" ]; then
+                  echo "keep $pkg@$id (untagged — manual digest references)"
+                  continue
+                fi
+                # purgeable only when EVERY tag is a preview tag of one PR
+                non_preview="$(echo "$tags" | tr ' ' '\n' | grep -cv '^pr-[0-9]*-[0-9a-f]*$' || true)"
+                if [ "${non_preview}" != "0" ]; then
+                  echo "keep $pkg@$id (carries a non-preview tag: $tags)"
+                  continue
+                fi
+                pr="$(echo "$tags" | tr ' ' '\n' | head -1 | sed -n 's/^pr-\([0-9]*\)-.*/\1/p')"
+                state="$(gh pr view "$pr" --repo "$REPO" --json state --jq .state 2>/dev/null || echo UNKNOWN)"
+                case "$state" in
+                  MERGED|CLOSED) ;;
+                  *) echo "keep $pkg:$tags (pr #$pr is $state)"; continue ;;
+                esac
+                if [ "$DRY_RUN" = "true" ]; then
+                  echo "WOULD DELETE $pkg version $id ($tags) — pr #$pr $state"
+                else
+                  gh api -X DELETE "users/tibrezus/packages/container/${pkg}/versions/${id}"
+                  echo "deleted $pkg version $id ($tags) — pr #$pr $state"
+                fi
+              done < <(echo "$versions" | jq -c '.[]')
+              page=$((page+1))
+            done
+          done
+          echo "purge pass complete (dry_run=$DRY_RUN)"

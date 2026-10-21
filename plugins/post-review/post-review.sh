@@ -542,11 +542,32 @@ import json,os
 r=json.load(open(os.environ['REVIEW'])); c=set(json.loads(os.environ['ARCH'])['ledger_carried'])
 ts=[t for i,t in enumerate(r.get('todos') or []) if isinstance(t,dict) and i not in c]
 print(len(ts))")
-REMAINDER_FINDINGS=$(python3 -c "
-import json
+# #727 r1: a ledger thread_ref the listing cannot see is a finding
+# that never landed — a typo'd id, a hallucinated number, or a
+# self-post the host 422'd but the agent recorded anyway. Treating it
+# as posted makes the finding invisible to BOTH surfaces (excluded
+# from the remainders, absent from the listing) — a false APPROVE on
+# a green verdict (probe-verified in the #732 round). Resolve refs
+# against the fetched listing: unresolvable → remainder, so the
+# publisher lands it and TOTAL_OPEN counts it. An UNAVAILABLE listing
+# (unwired dialect, scan failure → CS_JSON empty) keeps the pre-#727
+# semantics — trust the ref rather than republishing everything.
+export LANDED_IDS=$(CS="$CS_JSON" python3 -c "
+import json,os
+try: cs=json.loads(os.environ['CS']) or []
+except Exception: cs=[]
+print(' '.join(str(c.get('id')) for c in cs if isinstance(c,dict) and c.get('id') is not None))" 2>/dev/null)
+REMAINDER_FINDINGS=$(LANDED="$LANDED_IDS" python3 -c "
+import json,os
 r=json.load(open('$REVIEW'))
 fs=r.get('findings', r.get('comments',[]) or []) or []
-print(len([f for f in fs if isinstance(f,dict) and not f.get('thread_ref')]))")
+landed=set(os.environ.get('LANDED','').split())
+def posted(f):
+    ref=f.get('thread_ref')
+    if not ref: return False
+    if not landed: return True
+    return str(ref).split('/')[-1] in landed
+print(len([f for f in fs if isinstance(f,dict) and not posted(f)]))")
 
 # The classifier program lives verbatim between the GATE-CLASSIFIER markers
 # (the golden test extracts exactly these bytes). It is held in a QUOTED
@@ -939,8 +960,17 @@ review=json.load(open(os.environ["REVIEW"]))
 # this publisher handles ONLY the remainders — findings never posted before
 # the session ended (session-death resilience). Carried findings need no
 # publish: their threads are already on the PR and already counted.
+# #727 r1: a thread_ref the listing never saw is NOT a post (typo,
+# hallucination, rejected self-post) — same remainder predicate as the
+# TOTAL_OPEN count, or a bogus ref would vanish from both surfaces.
+landed=set(os.environ.get("LANDED_IDS","").split())
+def _posted(f):
+    ref=f.get("thread_ref")
+    if not ref: return False
+    if not landed: return True
+    return str(ref).split("/")[-1] in landed
 all_cs=[c for c in (review.get("findings", review.get("comments",[])) or [])
-        if not c.get("thread_ref")]
+        if not _posted(c)]
 # carried todos are terminated by the carry step (issue minted + thread
 # resolved or never posted) — they must NOT publish as threads: an open
 # carried thread would downgrade the NEXT verdict by this same gate.

@@ -581,6 +581,72 @@ func TestPostReviewSkipsAgentPostedRemainderFilter(t *testing.T) {
 	assertInlineThreads(t, out, 1, 0, 0) // ONLY the remainder publishes
 }
 
+// #727 r1 (probe-verified in the #732 round): a ledger thread_ref the
+// listing cannot see is a finding that NEVER LANDED — typo'd,
+// hallucinated, or a self-post the host 422'd but the agent recorded
+// anyway. The pre-fix filter excluded it from the remainders (has a
+// ref) while the classifier never saw it (not in the listing): the
+// finding existed on no surface and an APPROVE shipped green. Both
+// surfaces must now treat an unresolvable ref as a remainder: the
+// publisher lands it, TOTAL_OPEN counts it.
+func TestPostReviewBogusThreadRefIsARemainder(t *testing.T) {
+	f := &fakeForge{}
+	srv := httptest.NewServer(f.mux(t))
+	t.Cleanup(srv.Close)
+
+	findings := func(ref string) []any {
+		return []any{
+			map[string]any{"path": "bogus.go", "line": 9, "body": "Blocking: never landed", "thread_ref": ref},
+			map[string]any{"path": "real.go", "line": 1, "body": "Blocking: really posted",
+				"thread_ref": "4242424242"},
+		}
+	}
+	// The listing carries a comment the fake forge seeds — but NOT the
+	// agent's bogus ref. Seed one listed root (4242424242) so the
+	// resolution set is non-empty.
+	f.mu.Lock()
+	f.comments = []map[string]any{
+		{"id": 4242424242, "path": "real.go", "line": 1, "commit_id": "deadbeef123", "in_reply_to": nil, "body": "really posted"},
+	}
+	f.mu.Unlock()
+
+	t.Run("the publisher lands the never-posted finding", func(t *testing.T) {
+		out := runPlugin(t, srv, false, map[string]any{
+			"decision":     "REQUEST_CHANGES",
+			"reviewed_sha": "deadbeef123",
+			"findings":     findings("999999"),
+		})
+		assertInlineThreads(t, out, 1, 0, 0) // the bogus-ref finding publishes; the real one does not
+	})
+
+	t.Run("no false APPROVE: the bogus ref counts as open", func(t *testing.T) {
+		// Re-seed: the sibling subtest's publish appended its posted
+		// body (no id field) to the fake's listing — the classifier
+		// would trip on it and take the gate-unavailable exit before
+		// the downgrade path we are pinning here.
+		f.mu.Lock()
+		f.comments = []map[string]any{
+			{"id": 4242424242, "path": "real.go", "line": 1, "commit_id": "deadbeef123", "in_reply_to": nil, "body": "really posted"},
+		}
+		f.mu.Unlock()
+		out := runPlugin(t, srv, false, map[string]any{
+			"decision":     "APPROVE",
+			"reviewed_sha": "deadbeef123",
+			"findings":     findings("999999"),
+		})
+		if !strings.Contains(out, "APPROVE downgraded") {
+			t.Fatalf("a never-landed finding must downgrade an APPROVE (TOTAL_OPEN must count it), got: %s", out)
+		}
+		// Isolate the REMAINDER component: the seeded listed root alone
+		// downgrades too — pin that the bogus ref itself rode
+		// REMAINDER_FINDINGS (probe: trusting refs ships green under a
+		// listed-root-only assertion).
+		if !strings.Contains(out, "1 remainder findings") {
+			t.Fatalf("the bogus ref must count as a REMAINDER finding (never landed), got: %s", out)
+		}
+	})
+}
+
 func TestPostReviewPublishesNativeInlineThreads(t *testing.T) {
 	f := &fakeForge{}
 	srv := httptest.NewServer(f.mux(t))

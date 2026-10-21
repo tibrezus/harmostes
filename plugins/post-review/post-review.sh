@@ -656,10 +656,15 @@ cov_raw = review.get("coverage")
 # touch the ledger at all — merging an empty declaration ERASES the prior
 # frontier (files nobody examined would carry frontier_count 0 into the
 # next round's carry). Undeclared = the ledger is read-only this round.
-declared = cov_raw is not None
 cov = cov_raw if isinstance(cov_raw, dict) else {}
 covered_now = cov.get("covered") or []
 frontier_now = cov.get("frontier") or []
+# Vacuous declarations don't count (#704 r2): with the gate refusing
+# undeclared rounds after carry, `{covered:[], frontier:[]}` is the one
+# shape a budget-starved round can still emit — and merging it would
+# erase the frontier exactly like the undeclared round did. Empty AND
+# declared = read-only; a real statement names at least one path.
+declared = cov_raw is not None and bool(covered_now or frontier_now)
 sha = review.get("reviewed_sha", "")
 findings = review.get("findings", review.get("comments") or []) or []
 try:

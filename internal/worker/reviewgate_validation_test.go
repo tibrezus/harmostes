@@ -443,3 +443,65 @@ func TestReviewGateCoverageCompletenessAndCarryMandatory(t *testing.T) {
 		}
 	})
 }
+
+// #704 r2: accumulated coverage counts as declared. A delta round that
+// examines the frontier and the fix-diff must be able to APPROVE without
+// re-declaring paths covered at older shas — the carried ledger's covered
+// entries are declared by construction (staleness is the touched flag's
+// contract). The carried FRONTIER is never inherited: "not examined" is
+// not a state an APPROVE can inherit.
+func TestReviewGateCoverageCountsCarriedLedger(t *testing.T) {
+	dir := t.TempDir()
+	// the carried ledger: a.go + b.go covered at older shas, c.go frontier
+	lb, _ := json.Marshal(map[string]any{
+		"version": 1, "rounds": 2, "last_reviewed_sha": "1111",
+		"covered":  []any{map[string]any{"path": "a.go", "sha": "1111"}, map[string]any{"path": "b.go", "sha": "1111"}},
+		"frontier": []any{map[string]any{"path": "c.go", "reason": "wall reached"}},
+	})
+	if err := os.WriteFile(filepath.Join(dir, "coverage-ledger.json"), lb, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	review := map[string]any{
+		"decision":     "APPROVE",
+		"reviewed_sha": sha40,
+		"findings":     []any{},
+		"coverage":     map[string]any{"covered": []any{map[string]any{"path": "c.go"}}, "frontier": []any{}},
+	}
+	rj, _ := json.Marshal(review)
+	if err := os.WriteFile(filepath.Join(dir, "review.json"), rj, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cj, _ := json.Marshal(map[string]any{
+		"head_sha":      sha40,
+		"files_changed": []any{map[string]any{"filename": "a.go"}, map[string]any{"filename": "b.go"}, map[string]any{"filename": "c.go"}},
+	})
+	if err := os.WriteFile(filepath.Join(dir, "pr-context.json"), cj, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	script, _ := filepath.Abs(filepath.Join("..", "..", "plugins", "pr-review", "pr-review.sh"))
+	cmd := exec.Command("bash", script)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "HARMOSTES_WORKDIR="+dir, "HARMOSTES_PR_HEAD_SHA="+sha40)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("the delta-round APPROVE must pass: this round covered the old frontier (c.go); a.go/b.go are declared by the carried ledger — rc out=%s", out)
+	}
+
+	// the carried FRONTIER does not count as declared: drop this round's
+	// c.go declaration → refused (an APPROVE cannot inherit "not examined")
+	review["coverage"] = map[string]any{"covered": []any{}, "frontier": []any{}}
+	rj, _ = json.Marshal(review)
+	if err := os.WriteFile(filepath.Join(dir, "review.json"), rj, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd = exec.Command("bash", script)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "HARMOSTES_WORKDIR="+dir, "HARMOSTES_PR_HEAD_SHA="+sha40)
+	out, err = cmd.CombinedOutput()
+	if err == nil {
+		t.Fatal("a frontier path must be examined THIS round — an inherited 'not examined' cannot stand under an APPROVE")
+	}
+	if !strings.Contains(string(out), "c.go") {
+		t.Errorf("refusal must name the frontier path, got:\n%s", out)
+	}
+}

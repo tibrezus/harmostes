@@ -476,6 +476,36 @@ func TestPostReviewCoverageLedgerIntegrity(t *testing.T) {
 		}
 	})
 
+	t.Run("a vacuous declaration (both empty) is read-only — no frontier erase", func(t *testing.T) {
+		// with the gate refusing undeclared rounds after carry, the
+		// budget-starved escape is `{covered:[], frontier:[]}` — merging
+		// it would erase the frontier exactly like the undeclared round.
+		store := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(store, "coverage"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		r3, _ := json.Marshal(map[string]any{
+			"version": 1, "pr": 900, "rounds": 3, "last_reviewed_sha": "3333333333333333333333333333333333333333",
+			"covered":       []any{map[string]any{"path": "a.go", "sha": "3333333333333333333333333333333333333333", "round": 3}},
+			"frontier":      []any{map[string]any{"path": "big.go", "reason": "wall reached"}},
+			"findings_open": 1,
+		})
+		ledgerPath := filepath.Join(store, "coverage", "900.json")
+		if err := os.WriteFile(ledgerPath, r3, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		runCoverageMerge(t, map[string]any{
+			"decision":     "REQUEST_CHANGES",
+			"reviewed_sha": "4444444444444444444444444444444444444444",
+			"findings":     []any{},
+			"coverage":     map[string]any{"covered": []any{}, "frontier": []any{}},
+		}, store, "900")
+		led := readStoreLedger(t, store, "900")
+		if f := led["frontier"].([]any); len(f) != 1 {
+			t.Fatalf("the vacuous declaration is read-only — the frontier survives, got %v", f)
+		}
+	})
+
 	t.Run("a declared round with an empty frontier replaces it (the agent examined everything)", func(t *testing.T) {
 		store := t.TempDir()
 		if err := os.MkdirAll(filepath.Join(store, "coverage"), 0o755); err != nil {

@@ -66,6 +66,20 @@ except (FileNotFoundError, json.JSONDecodeError): ctx=None
 if cov is not None and d=="APPROVE" and isinstance(ctx,dict):
     changed={f.get("filename") for f in (ctx.get("files_changed") or []) if isinstance(f,dict)}
     declared={e.get("path") for e in cov.get("covered") or []}|{e.get("path") for e in cov.get("frontier") or []}
+    # Accumulated coverage counts as declared (#704 r2): the carried
+    # ledger's covered entries were fully reviewed at their own shas — a
+    # delta round that examines the frontier and the fix-diff must be able
+    # to APPROVE without re-declaring paths it did not open this round.
+    # (Staleness is the touched flag's contract in the carry, not this
+    # check's.) The frontier, by contrast, is ALWAYS this round's burden:
+    # "not examined" is not a state an APPROVE can inherit.
+    try:
+        with open(os.path.join(os.path.dirname(path),"coverage-ledger.json")) as f:
+            carried=json.load(f)
+        for e in (carried.get("covered") or []) if isinstance(carried,dict) else []:
+            if isinstance(e,dict) and isinstance(e.get("path"),str):
+                declared.add(e["path"])
+    except (FileNotFoundError, OSError, json.JSONDecodeError, ValueError): pass
     missing=sorted(changed-declared)
     if missing:
         print(f"ERROR: APPROVE coverage incomplete — {len(missing)} changed file(s) neither covered nor frontiered "

@@ -171,6 +171,22 @@ E2E="$WORK/e2e"; mkdir -p "$E2E/maint/forks" "$E2E/bin" "$E2E/home"
 UP="$E2E/upstream.git"; FORKG="$E2E/fork.git"
 git init -q --bare "$UP"; git init -q --bare "$FORKG"
 
+# Deterministic fixture commits (#674 root cause): the fork and upstream
+# lines must share the SAME base commit OBJECT — the harness builds them in
+# two separate repos with identical content, so the SHAs match only when
+# both commits land in the same wall-clock SECOND (git's timestamp
+# resolution). A second-boundary tick between the two commits (common on a
+# loaded CI runner) made the histories genuinely disjoint, the resolver's
+# merge died "refusing to merge unrelated histories", the agent then
+# committed a PLAIN non-merge resolution, and four assertions failed
+# together (row tip absent from the fork remote, parents=2, forged-row
+# exit, mint line missing) — always rerun-green, never reproducible
+# without the pin. Pin the clock; the fixture SHAs become stable across
+# runs too. (Identity still comes from the runner's git config, set below
+# via GIT_CONFIG_GLOBAL for the resolver phase.)
+export GIT_AUTHOR_DATE="2026-01-01T00:00:00 +0000"
+export GIT_COMMITTER_DATE="2026-01-01T00:00:00 +0000"
+
 # upstream: row branch v16.0/forgejo carries v16.0.5 (tagged); master is a decoy
 # ancestor (the def's top-level branch — what the OLD code fetched by mistake).
 UWT="$E2E/u"; git init -q "$UWT"; cd "$UWT"

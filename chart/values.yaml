@@ -24,9 +24,8 @@ skills:
   # GitHub mint takes the milestone NUMBER. The verbs are now executable
   # verbatim on every wired host. Prior: f44b548 (order fix, verb still
   # .id), c1382e7 (the #680 rewrite), 3707bc7 (r18 doctrine).
-  # eb296e5 (main's pin; supersedes 6193d3a/#726's repository-wiki
-  # section and 84d1cf6/#727's pillar-scan section — both are its
-  # ancestors).
+  # eb296e5 (main's pin — carries #726's repository-wiki section and
+  # #727's pillar-scan section as ancestors).
   rev: "eb296e59994c0af25a8966c1a08edda934e96e75"
 
 agent:
@@ -575,6 +574,21 @@ tasks:
       /workspace/research-out.md; the pipeline publishes it to the
       shared store with provenance. The store is shared across this
       repo's workflows: write nothing PR-private into it.
+
+    ## Mid-round posting (#727)
+
+    Posting findings DURING the round is supported and expected: post
+    each PROVEN finding's anchored thread the moment it is verified,
+    then continue the review — the author's fix work starts while
+    your round runs. Environment facts that make this safe: the gate
+    counts your posted threads exactly as it counts pipeline-posted
+    ones; the publisher publishes only what you never posted; the
+    proof bar never moves — nothing unverified is posted, ever.
+    Record `thread_ref` ONLY from the host's 2xx response id — a post
+    the host rejected stays ref-less so the publisher lands it. The
+    walk order itself (breadth-first across pillars, deep proofs
+    after the first pass) is the skill's to direct: playbook, Pillar
+    scan.
 
     ## Scope classes
 

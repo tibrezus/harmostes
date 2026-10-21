@@ -4791,6 +4791,21 @@ data:
       shared store with provenance. The store is shared across this
       repo's workflows: write nothing PR-private into it.
     
+    ## Mid-round posting (#727)
+    
+    Posting findings DURING the round is supported and expected: post
+    each PROVEN finding's anchored thread the moment it is verified,
+    then continue the review — the author's fix work starts while
+    your round runs. Environment facts that make this safe: the gate
+    counts your posted threads exactly as it counts pipeline-posted
+    ones; the publisher publishes only what you never posted; the
+    proof bar never moves — nothing unverified is posted, ever.
+    Record `thread_ref` ONLY from the host's 2xx response id — a post
+    the host rejected stays ref-less so the publisher lands it. The
+    walk order itself (breadth-first across pillars, deep proofs
+    after the first pass) is the skill's to direct: playbook, Pillar
+    scan.
+    
     ## Scope classes
     
     pr-context.json carries a `scope` hint: focused / large / huge.

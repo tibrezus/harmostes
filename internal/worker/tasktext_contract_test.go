@@ -340,3 +340,62 @@ func TestTaskTextTeachesTheShippedResearchContract(t *testing.T) {
 		}
 	})
 }
+
+func TestTaskTextTeachesTheShippedPillarScanContract(t *testing.T) {
+	text := taskText(t)
+
+	t.Run("the text carries the FACTS and the never-moved proof bar; the loop lives in the skill (#404/#680 boundary)", func(t *testing.T) {
+		for _, needle := range []string{
+			"Mid-round posting",
+			"post\neach PROVEN finding's anchored thread", // post-when-proven fact (dedented text)
+			"thread_ref",
+			"ONLY from the host's 2xx response id", // rejected self-posts stay ref-less → publisher lands them
+			"proof bar never moves",                // positive pin (keyword bans paraphrase-evade)
+			"nothing unverified is posted",
+			"playbook, Pillar", // the pointer: methodology defers to the skill
+		} {
+			if !strings.Contains(text, needle) {
+				t.Errorf("task text lost %q — the agent reads only this", needle)
+			}
+		}
+		// the boundary itself: the work-order loop must NOT live in the
+		// prompt — it is the skill's methodology (the CI render guard's
+		// stated doctrine; its teeth predate this section's shape).
+		for _, methodology := range []string{"Walk the pillars breadth-first", "switch to the next pillar", "deep proofs of remaining uncertainties after"} {
+			if strings.Contains(text, methodology) {
+				t.Errorf("task text re-grows methodology (%q) — the prompt is environment facts; the playbook owns the loop", methodology)
+			}
+		}
+	})
+
+	t.Run("the pointer's target exists in the SERVED skill", func(t *testing.T) {
+		playbook := pluginSource(t, ".agents/skills/pr-review/references/playbook.md")
+		for _, needle := range []string{"## Pillar scan", "breadth-first", "thread_ref"} {
+			if !strings.Contains(playbook, needle) {
+				t.Errorf("the served playbook lost %q — the text's pointer ('playbook, Pillar scan') would dangle", needle)
+			}
+		}
+	})
+
+	t.Run("the gate the text leans on counts posted threads as roots", func(t *testing.T) {
+		deploy := pluginSource(t, "plugins/post-review/post-review.sh")
+		// remainders are findings whose thread_ref is missing OR
+		// unresolvable against the listing (#727 r1: a bogus ref is a
+		// never-landed finding — remainder, published AND counted);
+		// the agent's real posts are never double-published
+		if !strings.Contains(deploy, "if not ref: return False") || !strings.Contains(deploy, "in landed") {
+			t.Error("post-review.sh lost the thread_ref remainder predicate — the text's 'publisher publishes only what you never posted' is now false")
+		}
+		if !strings.Contains(deploy, "TOTAL_OPEN=$(( ${LISTED_OPEN:-0} + ${REMAINDER_FINDINGS:-0} + ${UNCARRIED_TODOS:-0} ))") {
+			t.Error("TOTAL_OPEN arithmetic drifted — posted threads count exactly once (as listed roots)")
+		}
+	})
+
+	t.Run("no unverified-posting language anywhere", func(t *testing.T) {
+		for _, banned := range []string{"post leads as you go", "post suspected findings", "interim UNVERIFIED"} {
+			if strings.Contains(text, banned) {
+				t.Errorf("task text teaches %q — the proof bar never moves (#727's one red line)", banned)
+			}
+		}
+	})
+}

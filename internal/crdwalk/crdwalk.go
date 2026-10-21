@@ -22,6 +22,7 @@ import (
 	"os"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -345,6 +346,287 @@ func walkType(t reflect.Type, schema map[string]interface{}, path string, collec
 		record(path, leafValue(rv))
 	}
 	return leaves, issues
+}
+
+// ── The reverse direction (#704 class, #709/#710): schema → Go ──
+//
+// The forward walk derives everything from the Go type, so a schema
+// property no Go field can receive is invisible to every tier: the API
+// server stores the declaration, kubectl shows it, CI is green, and the
+// typed decode silently drops it on every read — while the UI's typed
+// splice writes it back OUT of the values file (production-inert feature,
+// found only by reading a compiled Job by hand). CheckReverse walks the
+// SCHEMA and asks whether the Go side can hold each property.
+
+// CheckReverse reports the reverse-conformance issues for one root (the
+// same Check surface the fast tier fails on). Metadata is preserved
+// wholesale by CRDs and skipped in both directions; a Go map or interface
+// holds arbitrary keys, so properties under it cannot be dropped; nodes
+// whose properties are absent have nothing to pair and belong to the
+// forward walk's domain.
+func CheckReverse(root reflect.Type, schema map[string]interface{}) []string {
+	issues := []string{}
+	checkReverse(deref(root), schema, "", &issues)
+	return issues
+}
+
+func checkReverse(t reflect.Type, node map[string]interface{}, path string, issues *[]string) {
+	if node == nil {
+		return // no schema node here: the forward walk's finding, not ours
+	}
+	if preserve, _ := node["x-kubernetes-preserve-unknown-fields"].(bool); preserve {
+		return // the API server keeps everything under this subtree — nothing to prune
+	}
+	props, hasProps := node["properties"].(map[string]interface{})
+	if !hasProps {
+		if items, ok := node["items"].(map[string]interface{}); ok {
+			checkReverse(elemTypeOf(t), items, path+"[]", issues)
+		}
+		if ap, ok := node["additionalProperties"].(map[string]interface{}); ok {
+			checkReverse(elemTypeOf(t), ap, path+"{}", issues)
+		}
+		return
+	}
+	if t == nil {
+		return // interface/RawExtension side: holds any shape, nothing to drop
+	}
+	t = deref(t)
+	if wellKnownLeaf(t) || t.Kind() == reflect.Interface {
+		return // the Go side is a leaf too; its shape is the forward walk's business
+	}
+	switch t.Kind() {
+	case reflect.Struct:
+		names := jsonNamesOf(t)
+		for _, prop := range sortedKeys(props) {
+			if prop == "metadata" {
+				continue // preserved wholesale by CRDs, never decoded field-wise
+			}
+			childPath := prop
+			if path != "" {
+				childPath = path + "." + prop
+			}
+			ft, ok := names[prop]
+			if !ok {
+				if pn, _ := props[prop].(map[string]interface{}); pn != nil {
+					if preserve, _ := pn["x-kubernetes-preserve-unknown-fields"].(bool); preserve {
+						continue // the conventional empty-status shape: preserved server-side, deliberately untyped
+					}
+				}
+				*issues = append(*issues, fmt.Sprintf("%s: schema property %q has no Go field — the API server stores the declaration, the typed decode silently drops it (#704 class); add the field or remove the property", childPath, prop))
+				continue
+			}
+			pn, _ := props[prop].(map[string]interface{})
+			checkReverse(ft, pn, childPath, issues)
+		}
+	case reflect.Map:
+		for _, prop := range sortedKeys(props) {
+			if prop == "metadata" {
+				continue
+			}
+			childPath := prop
+			if path != "" {
+				childPath = path + "." + prop
+			}
+			pn, _ := props[prop].(map[string]interface{})
+			checkReverse(t.Elem(), pn, childPath, issues)
+		}
+	default:
+		// scalar Go type under an object schema node: a shape mismatch the
+		// forward walk reports from its side; nothing to pair here.
+	}
+}
+
+// elemTypeOf returns the element type of a slice/array/map type (nil when
+// t is nil or of another kind — recursion then runs untyped and reports
+// nothing, the same courtesy the forward walk extends to any{}).
+func elemTypeOf(t reflect.Type) reflect.Type {
+	if t == nil {
+		return nil
+	}
+	t = deref(t)
+	switch t.Kind() {
+	case reflect.Slice, reflect.Array, reflect.Map:
+		return t.Elem()
+	}
+	return nil
+}
+
+// jsonNamesOf collects the json names a struct exposes at its schema node —
+// exactly the set the forward walk walks: inline embeds merged into the
+// parent, untagged and json:"-" fields excluded.
+func jsonNamesOf(t reflect.Type) map[string]reflect.Type {
+	names := map[string]reflect.Type{}
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		if !f.IsExported() {
+			continue
+		}
+		child, ok := jsonName(f)
+		if f.Anonymous && child == "" { // inline embed: same schema node
+			if ok {
+				for k, v := range jsonNamesOf(f.Type) {
+					names[k] = v
+				}
+			}
+			continue
+		}
+		if !ok {
+			continue
+		}
+		names[child] = f.Type
+	}
+	return names
+}
+
+func sortedKeys(m map[string]interface{}) []string {
+	ks := make([]string, 0, len(m))
+	for k := range m {
+		ks = append(ks, k)
+	}
+	sort.Strings(ks)
+	return ks
+}
+
+// SchemaLeaf is a leaf the SCHEMA declares, with a deterministic probe value
+// satisfying its constraints (enum → default → registered pattern probe →
+// generic, mirroring the forward walk's probe discipline). Type is the
+// schema's declared scalar type — consumers generating YAML documents need
+// it to emit NATIVE values ("7", not "7" as a string: the typed decode
+// rejects quoted numbers).
+type SchemaLeaf struct {
+	Path  string
+	Value string
+	Type  string
+}
+
+// SchemaLeaves enumerates the declared scalar leaves of a schema subtree,
+// paired with the Go type that must hold them (nil-typed recursion runs
+// schema-only). It is the generator for the UI typed round-trip guard
+// (#710): a document carrying every declared leaf must survive
+// templateDocument → spliceTemplateIntoValues, because CheckReverse
+// guarantees the Go side can hold each of them. Zero-valued probes are
+// skipped: the splice prunes zero leaves by design (pruneEmpty), so they
+// cannot survive ANY round-trip and are a different class entirely.
+func SchemaLeaves(root reflect.Type, node map[string]interface{}) []SchemaLeaf {
+	leaves := []SchemaLeaf{}
+	schemaLeaves(deref(root), node, "", &leaves)
+	return leaves
+}
+
+func schemaLeaves(t reflect.Type, node map[string]interface{}, path string, leaves *[]SchemaLeaf) {
+	if node == nil {
+		return
+	}
+	if preserve, _ := node["x-kubernetes-preserve-unknown-fields"].(bool); preserve {
+		return // unprunable subtree: its declared leaves are covered by the pairing, its unknown keys are unenumerable
+	}
+	props, hasProps := node["properties"].(map[string]interface{})
+	if !hasProps {
+		if items, ok := node["items"].(map[string]interface{}); ok {
+			schemaLeaves(elemTypeOf(t), items, path+"[]", leaves)
+			return
+		}
+		if ap, ok := node["additionalProperties"].(map[string]interface{}); ok {
+			schemaLeaves(elemTypeOf(t), ap, path+"{}", leaves)
+			return
+		}
+		if path == "" {
+			return
+		}
+		if v, ok := schemaProbe(t, node, path); ok {
+			typ, _ := node["type"].(string)
+			*leaves = append(*leaves, SchemaLeaf{Path: path, Value: v, Type: typ})
+		}
+		return
+	}
+	for _, prop := range sortedKeys(props) {
+		if prop == "metadata" {
+			continue
+		}
+		childPath := prop
+		if path != "" {
+			childPath = path + "." + prop
+		}
+		pn, _ := props[prop].(map[string]interface{})
+		schemaLeaves(childTypeOf(t, prop), pn, childPath, leaves)
+	}
+}
+
+// childTypeOf descends the Go pairing alongside the schema: struct fields by
+// json name, maps/slices by element. A nil result means "unpaired" — the
+// probe then relies on the schema node alone.
+func childTypeOf(t reflect.Type, prop string) reflect.Type {
+	if t == nil {
+		return nil
+	}
+	t = deref(t)
+	switch t.Kind() {
+	case reflect.Struct:
+		return jsonNamesOf(t)[prop]
+	case reflect.Map, reflect.Slice, reflect.Array:
+		return t.Elem()
+	}
+	return nil
+}
+
+// schemaProbe picks a probe value for one scalar schema node; ok=false when
+// the only legal probe is a zero value (pruned by design) or the node is a
+// pure container the walker should have descended into. A well-known Go
+// pairing (duration, quantity, int-or-string) takes the canonical well-known
+// probe — the typed decode must be able to PARSE the probe, not just store it.
+func schemaProbe(t reflect.Type, node map[string]interface{}, path string) (string, bool) {
+	if t != nil {
+		dt := deref(t)
+		if wellKnownLeaf(dt) {
+			rv := reflect.New(dt).Elem()
+			setWellKnown(dt, rv)
+			return leafValue(rv), true
+		}
+		if dt.Kind() == reflect.Interface {
+			return `{"probe":true}`, true
+		}
+	}
+	if enums, ok := node["enum"].([]interface{}); ok && len(enums) > 0 {
+		if e, ok := enums[0].(string); ok && e != "" {
+			return e, true
+		}
+	}
+	if d, ok := node["default"]; ok {
+		if s := fmt.Sprintf("%v", d); s != "" && s != "0" && s != "false" && s != "<nil>" {
+			return s, true
+		}
+	}
+	if p, ok := node["pattern"].(string); ok && p != "" {
+		if pv, known := patternProbes[p]; known {
+			return pv, true
+		}
+	}
+	switch node["type"] {
+	case "boolean":
+		return "", false // false is the zero value; pruned by design
+	case "integer", "number":
+		n := 7.0
+		if mn, ok := node["minimum"].(float64); ok && n < mn {
+			n = mn
+		}
+		if mx, ok := node["maximum"].(float64); ok && n > mx {
+			n = mx
+		}
+		if n == 0 {
+			return "", false
+		}
+		if n == float64(int64(n)) {
+			return strconv.FormatInt(int64(n), 10), true
+		}
+		return strconv.FormatFloat(n, 'f', -1, 64), true
+	case "string":
+		s := "probe." + path
+		if ml, ok := node["maxLength"].(float64); ok && ml >= 1 && int(ml) < len(s) {
+			s = s[:int(ml)]
+		}
+		return s, s != ""
+	}
+	return "probe." + path, true // untyped leaf (int-or-string, any): a string probe
 }
 
 // firstMapValue returns the alphabetically-first entry's value

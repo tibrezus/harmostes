@@ -156,13 +156,23 @@ func TestTaskTextTeachesTheShippedCoverageContract(t *testing.T) {
 			}
 		}
 		// the frontier's self-carry semantics: the text teaches it, the
-		// deploy implements it (per-path merge) — both sides pinned.
+		// deploy implements it (per-path merge + files_changed retirement)
+		// — both sides pinned.
 		if !strings.Contains(text, "carries itself forward") {
 			t.Errorf("the text must teach that the carried frontier persists until a round covers those paths (the same-head erasure hole)")
+		}
+		if strings.Contains(text, "would reset the ledger") || strings.Contains(text, "resets the ledger") {
+			t.Errorf("the text claims an undeclared round resets the ledger — the shipped merge is READ-ONLY for undeclared rounds (r1); the rationale is 'advances nothing', not 'resets'")
 		}
 		deploy := pluginSource(t, "plugins/post-review/post-review.sh")
 		if !strings.Contains(deploy, "declared_covered") || !strings.Contains(deploy, "per-path") {
 			t.Errorf("the deploy lost the per-path frontier merge — the text's self-carry claim is false")
+		}
+		if !strings.Contains(deploy, "changed_surface") {
+			t.Errorf("the deploy lost the files_changed retirement — the honest exit for a same-head round is gone")
+		}
+		if !strings.Contains(text, "carries itself forward") || !strings.Contains(text, "until a round covers it") {
+			t.Errorf("the self-carry sentence must name the retirement condition's shape")
 		}
 		// shipped-gate run 1: APPROVE over a carried ctx with an uncovered
 		// changed file → refused

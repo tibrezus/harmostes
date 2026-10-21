@@ -588,8 +588,9 @@ tasks:
 
     When the workspace carried a ledger (pr-context.json has a
     `coverage` block), you MUST close review.json with the coverage
-    block — the gate refuses an undeclared round, because an undeclared
-    round would reset the ledger:
+    block — the gate refuses an undeclared round: a round that ran but
+    declared nothing would advance nothing, and the ledger's round
+    count and open-findings count would go stale.
 
         "coverage": {
           "covered":  [{"path": "...", "note": "what full review meant"}],
@@ -611,8 +612,11 @@ tasks:
     declare the threads you re-verified as covered paths — that is the
     round's honest statement, and it keeps the ledger alive. The carried
     frontier carries itself forward: a path a prior round named as never
-    examined stays in the frontier until a round covers it — the deploy
-    merges per-path, so an unmentioned frontier file is never lost.
+    examined stays in the frontier until a round covers it — or until it
+    leaves the PR's changed surface, which retires it. The deploy merges
+    per-path, so an unmentioned frontier file is never lost, and you
+    never need to invent coverage to clear one: files still in the diff
+    stay honestly unexamined.
 
     `findings` carries ONLY blocking findings (CRITICAL or verified
     MAJOR) — each posted as a native anchored thread as it is verified

@@ -32,7 +32,7 @@ jobs:
           MESSAGE: ${{ github.event.client_payload.message }}
           TIMESTAMP: ${{ github.event.client_payload.timestamp }}
           REASON: ${{ github.event.client_payload.reason }}
-          REVISION: ${{ github.event.client_payload.metadata.fluxcd\.io/revision }}
+          REVISION: ${{ github.event.client_payload.metadata['fluxcd.io/revision'] }}
         run: |
           set -euo pipefail
           case "$ACTION" in

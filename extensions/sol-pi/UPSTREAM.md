@@ -1,15 +1,26 @@
 # Upstream provenance
 
-Vendored from https://github.com/NVlabs/SoL-Pi at commit `22277b7e0c3c46ba1259a6687f31fe39ade421a5` (main, 2026-09-11), pruned to
-the files the fleet needs (source, tests, schema checker, license/notices,
-docs). Not a subtree/pin tool — bump by replacing this directory from the
-upstream commit and recording the new SHA here.
+Vendored from https://github.com/NVlabs/SoL-Pi at commit `219568034fa54ed121ede80961655e33dfb9d0e3` (main, 2026-10-18 — the Pi-1.x compat line, #711), pruned to
+the files the fleet needs (source, tests, schema + compat checkers, tsconfig,
+license/notices, docs). Not a subtree/pin tool — bump by replacing this
+directory from the upstream commit and recording the new SHA here.
+
+Bump history: `22277b7` (2026-09-11) → `219568034fa54ed121ede80961655e33dfb9d0e3` (2026-10-18). The
+22277b7 prune had accidentally dropped upstream's `tsconfig.json` and
+`scripts/check-pi-compat.mjs` while KEEPING package.json's
+`typecheck`/`check` scripts and the docs that call them — a documented
+validation gate that could not run (#711). Both are back (verbatim from
+upstream); the type + public-API gates are armed in `make test-sol-pi`.
 
 ## Validation on bump (protocol: upstream agents-install.md)
 
-1. `npm ci --ignore-scripts && npm run check` (upstream suite; known env
-   failure: `tests/package.test.ts` pack-output parsing vs npm 12 — 2 tests,
-   environmental).
+1. `npm ci --ignore-scripts && npm run check` (upstream suite; recorded
+   env/prune failures under plain `npm test` in the vendored copy:
+   `package.test.ts` pack-output parsing vs npm 12 — 2 tests,
+   environmental; `install-guide.test.ts` — validates the pruned
+   agent-entry files; `star-history.test.js` — tests the pruned
+   star-count script. The fleet tier realizes check via the overlay
+   (`sol-pi.fleet.vitest.mjs`) plus the type and public-API gates).
 2. `npx vitest run tests/all-mechanisms.test.ts` — 4/4.
 3. Load probe under the image's `PI_VERSION` (the Dockerfile gate repeats it).
 4. `sol-pi.json` (the shipped profile, this directory) against
@@ -17,9 +28,11 @@ upstream commit and recording the new SHA here.
 
 ## Pi pairing
 
-Upstream tests against pi 0.84.2 (peer `*`). The fleet pins `PI_VERSION`
-(0.84.4) — `make test-sol-pi` runs the upstream suite against the fleet's
-pi packages; treat any failure there as a compatibility change, not noise.
+Upstream tests against pi 1.x (peer `*`; the Pi-1.x line carries the
+Pi-1.x compat fixes — `bash` structured exit codes, codemode). The fleet
+pins `PI_VERSION` (1.3.0) — `make test-sol-pi` runs the upstream type +
+public-API + suite gates against the fleet's pi packages; treat any
+failure there as a compatibility change, not noise.
 
 ## Ownership constraints (r5 review)
 

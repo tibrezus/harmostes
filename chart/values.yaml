@@ -24,11 +24,10 @@ skills:
   # GitHub mint takes the milestone NUMBER. The verbs are now executable
   # verbatim on every wired host. Prior: f44b548 (order fix, verb still
   # .id), c1382e7 (the #680 rewrite), 3707bc7 (r18 doctrine).
-  # 6193d3a: pr-review playbook gains the repository-wiki section
-  # (#726): /workspace/repo-wiki consulted BEFORE structural grepping,
-  # findings may cite doc+section, toward-TOBE compliance beats AS-IS
-  # divergence. Prior: abc8f42 (carry-mint milestone).
-  rev: "6193d3a5ada1a792d8842f3a02c282a21f71be22"
+  # eb296e5 (main's pin; supersedes 6193d3a/#726's repository-wiki
+  # section and 84d1cf6/#727's pillar-scan section — both are its
+  # ancestors).
+  rev: "eb296e59994c0af25a8966c1a08edda934e96e75"
 
 agent:
   # Hard tool-call cap per agent session (#484): past the cap only the
@@ -562,6 +561,20 @@ tasks:
       happened. Spend the budget frontier-first: open threads, the delta
       and its touched entries, the frontier — then the rest (the skill's
       coverage section has the full contract).
+    - **Research layer (#725)**: /workspace/research — orientation
+      notes (where things live, verified mechanisms, architecture
+      observations) published by PRIOR rounds and OTHER workflows on
+      this repository, each stamped with repo, workflow, PR, head SHA
+      and date. Start orientation there — it is the cheapest context
+      you own — but weigh by staleness: a note is a LEAD, not ground
+      truth. Verify against the tree before relying on it, and
+      re-derive nothing it already answers. A note naming paths that
+      no longer exist is expired: do not propagate it. When your round
+      established durable orientation facts a future round would
+      re-derive at cost, write them — terse markdown, no secrets — to
+      /workspace/research-out.md; the pipeline publishes it to the
+      shared store with provenance. The store is shared across this
+      repo's workflows: write nothing PR-private into it.
 
     ## Scope classes
 

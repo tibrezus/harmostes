@@ -49,7 +49,7 @@ export HOST REPO PR_NUM HEAD_SHA API_BASE IS_FJ WIKI_URL TRIG_CONTEXTS WORKDIR G
 # stale review.json/review-diff.patch from another repo's review
 # confuses the agent (observed live: reviewers disregarding foreign
 # files instead of reading fresh ones).
-rm -f "$WORKDIR/review.json" "$WORKDIR/review-diff.patch" "$WORKDIR/pr-context.json" "$WORKDIR/pr-diff.patch" "$WORKDIR/review-delta.patch" "$WORKDIR/coverage-ledger.json" "$WORKDIR/.head_ref" "$WORKDIR/.pr-meta.json"
+rm -f "$WORKDIR/review.json" "$WORKDIR/review-diff.patch" "$WORKDIR/pr-context.json" "$WORKDIR/pr-diff.patch" "$WORKDIR/review-delta.patch" "$WORKDIR/coverage-ledger.json" "$WORKDIR/.head_ref" "$WORKDIR/.pr-meta.json" "$WORKDIR/research-out.md" "$WORKDIR/research"
 log "provisioning workspace for $HOST/$REPO#$PR_NUM (head=${HEAD_SHA:0:8}, base=$TRIG_BASE)"
 
 # ── PR metadata + head ref (pr_context.py meta — network tier) ────────────
@@ -108,6 +108,29 @@ python3 "$(dirname "$0")/pr_context.py" context
 # review-delta.patch (last-reviewed..head) and a `coverage` fact block in
 # pr-context.json. Deterministic, non-fatal, no-op without the store.
 python3 "$(dirname "$0")/coverage_carry.py" || log "WARN: coverage carry failed (non-fatal — full-surface round)"
+
+# ── Research layer (#725): cross-workflow orientation notes ─────────────
+# RESEARCH-LINK-START (tested verbatim by TestWorkspaceResearchLink —
+# keep this block between the markers so the golden test runs the
+# shipped code). The repository-scoped sol-pi store carries
+# _shared/research — orientation notes prior rounds and OTHER
+# workflows on this repository published (the deploy node stamps
+# provenance; filenames are <PR>-<sha8>.md, newest heads win the
+# agent's attention by recency of their frontmatter). Read-oriented
+# surfacing: the agent READS /workspace/research; it writes NEW notes
+# to research-out.md in the WORKDIR, never into the store — direct
+# writes would bypass the publish path's provenance stamping.
+if [ -n "${HARMOSTES_SOL_PI_STORE:-}" ]; then
+  RESEARCH_SRC="${HARMOSTES_SOL_PI_STORE%/}/_shared/research"
+  if mkdir -p "$RESEARCH_SRC" 2>/dev/null; then
+    ln -sfn "$RESEARCH_SRC" "$WORKDIR/research"
+    N=$(ls -1 "$RESEARCH_SRC" 2>/dev/null | wc -l | tr -d ' ')
+    log "research layer linked: $WORKDIR/research -> $RESEARCH_SRC ($N note(s))"
+  else
+    log "WARN: research store leaf uncreatable — cold orientation this round (non-fatal)"
+  fi
+fi
+# RESEARCH-LINK-END
 
 # ── Wiki + RIG (architecture graph for the Architect stance) ──────────────
 if [ -n "$WIKI_URL" ]; then

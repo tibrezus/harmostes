@@ -4776,6 +4776,20 @@ data:
       happened. Spend the budget frontier-first: open threads, the delta
       and its touched entries, the frontier — then the rest (the skill's
       coverage section has the full contract).
+    - **Research layer (#725)**: /workspace/research — orientation
+      notes (where things live, verified mechanisms, architecture
+      observations) published by PRIOR rounds and OTHER workflows on
+      this repository, each stamped with repo, workflow, PR, head SHA
+      and date. Start orientation there — it is the cheapest context
+      you own — but weigh by staleness: a note is a LEAD, not ground
+      truth. Verify against the tree before relying on it, and
+      re-derive nothing it already answers. A note naming paths that
+      no longer exist is expired: do not propagate it. When your round
+      established durable orientation facts a future round would
+      re-derive at cost, write them — terse markdown, no secrets — to
+      /workspace/research-out.md; the pipeline publishes it to the
+      shared store with provenance. The store is shared across this
+      repo's workflows: write nothing PR-private into it.
     
     ## Scope classes
     
@@ -5532,7 +5546,7 @@ spec:
             - name: HARMOSTES_SKILLS_REPO
               value: "https://github.com/tibrezus/agents.git"
             - name: HARMOSTES_SKILLS_REV
-              value: "6193d3a5ada1a792d8842f3a02c282a21f71be22"
+              value: "eb296e59994c0af25a8966c1a08edda934e96e75"
           volumeMounts:
             - name: skills
               mountPath: /skills
@@ -5655,7 +5669,7 @@ spec:
             # #408 item 9: the dispatcher passes the pinned rev through so
             # per-Attempt Jobs serve the SAME revision the pool serves.
             - name: HARMOSTES_SKILLS_REV
-              value: "6193d3a5ada1a792d8842f3a02c282a21f71be22"
+              value: "eb296e59994c0af25a8966c1a08edda934e96e75"
             # GH_TOKEN deliberately aliases the same secret the dispatch path
             # already mounts as HARMOSTES_GIT_TOKEN — the gh CLI wants its
             # canonical name; one credential, one secret, two env spellings.

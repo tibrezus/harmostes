@@ -292,3 +292,51 @@ func TestTaskTextTeachesTheShippedRepoWikiContract(t *testing.T) {
 		}
 	})
 }
+
+func TestTaskTextTeachesTheShippedResearchContract(t *testing.T) {
+	text := taskText(t)
+
+	t.Run("the text names the layer, the staging path and the staleness rule", func(t *testing.T) {
+		for _, needle := range []string{
+			"/workspace/research",
+			"research-out.md",
+			"LEAD, not ground",                     // staleness semantics: verify before relying
+			"re-derive nothing it already answers", // the economy: no rediscovery
+		} {
+			if !strings.Contains(text, needle) {
+				t.Errorf("task text lost %q — the agent reads only this", needle)
+			}
+		}
+	})
+
+	t.Run("every path the text teaches exists in the shipped plugins", func(t *testing.T) {
+		ws := pluginSource(t, "plugins/workspace/workspace.sh")
+		for _, needle := range []string{"_shared/research", "RESEARCH-LINK-START", `"$WORKDIR/research-out.md"`} {
+			if !strings.Contains(ws, needle) {
+				t.Errorf("workspace.sh lost %q — the text teaches /workspace/research", needle)
+			}
+		}
+		deploy := pluginSource(t, "plugins/post-review/post-review.sh")
+		for _, needle := range []string{"RESEARCH-PUBLISH-START", "_shared/research", "research-out.md", "HARMOSTES_WORKFLOW"} {
+			if !strings.Contains(deploy, needle) {
+				t.Errorf("post-review.sh lost %q — the text teaches that the pipeline publishes the staged notes", needle)
+			}
+		}
+	})
+
+	t.Run("the provenance the text promises is the provenance stamped", func(t *testing.T) {
+		deploy := pluginSource(t, "plugins/post-review/post-review.sh")
+		for _, needle := range []string{"repo: %s", "workflow: %s", "head_sha: %s", "written_at: %s"} {
+			if !strings.Contains(deploy, needle) {
+				t.Errorf("the publish frontmatter drifted from the text's promise (lost %q)", needle)
+			}
+		}
+	})
+
+	t.Run("the store namespace is reserved where the join happens", func(t *testing.T) {
+		ss := pluginSource(t, "internal/sessionstore/sessionstore.go")
+		if !strings.Contains(ss, `func ReservedStoreNames() []string { return []string{"coverage", "_shared"} }`) {
+			t.Error("sessionstore.ReservedStoreNames drifted — the single source for the store's shared namespaces")
+		}
+	})
+}

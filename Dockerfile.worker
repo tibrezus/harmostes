@@ -65,7 +65,7 @@ RUN mkdir -p /go
 # runs `zig version` for build-system evidence.
 # metadata, but never `zig build` (parse-only). Any stable version suffices.
 ARG ZIG_VERSION=0.14.0
-RUN curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-x86_64-${ZIG_VERSION}.tar.xz" \
+RUN curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-x86_64-${ZIG_VERSION}.tar.xz" \
         -o /tmp/zig.tar.xz \
     && tar -xf /tmp/zig.tar.xz -C /usr/local \
     && ln -s "/usr/local/zig-linux-x86_64-${ZIG_VERSION}/zig" /usr/local/bin/zig \
@@ -75,7 +75,7 @@ RUN curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-x86_64-${Z
 # GitHub CLI — for platform wiki offloading (push low-level details to the
 # project's GitHub wiki via `gh api` or `git clone <repo>.wiki.git`).
 ARG GH_VERSION=2.63.2
-RUN curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz" \
+RUN curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz" \
         -o /tmp/gh.tar.gz \
     && tar -xzf /tmp/gh.tar.gz -C /tmp \
     && mv "/tmp/gh_${GH_VERSION}_linux_amd64/bin/gh" /usr/local/bin/gh \
@@ -94,8 +94,8 @@ COPY --from=build /out/harmostes-agent  /usr/local/bin/harmostes-agent
 # kinds are out of the flag binder's scope by design).
 # KEEP IN SYNC: this block is duplicated in .github/Dockerfile.worker.release.
 ARG TARGETARCH
-RUN curl -fsSL "https://github.com/rezuscloud/forgejo/releases/download/v16.0.3-rezus.6/fj-linux-${TARGETARCH}.tar.gz" -o /tmp/fj.tgz \
-    && curl -fsSL "https://github.com/rezuscloud/forgejo/releases/download/v16.0.3-rezus.6/checksums.txt" -o /tmp/fj.sha \
+RUN curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors "https://github.com/rezuscloud/forgejo/releases/download/v16.0.3-rezus.6/fj-linux-${TARGETARCH}.tar.gz" -o /tmp/fj.tgz \
+    && curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors "https://github.com/rezuscloud/forgejo/releases/download/v16.0.3-rezus.6/checksums.txt" -o /tmp/fj.sha \
     && grep "fj-linux-${TARGETARCH}.tar.gz$" /tmp/fj.sha | sed "s#  .*#  /tmp/fj.tgz#" | sha256sum -c - \
     && mkdir -p /tmp/fjx && tar -xzf /tmp/fj.tgz -C /tmp/fjx \
     && F="$(find /tmp/fjx -type f -name 'fj-linux-*')" && [ "$(printf '%s\n' "$F" | wc -l)" = "1" ] \

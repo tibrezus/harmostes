@@ -25,8 +25,77 @@ if "comments" in review:
 if d not in {"APPROVE","REQUEST_CHANGES","COMMENT"}:
     print(f'ERROR: decision must be APPROVE/REQUEST_CHANGES/COMMENT, got "{d}"',file=sys.stderr);sys.exit(1)
 if not isinstance(findings,list): print("ERROR: findings must be a list",file=sys.stderr);sys.exit(1)
-if d=="REQUEST_CHANGES" and not findings:
-    print("ERROR: REQUEST_CHANGES requires at least one blocking finding in findings (threads are the review)",file=sys.stderr);sys.exit(1)
+# Coverage block (#704): OPTIONAL — absent means the round makes no
+# coverage claim (legacy rounds, full back-compat). Present, it is the
+# round's honest statement of what it examined:
+#   covered  — files FULLY reviewed at reviewed_sha (path required)
+#   frontier — files seen but not examined, or never reached (path
+#              required; reason free-text, defaulted downstream)
+# The APPROVE contract: a declared frontier means the surface was NOT
+# fully reviewed — APPROVE is refused (declare REQUEST_CHANGES with the
+# frontier, or examine it). Symmetrically, a frontier-only round (no
+# findings) is a legitimate REQUEST_CHANGES: the unfinished coverage IS
+# the blocking statement, and the next round spends its budget there.
+cov=review.get("coverage")
+frontier_count=0
+if cov is not None:
+    if not isinstance(cov,dict):
+        print('ERROR: coverage must be an object {covered:[], frontier:[]}',file=sys.stderr);sys.exit(1)
+    for key in ("covered","frontier"):
+        entries=cov.get(key,[])
+        if entries is None: entries=[]
+        if not isinstance(entries,list):
+            print(f"ERROR: coverage.{key} must be a list",file=sys.stderr);sys.exit(1)
+        for i,e in enumerate(entries):
+            if not isinstance(e,dict) or not isinstance(e.get("path"),str) or not e.get("path").strip():
+                print(f"ERROR: coverage.{key}[{i}] must have a non-empty path",file=sys.stderr);sys.exit(1)
+    frontier_count=len(cov.get("frontier") or [])
+    if d=="APPROVE" and frontier_count:
+        print(f"ERROR: APPROVE with a declared frontier ({frontier_count} file(s) not examined) — the surface was not fully reviewed; "
+              "either examine the frontier or declare REQUEST_CHANGES carrying it",file=sys.stderr);sys.exit(1)
+# Completeness (#704 r1): an APPROVE's coverage must account for the WHOLE
+# changed surface — every file in pr-context.json's files_changed is either
+# covered or frontiered. Declaring 1 of 12 and approving is the coverage
+# lie the frontier contract exists to prevent. (REQUEST_CHANGES may
+# honestly declare partial coverage — only APPROVE claims the whole.)
+ctx_path=os.path.join(os.path.dirname(path),"pr-context.json")  # defined later for the sha check; needed here first
+ctx=None
+try:
+    with open(ctx_path) as f: ctx=json.load(f)
+except (FileNotFoundError, json.JSONDecodeError): ctx=None
+if cov is not None and d=="APPROVE" and isinstance(ctx,dict):
+    changed={f.get("filename") for f in (ctx.get("files_changed") or []) if isinstance(f,dict)}
+    declared={e.get("path") for e in cov.get("covered") or []}|{e.get("path") for e in cov.get("frontier") or []}
+    # Accumulated coverage counts as declared (#704 r2) — but ONLY what
+    # the carry itself certifies as still-valid (r3): an entry the carry
+    # stamped touched:true (changed since its coverage sha) or
+    # touched_unknown:true (no baseline resolvable) has EXPIRED — the gate
+    # must not vouch for it, or the inheritance re-imports the advisory
+    # "re-verify touched first" as if it were a guarantee. A delta round
+    # already holds review-delta.patch; re-declaring the touched file is
+    # the honest cost. The carried frontier is never inherited at all:
+    # "not examined" is not a state an APPROVE can inherit.
+    try:
+        with open(os.path.join(os.path.dirname(path),"coverage-ledger.json")) as f:
+            carried=json.load(f)
+        for e in (carried.get("covered") or []) if isinstance(carried,dict) else []:
+            if isinstance(e,dict) and isinstance(e.get("path"),str) and not e.get("touched") and not e.get("touched_unknown"):
+                declared.add(e["path"])
+    except (FileNotFoundError, OSError, json.JSONDecodeError, ValueError): pass
+    missing=sorted(changed-declared)
+    if missing:
+        print(f"ERROR: APPROVE coverage incomplete — {len(missing)} changed file(s) neither covered nor frontiered "
+              f"(first: {', '.join(missing[:3])}) — examine them, declare them frontier, or do not APPROVE",file=sys.stderr);sys.exit(1)
+# Mandatory declaration after carry (#704 r1): when the workspace carried a
+# ledger (pr-context carries the coverage fact block — only happens when a
+# ledger existed), a round that declares NOTHING would silently reset it in
+# the deploy's merge. The advisory becomes a requirement exactly there.
+if cov is None and isinstance(ctx,dict) and isinstance(ctx.get("coverage"),dict):
+    print("ERROR: this round carried a coverage ledger but declared no coverage block — "
+          "write coverage {covered:[], frontier:[]} with the round's honest statement "
+          "(an undeclared round resets the ledger and the next round loses the frontier)",file=sys.stderr);sys.exit(1)
+if d=="REQUEST_CHANGES" and not findings and not frontier_count:
+    print("ERROR: REQUEST_CHANGES requires at least one blocking finding in findings (threads are the review) — or a coverage frontier when the round ran out of budget before the surface (the frontier is the blocking statement)",file=sys.stderr);sys.exit(1)
 for i,c in enumerate(findings):
     if not isinstance(c,dict) or not c.get("path") or not c.get("body"):
         print(f"ERROR: findings[{i}] must have path+body",file=sys.stderr);sys.exit(1)

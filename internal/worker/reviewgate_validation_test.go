@@ -505,3 +505,79 @@ func TestReviewGateCoverageCountsCarriedLedger(t *testing.T) {
 		t.Errorf("refusal must name the frontier path, got:\n%s", out)
 	}
 }
+
+// #704 r3: inherited coverage must be CERTIFIED-STILL-VALID. The carry
+// stamps `touched: true` (changed since the coverage sha) and
+// `touched_unknown: true` (no baseline resolvable) on expired entries;
+// the completeness check inherits only entries WITHOUT those flags — the
+// gate must not vouch for coverage whose reviewed content no longer
+// exists at the approved head.
+func TestReviewGateCoverageInheritanceExcludesTouched(t *testing.T) {
+	build := func() (string, map[string]any, map[string]any) {
+		dir := t.TempDir()
+		lb, _ := json.Marshal(map[string]any{
+			"version": 1, "rounds": 1, "last_reviewed_sha": "1111",
+			"covered": []any{
+				map[string]any{"path": "stale.go", "sha": "1111", "touched": true, "touched_unknown": true},
+				map[string]any{"path": "fresh.go", "sha": "1111", "touched": false},
+			},
+			"frontier": []any{},
+		})
+		if err := os.WriteFile(filepath.Join(dir, "coverage-ledger.json"), lb, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		review := map[string]any{
+			"decision":     "APPROVE",
+			"reviewed_sha": sha40,
+			"findings":     []any{},
+			"coverage":     map[string]any{"covered": []any{map[string]any{"path": "other.go"}}, "frontier": []any{}},
+		}
+		ctx := map[string]any{
+			"head_sha":      sha40,
+			"files_changed": []any{map[string]any{"filename": "stale.go"}, map[string]any{"filename": "fresh.go"}, map[string]any{"filename": "other.go"}},
+		}
+		return dir, review, ctx
+	}
+	run := func(t *testing.T, dir string, review, ctx map[string]any) (string, int) {
+		rj, _ := json.Marshal(review)
+		if err := os.WriteFile(filepath.Join(dir, "review.json"), rj, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		cj, _ := json.Marshal(ctx)
+		if err := os.WriteFile(filepath.Join(dir, "pr-context.json"), cj, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		script, _ := filepath.Abs(filepath.Join("..", "..", "plugins", "pr-review", "pr-review.sh"))
+		cmd := exec.Command("bash", script)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "HARMOSTES_WORKDIR="+dir, "HARMOSTES_PR_HEAD_SHA="+sha40)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Logf("rejected: %s", out)
+		}
+		return string(out), exitCode(err)
+	}
+
+	t.Run("a touched-expired inherited entry is refused", func(t *testing.T) {
+		dir, review, ctx := build()
+		out, code := run(t, dir, review, ctx)
+		if code == 0 {
+			t.Fatal("the gate must not inherit touched-expired coverage — the file's reviewed content no longer exists at the approved head")
+		}
+		if !strings.Contains(out, "stale.go") {
+			t.Errorf("refusal must name the expired path, got:\n%s", out)
+		}
+	})
+
+	t.Run("re-declaring the touched file restores the APPROVE", func(t *testing.T) {
+		dir, review, ctx := build()
+		review["coverage"] = map[string]any{"covered": []any{
+			map[string]any{"path": "other.go"},
+			map[string]any{"path": "stale.go", "note": "re-verified against the delta"},
+		}, "frontier": []any{}}
+		out, code := run(t, dir, review, ctx)
+		if code != 0 {
+			t.Fatalf("re-declaration is the honest cost — the APPROVE then stands, rc=%d out=%s", code, out)
+		}
+	})
+}

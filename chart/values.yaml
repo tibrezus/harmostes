@@ -527,6 +527,16 @@ tasks:
       headers instead of reading end-to-end.
     - **Code**: /workspace/repo — checked out at the reviewed head SHA.
     - **Wiki**: /workspace/wiki — project design docs, if configured.
+    - **Coverage carry (#704)**: when a prior round left a coverage
+      ledger, your workspace carries /workspace/coverage-ledger.json
+      (files prior rounds fully reviewed, at which SHA, stamped
+      `touched: true` when the file changed since — those are EXPIRED and
+      must be re-verified) and /workspace/review-delta.patch (the diff
+      since the last-reviewed SHA — fix verification is cheap there).
+      pr-context.json's `coverage` block says at a glance whether carry
+      happened. Spend the budget frontier-first: open threads, the delta
+      and its touched entries, the frontier — then the rest (the skill's
+      coverage section has the full contract).
 
     ## Scope classes
 
@@ -574,6 +584,40 @@ tasks:
            {"path": "...", "line": N, "body": "<what is completely missing>",
             "disposition": "fix-in-pr|architecture-carry"}]}
 
+    ## Coverage — the round's closing statement
+
+    When the workspace carried a ledger (pr-context.json has a
+    `coverage` block), you MUST close review.json with the coverage
+    block — the gate refuses an undeclared round: a round that ran but
+    declared nothing would advance nothing, and the ledger's round
+    count and open-findings count would go stale.
+
+        "coverage": {
+          "covered":  [{"path": "...", "note": "what full review meant"}],
+          "frontier": [{"path": "...", "reason": "why it was not examined"}]
+        }
+
+    `covered` = files you FULLY reviewed at this round's head (plus the
+    prior rounds' untouched files, which stand — but a file the carry
+    stamped `touched: true` has EXPIRED: re-verify it or declare it in
+    the frontier, the gate refuses to inherit it). `frontier` = files you
+    saw but did not examine. The declaration must name at least one path
+    in one of the two lists — an empty block does nothing (the deploy
+    treats it as no statement, and the ledger freezes). The frontier is
+    honest, not shameful — it is how the next round finds what you
+    didn't. An APPROVE, though, claims the WHOLE surface: every changed
+    file must be covered or frontiered, and a declared frontier refuses
+    the APPROVE — either examine what remains or declare REQUEST_CHANGES
+    carrying the frontier. On a same-head re-arm (thread re-check round)
+    declare the threads you re-verified as covered paths — that is the
+    round's honest statement, and it keeps the ledger alive. The carried
+    frontier carries itself forward: a path a prior round named as never
+    examined stays in the frontier until a round covers it — or until it
+    leaves the PR's changed surface, which retires it. The deploy merges
+    per-path, so an unmentioned frontier file is never lost, and you
+    never need to invent coverage to clear one: files still in the diff
+    stay honestly unexamined.
+
     `findings` carries ONLY blocking findings (CRITICAL or verified
     MAJOR) — each posted as a native anchored thread as it is verified
     (thread body opens with **Blocking**). The anchor MUST be a line of
@@ -590,9 +634,15 @@ tasks:
     PR, reply+resolve — they block the verdict like any thread. Only a
     design/architecture-scale item that outlives this diff goes out as
     disposition architecture-carry (**Architecture-carry** prefix): the
-    pipeline mints one deduped tracker issue (milestone-assigned),
-    replies the reference, resolves the thread — carried items never
-    block. A reply alone never closes a thread: resolve is the close-out.
+    deploy dedups against the tracker (open AND closed) and replies the
+    reference, resolves the thread — carried items never block. Minting
+    an issue is the EXCEPTION, not the default (#71): only a
+    severe/structural finding (security, data loss, outage, corruption —
+    or an explicit `mint:` marker in the body) with NO existing issue
+    covering it mints, and the minted issue carries NO milestone (#712).
+    Everything else resolves as a review-record carry: reply + resolve,
+    no issue. A reply alone never closes a thread: resolve is the
+    close-out.
 
     Then verify it parses:
     python3 -c "import json; r=json.load(open('/workspace/review.json')); print('OK', r['decision'])"

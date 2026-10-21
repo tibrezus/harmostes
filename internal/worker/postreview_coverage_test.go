@@ -73,6 +73,35 @@ func runCoverageMerge(t *testing.T, review map[string]any, storeDir string, prNu
 	return runCoverageMergeOpen(t, review, storeDir, prNum, "")
 }
 
+// runCoverageMergeAt is runCoverageMerge with a caller-provided dir (the
+// retirement rule reads pr-context.json from the review's directory).
+func runCoverageMergeAt(t *testing.T, dir, storeDir, prNum string) (proj map[string]any) {
+	t.Helper()
+	reviewPath := filepath.Join(dir, "review.json")
+	projPath := filepath.Join(dir, ".coverage-carry.json")
+	py, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available locally")
+	}
+	script := filepath.Join(dir, "covmerge.py")
+	if err := os.WriteFile(script, []byte(extractCoverageMerge(t)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(py, script, reviewPath, projPath, storeDir, prNum)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("coverage merge crashed: %v — %s", err, out)
+	}
+	pb, err := os.ReadFile(projPath)
+	if err != nil {
+		t.Fatalf("projection not written: %v", err)
+	}
+	if err := json.Unmarshal(pb, &proj); err != nil {
+		t.Fatalf("projection invalid: %v", err)
+	}
+	return proj
+}
+
 func runCoverageMergeOpen(t *testing.T, review map[string]any, storeDir string, prNum string, totalOpen string) (proj map[string]any) {
 	t.Helper()
 	dir := t.TempDir()
@@ -503,6 +532,166 @@ func TestPostReviewCoverageLedgerIntegrity(t *testing.T) {
 		led := readStoreLedger(t, store, "900")
 		if f := led["frontier"].([]any); len(f) != 1 {
 			t.Fatalf("the vacuous declaration is read-only — the frontier survives, got %v", f)
+		}
+	})
+
+	t.Run("per-path frontier: a same-head round that ignores the carried frontier does NOT erase it (#716 r2)", func(t *testing.T) {
+		// prior rounds covered values.yaml+golden, frontier heavy.go; the
+		// same-head round declares only the threads it re-verified — the
+		// unmentioned never-examined file must survive in the frontier.
+		store := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(store, "coverage"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		r3, _ := json.Marshal(map[string]any{
+			"version": 1, "pr": 901, "rounds": 3, "last_reviewed_sha": "3333333333333333333333333333333333333333",
+			"covered":       []any{map[string]any{"path": "values.yaml", "sha": "3333333333333333333333333333333333333333", "round": 3}},
+			"frontier":      []any{map[string]any{"path": "internal/ui/heavy.go", "reason": "wall reached"}},
+			"findings_open": 2,
+		})
+		if err := os.WriteFile(filepath.Join(store, "coverage", "901.json"), r3, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		runCoverageMerge(t, map[string]any{
+			"decision":     "REQUEST_CHANGES",
+			"reviewed_sha": "4444444444444444444444444444444444444444",
+			"findings":     []any{},
+			"coverage":     map[string]any{"covered": []any{map[string]any{"path": "values.yaml"}}, "frontier": []any{}},
+		}, store, "901")
+		led := readStoreLedger(t, store, "901")
+		f := led["frontier"].([]any)
+		if len(f) != 1 || f[0].(map[string]any)["path"] != "internal/ui/heavy.go" {
+			t.Fatalf("the unmentioned carried frontier must survive the round, got %v", f)
+		}
+		// examined this round → it leaves the frontier
+		runCoverageMerge(t, map[string]any{
+			"decision":     "REQUEST_CHANGES",
+			"reviewed_sha": "5555555555555555555555555555555555555555",
+			"findings":     []any{},
+			"coverage":     map[string]any{"covered": []any{map[string]any{"path": "internal/ui/heavy.go", "note": "the old frontier, now read"}}, "frontier": []any{}},
+		}, store, "901")
+		led = readStoreLedger(t, store, "901")
+		if f := led["frontier"].([]any); len(f) != 0 {
+			t.Fatalf("a frontier path covered this round leaves the frontier, got %v", f)
+		}
+	})
+
+	t.Run("frontier retirement: a path outside files_changed retires (the honest exit, #716 r3)", func(t *testing.T) {
+		// the per-path merge gave a same-head round no honest exit: it
+		// cannot declare covered what it did not open, so the only
+		// mechanical escape was a false covered entry — and the lie
+		// certifies itself (touched:false forever). A path that left the
+		// PR's changed surface retires; one still in the diff stays.
+		store := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(store, "coverage"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		r3, _ := json.Marshal(map[string]any{
+			"version": 1, "pr": 902, "rounds": 3, "last_reviewed_sha": "3333333333333333333333333333333333333333",
+			"covered": []any{},
+			"frontier": []any{
+				map[string]any{"path": "gone.go", "reason": "wall reached"},
+				map[string]any{"path": "still-here.go", "reason": "never reached"},
+			},
+			"findings_open": 1,
+		})
+		if err := os.WriteFile(filepath.Join(store, "coverage", "902.json"), r3, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		dir := t.TempDir()
+		// the round declares nothing (read-only path) BUT the ctx surface
+		// names only still-here.go — gone.go is out of the diff. The
+		// retirement is a MERGE-time rule, so this round must still write:
+		// declare for real (the gate would demand it) — declared covered
+		// touches only still-here.go's siblings, gone.go retires.
+		writeJSON(t, filepath.Join(dir, "review.json"), map[string]any{
+			"decision":     "REQUEST_CHANGES",
+			"reviewed_sha": "4444444444444444444444444444444444444444",
+			"findings":     []any{map[string]any{"path": "still-here.go", "body": "Blocking: x"}},
+			"coverage":     map[string]any{"covered": []any{map[string]any{"path": "still-here.go"}}, "frontier": []any{}},
+		})
+		writeJSON(t, filepath.Join(dir, "pr-context.json"), map[string]any{
+			"head_sha":      "4444444444444444444444444444444444444444",
+			"files_changed": []any{map[string]any{"filename": "still-here.go"}},
+		})
+		runCoverageMergeAt(t, dir, store, "902")
+		led := readStoreLedger(t, store, "902")
+		f := led["frontier"].([]any)
+		if len(f) != 0 {
+			t.Fatalf("a frontier path outside the changed surface must retire, got %v", f)
+		}
+	})
+
+	t.Run("an empty-but-present files_changed is UNKNOWABLE — nothing retires (#716 r3)", func(t *testing.T) {
+		// derive_from_git yields an empty diff when merge_base==head
+		// (base renamed/deleted, shallow clone). Reading that as
+		// "nothing on the surface" would retire the ENTIRE frontier —
+		// the silent erasure this whole arc exists to stop.
+		store := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(store, "coverage"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		r3, _ := json.Marshal(map[string]any{
+			"version": 1, "pr": 904, "rounds": 3, "last_reviewed_sha": "3333333333333333333333333333333333333333",
+			"covered": []any{},
+			"frontier": []any{
+				map[string]any{"path": "heavy.go", "reason": "never reached"},
+				map[string]any{"path": "x.sh", "reason": "wall reached"},
+			},
+			"findings_open": 1,
+		})
+		if err := os.WriteFile(filepath.Join(store, "coverage", "904.json"), r3, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		dir := t.TempDir()
+		writeJSON(t, filepath.Join(dir, "review.json"), map[string]any{
+			"decision":     "REQUEST_CHANGES",
+			"reviewed_sha": "4444444444444444444444444444444444444444",
+			"findings":     []any{map[string]any{"path": "a.go", "body": "Blocking: x"}},
+			"coverage":     map[string]any{"covered": []any{map[string]any{"path": "a.go"}}, "frontier": []any{}},
+		})
+		writeJSON(t, filepath.Join(dir, "pr-context.json"), map[string]any{
+			"head_sha":      "4444444444444444444444444444444444444444",
+			"files_changed": []any{}, // the degraded derive_from_git shape
+		})
+		runCoverageMergeAt(t, dir, store, "904")
+		led := readStoreLedger(t, store, "904")
+		f := led["frontier"].([]any)
+		if len(f) != 2 {
+			t.Fatalf("an empty changed surface is unknowable — nothing may retire, got %v", f)
+		}
+	})
+
+	t.Run("a frontier path still in the changed surface survives an unmentioned round", func(t *testing.T) {
+		store := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(store, "coverage"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		r3, _ := json.Marshal(map[string]any{
+			"version": 1, "pr": 903, "rounds": 3, "last_reviewed_sha": "3333333333333333333333333333333333333333",
+			"covered":       []any{},
+			"frontier":      []any{map[string]any{"path": "heavy.go", "reason": "never reached"}},
+			"findings_open": 1,
+		})
+		if err := os.WriteFile(filepath.Join(store, "coverage", "903.json"), r3, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		dir := t.TempDir()
+		writeJSON(t, filepath.Join(dir, "review.json"), map[string]any{
+			"decision":     "REQUEST_CHANGES",
+			"reviewed_sha": "4444444444444444444444444444444444444444",
+			"findings":     []any{map[string]any{"path": "heavy.go", "body": "Blocking: x"}},
+			"coverage":     map[string]any{"covered": []any{}, "frontier": []any{map[string]any{"path": "heavy.go"}}},
+		})
+		writeJSON(t, filepath.Join(dir, "pr-context.json"), map[string]any{
+			"head_sha":      "4444444444444444444444444444444444444444",
+			"files_changed": []any{map[string]any{"filename": "heavy.go"}, map[string]any{"filename": "other.go"}},
+		})
+		runCoverageMergeAt(t, dir, store, "903")
+		led := readStoreLedger(t, store, "903")
+		f := led["frontier"].([]any)
+		if len(f) != 1 || f[0].(map[string]any)["path"] != "heavy.go" {
+			t.Fatalf("a frontier path still in the diff must stay frontier, got %v", f)
 		}
 	})
 

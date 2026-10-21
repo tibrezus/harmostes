@@ -720,8 +720,49 @@ if store and declared:
             if isinstance(e.get("note"), str) and e["note"].strip():
                 entry["note"] = e["note"]
             by_path[e["path"]] = entry
-        # the frontier is REPLACED wholesale — the freshest statement of
-        # what remains unexamined is the only current one.
+        # The frontier is per-path (#716 r2): a carried frontier path
+        # leaves by being EXAMINED (declared covered this round) or by
+        # LEAVING THE CHANGED SURFACE (#716 r3 — the retirement condition
+        # the r2 merge lacked: without it, a same-head re-check round had
+        # no honest exit — it cannot declare covered what it did not
+        # open, so the only mechanical escape was a false covered entry,
+        # and a lie certifies itself: touched:false forever, free
+        # APPROVEs). Files_changed comes from the same pr-context the
+        # gate reads; a path outside it is no longer review surface.
+        declared_covered = {e["path"] for e in covered_now if isinstance(e, dict) and isinstance(e.get("path"), str)}
+        try:
+            with open(os.path.join(os.path.dirname(review_path), "pr-context.json")) as f:
+                review_ctx = json.load(f)
+            changed_surface = {f.get("filename") for f in (review_ctx.get("files_changed") or []) if isinstance(f, dict)}
+        except (OSError, json.JSONDecodeError, ValueError):
+            changed_surface = None  # unreadable ctx → nothing retires
+        if not changed_surface:
+            # empty/absent files_changed is ALSO unknowable (#716 r3):
+            # derive_from_git yields an empty diff when merge_base==head
+            # (base renamed/deleted, shallow clone), and reading that as
+            # "nothing on the surface" would retire the ENTIRE frontier —
+            # the silent erasure r2 existed to stop. The gate already
+            # treats an empty surface as nothing-to-claim; the merge reads
+            # it the same way: nothing retires.
+            changed_surface = None
+        frontier_out = [
+            {"path": e["path"], **({"reason": e["reason"]} if isinstance(e.get("reason"), str) and e["reason"].strip() else {"reason": "not examined"})}
+            for e in frontier_now if isinstance(e, dict) and isinstance(e.get("path"), str)
+        ]
+        frontier_paths = {e["path"] for e in frontier_out}
+        retired = 0
+        for pe in ledger.get("frontier") or []:
+            if not (isinstance(pe, dict) and isinstance(pe.get("path"), str)):
+                continue
+            p = pe["path"]
+            if p in declared_covered or p in frontier_paths:
+                continue
+            if changed_surface is not None and p not in changed_surface:
+                retired += 1
+                continue  # out of the changed surface — nothing left to examine
+            frontier_out.append({"path": p, "reason": pe.get("reason") or "not examined"})
+        if retired:
+            print(f"[post-review] frontier retirement: {retired} path(s) left the changed surface — carried out of the ledger", file=sys.stderr)
         ledger_out = {
             "version": 1,
             "pr": int(pr_num) if str(pr_num).isdigit() else pr_num,
@@ -729,10 +770,7 @@ if store and declared:
             "last_reviewed_sha": sha,
             "updated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "covered": sorted(by_path.values(), key=lambda e: e["path"]),
-            "frontier": sorted(
-                ({"path": e["path"], **({"reason": e["reason"]} if isinstance(e.get("reason"), str) and e["reason"].strip() else {"reason": "not examined"})}
-                 for e in frontier_now if isinstance(e, dict) and isinstance(e.get("path"), str)),
-                key=lambda e: e["path"]),
+            "frontier": sorted(frontier_out, key=lambda e: e["path"]),
             "findings_open": open_threads,
         }
         os.makedirs(os.path.dirname(ledger_path), exist_ok=True)

@@ -12,6 +12,10 @@
 //   - `install-guide.test.ts` is excluded: it validates the upstream
 //     repo's agent-entry files (AGENTS.md / CLAUDE.md / root README),
 //     which the vendored copy deliberately prunes (see UPSTREAM.md).
+//   - `star-history.test.js` is excluded (pi-1.x bump, upstream
+//     219568034f): it tests scripts/update-star-history.mjs, a GitHub
+//     star-count updater the vendored copy deliberately prunes — the
+//     same recorded-prune class as install-guide.
 //   - exclude REPLACES vitest's defaults, so the stock node_modules/dist
 //     entries are restated explicitly.
 //
@@ -31,6 +35,7 @@ export default {
 			"**/dist/**",
 			"**/package.test.ts",
 			"**/install-guide.test.ts",
+			"**/star-history.test.js",
 		],
 	},
 };

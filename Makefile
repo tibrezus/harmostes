@@ -113,6 +113,14 @@ test-sol-pi:
 	# files, pruned in the vendored copy). cwd = the package root: several
 	# upstream tests resolve scripts/docs against process.cwd() (upstream
 	# layout); the overlay path is relative to that cwd.
+	# The type + public-API gates, restored with the pi-1.x bump (#711):
+	# the vendored tree carries upstream's tsconfig.json and
+	# scripts/check-pi-compat.mjs again, so the documented protocol
+	# (UPSTREAM.md step 1) is executable verbatim and the @types/node +
+	# typescript pins are consumed by a gate that can fail — the pi-bump
+	# sed moves those pins, so every bump re-proves the pairing.
+	cd extensions/sol-pi && npx tsc -p tsconfig.json
+	cd extensions/sol-pi && node scripts/check-pi-compat.mjs
 	cd extensions/sol-pi && npx vitest run --config ../sol-pi.fleet.vitest.mjs
 	@echo "sol-pi compat tier green (pi $(PI_VERSION))"
 

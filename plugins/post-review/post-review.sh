@@ -90,9 +90,11 @@ DEC=$(python3 -c "import json;print(json.load(open('$REVIEW'))['decision'])")
 #      otherwise the thread resolves as a review-record carry with NO
 #      new issue. A design-scale finding that outlives the diff becomes
 #      ONE deduped tracker issue at most, referenced by reply on the
-#      thread, then resolved. The mint carries NO milestone (#712):
-#      "newest open" tracked the running arc, not the finding's scope —
-#      scoping a carried issue is a maintainer decision. Carried threads do not downgrade; the issue
+#      thread, then resolved. The mint lands in the repo's architecture
+#      tracker milestone when one is declared ("Architecture & Design
+#      improvements", exact-title opt-in — #717); otherwise unmilestoned.
+#      NEVER the newest-open heuristic (#712: it tracked the running arc,
+#      not the finding's scope). Carried threads do not downgrade; the issue
 #      gates nothing. Severe items are never only carried — the skill's
 #      dual-thread rule keeps a Blocking quick fix in the PR.
 # The listing feeds THREE consumers (carry scan, gate, artifact) — one
@@ -322,11 +324,24 @@ def resolve(comment_id):
     except Exception:
         performed=None
     return performed is True
-# 1) milestones — deliberately NOT fetched or assigned (#712): the
-#    previous "newest-created open" rule tracked whatever arc was
-#    running when the review minted (rhesadox: 56 carries landed in the
-#    Zig 0.17 milestone), which is scope-noise, not scoping.
+# 1) milestones — the ARCHITECTURE TRACKER, exact-title opt-in (#717):
+#    a minted carry joins the repo's "Architecture & Design improvements"
+#    milestone when the maintainer has created one (correct by
+#    construction — the milestone IS the finding's class, not a scope
+#    guess); with no such milestone the mint stays unmilestoned (#712:
+#    never guess from creation timestamps — "newest open" tracked the
+#    running arc and swept 56 carries into rhesadox's Zig 0.17 milestone).
+ARCH_MS_TITLE="Architecture & Design improvements"
 milestone=None
+_,msraw=curl("GET", "/repos/%s/milestones?state=open" % repo)
+try: ms=json.loads(msraw)
+except Exception: ms=[]
+if isinstance(ms,list):
+    for m in ms:
+        if str(m.get("title") or "").strip()==ARCH_MS_TITLE:
+            milestone=m.get("id") if is_fj else m.get("number")
+            notes.append("milestone: architecture tracker (%s)" % ARCH_MS_TITLE)
+            break
 # 2) issues for dedup — OPEN and CLOSED (#700: a carried problem often
 # has its issue already, sometimes closed after an earlier fix attempt;
 # the dedup listing must see both or every round re-mints).
@@ -413,7 +428,8 @@ def ensure_issue(title, body):
         return None, "recurrence"
     if not MINT_WORTHY.search(body):
         return None, "unmarked"
-    payload={"title":title,"body":body}  # no milestone key — #712
+    payload={"title":title,"body":body}
+    if milestone is not None: payload["milestone"]=milestone  # #717
     ok,resp=curl("POST", "/repos/%s/issues" % repo, payload)
     try: r=json.loads(resp)
     except Exception: r={}

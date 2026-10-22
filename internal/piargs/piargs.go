@@ -72,6 +72,7 @@ var Extensions = []string{
 	"/extensions/litellm-provider",
 	"/extensions/rig-query",
 	"/extensions/turn-budget",
+	"/extensions/pillar-todo",
 	"/extensions/sol-pi",
 }
 
@@ -123,6 +124,12 @@ const RigGraphPath = "/workspace/rig.db"
 // only register providers have no entry.
 var extensionTools = map[string]string{
 	"/extensions/rig-query": "rig",
+	// pillar-todo registers the seeded todo checklist (#727 follow-up):
+	// the workspace plugin writes pillar-todos.json from the SERVED
+	// playbook's pillar block; the extension seeds the list at session
+	// start (fresh sessions only — resumed ones keep their branch state,
+	// so ticks persist across rounds through the lineage).
+	"/extensions/pillar-todo": "todo",
 	// sol-pi's observation-pack registers obs_recall (its recall affordance
 	// for replaced large tool results). The shipped profile
 	// (extensions/sol-pi/sol-pi.json, observationPack=true) is THE effective

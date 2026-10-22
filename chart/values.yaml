@@ -24,9 +24,11 @@ skills:
   # GitHub mint takes the milestone NUMBER. The verbs are now executable
   # verbatim on every wired host. Prior: f44b548 (order fix, verb still
   # .id), c1382e7 (the #680 rewrite), 3707bc7 (r18 doctrine).
-  # eb296e5 (main's pin — carries #726's repository-wiki section and
-  # #727's pillar-scan section as ancestors).
-  rev: "eb296e59994c0af25a8966c1a08edda934e96e75"
+  # cbc5dbc: Pillar scan opens with the seeding contract — the todo
+  # list arrives pre-populated from this playbook's pillar block
+  # (#727 follow-up); work it top-down, never rebuild it.
+  # Prior: eb296e5 (#726 repository-wiki + #727 pillar-scan sections).
+  rev: "cbc5dbc8825c157746b17faca9bcc556000c2bdc"
 
 agent:
   # Hard tool-call cap per agent session (#484): past the cap only the
@@ -574,6 +576,14 @@ tasks:
       /workspace/research-out.md; the pipeline publishes it to the
       shared store with provenance. The store is shared across this
       repo's workflows: write nothing PR-private into it.
+
+    ## Pillar todo (#727 follow-up)
+
+    Your todo tool arrives SEEDED with the pillar checklist — one item
+    per pillar, extracted from the served playbook's pillar block (the
+    skill is the source; you never rebuild the list). On a fresh
+    session it is unticked; a resumed session keeps its branch's
+    ticks. The playbook's Pillar scan section governs how to work it.
 
     ## Mid-round posting (#727)
 

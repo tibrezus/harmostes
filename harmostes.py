@@ -204,9 +204,11 @@ def main():
             "/extensions/litellm-provider",
             "/extensions/rig-query",
             "/extensions/turn-budget",
+            "/extensions/pillar-todo",
             "/extensions/sol-pi"
         ],
         "tools": {
+            "/extensions/pillar-todo": "todo",
             "/extensions/rig-query": "rig",
             "/extensions/sol-pi": "obs_recall"
         }

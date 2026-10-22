@@ -179,6 +179,36 @@ fi
 # record tools into the context
 jq --argjson t "$TOOLS" '. + {tools:$t}' "$WORKDIR/pr-context.json" > "$WORKDIR/pr-context.json.tmp" && mv "$WORKDIR/pr-context.json.tmp" "$WORKDIR/pr-context.json"
 
+# ── Pillar todo seed (#727 follow-up): the checklist exists at turn one ──
+# PILLAR-SEED-START (tested verbatim by TestWorkspacePillarSeed — keep this
+# block between the markers so the golden test runs the shipped code).
+# The SERVED playbook is the single source of the pillar set: its `## `
+# headings UP TO (not including) "## Hardened checks" are the pillars,
+# in walkthrough order. The pillar-todo extension seeds the session's
+# todo list from this manifest on a fresh session; a resumed session
+# keeps its branch state (ticks persist across rounds through the
+# lineage). Absent skill, absent block, or an empty extraction → no
+# manifest, the agent works without the checklist (non-fatal by
+# design).
+PILLAR_PLAYBOOK="/skills/pr-review/references/playbook.md"
+PILLAR_MANIFEST="$WORKDIR/pillar-todos.json"
+rm -f "$PILLAR_MANIFEST"
+if [ -f "$PILLAR_PLAYBOOK" ]; then
+  PILLAR_BLOCK=$(awk '/^## Hardened checks/{exit} /^## /{sub(/^## /,""); print}' "$PILLAR_PLAYBOOK")
+  if [ -n "$PILLAR_BLOCK" ]; then
+    printf '%s\n' "$PILLAR_BLOCK" | python3 -c '
+import json, sys
+items = [ln.strip() for ln in sys.stdin if ln.strip()]
+print(json.dumps(items))' > "$PILLAR_MANIFEST" 2>/dev/null || rm -f "$PILLAR_MANIFEST"
+  fi
+fi
+if [ -f "$PILLAR_MANIFEST" ]; then
+  log "pillar todo seed: $(python3 -c "import json;print(len(json.load(open('$PILLAR_MANIFEST'))))" 2>/dev/null || echo '?') pillar(s) → $PILLAR_MANIFEST"
+else
+  log "pillar todo seed: no playbook pillar block — session starts unseeded"
+fi
+# PILLAR-SEED-END
+
 # ── Repository wiki (#726): the reviewed repo's OWN target-architecture ──
 # docs — a DIFFERENT artifact from config.wiki (the cross-repo llm-wiki
 # above): DESIGN.md/TOBE.md/ARCHITECTURE.md and siblings describe the

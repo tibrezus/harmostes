@@ -4791,6 +4791,14 @@ data:
       shared store with provenance. The store is shared across this
       repo's workflows: write nothing PR-private into it.
     
+    ## Pillar todo (#727 follow-up)
+    
+    Your todo tool arrives SEEDED with the pillar checklist — one item
+    per pillar, extracted from the served playbook's pillar block (the
+    skill is the source; you never rebuild the list). On a fresh
+    session it is unticked; a resumed session keeps its branch's
+    ticks. The playbook's Pillar scan section governs how to work it.
+    
     ## Mid-round posting (#727)
     
     Posting findings DURING the round is supported and expected: post
@@ -5561,7 +5569,7 @@ spec:
             - name: HARMOSTES_SKILLS_REPO
               value: "https://github.com/tibrezus/agents.git"
             - name: HARMOSTES_SKILLS_REV
-              value: "eb296e59994c0af25a8966c1a08edda934e96e75"
+              value: "cbc5dbc8825c157746b17faca9bcc556000c2bdc"
           volumeMounts:
             - name: skills
               mountPath: /skills
@@ -5684,7 +5692,7 @@ spec:
             # #408 item 9: the dispatcher passes the pinned rev through so
             # per-Attempt Jobs serve the SAME revision the pool serves.
             - name: HARMOSTES_SKILLS_REV
-              value: "eb296e59994c0af25a8966c1a08edda934e96e75"
+              value: "cbc5dbc8825c157746b17faca9bcc556000c2bdc"
             # GH_TOKEN deliberately aliases the same secret the dispatch path
             # already mounts as HARMOSTES_GIT_TOKEN — the gh CLI wants its
             # canonical name; one credential, one secret, two env spellings.

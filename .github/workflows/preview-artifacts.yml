@@ -73,7 +73,7 @@ jobs:
           cp -r plugins extensions previewctx/
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           # Packages are user-owned (tibrezus/*) — GITHUB_TOKEN can't push.

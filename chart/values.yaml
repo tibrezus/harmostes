@@ -26,7 +26,7 @@ skills:
   # .id), c1382e7 (the #680 rewrite), 3707bc7 (r18 doctrine).
   # eb296e5 (main's pin — carries #726's repository-wiki section and
   # #727's pillar-scan section as ancestors).
-  rev: "eb296e59994c0af25a8966c1a08edda934e96e75"
+  rev: "cbc5dbc8825c157746b17faca9bcc556000c2bdc"
 
 agent:
   # Hard tool-call cap per agent session (#484): past the cap only the

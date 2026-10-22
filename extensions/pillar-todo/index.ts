@@ -24,10 +24,9 @@
  * unparsable one, or an empty one → empty list, the tool still works.
  */
 
-import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { readFileSync } from "node:fs";
-import { Type } from "typebox";
+import { Type } from "typebox"; // pi aliases typebox for extensions — the rig-query form: a bare-specifier value import from @earendil-works/pi-ai resolves only through pi's loader alias and drags the whole pi closure onto the plain-node test path (review r1)
 
 export interface Todo {
 	id: number;
@@ -43,7 +42,12 @@ interface TodoDetails {
 }
 
 const TodoParams = Type.Object({
-	action: StringEnum(["list", "add", "toggle", "clear"] as const),
+	// Type.Unsafe enum (the rig-query form): the shape StringEnum builds,
+	// without the pi-ai value import.
+	action: Type.Unsafe<{ type: "string"; enum: string[] }>({
+		type: "string",
+		enum: ["list", "add", "toggle", "clear", "seed"],
+	}),
 	text: Type.Optional(Type.String({ description: "Todo text (for add)" })),
 	id: Type.Optional(Type.Number({ description: "Todo ID (for toggle)" })),
 });
@@ -76,7 +80,7 @@ export default function (pi: ExtensionAPI) {
 	let nextId = 1;
 
 	/** Reconstruct from the session branch (the example's contract). */
-	const reconstructState = (ctx: ExtensionContext) => {
+	const reconstructState = (ctx: ExtensionContext): void => {
 		todos = [];
 		nextId = 1;
 		let sawTodoEntry = false;
@@ -94,26 +98,50 @@ export default function (pi: ExtensionAPI) {
 		return sawTodoEntry;
 	};
 
-	pi.on("session_start", async (_event, ctx) => {
-		const sawTodoEntry = reconstructState(ctx);
-		if (sawTodoEntry || todos.length > 0) return; // resumed: the branch IS the state
-		// Fresh session: seed from the manifest when present.
+	/**
+	 * Seed from the workspace manifest; false when there is nothing to
+	 * seed (absent/unparsable/empty manifest).
+	 */
+	const seedFromManifest = (): boolean => {
 		try {
 			const dir = process.env.HARMOSTES_WORKDIR ?? "/workspace";
 			const raw = readFileSync(`${dir}/pillar-todos.json`, "utf8");
 			const items = parseSeedManifest(raw);
 			if (items) {
 				todos = items.map((text) => ({ id: nextId++, text, done: false }));
+				return true;
 			}
 		} catch {
 			// no manifest / unreadable: empty list, tool still works
 		}
+		return false;
+	};
+
+	pi.on("session_start", async (_event, ctx) => {
+		reconstructState(ctx);
+		// Suppress the seed only when the branch CARRIES todo history —
+		// any todo toolResult (even a `clear`, whose details.todos is [])
+		// means the lineage owns the state. A branch with none (fresh
+		// session, or a round that died before ever calling the tool) is
+		// indistinguishable from never-seeded and gets a fresh checklist
+		// (review r1: the todos.length disjunct was dead — reconstruct
+		// only fills todos when it also saw an entry).
+		const branchHasTodoHistory = ctx.sessionManager
+			.getBranch()
+			.some(
+				(e) =>
+					e.type === "message" &&
+					(e.message as { role?: string; toolName?: string } | undefined)?.role === "toolResult" &&
+					(e.message as { toolName?: string }).toolName === "todo",
+				);
+		if (branchHasTodoHistory) return;
+		seedFromManifest();
 	});
 
 	pi.registerTool({
 		name: "todo",
 		label: "Todo",
-		description: "Manage a todo list. Actions: list, add (text), toggle (id), clear",
+		description: "Manage a todo list. Actions: list, add (text), toggle (id), clear, seed (re-read the pillar manifest)",
 		parameters: TodoParams,
 
 		async execute(_toolCallId, params) {
@@ -171,6 +199,29 @@ export default function (pi: ExtensionAPI) {
 					return {
 						content: [{ type: "text", text: `Cleared ${count} todos` }],
 						details: { action: "clear", todos: [], nextId: 1 } as TodoDetails,
+					};
+				}
+				case "seed": {
+					// Re-read the manifest: the playbook's "clear and reseed
+					// for a deliberate full re-sweep" must be executable
+					// (review r1: session_start fires once per session —
+					// without this a cleared list was a one-way door).
+					// Clear FIRST, unconditionally — the action's contract is
+					// replace-what-is-there, even when no manifest exists.
+					const count = todos.length;
+					todos = [];
+					nextId = 1;
+					const seeded = seedFromManifest();
+					return {
+						content: [
+							{
+								type: "text",
+								text: seeded
+									? `Replaced ${count} todo(s) with ${todos.length} from the pillar manifest`
+									: `Cleared ${count} todo(s); no pillar manifest to reseed from`,
+							},
+						],
+						details: { action: "clear", todos: [...todos], nextId } as TodoDetails,
 					};
 				}
 			}

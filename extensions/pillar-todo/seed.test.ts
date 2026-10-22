@@ -170,3 +170,66 @@ test("ticks persist across toggles and clear resets", async () => {
 	const list2 = await h.todo({ action: "list" });
 	assert.match(String(list2.content[0].text), /#1: C/);
 });
+
+// ── review r1: the branch-ownership cases ────────────────────────────────
+
+test("resumed branch whose only todo result is a clear: state owned — no re-seed", async () => {
+	const dir = withManifest(["Would-Be-Seeded"]);
+	const branch: Entry[] = [
+		{
+			type: "message",
+			message: { role: "toolResult", toolName: "todo", details: { action: "clear", todos: [], nextId: 1 } },
+		},
+	];
+	const h = harness(branch, dir);
+	await h.sessionStart();
+	const list = await h.todo({ action: "list" });
+	// the lineage owns the state — an empty-at-clear branch stays empty
+	// (the agent cleared it deliberately last round; seed is the re-entry)
+	assert.match(String(list.content[0].text), /No todos/);
+});
+
+test("resumed branch with NO todo results: re-seeds — indistinguishable from fresh", async () => {
+	const dir = withManifest(["Correctness", "Security"]);
+	const branch: Entry[] = [
+		{ type: "message", message: { role: "assistant", content: [] } }, // non-todo traffic only
+	];
+	const h = harness(branch, dir);
+	await h.sessionStart();
+	const list = await h.todo({ action: "list" });
+	const details = list.details as { todos: { text: string; done: boolean }[] };
+	assert.equal(details.todos.length, 2);
+	assert.equal(details.todos[0].text, "Correctness");
+});
+
+test("seed action: restores the checklist from the manifest after a clear", async () => {
+	const h = harness([], withManifest(["Correctness", "Security", "Performance"]));
+	await h.sessionStart();
+	await h.todo({ action: "toggle", id: 2 });
+	await h.todo({ action: "clear" });
+	let list = await h.todo({ action: "list" });
+	assert.match(String(list.content[0].text), /No todos/);
+	// the re-entry the playbook's "clear and reseed" names
+	const r = await h.todo({ action: "seed" });
+	assert.match(String(r.content[0].text), /Replaced 0 todo\(s\) with 3/);
+	list = await h.todo({ action: "list" });
+	const details = list.details as { todos: { id: number; text: string; done: boolean }[] };
+	assert.deepEqual(
+		details.todos.map((t) => [t.id, t.text, t.done]),
+		[
+			[1, "Correctness", false],
+			[2, "Security", false],
+			[3, "Performance", false],
+		],
+	);
+});
+
+test("seed action with no manifest: clears, says so, tool still works", async () => {
+	const h = harness([], undefined); // no manifest anywhere
+	await h.sessionStart();
+	await h.todo({ action: "add", text: "scratch" });
+	const r = await h.todo({ action: "seed" });
+	assert.match(String(r.content[0].text), /no pillar manifest/);
+	const list = await h.todo({ action: "list" });
+	assert.match(String(list.content[0].text), /No todos/);
+});

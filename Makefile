@@ -62,8 +62,7 @@ golden-update:
 test-extensions:
 	@test -d extensions/turn-budget/node_modules/@earendil-works/pi-coding-agent || \
 		npm install --prefix extensions/turn-budget --no-audit --no-fund --silent
-	@test -d extensions/pillar-todo/node_modules/@earendil-works/pi-coding-agent || \
-		npm install --prefix extensions/pillar-todo --no-audit --no-fund --silent
+	npm ci --prefix extensions/pillar-todo --no-audit --no-fund --silent
 	npm ci --prefix extensions/rig-query --no-audit --no-fund --silent
 	node --test --experimental-strip-types \
 		extensions/rig-query/queries.test.ts \

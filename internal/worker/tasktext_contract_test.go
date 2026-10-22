@@ -370,7 +370,12 @@ func TestTaskTextTeachesTheShippedPillarScanContract(t *testing.T) {
 
 	t.Run("the pointer's target exists in the SERVED skill", func(t *testing.T) {
 		playbook := pluginSource(t, ".agents/skills/pr-review/references/playbook.md")
-		for _, needle := range []string{"## Pillar scan", "breadth-first", "thread_ref"} {
+		for _, needle := range []string{
+			"## Pillar scan",
+			"Work it top-down",         // the loop's shape (the #82 wording)
+			"POST its anchored thread", // post-when-proven, in the skill
+			"tick that pillar",         // the seeded checklist is the loop's spine
+		} {
 			if !strings.Contains(playbook, needle) {
 				t.Errorf("the served playbook lost %q — the text's pointer ('playbook, Pillar scan') would dangle", needle)
 			}
@@ -396,6 +401,54 @@ func TestTaskTextTeachesTheShippedPillarScanContract(t *testing.T) {
 			if strings.Contains(text, banned) {
 				t.Errorf("task text teaches %q — the proof bar never moves (#727's one red line)", banned)
 			}
+		}
+	})
+}
+
+// #727 follow-up: the pillar todo — the checklist is SEEDED (the agent
+// never rebuilds it): the workspace plugin extracts the served playbook's
+// pillar block into pillar-todos.json and the pillar-todo extension
+// seeds the session's todo list from it. This pins the text's claims to
+// the shipped machinery, both directions.
+func TestTaskTextTeachesTheShippedPillarTodoSeed(t *testing.T) {
+	text := taskText(t)
+
+	t.Run("the text states the seed facts and defers the walk to the skill", func(t *testing.T) {
+		for _, needle := range []string{
+			"Pillar todo",
+			"SEEDED with the pillar checklist",
+			"served playbook's pillar block", // the skill is the source
+			"a resumed session keeps its branch's",
+			"playbook's Pillar scan section governs", // methodology stays in the skill
+		} {
+			if !strings.Contains(text, needle) {
+				t.Errorf("task text lost %q — the agent reads only this", needle)
+			}
+		}
+		for _, methodology := range []string{"one item per pillar, in walkthrough order", "tick a pillar when"} {
+			if strings.Contains(text, methodology) {
+				t.Errorf("task text re-grows methodology (%q) — the loop is the playbook's", methodology)
+			}
+		}
+	})
+
+	t.Run("the machinery the text names exists", func(t *testing.T) {
+		ws := pluginSource(t, "plugins/workspace/workspace.sh")
+		for _, needle := range []string{"PILLAR-SEED-START", "pillar-todos.json", "Hardened checks"} {
+			if !strings.Contains(ws, needle) {
+				t.Errorf("workspace.sh lost %q — the text teaches the seeded checklist", needle)
+			}
+		}
+		ext := pluginSource(t, "extensions/pillar-todo/index.ts")
+		for _, needle := range []string{"pillar-todos.json", `name: "todo"`, "sawTodoEntry"} {
+			if !strings.Contains(ext, needle) {
+				t.Errorf("pillar-todo extension lost %q — the text's seed claim would be false", needle)
+			}
+		}
+		// the served playbook HAS a pillar block (the seed's source)
+		playbook := pluginSource(t, ".agents/skills/pr-review/references/playbook.md")
+		if !strings.Contains(playbook, "## Correctness") || !strings.Contains(playbook, "## Hardened checks") {
+			t.Error("the served playbook lost its pillar block shape — the seed would extract nothing")
 		}
 	})
 }

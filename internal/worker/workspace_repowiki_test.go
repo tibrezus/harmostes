@@ -10,6 +10,7 @@ package worker
 // the unconditional clear of a previous round's docs.
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -244,5 +245,139 @@ func TestHostHttpsUrl(t *testing.T) {
 	parts := strings.SplitN(strings.TrimSpace(string(out)), "|", 2)
 	if len(parts) != 2 || parts[0] != parts[1] {
 		t.Errorf("https_url must delegate to clone_url byte-identically: %q vs %q", parts[0], parts[1])
+	}
+}
+
+// #727 follow-up: the pillar todo seed — the shipped block extracts the
+// SERVED playbook's pillar block (## headings before "## Hardened
+// checks") into /workspace/pillar-todos.json; the pillar-todo extension
+// seeds the session's todo list from it. This runs the block verbatim
+// against a fixture playbook.
+func TestWorkspacePillarSeed(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "plugins", "workspace", "workspace.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(raw)
+	runBlock := func(t *testing.T, workDir, playbook string) string {
+		t.Helper()
+		bash, err := exec.LookPath("bash")
+		if err != nil {
+			t.Skip("bash not available")
+		}
+		// The block reads the playbook at the SERVED path
+		// (/skills/pr-review/...). The test sandbox cannot write /skills,
+		// so the block text is re-pointed at a temp skill root first —
+		// one substitution, same code.
+		if playbook != "" {
+			root := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(root, "pr-review", "references"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(root, "pr-review", "references", "playbook.md"), mustRead(t, playbook), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			script = strings.ReplaceAll(script, "/skills/pr-review", filepath.Join(root, "pr-review"))
+		}
+		// Index AFTER the substitution: it lengthens the text, and
+		// slicing with pre-substitution indexes truncates the block
+		// (this exact bug shipped red once — keep the order).
+		start := strings.Index(script, "# PILLAR-SEED-START")
+		end := strings.Index(script, "# PILLAR-SEED-END")
+		if start < 0 || end < 0 || end <= start {
+			t.Fatal("PILLAR-SEED markers not found in plugins/workspace/workspace.sh — keep the pillar seed block between the markers")
+		}
+		block := "set -euo pipefail\n" +
+			"log() { echo \"[workspace] $*\"; }\n" +
+			"WORKDIR=\"$HARMOSTES_WORKDIR\"\n" +
+			script[start:end] + "\n"
+		cmd := exec.Command(bash, "-c", block)
+		cmd.Env = append(os.Environ(), "HARMOSTES_WORKDIR="+workDir)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("pillar seed block failed: %v — %s", err, out)
+		}
+		return string(out)
+	}
+
+	t.Run("playbook present: manifest carries the pillar block, in order", func(t *testing.T) {
+		work := t.TempDir()
+		playbook := filepath.Join(t.TempDir(), "playbook.md")
+		if err := os.WriteFile(playbook, []byte(`# Playbook
+
+## Boundaries (structural fit)
+body
+
+## Correctness
+body
+
+## Hardened checks — apply when a finding leans on them
+not a pillar
+
+## Pillar scan (#727 discipline)
+also not a pillar
+`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		out := runBlock(t, work, playbook)
+		b, err := os.ReadFile(filepath.Join(work, "pillar-todos.json"))
+		if err != nil {
+			t.Fatalf("manifest missing: %v (%s)", err, out)
+		}
+		var items []string
+		if err := json.Unmarshal(b, &items); err != nil {
+			t.Fatalf("manifest invalid JSON: %v", err)
+		}
+		assertDeepEqual(t, items, []string{"Boundaries (structural fit)", "Correctness"})
+		if !strings.Contains(out, "2 pillar(s)") {
+			t.Errorf("the seed must be logged with its count: %s", out)
+		}
+	})
+
+	t.Run("absent playbook: no manifest, stated, non-fatal", func(t *testing.T) {
+		work := t.TempDir()
+		out := runBlock(t, work, "")
+		if _, err := os.Stat(filepath.Join(work, "pillar-todos.json")); !os.IsNotExist(err) {
+			t.Fatal("absent playbook must not leave a manifest")
+		}
+		if !strings.Contains(out, "unseeded") {
+			t.Errorf("absence must be stated (config facts never drop silently): %s", out)
+		}
+	})
+
+	t.Run("playbook without a pillar block: no manifest", func(t *testing.T) {
+		work := t.TempDir()
+		playbook := filepath.Join(t.TempDir(), "playbook.md")
+		if err := os.WriteFile(playbook, []byte("# just prose\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		out := runBlock(t, work, playbook)
+		if _, err := os.Stat(filepath.Join(work, "pillar-todos.json")); !os.IsNotExist(err) {
+			t.Fatal("no pillar block must not leave a manifest")
+		}
+		if !strings.Contains(out, "unseeded") {
+			t.Errorf("empty extraction must state unseeded: %s", out)
+		}
+	})
+}
+
+func mustRead(t *testing.T, path string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+func assertDeepEqual(t *testing.T, got, want []string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %v, want %v", got, want)
+		}
 	}
 }

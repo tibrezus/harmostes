@@ -112,6 +112,7 @@ RUN git config --global user.name 'harmostes-bot' && \
 COPY extensions/litellm-provider /extensions/litellm-provider
 COPY extensions/rig-query        /extensions/rig-query
 COPY extensions/turn-budget     /extensions/turn-budget
+COPY extensions/pillar-todo     /extensions/pillar-todo
 RUN pi install npm:pi-searxng
 # defaultProjectTrust=never (#426 r3 finding 1): review workspaces are
 # UNTRUSTED PR content — a repo shipping .pi/sol-pi.json must not be able to
@@ -126,7 +127,7 @@ ENV SEARXNG_URL=http://searxng.searxng.svc.cluster.local:8080
 # fails the build. Typebox itself resolves through pi's alias injection
 # (guaranteed by the pinned PI_VERSION below), which is why unresolvable-
 # dependency failures are covered by the TS tier, not this probe.
-RUN PI_SKIP_VERSION_CHECK=1 PI_TOOL_BUDGET=3 timeout 60 pi -e /extensions/rig-query -e /extensions/turn-budget --mode rpc </dev/null >/tmp/pi-load.log 2>&1; rc=$?; \
+RUN PI_SKIP_VERSION_CHECK=1 PI_TOOL_BUDGET=3 timeout 60 pi -e /extensions/rig-query -e /extensions/turn-budget -e /extensions/pillar-todo --mode rpc </dev/null >/tmp/pi-load.log 2>&1; rc=$?; \
     if [ $rc -ne 0 ]; then \
       echo "rig-query/turn-budget load probe failed (pi exit $rc):"; cat /tmp/pi-load.log; exit 1; \
     fi

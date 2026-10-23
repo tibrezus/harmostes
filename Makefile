@@ -73,7 +73,7 @@ test-extensions:
 		extensions/turn-budget/policy.test.ts \
 		extensions/turn-budget/index.test.ts \
 		extensions/turn-budget/contract.test.ts \
-		extensions/pillar-todo/seed.test.ts
+		extensions/pillar-todo/seed.test.ts \
 		extensions/review-post/contract.test.ts
 	@node --experimental-strip-types -e 'await import("./extensions/litellm-provider/index.ts")'
 	python3 extensions/rig-query/fixtures/freshness.py

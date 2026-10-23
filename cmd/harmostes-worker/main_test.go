@@ -574,7 +574,18 @@ func TestScopePostToken(t *testing.T) {
 	for _, n := range worker.EnvAllowlistNames() {
 		safe := worker.SpawnSafeEnv(n)
 		if safe && (strings.Contains(n, "TOKEN") || strings.Contains(n, "PASSWORD") || strings.Contains(n, "USERNAME") || n == "HARMOSTES_FORGEJO_BOT_HOST") {
-			if n != "HARMOSTES_REVIEW_POST_TOKEN" && n != "HARMOSTES_REVIEW_POST_TOKEN_FJ" && n != "LITELLM_API_KEY" {
+			// Justified credential-shaped entries (r3 P3 discipline): the two
+			// REVIEW_POST halves (comment-scoped by the forge) and
+			// LITELLM_API_KEY (model access ≠ forge access). HARMOSTES_FORGEJO_TOKEN
+			// joins them under #749 by OWNER RULING — the fleet-wide forge
+			// credential is deliberately broad, so the #680 guarantee moved
+			// fully INTO CODE: review-post's extension has no verdict-event
+			// path on any host (pinned by extensions/review-post contract
+			// tests: every review-event POST carries event=COMMENT), and
+			// binding verdicts are emitted only by the gate sweep under the
+			// bot identity. If review-post's contract tests ever fail to pin
+			// that, this entry must be reverted first.
+			if n != "HARMOSTES_REVIEW_POST_TOKEN" && n != "HARMOSTES_REVIEW_POST_TOKEN_FJ" && n != "LITELLM_API_KEY" && n != "HARMOSTES_FORGEJO_TOKEN" {
 				t.Fatalf("safe set must not contain credential-shaped %s — justify or remove", n)
 			}
 		}

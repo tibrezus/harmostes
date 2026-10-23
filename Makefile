@@ -63,6 +63,7 @@ test-extensions:
 	@test -d extensions/turn-budget/node_modules/@earendil-works/pi-coding-agent || \
 		npm install --prefix extensions/turn-budget --no-audit --no-fund --silent
 	npm ci --prefix extensions/pillar-todo --no-audit --no-fund --silent
+	npm ci --prefix extensions/review-post --no-audit --no-fund --silent
 	npm ci --prefix extensions/rig-query --no-audit --no-fund --silent
 	node --test --experimental-strip-types \
 		extensions/rig-query/queries.test.ts \
@@ -72,7 +73,8 @@ test-extensions:
 		extensions/turn-budget/policy.test.ts \
 		extensions/turn-budget/index.test.ts \
 		extensions/turn-budget/contract.test.ts \
-		extensions/pillar-todo/seed.test.ts
+		extensions/pillar-todo/seed.test.ts \
+		extensions/review-post/contract.test.ts
 	@node --experimental-strip-types -e 'await import("./extensions/litellm-provider/index.ts")'
 	python3 extensions/rig-query/fixtures/freshness.py
 	@# Chart copy drift gate: the resolver's litellm-provider ConfigMap source

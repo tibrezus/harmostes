@@ -762,6 +762,12 @@ var spawnSafeEnv = map[string]bool{
 	"HARMOSTES_SKILLS_REV":           true, // a commit sha pin
 	"HARMOSTES_REVIEW_POST_TOKEN":    true, // the scoped credential itself (github.com)
 	"HARMOSTES_REVIEW_POST_TOKEN_FJ": true, // the fork-forge half (#687)
+	// HARMOSTES_FORGEJO_TOKEN (#749): the fleet-wide forge credential the
+	// owner designated for all workflows. Reaches armed review sessions as
+	// review-post's posting credential; the #680 guarantee is carried by
+	// CODE there (the extension has no verdict-event path on any host),
+	// not by this token's narrowness — it is deliberately broad.
+	"HARMOSTES_FORGEJO_TOKEN": true,
 }
 
 // SpawnSafeEnv reports whether an allowlisted name survives into an ARMED

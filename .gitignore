@@ -33,4 +33,5 @@ extensions/sol-pi/node_modules/
 tools/code-island/node_modules/
 extensions/turn-budget/node_modules/
 extensions/pillar-todo/node_modules/
+extensions/review-post/node_modules/
 e2e/probe-prod-257.mjs

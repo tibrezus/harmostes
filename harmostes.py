@@ -205,10 +205,12 @@ def main():
             "/extensions/rig-query",
             "/extensions/turn-budget",
             "/extensions/pillar-todo",
+            "/extensions/review-post",
             "/extensions/sol-pi"
         ],
         "tools": {
             "/extensions/pillar-todo": "todo",
+            "/extensions/review-post": "review_finding_post,review_findings_list,review_thread_reply,review_thread_resolve,review_verdict_post",
             "/extensions/rig-query": "rig",
             "/extensions/sol-pi": "obs_recall"
         }

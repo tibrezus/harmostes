@@ -111,6 +111,8 @@ function baseResponses(): Map<string, { status: number; json: any }> {
 		["POST /repos/tibrez/rhesadox/pulls/2833/reviews", OK_REVIEW],
 		["GET /repos/tibrez/rhesadox/pulls/2833/reviews/1407/comments", OK_COMMENT],
 		["POST /repos/tibrez/rhesadox/issues/2833/comments", { status: 200, json: { id: 5001 } }],
+		// the moved-head guard reads the live head on every verdict
+		["GET /repos/tibrez/rhesadox/pulls/2833", { status: 200, json: { head: { sha: "bf994bb6" } } }],
 	]);
 }
 
@@ -312,6 +314,121 @@ test("export: resume re-sync repairs a missing projection without re-posting", a
 		assert.equal(led.findings.length, 1);
 		assert.equal(led.findings[0].thread_ref, "forgejo:tibrez/rhesadox#2833:r1400:c1");
 		assert.ok(!h.fake.calls.some((c) => c.method === "POST" && c.path.endsWith("/reviews")));
+	} finally {
+		h.api.done();
+	}
+});
+
+// ── 9. the moved-head guard (#749 Phase 3): the verdict is bound to the head ─
+
+test("verdict_post: the moved-head guard refuses — nothing posted, nothing recorded", async () => {
+	const responses = baseResponses();
+	responses.set("GET /repos/tibrez/rhesadox/pulls/2833", { status: 200, json: { head: { sha: "9999999newhead" } } });
+	const h = harness({ responses });
+	try {
+		await h.api.start();
+		const r = await h.api.call("review_verdict_post", { decision: "REQUEST_CHANGES", body: "b" });
+		assert.match(String(r.details?.error), /head-moved/);
+		assert.ok(!h.fake.calls.some((c) => c.method === "POST" && c.path.includes("/comments")));
+		assert.ok(!fs.existsSync(path.join(h.api.workdir, "review.json")));
+	} finally {
+		h.api.done();
+	}
+});
+
+// ── 10. the converge tools (#749 Phase 3): research, coverage, carry ─────
+
+test("research_publish: frontmatter + atomic write + idempotent name; empty notes = no-op", async () => {
+	const store = fs.mkdtempSync(path.join(require("node:os").tmpdir(), "rp-store-"));
+	const h = harness({ responses: baseResponses(), env: { HARMOSTES_SOL_PI_STORE: store } });
+	process.env.HARMOSTES_SOL_PI_STORE = store;
+	try {
+		await h.api.start();
+		// empty/no-file → clean no-op
+		const r0 = await h.api.call("review_research_publish", {});
+		assert.match(String(r0.content[0].text), /nothing durable/);
+		// real notes → store file with frontmatter, named <pr>-<sha8>
+		fs.writeFileSync(path.join(h.api.workdir, "research-out.md"), "the rig tool caches by sha");
+		const r = await h.api.call("review_research_publish", {});
+		assert.match(String(r.content[0].text), /research published/);
+		const files = fs.readdirSync(path.join(store, "_shared/research"));
+		assert.deepEqual(files, ["2833-bf994bb6.md"]);
+		const body = fs.readFileSync(path.join(store, "_shared/research", files[0]), "utf8");
+		assert.match(body, /^---\nrepo: /);
+		assert.match(body, /head_sha: bf994bb6/);
+	} finally {
+		process.env.HARMOSTES_SOL_PI_STORE = "";
+		h.api.done();
+	}
+});
+
+test("coverage_publish: merges into the per-PR ledger; APPROVE+frontier is REFUSED", async () => {
+	const store = fs.mkdtempSync(path.join(require("node:os").tmpdir(), "rp-store-"));
+	const responses = new Map([
+		["POST /repos/tibrez/rhesadox/pulls/2833/reviews", OK_REVIEW],
+		["GET /repos/tibrez/rhesadox/pulls/2833/reviews/1407/comments", OK_COMMENT],
+		["POST /repos/tibrez/rhesadox/issues/2833/comments", { status: 200, json: { id: 5001 } }],
+		// the moved-head guard reads the live head on every verdict
+		["GET /repos/tibrez/rhesadox/pulls/2833", { status: 200, json: { head: { sha: "bf994bb6" } } }],
+	]);
+	const h = harness({ responses, env: { HARMOSTES_SOL_PI_STORE: store } });
+	process.env.HARMOSTES_SOL_PI_STORE = store;
+	try {
+		await h.api.start();
+		await h.api.call("review_finding_post", FINDING);
+		// the refusal: APPROVE + frontier
+		await h.api.call("review_verdict_post", { decision: "APPROVE", body: "v" });
+		const r = await h.api.call("review_coverage_publish", { covered: [{ path: "a.zig" }], frontier: [{ path: "b.zig", reason: "not examined" }] });
+		assert.match(String(r.content[0].text), /REFUSED/);
+		assert.ok(!fs.existsSync(path.join(store, "coverage/2833.json")));
+		// honest declaration merges: round 1, path-keyed, foreign keys kept
+		const led = ledgerOf(h);
+		assert.equal(led.decision, "APPROVE");
+		const r2 = await h.api.call("review_coverage_publish", { covered: [{ path: "a.zig", note: "full" }], frontier: [] });
+		assert.match(String(r2.content[0].text), /coverage merged: round 1/);
+		const stored = JSON.parse(fs.readFileSync(path.join(store, "coverage/2833.json"), "utf8"));
+		assert.equal(stored.rounds, 1);
+		assert.deepEqual(stored.covered.map((c: any) => c.path), ["a.zig"]);
+	} finally {
+		process.env.HARMOSTES_SOL_PI_STORE = "";
+		h.api.done();
+	}
+});
+
+test("carry_file: mint-gate + dedup + reply/resolve; resolve failure keeps the thread open", async () => {
+	const responses = new Map([
+		["GET /repos/tibrez/rhesadox/issues", { status: 200, json: [{ number: 7, title: "architecture: fix the classifier tokenization drift" }] }],
+		["GET /repos/tibrez/rhesadox/milestones", { status: 200, json: [{ id: 3, title: "Architecture & Design improvements" }] }],
+		["POST /repos/tibrez/rhesadox/issues", { status: 201, json: { number: 42 } }],
+		["POST /repos/tibrez/rhesadox/pulls/2833/comments", { status: 201, json: { id: 6001 } }],
+		["PUT /repos/tibrez/rhesadox/pulls/2833/comments/60333/resolutions", { status: 201, json: {} }],
+	]);
+	const h = harness({ responses, env: { HARMOSTES_SOL_PI_STORE: "" } });
+	fs.writeFileSync(path.join(h.api.workdir, "review.json"), JSON.stringify({
+		todos: [
+			{ path: "a.zig", body: "the classifier diffs the base TIP, not the merge base", disposition: "architecture-carry", thread_ref: "forgejo:tibrez/rhesadox#2833:r1407:c60333" },
+			{ path: "b.zig", body: "severe: the gate can pass on a truncated scan — mint this one", disposition: "architecture-carry" },
+			{ path: "c.zig", body: "arch-sync page wording drift (generated artifact)", disposition: "architecture-carry" },
+		],
+	}));
+	try {
+		await h.api.start();
+		const r = await h.api.call("review_carry_file", {});
+		const txt = String(r.content[0].text);
+		assert.match(txt, /3 entr/);
+		// 1: deduped against issue #7 (tokenization/bigram jaccard), thread replied+resolved
+		// 2: MINT_WORTHY (severe) → minted as #42 with the architecture milestone
+		// 3: GENERATED → review-record carry, no mint, no thread (none posted)
+		const mintCall = h.fake.calls.find((c) => c.method === "POST" && c.path === "/repos/tibrez/rhesadox/issues");
+		assert.ok(mintCall, "the severe/structural carry mints");
+		assert.equal(mintCall.body.milestone, 3);
+		assert.match(String(mintCall.body.body), /severe: the gate can pass/);
+		const resolveCall = h.fake.calls.find((c) => c.method === "PUT" && c.path.includes("/resolutions"));
+		assert.ok(resolveCall, "the carried thread resolves");
+		const d = r.details.carry;
+		assert.equal(d.minted.length, 1);
+		assert.equal(d.resolved.length, 1);
+		assert.equal(d.failed.length, 0);
 	} finally {
 		h.api.done();
 	}

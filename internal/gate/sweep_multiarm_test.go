@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -184,6 +185,11 @@ func noLabelServer(t *testing.T) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
+		case strings.HasSuffix(req.URL.Path, "/reviews") && strings.Contains(req.URL.Path, "/pulls/"):
+			// #749 Phase 3: the converge's thread listing (ListReviewThreads
+			// reviews route). Serves an empty thread set — the budget models
+			// Evaluate's PR-fetch reads, not the converge's.
+			_ = json.NewEncoder(w).Encode([]any{})
 		case strings.Contains(req.URL.Path, "/pulls/"):
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"state": "open", "head": map[string]string{"sha": "deadbeef123"},
@@ -1074,6 +1080,11 @@ func prServerWithLabels(t *testing.T, labels ...string) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
+		case strings.HasSuffix(req.URL.Path, "/reviews") && strings.Contains(req.URL.Path, "/pulls/"):
+			// #749 Phase 3: the converge's thread listing (ListReviewThreads
+			// reviews route). Serves an empty thread set — the budget models
+			// Evaluate's PR-fetch reads, not the converge's.
+			_ = json.NewEncoder(w).Encode([]any{})
 		case strings.Contains(req.URL.Path, "/pulls/"):
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"state": "open", "head": map[string]string{"sha": "deadbeef123"},
@@ -1401,6 +1412,11 @@ func noVerdictServer(t *testing.T) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
+		case strings.HasSuffix(req.URL.Path, "/reviews") && strings.Contains(req.URL.Path, "/pulls/"):
+			// #749 Phase 3: the converge's thread listing (ListReviewThreads
+			// reviews route). Serves an empty thread set — the budget models
+			// Evaluate's PR-fetch reads, not the converge's.
+			_ = json.NewEncoder(w).Encode([]any{})
 		case strings.Contains(req.URL.Path, "/pulls/"):
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"state": "open", "head": map[string]string{"sha": "deadbeef123"},
@@ -2795,6 +2811,11 @@ func memoRefusingHost(okFetches int32) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
+		case strings.HasSuffix(req.URL.Path, "/reviews") && strings.Contains(req.URL.Path, "/pulls/"):
+			// #749 Phase 3: the converge's thread listing (ListReviewThreads
+			// reviews route). Serves an empty thread set — the budget models
+			// Evaluate's PR-fetch reads, not the converge's.
+			_ = json.NewEncoder(w).Encode([]any{})
 		case strings.Contains(req.URL.Path, "/pulls/"):
 			if atomic.AddInt32(&prFetches, 1) <= okFetches {
 				_ = json.NewEncoder(w).Encode(map[string]any{
@@ -3387,6 +3408,11 @@ func ciFlipServer(t *testing.T, ciState *atomic.Value) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
+		case strings.HasSuffix(req.URL.Path, "/reviews") && strings.Contains(req.URL.Path, "/pulls/"):
+			// #749 Phase 3: the converge's thread listing (ListReviewThreads
+			// reviews route). Serves an empty thread set — the budget models
+			// Evaluate's PR-fetch reads, not the converge's.
+			_ = json.NewEncoder(w).Encode([]any{})
 		case strings.Contains(req.URL.Path, "/pulls/"):
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"state": "open", "head": map[string]string{"sha": "deadbeef123"},
@@ -3721,4 +3747,101 @@ func TestSweepDeathPassSkipsOnJobListError(t *testing.T) {
 		t.Fatalf("a failed list must skip the destructive pass: released=%v dead=%d reason=%q",
 			got.Status.Review.Released, got.Status.Review.DeadDispatches, got.Status.Review.ReleaseReason)
 	}
+}
+
+// ── #749 Phase 3: the converge-side consume — a standing-verdict refusal
+// removes the review label and sets pr-review/verdict from the decision +
+// the open-root count (the gate math, worker-native). ──
+
+func TestSweepConvergeConsumesStandingVerdict(t *testing.T) {
+	type call struct {
+		method, path, body string
+	}
+	var mu sync.Mutex
+	var calls []call
+	verdict := "<!-- pr-review: APPROVE @ deadbeef123 -->"
+	threads := []any{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		calls = append(calls, call{method: req.Method, path: req.URL.Path})
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case req.Method == "DELETE" && strings.Contains(req.URL.Path, "/labels/"):
+			w.WriteHeader(http.StatusNoContent)
+		case req.Method == "POST" && strings.Contains(req.URL.Path, "/statuses/"):
+			b, _ := io.ReadAll(req.Body)
+			calls[len(calls)-1].body = string(b)
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{})
+		case strings.HasSuffix(req.URL.Path, "/reviews") && strings.Contains(req.URL.Path, "/pulls/"):
+			_ = json.NewEncoder(w).Encode(threads)
+		case strings.Contains(req.URL.Path, "/pulls/") && strings.Contains(req.URL.Path, "/comments"):
+			_ = json.NewEncoder(w).Encode([]any{
+				map[string]string{"body": "verdict\n\n" + verdict, "updated_at": "2026-09-21T00:00:00Z"},
+			})
+		case strings.Contains(req.URL.Path, "/pulls/"):
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"state": "open", "head": map[string]string{"sha": "deadbeef123"},
+				"base":   map[string]string{"ref": "main"},
+				"labels": []map[string]string{{"name": "needs-review"}},
+			})
+		case strings.Contains(req.URL.Path, "/comments"):
+			_ = json.NewEncoder(w).Encode([]any{
+				map[string]string{"body": "verdict\n\n" + verdict, "updated_at": "2026-09-21T00:00:00Z"},
+			})
+		default:
+			http.NotFound(w, req)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	deps, ctx := gateEnvW(t, wf, &fakeStatus{}, "git.rezus.cloud/tibrez/rhesadox#99", "label_updated", "deadbeef123")
+	if _, err := RunReviewGateWake(ctx, deps, wf); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	var deleted, statusPosted bool
+	var statusBody string
+	mu.Lock()
+	for _, c := range calls {
+		if c.method == "DELETE" && strings.Contains(c.path, "/labels/needs-review") {
+			deleted = true
+		}
+		if c.method == "POST" && strings.Contains(c.path, "/statuses/deadbeef123") {
+			statusPosted = true
+			statusBody = c.body
+		}
+	}
+	mu.Unlock()
+	if !deleted {
+		t.Fatal("the standing verdict must CONSUME: label needs-review deleted (worker-native)")
+	}
+	if !statusPosted {
+		t.Fatal("the standing verdict must set the pr-review/verdict merge status")
+	}
+	// APPROVE + zero open roots (the fixture serves no threads) → success.
+	if !strings.Contains(statusBody, `"state":"success"`) || !strings.Contains(statusBody, "pr-review/verdict") {
+		t.Fatalf("APPROVE with no open roots must post success on pr-review/verdict, got %s", statusBody)
+	}
+
+	// Second scenario: REQUEST_CHANGES → failure, regardless of roots.
+	mu.Lock()
+	calls = nil
+	mu.Unlock()
+	verdict = "<!-- pr-review: REQUEST_CHANGES @ deadbeef123 -->"
+	if _, err := RunReviewGateWake(ctx, deps, wf); err != nil {
+		t.Fatalf("sweep 2: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for _, c := range calls {
+		if c.method == "POST" && strings.Contains(c.path, "/statuses/") {
+			if !strings.Contains(c.body, `"state":"failure"`) {
+				t.Fatalf("REQUEST_CHANGES must post failure, got %s", c.body)
+			}
+			return
+		}
+	}
+	t.Fatal("expected a merge-status post for the REQUEST_CHANGES verdict")
 }

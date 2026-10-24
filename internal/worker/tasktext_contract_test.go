@@ -88,6 +88,28 @@ func runGateScript(t *testing.T, dir string) (string, error) {
 	return string(out), err
 }
 
+// sweepSource reads the gate sweep's source — the Phase-3 home of the
+// consume + thread-gate math (#749).
+func sweepSource(t *testing.T) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("..", "..", "internal", "gate", "sweep.go"))
+	if err != nil {
+		t.Fatalf("read gate sweep: %v", err)
+	}
+	return string(b)
+}
+
+// extensionSource reads the review-post extension's source — the Phase-3
+// home of the merge/publish logic the task text teaches (#749).
+func extensionSource(t *testing.T) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("..", "..", "extensions", "review-post", "index.ts"))
+	if err != nil {
+		t.Fatalf("read review-post extension: %v", err)
+	}
+	return string(b)
+}
+
 func TestTaskTextTeachesTheShippedCoverageContract(t *testing.T) {
 	text := taskText(t)
 	if len(text) < 500 {
@@ -108,27 +130,35 @@ func TestTaskTextTeachesTheShippedCoverageContract(t *testing.T) {
 		}
 	})
 
-	t.Run("the empty declaration: the text and the deploy must agree it does nothing", func(t *testing.T) {
+	t.Run("the empty declaration: the text and the tool must agree it does nothing", func(t *testing.T) {
 		if !strings.Contains(text, "name at least one path") && !strings.Contains(text, "an empty block does nothing") {
 			t.Errorf("the text must teach that the declaration names a real path (the empty shape is read-only on the ledger)")
 		}
-		deploy := pluginSource(t, "plugins/post-review/post-review.sh")
-		if !strings.Contains(deploy, "declared = cov_raw is not None and bool(covered_now or frontier_now)") {
-			t.Errorf("the deploy's read-only gate for the empty shape drifted — the text's 'does nothing' claim is now false")
+		// #749 Phase 3: the merge lives in the extension's coverage tool —
+		// its empty/undecidable surface is UNKNOWABLE, never "nothing".
+		ext := extensionSource(t)
+		if !strings.Contains(ext, "changedSurface !== null && !changedSurface.has(pe.path)") {
+			t.Errorf("review_coverage_publish lost the unknowable-surface guard — a degraded files_changed would erase the whole frontier")
 		}
 		gate := pluginSource(t, "plugins/pr-review/pr-review.sh")
 		if strings.Contains(gate, "write coverage {covered:[], frontier:[]}") {
-			t.Errorf("the gate's remediation string must not teach the empty shape (the deploy treats it as no statement)")
+			t.Errorf("the gate's remediation string must not teach the empty shape (the merge treats it as no statement)")
 		}
 	})
 
-	t.Run("the carries paragraph matches the shipped mint semantics (#712)", func(t *testing.T) {
+	t.Run("the carries paragraph matches the shipped mint semantics (#712/#717)", func(t *testing.T) {
 		if strings.Contains(text, "milestone-assigned") {
-			t.Error("the text must not promise milestone-assigned carries — #712 mints unmilestoned (post-review.sh: 'deliberately NOT fetched or assigned')")
+			t.Error("the text must not promise milestone-ASSIGNED carries — #717 is exact-title opt-in, never guessed")
 		}
-		deploy := pluginSource(t, "plugins/post-review/post-review.sh")
-		if !strings.Contains(deploy, "milestone=None") {
-			t.Errorf("post-review.sh drifted from unmilestoned mints — revisit the text with it")
+		// #749 Phase 3: the mint lives in review_carry_file — the
+		// "Architecture & Design improvements" milestone joins ONLY when
+		// the repo has one (exact title, #717); a no-milestone repo mints
+		// unmilestoned (#712).
+		ext := extensionSource(t)
+		for _, needle := range []string{`ARCH_MS = "Architecture & Design improvements"`, "milestones.find"} {
+			if !strings.Contains(ext, needle) {
+				t.Errorf("review_carry_file drifted from the #717 exact-title opt-in (lost %q)", needle)
+			}
 		}
 		for _, want := range []string{"EXCEPTION", "mint:"} {
 			if !strings.Contains(text, want) {
@@ -164,19 +194,17 @@ func TestTaskTextTeachesTheShippedCoverageContract(t *testing.T) {
 		if strings.Contains(text, "would reset the ledger") || strings.Contains(text, "resets the ledger") {
 			t.Errorf("the text claims an undeclared round resets the ledger — the shipped merge is READ-ONLY for undeclared rounds (r1); the rationale is 'advances nothing', not 'resets'")
 		}
-		deploy := pluginSource(t, "plugins/post-review/post-review.sh")
-		if !strings.Contains(deploy, "declared_covered") || !strings.Contains(deploy, "per-path") {
-			t.Errorf("the deploy lost the per-path frontier merge — the text's self-carry claim is false")
+		ext := extensionSource(t)
+		if !strings.Contains(ext, "frontierOut[pe.path]") || !strings.Contains(ext, "declaredCovered") {
+			t.Errorf("review_coverage_publish lost the per-path frontier merge — the text's self-carry claim is false")
 		}
-		if !strings.Contains(deploy, "changed_surface") {
-			t.Errorf("the deploy lost the files_changed retirement — the honest exit for a same-head round is gone")
+		if !strings.Contains(ext, "changedSurface") {
+			t.Errorf("review_coverage_publish lost the files_changed retirement — the honest exit for a same-head round is gone")
 		}
 		// the empty-surface inversion: files_changed [] is UNKNOWABLE, not
 		// "nothing on the surface" — reading it as authoritative retires
-		// the whole frontier. The guard line is the behavior's home.
-		if !strings.Contains(deploy, "if not changed_surface:") {
-			t.Errorf("the deploy lost the empty-surface guard — a degraded files_changed would erase the whole frontier")
-		}
+		// the whole frontier. The guard line is the behavior's home
+		// (review_coverage_publish's null guard, pinned above).
 		if !strings.Contains(text, "carries itself forward") || !strings.Contains(text, "until a round covers it") {
 			t.Errorf("the self-carry sentence must name the retirement condition's shape")
 		}
@@ -316,18 +344,18 @@ func TestTaskTextTeachesTheShippedResearchContract(t *testing.T) {
 				t.Errorf("workspace.sh lost %q — the text teaches /workspace/research", needle)
 			}
 		}
-		deploy := pluginSource(t, "plugins/post-review/post-review.sh")
-		for _, needle := range []string{"RESEARCH-PUBLISH-START", "_shared/research", "research-out.md", "HARMOSTES_WORKFLOW"} {
-			if !strings.Contains(deploy, needle) {
-				t.Errorf("post-review.sh lost %q — the text teaches that the pipeline publishes the staged notes", needle)
+		ext := extensionSource(t)
+		for _, needle := range []string{"review_research_publish", "_shared/research", "research-out.md", "HARMOSTES_WORKFLOW"} {
+			if !strings.Contains(ext, needle) {
+				t.Errorf("review_research_publish lost %q — the text teaches that the tool publishes the staged notes", needle)
 			}
 		}
 	})
 
 	t.Run("the provenance the text promises is the provenance stamped", func(t *testing.T) {
-		deploy := pluginSource(t, "plugins/post-review/post-review.sh")
-		for _, needle := range []string{"repo: %s", "workflow: %s", "head_sha: %s", "written_at: %s"} {
-			if !strings.Contains(deploy, needle) {
+		ext := extensionSource(t)
+		for _, needle := range []string{"repo: ${", "workflow: ${", "head_sha: ${", "written_at: ${"} {
+			if !strings.Contains(ext, needle) {
 				t.Errorf("the publish frontmatter drifted from the text's promise (lost %q)", needle)
 			}
 		}
@@ -383,16 +411,20 @@ func TestTaskTextTeachesTheShippedPillarScanContract(t *testing.T) {
 	})
 
 	t.Run("the gate the text leans on counts posted threads as roots", func(t *testing.T) {
-		deploy := pluginSource(t, "plugins/post-review/post-review.sh")
-		// remainders are findings whose thread_ref is missing OR
-		// unresolvable against the listing (#727 r1: a bogus ref is a
-		// never-landed finding — remainder, published AND counted);
-		// the agent's real posts are never double-published
-		if !strings.Contains(deploy, "if not ref: return False") || !strings.Contains(deploy, "in landed") {
-			t.Error("post-review.sh lost the thread_ref remainder predicate — the text's 'publisher publishes only what you never posted' is now false")
+		// #749 Phase 3: the publisher is DELETED — the counting moved to
+		// the sweep's converge (ListReviewThreads → open ROOTS: a root is
+		// any unresolved non-reply, whatever round or author posted it;
+		// replies never close, resolves do) and to the extension's
+		// branch-correct posting state (a re-round never double-posts).
+		gate := pluginSource(t, "plugins/pr-review/pr-review.sh")
+		if !strings.Contains(gate, "thread_ref") {
+			t.Error("the gate lost the thread_ref ledger contract — the text's posting claim is unanchored")
 		}
-		if !strings.Contains(deploy, "TOTAL_OPEN=$(( ${LISTED_OPEN:-0} + ${REMAINDER_FINDINGS:-0} + ${UNCARRIED_TODOS:-0} ))") {
-			t.Error("TOTAL_OPEN arithmetic drifted — posted threads count exactly once (as listed roots)")
+		sweep := sweepSource(t)
+		for _, needle := range []string{"ListReviewThreads", "openRoots", "!t.Resolved"} {
+			if !strings.Contains(sweep, needle) {
+				t.Errorf("the sweep's converge lost %q — posted threads would not count as roots", needle)
+			}
 		}
 	})
 

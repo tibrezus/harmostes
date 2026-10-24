@@ -533,7 +533,7 @@ func fixtureExtras(world *chartWorld) []runtime.Object {
 			Description: "PR review (fixture, r1)",
 			Prepare:     v1alpha1.PrepareSpec{Plugin: v1alpha1.PluginRef{Name: "pr-fetch-stale"}},
 			Agent:       v1alpha1.AgentSpec{Enabled: &noAgent},
-			Deploy:      v1alpha1.DeploySpec{Plugin: v1alpha1.PluginRef{Name: "post-review"}},
+			Deploy:      v1alpha1.DeploySpec{Plugin: v1alpha1.PluginRef{Name: "noop"}}, // #749 Phase 3: the chart's deploy runs noop — the sweep consumes
 		},
 	}, {
 		Rev:         2,

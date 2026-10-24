@@ -60,3 +60,13 @@ jobs:
           fi
           echo "auto-merge armed on release PR #$PR"
           gh pr merge "$PR" -R "$GITHUB_REPOSITORY" --auto --squash
+          # Strict branch protection ("require branch up to date") stalls
+          # an armed automerge whenever ANY main merge lands between arming
+          # and completion — including non-releasable ci/chore merges, which
+          # release-please does not consider worth updating its PR for. Keep
+          # the release branch current so the armed merge can land; every
+          # push to main re-runs this step, so the cycle converges.
+          if gh pr view "$PR" -R "$GITHUB_REPOSITORY" --json mergeStateStatus --jq -e '. == "BEHIND"'; then
+            echo "release PR #$PR is BEHIND — updating branch"
+            gh pr update-branch "$PR" -R "$GITHUB_REPOSITORY"
+          fi

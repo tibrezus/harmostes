@@ -39,7 +39,11 @@ jobs:
     env:
       TAG: pr-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
     steps:
+      # full history + tags: the preview version base is computed from the
+      # repo's release tags (#755) — <stable base + one patch>-pr<N>.<sha8>
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-go@v7
         with:
@@ -52,7 +56,7 @@ jobs:
       - name: Build binaries
         run: |
           set -euo pipefail
-          V="0.0.0-pr${{ github.event.pull_request.number }}"
+          V="$(go run ./cmd/harmostes-version -preview-base)-pr${{ github.event.pull_request.number }}.$(git rev-parse --short HEAD)"
           SHA="$(git rev-parse --short HEAD)"
           NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           LDFLAGS="-s -w -X github.com/tibrezus/harmostes/version.Version=$V -X github.com/tibrezus/harmostes/version.GitCommit=$SHA -X github.com/tibrezus/harmostes/version.BuildTime=$NOW"

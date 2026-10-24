@@ -564,6 +564,7 @@ jobs:
           if fail:
               print("RENDER ASSERTIONS FAILED:", *fail, sep="\n  - ", file=sys.stderr)
               sys.exit(1)
+          print(f"declarative layer render assertions: green ({len(docs)} docs)")
 
       - name: requirements conformance (hard requirements, owner-ruled)
         run: |
@@ -575,8 +576,6 @@ jobs:
           # away marker, or a pointerless requirement REDS here — the
           # workflows cannot drift from the requirements file.
           python3 requirements/conformance.py requirements/workflows.yaml
-          print(f"declarative layer render assertions: green ({len(docs)} docs)")
-          PY
       - name: skills.rev ↔ .agents pin coherence (blocking, #680 r8)
         run: |
           # The SERVED skill (skills.rev, cloned by every attempt) and the

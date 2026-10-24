@@ -565,6 +565,7 @@ jobs:
               print("RENDER ASSERTIONS FAILED:", *fail, sep="\n  - ", file=sys.stderr)
               sys.exit(1)
           print(f"declarative layer render assertions: green ({len(docs)} docs)")
+PY
 
       - name: requirements conformance (hard requirements, owner-ruled)
         run: |

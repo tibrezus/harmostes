@@ -110,6 +110,7 @@ function baseResponses(): Map<string, { status: number; json: any }> {
 	return new Map([
 		["POST /repos/tibrez/rhesadox/pulls/2833/reviews", OK_REVIEW],
 		["GET /repos/tibrez/rhesadox/pulls/2833/reviews/1407/comments", OK_COMMENT],
+		["POST /repos/tibrez/rhesadox/issues/2833/comments", { status: 200, json: { id: 5001 } }],
 	]);
 }
 
@@ -215,4 +216,103 @@ test("resolveTarget: forgejo host, github host, unknown host, incomplete context
 	assert.equal(t2?.apiBase, "https://api.github.com");
 	assert.equal(resolveTarget({} as any, CTX as any), null, "no credential → null");
 	assert.equal(resolveTarget({ HARMOSTES_FORGEJO_TOKEN: "t" } as any, { ...CTX, head_sha: "" } as any), null, "incomplete context → null");
+});
+
+// ── 8. the ledger export (#749 Phase 2): review.json is extension-written ─
+
+const fs = require("node:fs");
+const path = require("node:path");
+
+function ledgerOf(h: ReturnType<typeof harness>): any {
+	return JSON.parse(fs.readFileSync(path.join(h.api.workdir, "review.json"), "utf8"));
+}
+
+test("export: finding_post + verdict_post maintain review.json — lean findings, decision, reviewed_sha", async () => {
+	const h = harness({ responses: baseResponses() });
+	try {
+		await h.api.start();
+		await h.api.call("review_finding_post", FINDING);
+		await h.api.call("review_verdict_post", { decision: "REQUEST_CHANGES", body: "round body" });
+		const led = ledgerOf(h);
+		assert.equal(led.decision, "REQUEST_CHANGES");
+		assert.equal(led.reviewed_sha, "bf994bb6");
+		assert.equal(led.findings.length, 1);
+		// the lean gate shape: body lives on the host thread, not the ledger
+		assert.deepEqual(Object.keys(led.findings[0]).sort(), ["line", "path", "severity", "thread_ref"]);
+		assert.equal(led.findings[0].thread_ref, "forgejo:tibrez/rhesadox#2833:r1407:c99");
+	} finally {
+		h.api.done();
+	}
+});
+
+test("export: foreign keys survive (todos, coverage) — read-modify-write, never a clobber", async () => {
+	const h = harness({ responses: baseResponses() });
+	fs.writeFileSync(path.join(h.api.workdir, "review.json"), JSON.stringify({
+		decision: "COMMENT",
+		todos: [{ path: "x.zig", disposition: "architecture-carry" }],
+		coverage: { covered: [{ path: "x.zig" }], frontier: [] },
+	}));
+	try {
+		await h.api.start();
+		await h.api.call("review_finding_post", FINDING);
+		const led = ledgerOf(h);
+		assert.equal(led.findings.length, 1);
+		assert.deepEqual(led.todos, [{ path: "x.zig", disposition: "architecture-carry" }]);
+		assert.deepEqual(Object.keys(led.coverage), ["covered", "frontier"]);
+		// decision is tool-owned only once a verdict is posted — the
+		// pre-existing value stands until review_verdict_post
+		assert.equal(led.decision, "COMMENT");
+		await h.api.call("review_verdict_post", { decision: "APPROVE", body: "v" });
+		assert.equal(ledgerOf(h).decision, "APPROVE");
+	} finally {
+		h.api.done();
+	}
+});
+
+test("export: failed post writes nothing; unarmed start never touches a hand-written ledger", async () => {
+	const responses = new Map([["POST /repos/tibrez/rhesadox/pulls/2833/reviews", { status: 403, json: { message: "forbidden" } }]]);
+	const h = harness({ responses });
+	const handLedger = JSON.stringify({ decision: "REQUEST_CHANGES", findings: [{ path: "hand.zig" }] });
+	fs.writeFileSync(path.join(h.api.workdir, "review.json"), handLedger);
+	try {
+		await h.api.start(); // armed but empty state → no export
+		assert.equal(fs.readFileSync(path.join(h.api.workdir, "review.json"), "utf8"), handLedger);
+		await h.api.call("review_finding_post", FINDING); // 403 → error result
+		assert.equal(fs.readFileSync(path.join(h.api.workdir, "review.json"), "utf8"), handLedger);
+	} finally {
+		h.api.done();
+	}
+	// unarmed: session_start with reconstructed state must not clobber
+	const h2 = harness({ env: { HARMOSTES_FORGEJO_TOKEN: "" }, responses: baseResponses() });
+	fs.writeFileSync(path.join(h2.api.workdir, "review.json"), handLedger);
+	try {
+		await h2.api.start();
+		assert.equal(fs.readFileSync(path.join(h2.api.workdir, "review.json"), "utf8"), handLedger);
+	} finally {
+		h2.api.done();
+	}
+});
+
+test("export: resume re-sync repairs a missing projection without re-posting", async () => {
+	const branch = [{
+		type: "message",
+		message: {
+			role: "toolResult",
+			toolName: "review_finding_post",
+			details: {
+				tool: "review-post",
+				posted: [{ thread_ref: "forgejo:tibrez/rhesadox#2833:r1400:c1", path: "src/old.zig", line: 7, severity: "Blocking", body: "old" }],
+			},
+		},
+	}];
+	const h = harness({ branch, responses: baseResponses() });
+	try {
+		await h.api.start();
+		const led = ledgerOf(h); // the projection exists again — no host call made
+		assert.equal(led.findings.length, 1);
+		assert.equal(led.findings[0].thread_ref, "forgejo:tibrez/rhesadox#2833:r1400:c1");
+		assert.ok(!h.fake.calls.some((c) => c.method === "POST" && c.path.endsWith("/reviews")));
+	} finally {
+		h.api.done();
+	}
 });

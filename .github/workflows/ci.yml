@@ -566,6 +566,17 @@ jobs:
               sys.exit(1)
           print(f"declarative layer render assertions: green ({len(docs)} docs)")
           PY
+
+      - name: requirements conformance (hard requirements, owner-ruled)
+        run: |
+          # The requirements file states the hard requirements per workflow
+          # (owner ruling 2026-10-24: immutable — changes only by explicit
+          # owner statement). This step enforces that every requirement is
+          # actually carried by the machinery: each enforcement pointer
+          # (file + exact marker) must hold. A deleted test, a reworded-
+          # away marker, or a pointerless requirement REDS here — the
+          # workflows cannot drift from the requirements file.
+          python3 requirements/conformance.py requirements/workflows.yaml
       - name: skills.rev ↔ .agents pin coherence (blocking, #680 r8)
         run: |
           # The SERVED skill (skills.rev, cloned by every attempt) and the

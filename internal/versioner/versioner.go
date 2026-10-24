@@ -21,6 +21,7 @@ package versioner
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"regexp"
 	"strconv"
@@ -259,6 +260,10 @@ func logSubjects(dir, from string) ([]string, error) {
 
 func git(dir string, args ...string) (string, error) {
 	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	// Bot-token boundary (#480 r10 t20): the child env is enumerated, never
+	// inherited — a git read needs nothing but PATH, and an inherited env
+	// would carry whatever credentials the parent holds.
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH")}
 	out, err := cmd.Output()
 	if err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {

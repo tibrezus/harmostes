@@ -576,7 +576,7 @@ jobs:
           # (file + exact marker) must hold. A deleted test, a reworded-
           # away marker, or a pointerless requirement REDS here — the
           # workflows cannot drift from the requirements file.
-          python3 requirements/conformance.py requirements/workflows.yaml
+          python3 requirements/conformance.py
       - name: skills.rev ↔ .agents pin coherence (blocking, #680 r8)
         run: |
           # The SERVED skill (skills.rev, cloned by every attempt) and the

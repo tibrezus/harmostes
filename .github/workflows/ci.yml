@@ -44,7 +44,7 @@ jobs:
           cache: true
 
       - name: Set up Node (the extensions tier needs >= 22.5 — the worker image ships node:22)
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
 
@@ -296,7 +296,7 @@ jobs:
           cache: true
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm

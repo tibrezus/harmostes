@@ -28,7 +28,7 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync, renameSync } from "node:fs";
 import { Type } from "typebox"; // pi aliases typebox for extensions — the rig-query form
 
 interface PrContext {
@@ -51,6 +51,7 @@ interface ReviewPostDetails {
 	posted: PostedFinding[];
 	verdict?: string;
 	error?: string;
+	exportError?: string; // ledger-export failure — non-fatal, repaired on session_start
 }
 
 // The one shape every finding_post/thread_ref answer takes.
@@ -288,8 +289,50 @@ export default function (pi: ExtensionAPI) {
 
 	const details = (): ReviewPostDetails => ({ tool: "review-post", posted, verdict });
 
+	// ── the ledger export (#749 Phase 2): review.json is the extension-
+	// written export ────────────────────────────────────────────────────
+	// While armed, the TOOLS own findings[] and decision in
+	// $HARMOSTES_WORKDIR/review.json; the agent stops hand-writing JSON
+	// for those fields (unarmed rounds hand-write the whole ledger — the
+	// supported inert mode, and this function is never called there).
+	// Foreign keys (todos[], coverage, anything else) are preserved
+	// verbatim: read-modify-write, atomic tmp+rename. Write failure is
+	// NON-FATAL: the thread is on the host (the gate counts threads
+	// natively) and the session_start re-sync repairs the projection on
+	// resume. Never exports an empty state — an unarmed hand-written
+	// ledger must never be clobbered.
+	const exportLedger = (sha: string): { exported: boolean; error?: string } => {
+		if (!sha || (posted.length === 0 && !verdict)) return { exported: false };
+		const dir = process.env.HARMOSTES_WORKDIR ?? "/workspace";
+		const p = `${dir}/review.json`;
+		try {
+			let ledger: Record<string, unknown> = {};
+			try {
+				ledger = JSON.parse(readFileSync(p, "utf8")) as Record<string, unknown>;
+			} catch {
+				/* new ledger — start lean; a corrupt one is replaced, not merged */
+			}
+			ledger.reviewed_sha = sha;
+			if (verdict) ledger.decision = verdict;
+			// the lean gate shape (#680/#749): the body lives on the host
+			// thread; findings[] is REPLACED by tool state, not merged.
+			ledger.findings = posted.map((f) => ({ path: f.path, line: f.line, severity: f.severity, thread_ref: f.thread_ref }));
+			const tmp = `${p}.tmp`;
+			writeFileSync(tmp, JSON.stringify(ledger, null, 2) + "\n");
+			renameSync(tmp, p);
+			return { exported: true };
+		} catch (e) {
+			return { exported: false, error: e instanceof Error ? e.message : String(e) };
+		}
+	};
+
 	pi.on("session_start", async (_event, ctx) => {
 		reconstruct(ctx);
+		// re-sync the export from reconstructed state (a crashed round's
+		// projection catches up without a re-post; empty state exports
+		// nothing, so unarmed hand-written ledgers are safe)
+		const rt = resolveTarget(process.env, readPrContext(process.env.HARMOSTES_WORKDIR ?? "/workspace"));
+		if (rt) exportLedger(rt.sha);
 	});
 
 	// ── finding_post — native anchored thread at proof time ────────────────
@@ -306,9 +349,10 @@ export default function (pi: ExtensionAPI) {
 				const ref = await t.c.postFinding(params);
 				posted = posted.filter((p) => !(p.path === params.path && p.line === params.line));
 				posted.push({ thread_ref: ref, path: params.path, line: params.line, severity: params.severity, body: params.body });
+				const ex = exportLedger(t.t.sha);
 				return {
-					content: [{ type: "text", text: `posted ${params.severity} thread at ${params.path}:${params.line} — thread_ref ${ref}` }],
-					details: details(),
+					content: [{ type: "text", text: `posted ${params.severity} thread at ${params.path}:${params.line} — thread_ref ${ref}` + (ex.error ? ` (ledger export failed: ${ex.error})` : "") }],
+					details: { ...details(), exportError: ex.error },
 				};
 			} catch (e) {
 				const msg = e instanceof Error ? e.message : String(e);
@@ -389,7 +433,8 @@ export default function (pi: ExtensionAPI) {
 			try {
 				await t.c.postVerdictComment(params.decision, params.body);
 				verdict = params.decision;
-				return { content: [{ type: "text", text: `verdict ${params.decision} posted at ${t.t.sha}` }], details: details() };
+				const ex = exportLedger(t.t.sha);
+				return { content: [{ type: "text", text: `verdict ${params.decision} posted at ${t.t.sha}` + (ex.error ? ` (ledger export failed: ${ex.error})` : "") }], details: { ...details(), exportError: ex.error } };
 			} catch (e) {
 				const msg = e instanceof Error ? e.message : String(e);
 				return { content: [{ type: "text", text: `verdict post failed: ${msg} — record the decision in the ledger; the pipeline publishes it` }], details: { ...details(), error: msg } };

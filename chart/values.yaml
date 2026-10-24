@@ -28,7 +28,7 @@ skills:
   # list arrives pre-populated from this playbook's pillar block
   # (#727 follow-up); work it top-down, never rebuild it.
   # Prior: eb296e5 (#726 repository-wiki + #727 pillar-scan sections).
-  rev: "cbc5dbc8825c157746b17faca9bcc556000c2bdc"
+  rev: "f7fdf227b5c4252cf8a02ebc798862ead4af72a8"
 
 agent:
   # Hard tool-call cap per agent session (#484): past the cap only the
@@ -623,19 +623,27 @@ tasks:
     composed from your ledger, and an honest partial review beats no
     review.
 
-    ## Posting credentials
+    ## Posting — the review-post tools (#749)
 
-    HARMOSTES_REVIEW_POST_TOKEN is a comment-scoped credential for the
-    forge: it can post, reply to, and resolve PR threads — nothing else.
-    Use it (with the host CLI or HTTP API per the skill's host guide) to
-    post each verified finding immediately; it deliberately cannot
-    approve, merge, or push. If it is absent, post nothing yourself and
-    record findings in the ledger only — the pipeline publishes them.
+    Post each verified finding THE MOMENT you verify it, with
+    `review_finding_post` — the thread lands on the forge as a native
+    anchored thread and the ledger records it; do not batch, and do not
+    hand-write review.json's findings[] or decision while the tools are
+    armed (they maintain those fields). `review_findings_list` shows
+    what the host already holds (dedupe before posting on a re-round);
+    `review_thread_reply` / `review_thread_resolve` are the close-out
+    pair (resolve only a fix you have VERIFIED at the reviewed SHA).
+    `review_verdict_post` posts the verdict COMMENT — the binding
+    review event is the pipeline's, never yours. If the tools report
+    they are not armed, post nothing yourself and record findings and
+    decision in the ledger only (python3, never a bash heredoc) — the
+    pipeline publishes them.
 
     ## The ledger — /workspace/review.json
 
-    The round's durable scratch record. Update it as you go (python3,
-    never a bash heredoc):
+    While the review-post tools are armed, they maintain findings[],
+    decision, and reviewed_sha — hand-write only the fields below. If
+    unarmed, the whole ledger is yours:
 
         {"decision": "APPROVE|REQUEST_CHANGES",
          "reviewed_sha": "<head SHA of /workspace/repo>",

@@ -535,7 +535,7 @@ jobs:
               ("skill provides the", "prompt must defer methodology to the loaded skill"),
               ("findings", "prompt lost the ledger findings[] contract"),
               ("thread_ref", "prompt lost the posted-thread ledger marker"),
-              ("HARMOSTES_REVIEW_POST_TOKEN", "prompt lost the scoped posting credential section"),
+              ("review_finding_post", "prompt lost the posting-tools contract (#749 Phase 2 — the tools are the posting path; token names live in the extension, not the prompt)"),
               ("/workspace/review.json", "prompt lost the ledger path"),
           ):
               check(marker in prompt, f"pr-review.txt missing contract marker: {why}")

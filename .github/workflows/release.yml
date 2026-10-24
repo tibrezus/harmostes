@@ -60,13 +60,13 @@ jobs:
           echo "$HOME/.dotnet" >> "$GITHUB_PATH"
 
       - name: Install GitVersion
-        uses: gittools/actions/gitversion/setup@v4.5.0
+        uses: gittools/actions/gitversion/setup@v4.7.0
         with:
           versionSpec: '6.7.x'
 
       - name: Determine Version
         id: gitversion
-        uses: gittools/actions/gitversion/execute@v4.5.0
+        uses: gittools/actions/gitversion/execute@v4.7.0
         with:
           configFilePath: .github/GitVersion.yml
           disableShallowCloneCheck: true
@@ -193,13 +193,13 @@ jobs:
           echo "$HOME/.dotnet" >> "$GITHUB_PATH"
 
       - name: Install GitVersion
-        uses: gittools/actions/gitversion/setup@v4.5.0
+        uses: gittools/actions/gitversion/setup@v4.7.0
         with:
           versionSpec: '6.7.x'
 
       - name: Determine Version
         id: gitversion
-        uses: gittools/actions/gitversion/execute@v4.5.0
+        uses: gittools/actions/gitversion/execute@v4.7.0
         with:
           configFilePath: .github/GitVersion.yml
           disableShallowCloneCheck: true

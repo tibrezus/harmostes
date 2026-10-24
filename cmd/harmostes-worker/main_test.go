@@ -466,20 +466,6 @@ func TestFilterEnvScrubBotToken(t *testing.T) {
 // (agent.FilterEnv / ChildEnv) stays as defense in depth; the grant and
 // its re-injection died with post-review.sh and the allowlist forwarding.
 
-// fakeResolver resolves name (optionally name|configMap) to a script path —
-// mirroring BuiltinResolver's builtin + configmap legs for the grant tests.
-type fakeResolver map[string]string
-
-func (f fakeResolver) Resolve(_ context.Context, ref v1alpha1.PluginRef, _ string) (string, []string, error) {
-	if p, ok := f[ref.Name+"|"+ref.ConfigMap]; ok && ref.ConfigMap != "" {
-		return p, nil, nil
-	}
-	if p, ok := f[ref.Name]; ok {
-		return p, nil, nil
-	}
-	return "", nil, fmt.Errorf("plugin %q not found", ref.Name)
-}
-
 // TestDropSessionCredentials (#749 Phase 3): the scoped-token era's
 // re-binding is gone — the fleet credential IS the posting credential and
 // the chart wires the CLI canonicals to it. What the spawn filter still

@@ -43,11 +43,20 @@ jobs:
       # Continuous releases (ADR-0020): the release PR merges itself once
       # green. Delete this step to switch to human-gated release trains —
       # nothing else changes.
+      #
+      # No checkout in this job: gh gets the repo via -R (a bare gh pr
+      # merge needs a local git repo otherwise), and the PR is found by its
+      # autorelease: pending label so the step is idempotent — it re-arms
+      # automerge on a PR the action created (or updated) in an earlier run
+      # too (first live run failed exactly there: #760 sat un-automerged).
       - name: Enable auto-merge on the release PR
-        if: steps.release.outputs.prs_created == 'true'
         env:
           GH_TOKEN: ${{ secrets.HARMOSTES_GITHUB_TOKEN }}
         run: |
-          PR="${{ fromJSON(steps.release.outputs.pr).number }}"
-          echo "auto-merge enabled on release PR #$PR"
-          gh pr merge "$PR" --auto --squash
+          PR="$(gh pr list -R "$GITHUB_REPOSITORY" --label "autorelease: pending" --state open --json number --jq '.[0].number')"
+          if [ -z "$PR" ]; then
+            echo "no pending release PR — nothing to arm"
+            exit 0
+          fi
+          echo "auto-merge armed on release PR #$PR"
+          gh pr merge "$PR" -R "$GITHUB_REPOSITORY" --auto --squash

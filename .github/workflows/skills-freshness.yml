@@ -65,10 +65,13 @@ jobs:
           # update-index moves the gitlink without materializing the
           # submodule (this checkout has no submodules: recursive).
           git update-index --cacheinfo "160000,$upstream,.agents"
-          git commit -m "chore(skills): bump pinned skills rev to $upstream (values.yaml + .agents gitlink, kept coherent)"
+          # fix, not chore (ADR-0020): a skills pin bump ships runtime content to
+          # the fleet — under strict CC a chore never releases, and the
+          # fleet's skills would silently stop rolling.
+          git commit -m "fix(skills): bump pinned skills rev to $upstream (values.yaml + .agents gitlink, kept coherent)"
           git push origin "chore/skills-bump-$upstream"
           gh pr create \
-            --title "chore(skills): bump pinned skills rev to ${upstream:0:7}" \
+            --title "fix(skills): bump pinned skills rev to ${upstream:0:7}" \
             --body "Automated bump of \`values.skills.rev\` (#408 item 9): agents main advanced \`${pinned:-<tracking main>}\` → \`$upstream\`.
 
             The fleet serves the pinned rev; merging this PR is the freshness step. Rollback = revert (the previous pin returns)." \

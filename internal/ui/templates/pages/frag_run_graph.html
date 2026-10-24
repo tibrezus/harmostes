@@ -48,7 +48,7 @@
 <svg class="rg-timing" role="img" aria-label="per-step timing waterfall" viewBox="0 0 {{$.Graph.TimingW}} {{$.Graph.TimingH}}" width="100%" preserveAspectRatio="xMinYMin meet">
 	{{- range $s := .}}
 	<g class="rg-timing-lane" data-testid="timing-lane" data-label="{{$s.Label}}" transform="translate(0, {{$s.Y}})">
-		<text class="rg-timing-label" x="8" y="15">{{$s.Label}}</text>
+		<text class="rg-timing-label" x="8" y="15">{{if $s.Full}}<title>{{$s.Full}}</title>{{end}}{{$s.Label}}</text>
 		<rect class="rg-timing-bar rg-state-{{$s.Status}}{{if $s.Live}} rg-timing-live{{end}}" x="{{$s.X}}" y="4" width="{{$s.Width}}" height="14" rx="3"><title>{{$s.Title}}</title></rect>
 		{{- if $s.Right}}
 		<text class="rg-timing-dur"{{if $s.Anchor}} text-anchor="{{$s.Anchor}}"{{end}} x="{{$s.TextX}}" y="15">{{$s.Title}}</text>

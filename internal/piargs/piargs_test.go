@@ -70,8 +70,10 @@ func TestExtensionToolsCoversEveryLoadedExtension(t *testing.T) {
 	cases := map[string]string{
 		"/extensions/litellm-provider": "", // provider-only: registers no tool
 		"/extensions/rig-query":        "rig",
-		"/extensions/turn-budget":      "",           // veto-only: blocks over-budget tool_call events, registers none (#484)
-		"/extensions/sol-pi":           "obs_recall", // observation-pack's recall affordance (#425)
+		"/extensions/turn-budget":      "",                                                                                                       // veto-only: blocks over-budget tool_call events, registers none (#484)
+		"/extensions/pillar-todo":      "todo",                                                                                                   // the seeded pillar checklist (#727 follow-up)
+		"/extensions/review-post":      "review_finding_post,review_findings_list,review_thread_reply,review_thread_resolve,review_verdict_post", // progressive posting (#749)
+		"/extensions/sol-pi":           "obs_recall",                                                                                             // observation-pack's recall affordance (#425)
 	}
 	for _, ext := range Extensions {
 		want, known := cases[ext]
@@ -101,13 +103,30 @@ func TestExtensionToolsCoversEveryLoadedExtension(t *testing.T) {
 				found = true
 			}
 		}
-		if !found {
+		// want may be a comma-joined LIST (review-post registers five tools):
+		// every name must land in the parsed --tools value exactly.
+		if !found && !containsAll(tools, want) {
 			t.Errorf("parsed --tools %q must contain %q exactly (for %s)", tools, want, ext)
 		}
 	}
 }
 
 func alwaysPresent(string) (os.FileInfo, error) { return nil, nil }
+
+// containsAll: every comma-separated name in want appears as an exact
+// member of the parsed --tools list.
+func containsAll(tools, want string) bool {
+	parsed := map[string]bool{}
+	for _, t := range strings.Split(tools, ",") {
+		parsed[t] = true
+	}
+	for _, w := range strings.Split(want, ",") {
+		if !parsed[w] {
+			return false
+		}
+	}
+	return true
+}
 
 func alwaysMissing(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
 

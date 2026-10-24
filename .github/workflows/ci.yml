@@ -173,6 +173,15 @@ jobs:
       - name: fork-maintenance release identity
         run: make test-fork-maintenance
 
+      # Skill drift (#606): the agents-repo fork-maintenance skill's
+      # templates are VERBATIM copies of the chart's live engine scripts —
+      # when they drift, an agent reads a different engine than the cluster
+      # runs. Both sides sit in one checkout (the skill via the .agents
+      # submodule, the chart in-tree); the skill's own check-drift.sh does
+      # the comparison, this step only resolves the two checkouts.
+      - name: fork-maintenance skill drift (agents copy == chart engine)
+        run: bash chart/ci/skill-drift.sh
+
       # Vendor sync (#452 D2): plugins/rig-emit/{emit-rig.py,rig/} is a
       # byte-equivalent vendored copy of llm-wiki-core's repo-map action at
       # the sha pinned in VENDOR.sha, plus exactly the deviations
@@ -526,7 +535,7 @@ jobs:
               ("skill provides the", "prompt must defer methodology to the loaded skill"),
               ("findings", "prompt lost the ledger findings[] contract"),
               ("thread_ref", "prompt lost the posted-thread ledger marker"),
-              ("HARMOSTES_REVIEW_POST_TOKEN", "prompt lost the scoped posting credential section"),
+              ("review_finding_post", "prompt lost the posting-tools contract (#749 Phase 2 — the tools are the posting path; token names live in the extension, not the prompt)"),
               ("/workspace/review.json", "prompt lost the ledger path"),
           ):
               check(marker in prompt, f"pr-review.txt missing contract marker: {why}")
@@ -557,6 +566,17 @@ jobs:
               sys.exit(1)
           print(f"declarative layer render assertions: green ({len(docs)} docs)")
           PY
+
+      - name: requirements conformance (hard requirements, owner-ruled)
+        run: |
+          # The requirements file states the hard requirements per workflow
+          # (owner ruling 2026-10-24: immutable — changes only by explicit
+          # owner statement). This step enforces that every requirement is
+          # actually carried by the machinery: each enforcement pointer
+          # (file + exact marker) must hold. A deleted test, a reworded-
+          # away marker, or a pointerless requirement REDS here — the
+          # workflows cannot drift from the requirements file.
+          python3 requirements/conformance.py requirements/workflows.yaml
       - name: skills.rev ↔ .agents pin coherence (blocking, #680 r8)
         run: |
           # The SERVED skill (skills.rev, cloned by every attempt) and the

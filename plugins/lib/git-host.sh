@@ -84,6 +84,38 @@ host::clone_url() { # <host> <owner/name> → authenticated clone URL
   esac
 }
 
+host::https_url() { # <any git URL> → authenticated https URL (#726)
+  # Declarative wiki fields carry whatever shape the operator wrote —
+  # ssh://git@host/path.git, https://host/path, git@host:path. This is
+  # the SHAPE parser only: host + path extraction per URL family. The
+  # credential table lives ONCE in host::clone_url (review r1: a copied
+  # table here was byte-identical on every probed shape — delegation,
+  # never a second copy — and the Go↔bash mirror keeps pinning that
+  # half). Scheme-ful URLs may carry a PORT (ssh://git@host:2222/p,
+  # https://host:8443/p); the colon there is not the scp separator —
+  # strip it from the host, and split on the colon ONLY for the
+  # scheme-less scp shorthand.
+  local url="$1" rest host path
+  case "$url" in
+    git@*)
+      rest="${url#git@}"
+      host="${rest%%:*}"
+      path="${rest#*:}"
+      if [ "$path" = "$rest" ]; then # no colon: treat as plain host/path
+        host="${rest%%/*}"; path="${rest#*/}"
+      fi
+      ;;
+    ssh://git@*) rest="${url#ssh://git@}"; host="${rest%%/*}"; path="${rest#*/}";;
+    ssh://*)     rest="${url#ssh://}";     host="${rest%%/*}"; path="${rest#*/}";;
+    https://*)   rest="${url#https://}";   host="${rest%%/*}"; path="${rest#*/}";;
+    *)           echo "$url"; return 0;; # unknown scheme: passthrough
+  esac
+  host="${host%%:*}" # port, if any, is not host identity
+  [ -z "$host" ] || [ -z "$path" ] && { echo "$url"; return 0; }
+  path="${path%.git}" # clone_url appends exactly one .git
+  host::clone_url "$host" "$path"
+}
+
 host::is_gitlab() { # <host> → "true"|"false" (GitLab-shaped API?)
   case "$1" in
     gitlab.com|*.gitlab.com) echo "true";;

@@ -542,11 +542,32 @@ import json,os
 r=json.load(open(os.environ['REVIEW'])); c=set(json.loads(os.environ['ARCH'])['ledger_carried'])
 ts=[t for i,t in enumerate(r.get('todos') or []) if isinstance(t,dict) and i not in c]
 print(len(ts))")
-REMAINDER_FINDINGS=$(python3 -c "
-import json
+# #727 r1: a ledger thread_ref the listing cannot see is a finding
+# that never landed — a typo'd id, a hallucinated number, or a
+# self-post the host 422'd but the agent recorded anyway. Treating it
+# as posted makes the finding invisible to BOTH surfaces (excluded
+# from the remainders, absent from the listing) — a false APPROVE on
+# a green verdict (probe-verified in the #732 round). Resolve refs
+# against the fetched listing: unresolvable → remainder, so the
+# publisher lands it and TOTAL_OPEN counts it. An UNAVAILABLE listing
+# (unwired dialect, scan failure → CS_JSON empty) keeps the pre-#727
+# semantics — trust the ref rather than republishing everything.
+export LANDED_IDS=$(CS="$CS_JSON" python3 -c "
+import json,os
+try: cs=json.loads(os.environ['CS']) or []
+except Exception: cs=[]
+print(' '.join(str(c.get('id')) for c in cs if isinstance(c,dict) and c.get('id') is not None))" 2>/dev/null)
+REMAINDER_FINDINGS=$(LANDED="$LANDED_IDS" python3 -c "
+import json,os
 r=json.load(open('$REVIEW'))
 fs=r.get('findings', r.get('comments',[]) or []) or []
-print(len([f for f in fs if isinstance(f,dict) and not f.get('thread_ref')]))")
+landed=set(os.environ.get('LANDED','').split())
+def posted(f):
+    ref=f.get('thread_ref')
+    if not ref: return False
+    if not landed: return True
+    return str(ref).split('/')[-1] in landed
+print(len([f for f in fs if isinstance(f,dict) and not posted(f)]))")
 
 # The classifier program lives verbatim between the GATE-CLASSIFIER markers
 # (the golden test extracts exactly these bytes). It is held in a QUOTED
@@ -821,6 +842,76 @@ export COV_FILE
 # COVERAGE-MERGE-END
 fi   # IS_GITLAB guard closes: the listing/carry/gate are wired dialects only
 
+# ── Research layer publish (#725): the agent's orientation notes → the ──
+# RESEARCH-PUBLISH-START (tested verbatim by TestPostReviewResearchPublish
+# — keep this block between the markers so the golden test runs the
+# shipped code). The agent writes WORKDIR/research-out.md (task-text
+# contract: durable orientation facts a future round would re-derive at
+# cost); THIS node owns the store write: provenance frontmatter (repo,
+# workflow, PR, head SHA, date — the review artifact's reviewed_sha is
+# the round's authoritative head), atomic tempfile+rename, name
+# <PR>-<sha8>.md unique per PR+head — append-only across rounds and
+# workflows, idempotent on a same-head re-arm (the one writer per file).
+# NON-FATAL: research carry is an accelerator; losing it costs the next
+# round its head start, never this round its verdict.
+RESEARCH_OUT="$WORKDIR/research-out.md"
+# Self-contained store resolution (the coverage merge's COV_STORE lives
+# inside the wired-dialects guard above; the research layer is pure
+# store mechanics — no forge API — so it runs for every dialect).
+RESEARCH_STORE="${HARMOSTES_SOL_PI_STORE:-}"
+if [ -s "$RESEARCH_OUT" ] && [ -n "$RESEARCH_STORE" ]; then
+  RESEARCH_DIR_PUBLISH="$RESEARCH_STORE/_shared/research"
+  if mkdir -p "$RESEARCH_DIR_PUBLISH" 2>/dev/null; then
+    python3 - "$RESEARCH_OUT" "$RESEARCH_DIR_PUBLISH" "$PR_NUM" "${HARMOSTES_WORKFLOW:-unknown}" "${HARMOSTES_TRIGGER_REPO:-${HARMOSTES_SOURCE:-unknown}}" << 'PYRES' || log "WARN: research publish failed (non-fatal — carry lost for the next round)"
+import json, os, sys, tempfile
+from datetime import datetime, timezone
+
+out_path, leaf, pr_num, workflow, repo = sys.argv[1:6]
+# The head of record: the review artifact is the authority (post-review
+# rewrites it on downgrade; its reviewed_sha is this round's head).
+sha = ""
+try:
+    with open(os.path.join(os.path.dirname(out_path), "review.json")) as f:
+        sha = str(json.load(f).get("reviewed_sha") or "")[:40]
+except Exception:
+    pass
+try:
+    notes = open(out_path, encoding="utf-8", errors="replace").read().strip()
+except Exception:
+    notes = ""
+if not notes:
+    sys.exit(0)  # nothing durable to publish
+front = ("---\n"
+         "repo: %s\n"
+         "workflow: %s\n"
+         'pr: "%s"\n'
+         "head_sha: %s\n"
+         "written_at: %s\n"
+         "---\n\n" % (repo or "unknown", workflow, pr_num, sha,
+                       datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")))
+name = "%s-%s.md" % (pr_num, (sha[:8] if sha else "nosha"))
+# The writer owns its leaf: the bash wrapper mkdirs, but a self-
+# sufficient program cannot crash on a missing store subtree.
+os.makedirs(leaf, exist_ok=True)
+target = os.path.join(leaf, name)
+# Atomic: a concurrent reader (another workflow's prepare) either sees
+# the previous file complete or the new one complete — never a partial.
+fd, tmp = tempfile.mkstemp(dir=leaf, prefix=".research-")
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(front + notes + "\n")
+    os.replace(tmp, target)
+finally:
+    if os.path.exists(tmp):
+        os.remove(tmp)
+print("[post-review] research published: %s" % target)
+PYRES
+  else
+    log "WARN: research store leaf uncreatable — notes dropped (non-fatal)"
+  fi
+fi
+# RESEARCH-PUBLISH-END
+
 # ── Native inline threads (deterministic, #429): the agent never reliably
 # self-posts (attempt 90f9fd63ad9a: 81 bash tools, zero review-api calls —
 # the task's review.json contract and the round-trip budget both push it to
@@ -939,8 +1030,17 @@ review=json.load(open(os.environ["REVIEW"]))
 # this publisher handles ONLY the remainders — findings never posted before
 # the session ended (session-death resilience). Carried findings need no
 # publish: their threads are already on the PR and already counted.
+# #727 r1: a thread_ref the listing never saw is NOT a post (typo,
+# hallucination, rejected self-post) — same remainder predicate as the
+# TOTAL_OPEN count, or a bogus ref would vanish from both surfaces.
+landed=set(os.environ.get("LANDED_IDS","").split())
+def _posted(f):
+    ref=f.get("thread_ref")
+    if not ref: return False
+    if not landed: return True
+    return str(ref).split("/")[-1] in landed
 all_cs=[c for c in (review.get("findings", review.get("comments",[])) or [])
-        if not c.get("thread_ref")]
+        if not _posted(c)]
 # carried todos are terminated by the carry step (issue minted + thread
 # resolved or never posted) — they must NOT publish as threads: an open
 # carried thread would downgrade the NEXT verdict by this same gate.

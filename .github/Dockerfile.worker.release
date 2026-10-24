@@ -19,7 +19,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Pinned by hand, deliberately: the rig-query load gate is the version's
 # acceptance test, so an auto-bump that passes CI without rebuilding the
 # image is worse than a conscious bump (#338 r20).
-ARG PI_VERSION=1.3.0
+ARG PI_VERSION=1.4.0
 # pi 1.0.0 removed npm-shrinkwrap.json: this `npm install -g` no longer pins
 # TRANSITIVE deps (pi pins its known-vulnerable ones directly, e.g.
 # brace-expansion 5.0.12 in 1.0.1). If the float is ever unacceptable, switch
@@ -40,7 +40,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Go toolchain (for emit-rig's go-modules extractor — runs `go list`).
 ARG GO_VERSION=1.26.0
-RUN curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" \
+RUN curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" \
         -o /tmp/go.tar.gz \
     && tar -C /usr/local -xzf /tmp/go.tar.gz \
     && rm /tmp/go.tar.gz
@@ -49,7 +49,7 @@ RUN mkdir -p /go
 
 # Zig — emit-rig.py zig-build extractor.
 ARG ZIG_VERSION=0.14.0
-RUN curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-x86_64-${ZIG_VERSION}.tar.xz" \
+RUN curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-x86_64-${ZIG_VERSION}.tar.xz" \
         -o /tmp/zig.tar.xz \
     && tar -xf /tmp/zig.tar.xz -C /usr/local \
     && ln -s "/usr/local/zig-linux-x86_64-${ZIG_VERSION}/zig" /usr/local/bin/zig \
@@ -58,7 +58,7 @@ RUN curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-x86_64-${Z
 
 # GitHub CLI — platform wiki offloading.
 ARG GH_VERSION=2.63.2
-RUN curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz" \
+RUN curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz" \
         -o /tmp/gh.tar.gz \
     && tar -xzf /tmp/gh.tar.gz -C /tmp \
     && mv "/tmp/gh_${GH_VERSION}_linux_amd64/bin/gh" /usr/local/bin/gh \
@@ -77,8 +77,8 @@ COPY ${TARGETPLATFORM}/harmostes-agent  /usr/local/bin/harmostes-agent
 # kinds are out of the flag binder's scope by design).
 # KEEP IN SYNC: this block is duplicated in .github/Dockerfile.worker.release.
 ARG TARGETARCH
-RUN curl -fsSL "https://github.com/rezuscloud/forgejo/releases/download/v16.0.3-rezus.6/fj-linux-${TARGETARCH}.tar.gz" -o /tmp/fj.tgz \
-    && curl -fsSL "https://github.com/rezuscloud/forgejo/releases/download/v16.0.3-rezus.6/checksums.txt" -o /tmp/fj.sha \
+RUN curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors "https://github.com/rezuscloud/forgejo/releases/download/v16.0.3-rezus.6/fj-linux-${TARGETARCH}.tar.gz" -o /tmp/fj.tgz \
+    && curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors "https://github.com/rezuscloud/forgejo/releases/download/v16.0.3-rezus.6/checksums.txt" -o /tmp/fj.sha \
     && grep "fj-linux-${TARGETARCH}.tar.gz$" /tmp/fj.sha | sed "s#  .*#  /tmp/fj.tgz#" | sha256sum -c - \
     && mkdir -p /tmp/fjx && tar -xzf /tmp/fj.tgz -C /tmp/fjx \
     && F="$(find /tmp/fjx -type f -name 'fj-linux-*')" && [ "$(printf '%s\n' "$F" | wc -l)" = "1" ] \
@@ -112,6 +112,8 @@ RUN git config --global user.name 'harmostes-bot' && \
 COPY extensions/litellm-provider /extensions/litellm-provider
 COPY extensions/rig-query        /extensions/rig-query
 COPY extensions/turn-budget     /extensions/turn-budget
+COPY extensions/pillar-todo     /extensions/pillar-todo
+COPY extensions/review-post     /extensions/review-post
 RUN pi install npm:pi-searxng
 # defaultProjectTrust=never (#426 r3 finding 1): review workspaces are
 # UNTRUSTED PR content — a repo shipping .pi/sol-pi.json must not be able to
@@ -126,7 +128,7 @@ ENV SEARXNG_URL=http://searxng.searxng.svc.cluster.local:8080
 # fails the build. Typebox itself resolves through pi's alias injection
 # (guaranteed by the pinned PI_VERSION below), which is why unresolvable-
 # dependency failures are covered by the TS tier, not this probe.
-RUN PI_SKIP_VERSION_CHECK=1 PI_TOOL_BUDGET=3 timeout 60 pi -e /extensions/rig-query -e /extensions/turn-budget --mode rpc </dev/null >/tmp/pi-load.log 2>&1; rc=$?; \
+RUN PI_SKIP_VERSION_CHECK=1 PI_TOOL_BUDGET=3 timeout 60 pi -e /extensions/rig-query -e /extensions/turn-budget -e /extensions/pillar-todo -e /extensions/review-post --mode rpc </dev/null >/tmp/pi-load.log 2>&1; rc=$?; \
     if [ $rc -ne 0 ]; then \
       echo "rig-query/turn-budget load probe failed (pi exit $rc):"; cat /tmp/pi-load.log; exit 1; \
     fi

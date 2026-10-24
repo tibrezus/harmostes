@@ -72,6 +72,8 @@ var Extensions = []string{
 	"/extensions/litellm-provider",
 	"/extensions/rig-query",
 	"/extensions/turn-budget",
+	"/extensions/pillar-todo",
+	"/extensions/review-post",
 	"/extensions/sol-pi",
 }
 
@@ -123,6 +125,18 @@ const RigGraphPath = "/workspace/rig.db"
 // only register providers have no entry.
 var extensionTools = map[string]string{
 	"/extensions/rig-query": "rig",
+	// pillar-todo registers the seeded todo checklist (#727 follow-up):
+	// the workspace plugin writes pillar-todos.json from the SERVED
+	// playbook's pillar block; the extension seeds the list at session
+	// start (fresh sessions only — resumed ones keep their branch state,
+	// so ticks persist across rounds through the lineage).
+	"/extensions/pillar-todo": "todo",
+	// review-post (#749): the reviewer's posting machinery — five tools,
+	// one profile, every host. The value is a comma-joined tool LIST (the
+	// --tools allowlist parses it back apart; slices.Contains dedupes the
+	// joined literal coarsely, which is harmless). Verdict review EVENTS
+	// are not in the set and have no tool (#680 by code).
+	"/extensions/review-post": "review_finding_post,review_findings_list,review_thread_reply,review_thread_resolve,review_verdict_post",
 	// sol-pi's observation-pack registers obs_recall (its recall affordance
 	// for replaced large tool results). The shipped profile
 	// (extensions/sol-pi/sol-pi.json, observationPack=true) is THE effective

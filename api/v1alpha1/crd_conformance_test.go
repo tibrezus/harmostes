@@ -41,6 +41,13 @@ func TestCRDConformance(t *testing.T) {
 			for _, is := range crdwalk.Check(root.Type, schema) {
 				t.Errorf("%s: %s", root.File, is)
 			}
+			// The reverse direction (#704 class, #709/#710): a schema property
+			// no Go field can receive is invisible to the forward walk — the
+			// API server stores it, the typed decode silently drops it, the UI
+			// splice writes it back out. Both directions fail the same subtest.
+			for _, is := range crdwalk.CheckReverse(root.Type, schema) {
+				t.Errorf("%s (reverse): %s", root.File, is)
+			}
 		})
 	}
 }

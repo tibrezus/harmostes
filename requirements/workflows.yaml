@@ -1,0 +1,111 @@
+# HARD REQUIREMENTS FOR ALL WORKFLOWS
+#
+# IMMUTABILITY (owner ruling, 2026-10-24):
+#   This file states the hard requirements for each workflow. A requirement
+#   in this file does not change — and no workflow may stop satisfying one —
+#   unless tibrez specifically says so. The commit that changes a requirement
+#   must quote the owner's ruling verbatim in its message.
+#
+# ENFORCEMENT (what makes this more than prose):
+#   Every requirement carries machine-checkable enforcement pointers under
+#   `enforcement:`. CI (the "requirements conformance" step) verifies each
+#   pointer mechanically: the named file must exist and contain the named
+#   marker. If the machinery stops enforcing a requirement — a test is
+#   deleted, a marker is reworded away, a check goes green vacuously — CI
+#   REDS. The workflows cannot drift from this file.
+#
+#   Adding a requirement without an enforcement pointer is a conformance
+#   failure by definition: an unenforced "hard" requirement is not hard.
+
+workflows:
+  pr-review:
+    description: >
+      The per-PR adversarial review workflow (rhesadox et al.): an agent
+      reviews the diff at the armed head and posts findings as anchored
+      threads; the gate consumes the verdict and releases the label.
+    requirements:
+      - id: PR-REVIEW-1
+        statement: >
+          Every finding is posted as a NATIVE ANCHORED THREAD on the exact
+          code snippet it concerns, THE MOMENT the finding is confirmed
+          (the proof bar is met). Aggregating findings into one long
+          comment, or holding them for a round-end batch, violates this
+          requirement even if the content is identical.
+        ruling: >
+          "Using review on code snippets, and posting them as soon as they
+          are confirmed are a hard requirements for the workflow" (tibrez,
+          2026-10-24, after rhesadox#2843 landed as a single 11KB comment).
+        enforcement:
+          - file: extensions/review-post/index.ts
+            contains: "Post a verified finding as a native anchored thread, NOW (progressive posting)"
+          - file: extensions/review-post/contract.test.ts
+            contains: "finding_post: happy path returns the host-issued thread_ref and records it"
+          - file: chart/ci/golden/full.yaml
+            contains: "Post each verified finding THE MOMENT you verify it"
+          - file: .agents/skills/pr-review/SKILL.md
+            contains: "Post each\nverified finding **immediately** as a native anchored thread — do not\nbatch"
+
+      - id: PR-REVIEW-2
+        statement: >
+          The reviewer posts with HARMOSTES_FORGEJO_TOKEN — the one
+          fleet-wide credential (owner ruling 2026-10-24). No per-channel
+          tokens, no bot credential in the agent path. If the token is
+          absent the tools report unarmed and the round degrades to the
+          ledger path; it NEVER 403-fights a channel.
+        enforcement:
+          - file: extensions/review-post/index.ts
+            contains: "HARMOSTES_FORGEJO_TOKEN"
+          - file: extensions/review-post/contract.test.ts
+            contains: "no credential: every tool degrades to the ledger message, nothing throws"
+          - file: internal/worker/dispatch.go
+            contains: "HARMOSTES_FORGEJO_TOKEN"
+
+      - id: PR-REVIEW-3
+        statement: >
+          A thread_ref is accepted only from a host 2xx response. A failed
+          post is terminal for that call: no fabricated refs, no retry
+          storms. Posting state survives resume — a re-round never
+          double-posts.
+        enforcement:
+          - file: extensions/review-post/contract.test.ts
+            contains: "finding_post: host failure — error result, NO thread_ref, no state mutation"
+          - file: extensions/review-post/contract.test.ts
+            contains: "resume: branch state reconstructs — a re-round sees the prior thread_ref without re-posting"
+
+      - id: PR-REVIEW-4
+        statement: >
+          The agent NEVER emits a binding verdict review event. The
+          agent-side verdict is the trailer comment
+          (`<!-- pr-review: DECISION @ sha -->`, exact form); review
+          events and label consumption belong to the gate sweep alone.
+        enforcement:
+          - file: extensions/review-post/contract.test.ts
+            contains: "verdict_post: carries the exact trailer, and is an ISSUE comment — never a review event"
+          - file: internal/worker/reviewgate_validation_test.go
+            contains: "TestReviewGateAcceptsNewContract"
+
+      - id: PR-REVIEW-5
+        statement: >
+          The ledger (/workspace/review.json) is the extension-written
+          export while the tools are armed: findings[], decision, and
+          reviewed_sha are tool-maintained; the agent hand-writes only
+          todos[] and coverage. Unarmed rounds hand-write the whole
+          ledger — the supported inert mode.
+        enforcement:
+          - file: extensions/review-post/contract.test.ts
+            contains: "export: foreign keys survive (todos, coverage) — read-modify-write, never a clobber"
+          - file: chart/ci/golden/full.yaml
+            contains: "they maintain findings[],"
+          - file: internal/worker/reviewgate_validation_test.go
+            contains: "TestReviewGateAcceptsNewContract"
+
+      - id: PR-REVIEW-6
+        statement: >
+          A carried finding never blocks silently: the agent replies on
+          its thread and resolves it. Unresolved threads — this round's
+          or any prior round's — count against the verdict.
+        enforcement:
+          - file: extensions/review-post/index.ts
+            contains: "review_thread_resolve"
+          - file: chart/ci/golden/full.yaml
+            contains: "A reply alone never closes a thread: resolve is the"

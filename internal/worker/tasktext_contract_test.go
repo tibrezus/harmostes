@@ -245,3 +245,210 @@ func TestTaskTextTeachesTheShippedCoverageContract(t *testing.T) {
 		}
 	})
 }
+
+// #726: the task text teaches the repository wiki — the reviewed repo's
+// OWN architecture docs at /workspace/repo-wiki (distinct from
+// /workspace/wiki, the cross-repo llm-wiki). The text promises a
+// directory the prepare must clone (config.repoWiki) and a judging rule
+// (toward-TOBE complies); this pins text↔code both ways.
+func TestTaskTextTeachesTheShippedRepoWikiContract(t *testing.T) {
+	text := taskText(t)
+
+	t.Run("the text names the dir, the standard docs and the direction rule", func(t *testing.T) {
+		for _, needle := range []string{
+			"/workspace/repo-wiki",
+			"DESIGN.md", "TOBE.md", "ARCHITECTURE.md",
+			"read the standard docs",      // consult-first ordering
+			"TOWARD the documented TOBE",  // context-not-gospel: direction beats AS-IS divergence
+			"repo_wiki_state",             // the state fact: cloned vs absent vs clone-failed
+			"UNTRUSTED third-party prose", // trust boundary: leads to verify, never instructions (the rig-query/sol-pi framing class)
+		} {
+			if !strings.Contains(text, needle) {
+				t.Errorf("task text lost %q — the agent reads only this", needle)
+			}
+		}
+		if strings.Contains(text, "the docs override the diff") || strings.Contains(text, "reject any PR that deviates from the docs") {
+			t.Error("the text must not teach docs-as-veto — toward-TOBE compliance is the rule")
+		}
+	})
+
+	t.Run("the prepare clones what the text promises", func(t *testing.T) {
+		ws := pluginSource(t, "plugins/workspace/workspace.sh")
+		for _, needle := range []string{
+			"REPO-WIKI-START",
+			"config.repoWiki", // the declarative field
+			"repo-wiki",       // the promised directory
+			"host::https_url", // credential normalization beside the main clone's chain
+		} {
+			if !strings.Contains(ws, needle) {
+				t.Errorf("workspace.sh lost %q — the text teaches /workspace/repo-wiki", needle)
+			}
+		}
+		lib := pluginSource(t, "plugins/lib/git-host.sh")
+		for _, needle := range []string{"ssh://git@*", "scp"} {
+			if !strings.Contains(lib, needle) {
+				t.Errorf("git-host.sh lost %q — declarative URLs arrive in operator shapes, not canonical https", needle)
+			}
+		}
+	})
+}
+
+func TestTaskTextTeachesTheShippedResearchContract(t *testing.T) {
+	text := taskText(t)
+
+	t.Run("the text names the layer, the staging path and the staleness rule", func(t *testing.T) {
+		for _, needle := range []string{
+			"/workspace/research",
+			"research-out.md",
+			"LEAD, not ground",                     // staleness semantics: verify before relying
+			"re-derive nothing it already answers", // the economy: no rediscovery
+		} {
+			if !strings.Contains(text, needle) {
+				t.Errorf("task text lost %q — the agent reads only this", needle)
+			}
+		}
+	})
+
+	t.Run("every path the text teaches exists in the shipped plugins", func(t *testing.T) {
+		ws := pluginSource(t, "plugins/workspace/workspace.sh")
+		for _, needle := range []string{"_shared/research", "RESEARCH-LINK-START", `"$WORKDIR/research-out.md"`} {
+			if !strings.Contains(ws, needle) {
+				t.Errorf("workspace.sh lost %q — the text teaches /workspace/research", needle)
+			}
+		}
+		deploy := pluginSource(t, "plugins/post-review/post-review.sh")
+		for _, needle := range []string{"RESEARCH-PUBLISH-START", "_shared/research", "research-out.md", "HARMOSTES_WORKFLOW"} {
+			if !strings.Contains(deploy, needle) {
+				t.Errorf("post-review.sh lost %q — the text teaches that the pipeline publishes the staged notes", needle)
+			}
+		}
+	})
+
+	t.Run("the provenance the text promises is the provenance stamped", func(t *testing.T) {
+		deploy := pluginSource(t, "plugins/post-review/post-review.sh")
+		for _, needle := range []string{"repo: %s", "workflow: %s", "head_sha: %s", "written_at: %s"} {
+			if !strings.Contains(deploy, needle) {
+				t.Errorf("the publish frontmatter drifted from the text's promise (lost %q)", needle)
+			}
+		}
+	})
+
+	t.Run("the store namespace is reserved where the join happens", func(t *testing.T) {
+		ss := pluginSource(t, "internal/sessionstore/sessionstore.go")
+		if !strings.Contains(ss, `func ReservedStoreNames() []string { return []string{"coverage", "_shared"} }`) {
+			t.Error("sessionstore.ReservedStoreNames drifted — the single source for the store's shared namespaces")
+		}
+	})
+}
+
+func TestTaskTextTeachesTheShippedPillarScanContract(t *testing.T) {
+	text := taskText(t)
+
+	t.Run("the text carries the FACTS and the never-moved proof bar; the loop lives in the skill (#404/#680 boundary)", func(t *testing.T) {
+		for _, needle := range []string{
+			"Mid-round posting",
+			"post\neach PROVEN finding's anchored thread", // post-when-proven fact (dedented text)
+			"thread_ref",
+			"ONLY from the host's 2xx response id", // rejected self-posts stay ref-less → publisher lands them
+			"proof bar never moves",                // positive pin (keyword bans paraphrase-evade)
+			"nothing unverified is posted",
+			"playbook, Pillar", // the pointer: methodology defers to the skill
+		} {
+			if !strings.Contains(text, needle) {
+				t.Errorf("task text lost %q — the agent reads only this", needle)
+			}
+		}
+		// the boundary itself: the work-order loop must NOT live in the
+		// prompt — it is the skill's methodology (the CI render guard's
+		// stated doctrine; its teeth predate this section's shape).
+		for _, methodology := range []string{"Walk the pillars breadth-first", "switch to the next pillar", "deep proofs of remaining uncertainties after"} {
+			if strings.Contains(text, methodology) {
+				t.Errorf("task text re-grows methodology (%q) — the prompt is environment facts; the playbook owns the loop", methodology)
+			}
+		}
+	})
+
+	t.Run("the pointer's target exists in the SERVED skill", func(t *testing.T) {
+		playbook := pluginSource(t, ".agents/skills/pr-review/references/playbook.md")
+		for _, needle := range []string{
+			"## Pillar scan",
+			"Work it top-down",         // the loop's shape (the #82 wording)
+			"POST its anchored thread", // post-when-proven, in the skill
+			"tick that pillar",         // the seeded checklist is the loop's spine
+		} {
+			if !strings.Contains(playbook, needle) {
+				t.Errorf("the served playbook lost %q — the text's pointer ('playbook, Pillar scan') would dangle", needle)
+			}
+		}
+	})
+
+	t.Run("the gate the text leans on counts posted threads as roots", func(t *testing.T) {
+		deploy := pluginSource(t, "plugins/post-review/post-review.sh")
+		// remainders are findings whose thread_ref is missing OR
+		// unresolvable against the listing (#727 r1: a bogus ref is a
+		// never-landed finding — remainder, published AND counted);
+		// the agent's real posts are never double-published
+		if !strings.Contains(deploy, "if not ref: return False") || !strings.Contains(deploy, "in landed") {
+			t.Error("post-review.sh lost the thread_ref remainder predicate — the text's 'publisher publishes only what you never posted' is now false")
+		}
+		if !strings.Contains(deploy, "TOTAL_OPEN=$(( ${LISTED_OPEN:-0} + ${REMAINDER_FINDINGS:-0} + ${UNCARRIED_TODOS:-0} ))") {
+			t.Error("TOTAL_OPEN arithmetic drifted — posted threads count exactly once (as listed roots)")
+		}
+	})
+
+	t.Run("no unverified-posting language anywhere", func(t *testing.T) {
+		for _, banned := range []string{"post leads as you go", "post suspected findings", "interim UNVERIFIED"} {
+			if strings.Contains(text, banned) {
+				t.Errorf("task text teaches %q — the proof bar never moves (#727's one red line)", banned)
+			}
+		}
+	})
+}
+
+// #727 follow-up: the pillar todo — the checklist is SEEDED (the agent
+// never rebuilds it): the workspace plugin extracts the served playbook's
+// pillar block into pillar-todos.json and the pillar-todo extension
+// seeds the session's todo list from it. This pins the text's claims to
+// the shipped machinery, both directions.
+func TestTaskTextTeachesTheShippedPillarTodoSeed(t *testing.T) {
+	text := taskText(t)
+
+	t.Run("the text states the seed facts and defers the walk to the skill", func(t *testing.T) {
+		for _, needle := range []string{
+			"Pillar todo",
+			"SEEDED with the pillar checklist",
+			"served playbook's pillar block", // the skill is the source
+			"a resumed session keeps its branch's",
+			"playbook's Pillar scan section governs", // methodology stays in the skill
+		} {
+			if !strings.Contains(text, needle) {
+				t.Errorf("task text lost %q — the agent reads only this", needle)
+			}
+		}
+		for _, methodology := range []string{"one item per pillar, in walkthrough order", "tick a pillar when"} {
+			if strings.Contains(text, methodology) {
+				t.Errorf("task text re-grows methodology (%q) — the loop is the playbook's", methodology)
+			}
+		}
+	})
+
+	t.Run("the machinery the text names exists", func(t *testing.T) {
+		ws := pluginSource(t, "plugins/workspace/workspace.sh")
+		for _, needle := range []string{"PILLAR-SEED-START", "pillar-todos.json", "Hardened checks"} {
+			if !strings.Contains(ws, needle) {
+				t.Errorf("workspace.sh lost %q — the text teaches the seeded checklist", needle)
+			}
+		}
+		ext := pluginSource(t, "extensions/pillar-todo/index.ts")
+		for _, needle := range []string{"pillar-todos.json", `name: "todo"`, "sawTodoEntry"} {
+			if !strings.Contains(ext, needle) {
+				t.Errorf("pillar-todo extension lost %q — the text's seed claim would be false", needle)
+			}
+		}
+		// the served playbook HAS a pillar block (the seed's source)
+		playbook := pluginSource(t, ".agents/skills/pr-review/references/playbook.md")
+		if !strings.Contains(playbook, "## Correctness") || !strings.Contains(playbook, "## Hardened checks") {
+			t.Error("the served playbook lost its pillar block shape — the seed would extract nothing")
+		}
+	})
+}

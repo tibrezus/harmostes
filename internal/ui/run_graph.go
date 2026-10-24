@@ -245,7 +245,13 @@ func (s *Server) buildRunGraph(ctx context.Context, att *v1alpha1.Attempt) runGr
 // timingSegment is one bar in the waterfall strip: a node's execution window
 // (start = producedAt - duration, end = producedAt).
 type timingSegment struct {
-	Label  string `json:"label"`
+	Label string `json:"label"`
+	// Full is the UNTRUNCATED label, emitted as the lane label's <title>
+	// tooltip (#569 residue: the 12-rune gutter truncation turned long node
+	// names into "agent · lit…" ghosts with no recovery — the bar's title
+	// carries the timing story, the label's carries the name). Empty when
+	// the label was not truncated.
+	Full   string `json:"full,omitempty"`
 	Status string `json:"status"`         // segment color class (rg-state-*)
 	Live   bool   `json:"live,omitempty"` // in-flight lane: pulsing bar
 	X      int    `json:"x"`
@@ -393,6 +399,7 @@ func buildTimingStrip(nodes []graphNodeView, latest map[string]v1alpha1.NodeResu
 		}
 		segs = append(segs, timingSegment{
 			Label:  truncateRunes(l.label, 12), // fits the 110px gutter
+			Full:   fullLabelOf(l.label, 12),
 			Status: l.status,
 			Live:   l.isLive,
 			X:      barX + x,
@@ -538,6 +545,16 @@ func isExternalNode(nodes []v1alpha1.NodeSpec, id string) bool {
 		}
 	}
 	return false
+}
+
+// fullLabelOf returns the label when it survives truncation (the template
+// emits it as the lane label's <title> only when the gutter cut it — an
+// identical title over an untruncated label is noise).
+func fullLabelOf(s string, n int) string {
+	if len([]rune(s)) <= n {
+		return ""
+	}
+	return s
 }
 
 // truncateRunes truncates by runes (byte slicing corrupts multi-byte labels)

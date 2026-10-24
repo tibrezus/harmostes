@@ -1,10 +1,15 @@
-# harmostes release pipeline — GitVersion + GoReleaser + OCI Helm chart.
+# harmostes release pipeline — tag-driven GoReleaser + OCI Helm chart
+# (ADR-0020).
 #
-# Pattern: push to main → harmostes-version computes the version by
-# deterministic git arithmetic (#755: one patch per merged PR — subjects
-# ending "(#N)"; direct pushes only increment the -N suffix) → creates tag →
-# GoReleaser builds 4 Go binaries, 3 Docker images, archives +
-# SBOM + cosign-signed checksums → publishes OCI Helm chart → GitHub Release.
+# Pattern: release-please (release-please.yml) maintains the release PR on
+# main from Conventional Commits; its automerge creates the vX.Y.Z tag →
+# THIS workflow fires on the tag → GoReleaser builds 4 Go binaries, 3
+# Docker images, archives + SBOM + cosign-signed checksums → publishes the
+# OCI Helm chart at the same version → GitHub Release. The version IS the
+# tag — nothing computes or predicts it.
+#
+# Recovery: a release killed mid-publish is re-run from the failed run
+# (gh run rerun) — the tag already exists and the pipeline is idempotent.
 #
 # The OCI chart is consumed by Flux's HelmRepository(type:oci) in k8s-config,
 # which auto-upgrades the HelmRelease on every new chart version. The chart's
@@ -18,15 +23,11 @@ name: Release
 
 on:
   push:
-    branches: [main]
+    tags: ['v*']
   workflow_dispatch:
     inputs:
       snapshot:
         description: Run in snapshot mode (no publish)
-        type: boolean
-        default: false
-      force:
-        description: Re-publish even if the version tag exists (recovery for a release killed mid-publish — the tag already exists, so the tagExists skip would strand the version)
         type: boolean
         default: false
 
@@ -39,82 +40,16 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  version:
-    name: Determine Version
-    if: github.event.inputs.snapshot != 'true'
-    runs-on: ubuntu-latest
-    # The release group is global — a hung job holds it and blocks every
-    # future release for up to GitHub's 360-min default. Bound both jobs
-    # (~3 and ~10 min observed, 2026-08-26).
-    timeout-minutes: 10
-    outputs:
-      semVer: ${{ steps.version.outputs.semVer }}
-      sha: ${{ steps.version.outputs.sha }}
-      tagExists: ${{ steps.check_tag.outputs.exists }}
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-          cache: false
-
-      # #755: GitVersion is out — its CD mode froze the release base forever
-      # (1.2.0-335: 335 releases, the base never moved, because its own
-      # prerelease-shaped tags can never advance the version source). The
-      # versioner is deterministic git-tag/log arithmetic, unit-tested in
-      # internal/versioner, and needs no .NET runtime (~90s faster too).
-      - name: Determine Version
-        id: version
-        run: |
-          SEMVER="$(go run ./cmd/harmostes-version)"
-          echo "semVer=$SEMVER" >> "$GITHUB_OUTPUT"
-          echo "sha=$(go run ./cmd/harmostes-version -sha)" >> "$GITHUB_OUTPUT"
-          echo "SemVer: $SEMVER"
-
-      - name: Check if tag exists
-        id: check_tag
-        run: |
-          TAG="v${{ steps.version.outputs.semVer }}"
-          if git tag -l "$TAG" | grep -q .; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "Tag $TAG already exists"
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-            echo "Tag $TAG does not exist, will create"
-          fi
-
-      - name: Create git tag
-        if: steps.check_tag.outputs.exists == 'false'
-        uses: actions/github-script@v9
-        with:
-          script: |
-            const tag = `v${{ steps.version.outputs.semVer }}`;
-            const sha = '${{ steps.version.outputs.sha }}';
-            console.log(`Creating tag ${tag} at ${sha}`);
-            await github.rest.git.createRef({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              ref: `refs/tags/${tag}`,
-              sha: sha
-            });
-
   release:
     name: Release
-    needs: version
-    # force=true bypasses the tagExists skip: the tag was already created
-    # before the failed publish attempt, so the skip would strand the
-    # version (#261) — re-attempt publication for the existing tag instead.
-    if: github.event.inputs.snapshot != 'true' && (needs.version.outputs.tagExists == 'false' || github.event.inputs.force == 'true')
+    if: github.event.inputs.snapshot != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-          ref: v${{ needs.version.outputs.semVer }}
+          ref: ${{ github.ref }} # the tag
 
       - uses: actions/setup-go@v7
         with:
@@ -165,14 +100,15 @@ jobs:
 
       - name: Publish OCI Helm chart
         env:
-          CHART_VERSION: ${{ needs.version.outputs.semVer }}
           HARMOSTES_GITHUB_TOKEN: ${{ secrets.HARMOSTES_GITHUB_TOKEN }}
-        run: bash .github/scripts/publish-chart.sh
+        run: |
+          export CHART_VERSION="${GITHUB_REF_NAME#v}" # v1.3.0 → 1.3.0
+          bash .github/scripts/publish-chart.sh
 
       - name: Attach chart to GitHub Release
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: v${{ needs.version.outputs.semVer }}
+          tag_name: ${{ github.ref_name }}
           files: harmostes-*.tgz
 
   snapshot:
@@ -185,17 +121,12 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-          cache: false
-
-      - name: Determine Version
+      - name: Determine Snapshot Version
         id: version
         run: |
-          SEMVER="$(go run ./cmd/harmostes-version)"
-          echo "semVer=$SEMVER" >> "$GITHUB_OUTPUT"
-          echo "SemVer: $SEMVER"
+          TAG="$(git describe --tags --abbrev=0)"
+          echo "semVer=${TAG#v}" >> "$GITHUB_OUTPUT"
+          echo "snapshot version: ${TAG#v} (latest tag)"
 
       - name: Log in to GHCR
         uses: docker/login-action@v4

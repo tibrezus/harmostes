@@ -174,17 +174,6 @@ spec:
                   name: harmostes-review-post-token
                   key: token
                   optional: true
-            # The fork-forge half (#687): a github.com PAT re-bound as
-            # FORGEJO_TOKEN 401s every call in a fork session — the session
-            # picks by its PR host (scopePostToken). Comment-scoped on the
-            # fork (write:issue — verified live: comment 201, merge 403).
-            # OPTIONAL: absent = fork sessions stay unarmed.
-            - name: HARMOSTES_REVIEW_POST_TOKEN_FJ
-              valueFrom:
-                secretKeyRef:
-                  name: harmostes-review-post-token-forgejo
-                  key: token
-                  optional: true
             # Served-skills single source (#441): passed to the dispatcher so
             # per-Attempt Jobs' sync-skills init containers clone the SAME
             # repo the pool's own init container does. Empty = the Go default
@@ -215,23 +204,6 @@ spec:
                 secretKeyRef:
                   name: harmostes-forgejo-token
                   key: token
-            # harmostes-bot review identity (#480): native review objects post
-            # as the whitelisted bot — the primary token is the PR author's,
-            # and the forge 422s self-reviews. Optional: installs without the
-            # bot secret keep working (post-review falls back to the primary
-            # token and speaks the host's rejection in the artifact).
-            - name: HARMOSTES_FORGEJO_BOT_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: harmostes-forgejo-bot-token
-                  key: token
-                  optional: true
-            # The exact forge origin the bot credential is minted for (#480
-            # r2 t3): the deploy plugin overrides its auth only when the
-            # pr-context host matches this exactly — never on dialect alone
-            # (IS_FJ is "not github.com", true for any untrusted host).
-            - name: HARMOSTES_FORGEJO_BOT_HOST
-              value: {{ .Values.worker.forgejoBotHost | default "git.rezus.cloud" | quote }}
             - name: LITELLM_URL
               valueFrom:
                 secretKeyRef:

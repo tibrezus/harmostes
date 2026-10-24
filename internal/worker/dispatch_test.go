@@ -341,8 +341,17 @@ func TestJobEnvAllowlistCarriesCLIAliases(t *testing.T) {
 		{"FORGEJO_TOKEN", "the fj CLI's env fallback — without it the inline-thread protocol's Forgejo leg dies to prose"},
 		{"GH_TOKEN", "gh's native env — without it the protocol's GitHub leg dies to prose"},
 		{"LITELLM_FALLBACKS", "the extension's override knob is a pool-pod-only no-op without it (#359 r4 P4.1)"},
-		{"HARMOSTES_FORGEJO_BOT_TOKEN", "the whitelisted bot review identity (#480) — without it native APPROVED/REQUEST_CHANGES reviews 422 as self-reviews on author-owned PRs"},
-		{"HARMOSTES_FORGEJO_BOT_HOST", "the other half of the #480 gate pair (#480 r3 t5) — token without host means the Job-side script compares against a compiled-in default and a non-default botHost silently never matches"},
+		// HARMOSTES_FORGEJO_BOT_TOKEN/_HOST: RETIRED (#749 Phase 3, owner
+		// ruling 2026-10-24 — one credential serves every workflow). The
+		// names must NOT return to the allowlist; the sweep consumes and
+		// posts worker-side under the fleet token.
+	}
+	for _, retired := range []string{"HARMOSTES_FORGEJO_BOT_TOKEN", "HARMOSTES_FORGEJO_BOT_HOST", "HARMOSTES_REVIEW_POST_TOKEN_FJ"} {
+		for _, k := range jobEnvAllowlist {
+			if k == retired {
+				t.Errorf("%s is retired (#749 Phase 3) — it must not return to jobEnvAllowlist", retired)
+			}
+		}
 	}
 	for _, row := range rows {
 		found := false

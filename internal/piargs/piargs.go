@@ -136,7 +136,7 @@ var extensionTools = map[string]string{
 	// --tools allowlist parses it back apart; slices.Contains dedupes the
 	// joined literal coarsely, which is harmless). Verdict review EVENTS
 	// are not in the set and have no tool (#680 by code).
-	"/extensions/review-post": "review_finding_post,review_findings_list,review_thread_reply,review_thread_resolve,review_verdict_post",
+	"/extensions/review-post": "review_finding_post,review_findings_list,review_thread_reply,review_thread_resolve,review_verdict_post,review_research_publish,review_coverage_publish,review_carry_file",
 	// sol-pi's observation-pack registers obs_recall (its recall affordance
 	// for replaced large tool results). The shipped profile
 	// (extensions/sol-pi/sol-pi.json, observationPack=true) is THE effective

@@ -122,52 +122,6 @@ func graphPresenceLine(graphPath string) (string, bool) {
 	return "", false
 }
 
-// botTokenEnvForNode is the #480 credential-scoping policy: the bot review
-// credential rides ONLY the node whose plugin is post-review — its sole
-// reader — regardless of what the node is named in the graph (compiled
-// "deploy" or CR-authored IDs; r5 t10). Every other node (prepare runs
-// emit-rig + the Go toolchain inside the untrusted PR clone) gets the
-// scrubbed base. The token itself is scrubbed from the process env at the
-// agent spawn leaf (agent.FilterEnv) and from this extraEnv slice.
-func botTokenEnvForNode(node v1alpha1.NodeSpec, base []string, resolver worker.PluginResolver) []string {
-	if node.Type != "plugin" {
-		return base
-	}
-	var cfg graph.PluginNodeConfig
-	if err := json.Unmarshal(node.Config, &cfg); err != nil {
-		return base
-	}
-	// Identity = the canonical resolution: resolve the node's ref and the
-	// canonical {name: post-review} ref and grant only on equality. A path-
-	// shape suffix cannot be the identity — the shipped BuiltinResolver maps
-	// the builtin to a FLAT image path (/usr/local/lib/harmostes/plugins/
-	// post-review.sh) while tests produce the repo layout, so any suffix
-	// guess matches one world and silently no-ops the other (r11 t21).
-	// Phase "plugin" — the SAME resolution the executor performs
-	// (plugin_executor.go); r14 t21: resolving the identity under a
-	// different phase than the leg that runs the script is the r11 t21
-	// failure mode again (identity that matches one world and no-ops the
-	// other) the moment a resolver becomes phase-aware.
-	nodeCmd, _, err := resolver.Resolve(context.Background(), cfg.ToPluginRef(), "plugin")
-	if err != nil || nodeCmd == "" {
-		return base
-	}
-	canonical, _, err := resolver.Resolve(context.Background(),
-		v1alpha1.PluginRef{Name: "post-review"}, "plugin")
-	if err != nil || canonical == "" || nodeCmd != canonical {
-		return base
-	}
-	bt := os.Getenv(agent.BotTokenEnvKey)
-	if bt == "" {
-		return base
-	}
-	grant := []string{
-		agent.BotTokenEnvKey + "=" + bt,
-		agent.BotHostEnvKey + "=" + os.Getenv(agent.BotHostEnvKey),
-	}
-	return append(append([]string{}, base...), grant...)
-}
-
 // spawnEnv extends the pi child env with the ADR-0009 rig freshness
 // contract (#338/#350), evaluated at agent-node spawn: the expectation is
 // armed from the reviewed SHA; the degradation signal (#338 r24 D5) says
@@ -181,7 +135,7 @@ func botTokenEnvForNode(node v1alpha1.NodeSpec, base []string, resolver worker.P
 func spawnEnv(base []string, graphPath string, logf func(string, ...any)) []string {
 	sha := os.Getenv("HARMOSTES_TRIGGER_SHA")
 	if sha == "" {
-		return scopePostToken(base)
+		return dropSessionCredentials(base)
 	}
 	env := append([]string{}, base...)
 	env = append(env, "RIG_EXPECTED_SHA="+sha)
@@ -192,92 +146,40 @@ func spawnEnv(base []string, graphPath string, logf func(string, ...any)) []stri
 	if !degraded {
 		env = append(env, "RIG_REQUIRE_SHA=1")
 	}
-	return scopePostToken(env)
+	return dropSessionCredentials(env)
 }
 
-// ReviewPostTokenEnvKey (#680): the comment-scoped posting credential.
+// ReviewPostTokenEnvKey (#680): the github.com posting credential.
 // Forwarded to REVIEW attempts only (dispatch drops the name for any other
-// objective kind) — its presence in a session env IS the arming signal.
-// In an armed session the spawn env is FAIL-CLOSED: every allowlisted
-// variable NOT in the explicit safe set (worker.SpawnSafeEnv — the LLM
-// trio, budget numbers, skills pins, this token) is dropped, and the
-// CLI-canonical names (GH_TOKEN/GITHUB_TOKEN/FORGEJO_TOKEN) are RE-BOUND
-// to the scoped value, so the CLIs authenticate but can only do what a
-// comment-scoped token allows. Unarmed deployments keep the historical
-// env (no behavior change).
+// objective kind). Forgejo hosts post with HARMOSTES_FORGEJO_TOKEN (the
+// one fleet credential, owner ruling 2026-10-24). The scoped-token era's
+// env re-binding is gone (#749 Phase 3): the session env keeps the safe
+// set as forwarded; dropSessionCredentials still fail-closes anything the
+// safe set has not justified.
 const (
 	ReviewPostTokenEnvKey   = "HARMOSTES_REVIEW_POST_TOKEN"
-	ReviewPostTokenFJEnvKey = "HARMOSTES_REVIEW_POST_TOKEN_FJ" // #687: the fork-forge half
 	ReviewTriggerRepoEnvKey = "HARMOSTES_TRIGGER_REPO"
 	// ReviewGithubHost: the github.com discriminator (mirrors host::is_fj —
 	// a non-github.com host is Forgejo-shaped for token selection).
 	ReviewGithubHost = "github.com"
 )
 
-// pickPostToken selects the session's posting credential by the PR's host
-// (#687): one value cannot be valid on both wired forges, and re-binding a
-// github PAT as FORGEJO_TOKEN (or the reverse) arms the session with a
-// credential its own forge 401s — the agent grinds on posting failures
-// mid-round. github.com sessions take the github token, every other host
-// the fork token; a missing repo env defaults to github (the historically
-// armed side). A side with no configured token stays unarmed for that
-// host's sessions: absent = unarmed, never wrong-armed.
-func pickPostToken(repo, gh, fj string) string {
-	host := ReviewGithubHost
-	if i := strings.Index(repo, "/"); i > 0 {
-		host = repo[:i]
-	}
-	if host == ReviewGithubHost {
-		return gh
-	}
-	return fj
-}
-
-func scopePostToken(env []string) []string {
-	gh := os.Getenv(ReviewPostTokenEnvKey)
-	fj := os.Getenv(ReviewPostTokenFJEnvKey)
-	if gh == "" && fj == "" {
-		return env
-	}
-	// FAIL-CLOSED: keep only the explicitly-safe names (worker.SpawnSafeEnv);
-	// drop every OTHER credential-forwarded variable. A future allowlisted
-	// credential is dropped by default — it must be justified into the safe
-	// set, never caught by a heuristic.
+// dropSessionCredentials (#749 Phase 3): the ONE remaining spawn-filter
+// duty. The scoped-token era's re-binding and per-host picking are gone —
+// the fleet credential (HARMOSTES_FORGEJO_TOKEN) IS the posting credential
+// and the chart wires the CLI canonicals to it. What survives is the
+// fail-closed walk: every allowlisted name NOT in the explicit safe set
+// (worker.SpawnSafeEnv) is dropped from agent sessions. A future forwarded
+// credential is dropped by default — it must be justified into the safe
+// set, never caught by a heuristic.
+func dropSessionCredentials(env []string) []string {
 	var drop []string
 	for _, n := range worker.EnvAllowlistNames() {
 		if !worker.SpawnSafeEnv(n) {
 			drop = append(drop, n)
 		}
 	}
-	// drop BOTH raw token names: the session sees exactly one posting
-	// credential, the chosen one, under the canonical name the prompt and
-	// the skill document.
-	drop = append(drop, ReviewPostTokenEnvKey, ReviewPostTokenFJEnvKey)
-	scoped := agent.FilterEnv(env, drop...)
-	repo := ""
-	for _, kv := range env {
-		if strings.HasPrefix(kv, ReviewTriggerRepoEnvKey+"=") {
-			repo = strings.TrimPrefix(kv, ReviewTriggerRepoEnvKey+"=")
-			break
-		}
-	}
-	post := pickPostToken(repo, gh, fj)
-	if post == "" {
-		// wrong-armed is worse than unarmed: this host has no token, the
-		// session keeps the rich-env drop but no posting credential — the
-		// historical unarmed posture for that host.
-		return scoped
-	}
-	scoped = append(scoped, ReviewPostTokenEnvKey+"="+post)
-	// RE-BIND the CLI-canonical names to the scoped credential (r4 P1):
-	// dropping the rich aliases without re-binding un-authenticates the very
-	// CLI paths the skill's host guide drives. gh reads GH_TOKEN/GITHUB_TOKEN;
-	// fj/curl shapes read FORGEJO_TOKEN — every canonical now resolves to the
-	// comment-scoped token, so the CLIs can do exactly what it allows.
-	for _, alias := range []string{"GH_TOKEN", "GITHUB_TOKEN", "FORGEJO_TOKEN"} {
-		scoped = append(scoped, alias+"="+post)
-	}
-	return scoped
+	return agent.FilterEnv(env, drop...)
 }
 
 func main() {
@@ -829,9 +731,6 @@ func runOneShot() {
 			Shadow:         shadow,
 			State:          wf.Name,
 			ExtraEnv:       extraEnv,
-			ExtraEnvForNode: func(node v1alpha1.NodeSpec, base []string) []string {
-				return botTokenEnvForNode(node, base, deps.Plugins)
-			},
 		}),
 	)
 
@@ -1025,14 +924,13 @@ func (a taskResolverAdapter) Get(ctx context.Context, ref string) (string, error
 
 func builtinPlugins() map[string]string {
 	return map[string]string{
-		"noop":        "/usr/local/lib/harmostes/plugins/noop.sh",
-		"rig-emit":    "/usr/local/lib/harmostes/plugins/rig-emit.sh",
-		"wiki-lint":   "/usr/local/lib/harmostes/plugins/wiki-lint.sh",
-		"git-push":    "/usr/local/lib/harmostes/plugins/git-push.sh",
-		"workspace":   "/usr/local/lib/harmostes/plugins/workspace.sh",
-		"pr-review":   "/usr/local/lib/harmostes/plugins/pr-review.sh",
-		"post-review": "/usr/local/lib/harmostes/plugins/post-review.sh",
-		"fork-sync":   "/usr/local/lib/harmostes/plugins/fork-sync.sh",
+		"noop":      "/usr/local/lib/harmostes/plugins/noop.sh",
+		"rig-emit":  "/usr/local/lib/harmostes/plugins/rig-emit.sh",
+		"wiki-lint": "/usr/local/lib/harmostes/plugins/wiki-lint.sh",
+		"git-push":  "/usr/local/lib/harmostes/plugins/git-push.sh",
+		"workspace": "/usr/local/lib/harmostes/plugins/workspace.sh",
+		"pr-review": "/usr/local/lib/harmostes/plugins/pr-review.sh",
+		"fork-sync": "/usr/local/lib/harmostes/plugins/fork-sync.sh",
 	}
 }
 

@@ -836,3 +836,32 @@ func TestWorkspaceCoverageCarry(t *testing.T) {
 		}
 	})
 }
+
+// pluginEnvScrub + hermeticEnv: restored from the post-review plugin tests
+// (deleted with the script, #749 Phase 3) — workspace.sh's test runs must
+// stay hermetic against ambient credential env.
+var pluginEnvScrub = []string{
+	"HARMOSTES_REVIEW_POST_TOKEN", "HARMOSTES_REVIEW_POST_TOKEN_FJ",
+	"HARMOSTES_GIT_TOKEN", "HARMOSTES_GITHUB_TOKEN",
+	"HARMOSTES_FORGEJO_TOKEN", "HARMOSTES_FORGEJO_BOT_TOKEN",
+	"HARMOSTES_FORGEJO_BOT_HOST",
+	"HARMOSTES_CODEBERG_TOKEN", "LLM_WIKI_CODEBERG_TOKEN",
+	"HARMOSTES_RZC_USERNAME", "HARMOSTES_RZC_PASSWORD",
+	"HARMOSTES_TEST_GITHUB_API_BASE", "HARMOSTES_TEST_FORGEJO_API_BASE",
+	"HARMOSTES_TEST_CODEBERG_API_BASE",
+}
+
+func hermeticEnv(ambient []string, fixtures ...string) []string {
+	skip := map[string]bool{}
+	for _, k := range pluginEnvScrub {
+		skip[k] = true
+	}
+	out := make([]string, 0, len(ambient)+len(fixtures))
+	for _, kv := range ambient {
+		if k, _, ok := strings.Cut(kv, "="); ok && skip[k] {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return append(out, fixtures...)
+}

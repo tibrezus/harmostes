@@ -104,7 +104,6 @@ RUN curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors "https://github.com/
 
 # Built-in plugins shipped in the image (ConfigMap plugins mount under /plugins)
 # ADR-0011: every production plugin is a built-in — workspace/pr-review/
-# post-review (the pr-review pipeline) and fork-sync (the fork-maintenance
 # engine entry point; its payload rides in the chart as ConfigMaps mounted at
 # /workspace). k8s-config carries no plugin scripts.
 COPY plugins/noop/noop.sh      /usr/local/lib/harmostes/plugins/noop.sh
@@ -120,7 +119,6 @@ COPY plugins/workspace/workspace.sh   /usr/local/lib/harmostes/plugins/workspace
 COPY plugins/workspace/pr_context.py  /usr/local/lib/harmostes/plugins/pr_context.py
 COPY plugins/lib/                     /usr/local/lib/harmostes/lib/
 COPY plugins/pr-review/pr-review.sh   /usr/local/lib/harmostes/plugins/pr-review.sh
-COPY plugins/post-review/post-review.sh /usr/local/lib/harmostes/plugins/post-review.sh
 COPY plugins/fork-sync/fork-sync.sh   /usr/local/lib/harmostes/plugins/fork-sync.sh
 RUN chmod +x /usr/local/lib/harmostes/plugins/*.sh
 

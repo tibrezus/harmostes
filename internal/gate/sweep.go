@@ -369,6 +369,53 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 	// mode this deadline exists for is invisible in the durable history.
 	recordCtx := context.WithoutCancel(ctx)
 
+	// convergeConsume (#749 Phase 3): the deploy-era consume moved here.
+	// When a verdict stands at the head, the review label comes off and the
+	// pr-review/verdict commit status is set from the decision + the OPEN
+	// root count (the gate math, worker-native: success ⇔ APPROVE with
+	// every thread resolved or carried; failure otherwise; a failed thread
+	// listing posts NOTHING — a missing context blocks like a failing one
+	// where required, the fail-closed posture). Every step is non-fatal:
+	// the refusal already gates the head, so a transport failure here must
+	// never become a dispatch. Guarded per (repo/pr/sha) — the sweep-local
+	// memo keeps the steady-state skip pass from repeating it each cycle.
+	converged := map[string]bool{}
+	convergeConsume := func(ctx context.Context, api review.API, env *review.Envelope) {
+		if env == nil || env.VerdictDecision == "" || env.Label == "" {
+			return
+		}
+		key := fmt.Sprintf("%s/%d/%s", env.Repo, env.PR, env.HeadSHA)
+		if converged[key] {
+			return
+		}
+		converged[key] = true
+		if err := api.DeleteLabel(ctx, env.Repo, env.PR, env.Label); err != nil {
+			log("review-ready: consume: label delete failed for %s#%d (%v) — verdict stands; the next sweep heals", env.Repo, env.PR, err)
+		} else {
+			log("review-ready: consumed %s#%d at %s — label %q removed (worker-native, #749 Phase 3)", env.Repo, env.PR, env.HeadSHA[:8], env.Label)
+		}
+		threads, err := api.ListReviewThreads(ctx, env.Repo, env.PR)
+		if err != nil {
+			log("review-ready: merge status SKIPPED for %s#%d — thread listing failed (%v); a missing context blocks like a failing one where required", env.Repo, env.PR, err)
+			return
+		}
+		openRoots := 0
+		for _, t := range threads {
+			if !t.IsReply && !t.Resolved {
+				openRoots++
+			}
+		}
+		state, desc := "failure", fmt.Sprintf("reviewed: %s — open threads must be resolved/carried", env.VerdictDecision)
+		if env.VerdictDecision == "APPROVE" && openRoots == 0 {
+			state, desc = "success", "reviewed: APPROVE, all threads closed"
+		}
+		if err := api.PostCommitStatus(ctx, env.Repo, env.HeadSHA, state, "pr-review/verdict", desc); err != nil {
+			log("review-ready: merge status post failed for %s#%d (%v) — verdict stands", env.Repo, env.PR, err)
+			return
+		}
+		log("review-ready: merge status %s at %s for %s#%d (%d open root(s))", state, env.HeadSHA[:8], env.Repo, env.PR, openRoots)
+	}
+
 	// Live status read: the timeline-transition dedupe reads the CURRENT
 	// aggregates, never the fetch-time snapshot (#257).
 	var liveAgg *v1alpha1.ReviewReadyStatus
@@ -1084,6 +1131,9 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 					VerdictURL: res.Envelope.VerdictURL,
 				})
 				log("review-ready: refused %s at %s — verdict standing (#567); memoised so the labeled scan will not re-arm it", cand.pointer, res.Envelope.HeadSHA)
+				// #749 Phase 3: the consume rides the refusal — label off,
+				// merge status set from the standing verdict + open roots.
+				convergeConsume(recordCtx, api, res.Envelope)
 				// #577: the FIRST refusal posts the host-facing notice too —
 				// the verdict itself is easy to miss in a busy conversation,
 				// and every later re-arm is memo-refused silently.

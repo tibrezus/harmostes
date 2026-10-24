@@ -210,7 +210,7 @@ def main():
         ],
         "tools": {
             "/extensions/pillar-todo": "todo",
-            "/extensions/review-post": "review_finding_post,review_findings_list,review_thread_reply,review_thread_resolve,review_verdict_post",
+            "/extensions/review-post": "review_finding_post,review_findings_list,review_thread_reply,review_thread_resolve,review_verdict_post,review_research_publish,review_coverage_publish,review_carry_file",
             "/extensions/rig-query": "rig",
             "/extensions/sol-pi": "obs_recall"
         }

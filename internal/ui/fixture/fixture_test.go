@@ -258,7 +258,7 @@ func TestFixture_TemplateLockstepWithChartValues(t *testing.T) {
 	for _, marker := range []string{
 		"litellm/ali/anthropic/qwen3.8-flash", // the chart's agent model
 		"name: workspace",                     // the chart's prepare plugin
-		"name: post-review",                   // the chart's deploy plugin
+		"name: noop",                          // the chart's deploy plugin (#749 Phase 3: the sweep consumes)
 		"name: wiki",                          // the chart's third scope field
 	} {
 		if !strings.Contains(page, marker) {

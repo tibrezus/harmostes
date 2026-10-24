@@ -70,10 +70,10 @@ func TestExtensionToolsCoversEveryLoadedExtension(t *testing.T) {
 	cases := map[string]string{
 		"/extensions/litellm-provider": "", // provider-only: registers no tool
 		"/extensions/rig-query":        "rig",
-		"/extensions/turn-budget":      "",                                                                                                       // veto-only: blocks over-budget tool_call events, registers none (#484)
-		"/extensions/pillar-todo":      "todo",                                                                                                   // the seeded pillar checklist (#727 follow-up)
-		"/extensions/review-post":      "review_finding_post,review_findings_list,review_thread_reply,review_thread_resolve,review_verdict_post", // progressive posting (#749)
-		"/extensions/sol-pi":           "obs_recall",                                                                                             // observation-pack's recall affordance (#425)
+		"/extensions/turn-budget":      "",                                                                                                                                                                         // veto-only: blocks over-budget tool_call events, registers none (#484)
+		"/extensions/pillar-todo":      "todo",                                                                                                                                                                     // the seeded pillar checklist (#727 follow-up)
+		"/extensions/review-post":      "review_finding_post,review_findings_list,review_thread_reply,review_thread_resolve,review_verdict_post,review_research_publish,review_coverage_publish,review_carry_file", // progressive posting + the converge tools (#749)
+		"/extensions/sol-pi":           "obs_recall",                                                                                                                                                               // observation-pack's recall affordance (#425)
 	}
 	for _, ext := range Extensions {
 		want, known := cases[ext]

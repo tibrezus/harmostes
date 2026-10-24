@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 
 	"context"
@@ -462,70 +461,10 @@ func TestFilterEnvScrubBotToken(t *testing.T) {
 	}
 }
 
-// #480 r4 t7: the source-level scrub must cover the PLUGIN env slice —
-// prepare/gate run tooling inside the untrusted PR clone (workspace.sh →
-// emit-rig → go mod inherits env verbatim), so the bot credential may not
-// ride extraEnv into any node except deploy, whose helper re-injects it.
-func TestBotTokenScrubCoversPluginEnvDeployReinjects(t *testing.T) {
-	t.Setenv("HARMOSTES_FORGEJO_BOT_TOKEN", "bot-secret")
-
-	pluginEnv := agent.FilterEnv(os.Environ(), "HARMOSTES_FORGEJO_BOT_TOKEN")
-	for _, kv := range pluginEnv {
-		if kv == "HARMOSTES_FORGEJO_BOT_TOKEN=bot-secret" {
-			t.Error("bot token leaked into the plugin/gate env slice (prepare/gate run untrusted-PR tooling)")
-		}
-	}
-
-	// the grant follows the RESOLVED EXECUTABLE (r10 t19): name alone is not
-	// script identity — a CR declaring name=post-review with a foreign
-	// ConfigMap resolves elsewhere and gets nothing. Node IDs are equally
-	// irrelevant for both directions (#480 r6 t10).
-	// mirrors BuiltinResolver: the CANONICAL ref resolves to the shipped
-	// FLAT image path (r11 t21 — a path-suffix identity guessed the repo
-	// layout and silently no-opped the grant in production).
-	resolver := worker.PluginResolver(fakeResolver{
-		"post-review":         "/usr/local/lib/harmostes/plugins/post-review.sh",
-		"post-review|cm-evil": "/plugins/cm-evil/post-review.sh",
-		"wiki-lint":           "/usr/local/lib/harmostes/plugins/wiki-lint.sh",
-	})
-	deployNode := v1alpha1.NodeSpec{ID: "whatever-a-cr-names-it", Type: "plugin",
-		Config: json.RawMessage(`{"name":"post-review"}`)}
-	dep := botTokenEnvForNode(deployNode, pluginEnv, resolver)
-	found := false
-	for _, kv := range dep {
-		if kv == "HARMOSTES_FORGEJO_BOT_TOKEN=bot-secret" {
-			found = true
-		}
-	}
-	if !found {
-		t.Error("the post-review node must re-inject the bot credential — post-review is its sole reader")
-	}
-
-	// and the grant must not mutate the shared base slice
-	for _, kv := range pluginEnv {
-		if kv == "HARMOSTES_FORGEJO_BOT_TOKEN=bot-secret" {
-			t.Error("botTokenEnvForNode mutated the base slice")
-		}
-	}
-
-	// a foreign-configMap CR that SPOOFS the post-review name gets nothing
-	spoof := botTokenEnvForNode(v1alpha1.NodeSpec{ID: "deploy", Type: "plugin",
-		Config: json.RawMessage(`{"name":"post-review","configMap":"cm-evil"}`)}, pluginEnv, resolver)
-	for _, kv := range spoof {
-		if kv == "HARMOSTES_FORGEJO_BOT_TOKEN=bot-secret" {
-			t.Error("a name-spoofing node with a foreign ConfigMap must not receive the bot credential (r10 t19)")
-		}
-	}
-
-	// a non-post-review plugin node gets the scrubbed base even if named deploy
-	other := botTokenEnvForNode(v1alpha1.NodeSpec{ID: "deploy", Type: "plugin",
-		Config: json.RawMessage(`{"name":"wiki-lint"}`)}, pluginEnv, resolver)
-	for _, kv := range other {
-		if kv == "HARMOSTES_FORGEJO_BOT_TOKEN=bot-secret" {
-			t.Error("a non-post-review plugin must not receive the bot credential")
-		}
-	}
-}
+// #480 r4 t7 → #749 Phase 3: the bot credential is RETIRED (owner ruling,
+// 2026-10-24 — one credential serves every workflow). The scrub itself
+// (agent.FilterEnv / ChildEnv) stays as defense in depth; the grant and
+// its re-injection died with post-review.sh and the allowlist forwarding.
 
 // fakeResolver resolves name (optionally name|configMap) to a script path —
 // mirroring BuiltinResolver's builtin + configmap legs for the grant tests.
@@ -541,133 +480,55 @@ func (f fakeResolver) Resolve(_ context.Context, ref v1alpha1.PluginRef, _ strin
 	return "", nil, fmt.Errorf("plugin %q not found", ref.Name)
 }
 
-// TestScopePostToken (#680): when the comment-scoped review posting token
-// is armed, the pi spawn env loses EVERY richer forge credential (bot keys
-// AND the owner/admin-class consumer CLI aliases); unarmed deployments keep
-// the historical env byte-for-byte.
-func TestScopePostToken(t *testing.T) {
+// TestDropSessionCredentials (#749 Phase 3): the scoped-token era's
+// re-binding is gone — the fleet credential IS the posting credential and
+// the chart wires the CLI canonicals to it. What the spawn filter still
+// guarantees is the fail-closed walk: every allowlisted name NOT in the
+// explicit safe set is dropped from agent sessions, and NO safe-set name
+// is ever dropped (a credential justified into the set must reach the
+// session, or the tools silently disarm).
+func TestDropSessionCredentials(t *testing.T) {
 	// FULL-POPULATION fixture (r5 P2 — a fixture that names only two
 	// credentials went vacuous for the other five): every allowlisted name
 	// rides base with a RICH sentinel value, so each drop leg can fail.
-	base := []string{"PATH=/usr/bin", "HARMOSTES_REVIEW_POST_TOKEN=scoped"}
+	base := []string{"PATH=/usr/bin"}
 	for _, n := range worker.EnvAllowlistNames() {
-		if n == "HARMOSTES_REVIEW_POST_TOKEN" {
-			continue // set explicitly with the armed value below
-		}
 		base = append(base, n+"=rich-"+n)
 	}
-	t.Setenv("HARMOSTES_REVIEW_POST_TOKEN", "scoped")
-	scoped := scopePostToken(base)
-	joined := strings.Join(scoped, "\n")
-	for _, banned := range []string{"BOT_TOKEN", "BOT_HOST"} {
-		if strings.Contains(joined, banned) {
-			t.Fatalf("armed scope must drop %s: %v", banned, scoped)
-		}
-	}
-	if !strings.Contains(joined, "HARMOSTES_REVIEW_POST_TOKEN=scoped") || !strings.Contains(joined, "PATH=") {
-		t.Fatalf("scoped token and neutral env must survive: %v", scoped)
-	}
-	// r3 P3: the closure is FAIL-CLOSED and NON-CIRCULAR — walk the REAL
-	// allowlist; every name either is in the explicit safe set (justified,
-	// non-credential) or must be DROPPED when armed. The safe set is pinned
-	// independently here: no credential-shaped name may be safe.
+	dropped := dropSessionCredentials(base)
+	joined := strings.Join(dropped, "\n")
+	// r3 P3: the walk is FAIL-CLOSED and NON-CIRCULAR — every allowlisted
+	// name is either safe (justified, kept) or DROPPED. The safe set is
+	// pinned independently: only credential-shaped names with a WRITTEN
+	// justification may be safe (see the map's comments — the two posting
+	// credentials and the LLM key; the fleet token's justification is the
+	// owner ruling + the extension's no-verdict-event path).
 	for _, n := range worker.EnvAllowlistNames() {
 		safe := worker.SpawnSafeEnv(n)
-		if safe && (strings.Contains(n, "TOKEN") || strings.Contains(n, "PASSWORD") || strings.Contains(n, "USERNAME") || n == "HARMOSTES_FORGEJO_BOT_HOST") {
-			// Justified credential-shaped entries (r3 P3 discipline): the two
-			// REVIEW_POST halves (comment-scoped by the forge) and
-			// LITELLM_API_KEY (model access ≠ forge access). HARMOSTES_FORGEJO_TOKEN
-			// joins them under #749 by OWNER RULING — the fleet-wide forge
-			// credential is deliberately broad, so the #680 guarantee moved
-			// fully INTO CODE: review-post's extension has no verdict-event
-			// path on any host (pinned by extensions/review-post contract
-			// tests: every review-event POST carries event=COMMENT), and
-			// binding verdicts are emitted only by the gate sweep under the
-			// bot identity. If review-post's contract tests ever fail to pin
-			// that, this entry must be reverted first.
-			if n != "HARMOSTES_REVIEW_POST_TOKEN" && n != "HARMOSTES_REVIEW_POST_TOKEN_FJ" && n != "LITELLM_API_KEY" && n != "HARMOSTES_FORGEJO_TOKEN" {
+		in := strings.Contains(joined, n+"=")
+		if safe && !in {
+			t.Fatalf("safe-set name %s must reach the session (a justified credential that vanishes silently disarms the tools)", n)
+		}
+		if !safe && in && n != "PATH" {
+			t.Fatalf("non-safe %s must be dropped from agent sessions (fail-closed default)", n)
+		}
+		if safe && (strings.Contains(n, "TOKEN") || strings.Contains(n, "PASSWORD") || strings.Contains(n, "USERNAME")) {
+			// Justified credential-shaped entries: the two posting
+			// credentials (github half; the fleet token) and LITELLM_API_KEY.
+			// The fleet token's breadth is safe because review-post's
+			// extension has no verdict-event path on any host (#680 by
+			// code, pinned by the extension's contract tests) and binding
+			// verdicts are emitted only by the gate sweep. If those tests
+			// ever fail to pin that, revert this entry first.
+			if n != "HARMOSTES_REVIEW_POST_TOKEN" && n != "HARMOSTES_FORGEJO_TOKEN" && n != "LITELLM_API_KEY" && n != "FORGEJO_TOKEN" && n != "GH_TOKEN" {
 				t.Fatalf("safe set must not contain credential-shaped %s — justify or remove", n)
 			}
 		}
-		if !safe {
-			// may appear ONLY as a re-bind to the scoped value, never with
-			// its rich value (the drop is falsifiable per name — every
-			// non-safe name IS in the fixture with a rich sentinel).
-			for _, kv := range scoped {
-				k, v, _ := strings.Cut(kv, "=")
-				if k == n && v != "scoped" {
-					t.Fatalf("armed scope must drop non-safe %s's rich value (got %q): %v", n, v, scoped)
-				}
-			}
+	}
+	// the retired credentials never reach any session (not allowlisted)
+	for _, retired := range []string{"HARMOSTES_FORGEJO_BOT_TOKEN", "HARMOSTES_FORGEJO_BOT_HOST", "HARMOSTES_REVIEW_POST_TOKEN_FJ"} {
+		if strings.Contains(joined, retired+"=") {
+			t.Fatalf("retired credential %s must not reach agent sessions", retired)
 		}
-	}
-	llm := append(scoped, "LITELLM_API_KEY=llm")
-	if !strings.Contains(strings.Join(scopePostToken(llm), "\n"), "LITELLM_API_KEY=llm") {
-		t.Fatal("armed scope must keep the LLM API key (the session needs the model)")
-	}
-	// r4 P1: the CLI-canonical names must RESOLVE — re-bound to the scoped
-	// token, never absent (the skill's host guide drives gh/fj/curl).
-	for _, alias := range []string{"GH_TOKEN", "GITHUB_TOKEN", "FORGEJO_TOKEN"} {
-		if !strings.Contains(joined, alias+"=scoped") {
-			t.Fatalf("armed scope must re-bind %s to the post token: %v", alias, scoped)
-		}
-	}
-
-	t.Setenv("HARMOSTES_REVIEW_POST_TOKEN", "") // unarmed
-	unarmed := scopePostToken([]string{"GH_TOKEN=owner", "PATH=/x"})
-	if len(unarmed) != 2 || unarmed[0] != "GH_TOKEN=owner" {
-		t.Fatalf("unarmed scope must be identity: %v", unarmed)
-	}
-}
-
-// TestScopePostTokenHostKeyed pins #687: one value cannot serve both wired
-// forges. github.com sessions take the github token, fork sessions the FJ
-// token; a host with no configured token stays unarmed (never wrong-armed);
-// the session sees exactly ONE posting credential under the canonical name —
-// both raw token names are dropped.
-func TestScopePostTokenHostKeyed(t *testing.T) {
-	base := func(repo string) []string {
-		e := []string{"PATH=/usr/bin"}
-		if repo != "" {
-			e = append(e, "HARMOSTES_TRIGGER_REPO="+repo)
-		}
-		return e
-	}
-	t.Setenv("HARMOSTES_REVIEW_POST_TOKEN", "gh-token")
-	t.Setenv("HARMOSTES_REVIEW_POST_TOKEN_FJ", "fj-token")
-
-	scoped := scopePostToken(base("github.com/tibrezus/harmostes"))
-	joined := strings.Join(scoped, "\n")
-	for _, want := range []string{"HARMOSTES_REVIEW_POST_TOKEN=gh-token", "GH_TOKEN=gh-token", "FORGEJO_TOKEN=gh-token"} {
-		if !strings.Contains(joined, want) {
-			t.Fatalf("github session must bind the github token (%s missing): %v", want, scoped)
-		}
-	}
-	if strings.Contains(joined, "fj-token") || strings.Contains(joined, "REVIEW_POST_TOKEN_FJ") {
-		t.Fatalf("the fork token must not reach a github session: %v", scoped)
-	}
-
-	scoped = scopePostToken(base("git.rezus.cloud/tibrez/rhesadox"))
-	joined = strings.Join(scoped, "\n")
-	for _, want := range []string{"HARMOSTES_REVIEW_POST_TOKEN=fj-token", "FORGEJO_TOKEN=fj-token", "GH_TOKEN=fj-token"} {
-		if !strings.Contains(joined, want) {
-			t.Fatalf("fork session must bind the fork token (%s missing): %v", want, scoped)
-		}
-	}
-	if strings.Contains(joined, "gh-token") {
-		t.Fatalf("the github token must not reach a fork session (the 401 storm): %v", scoped)
-	}
-
-	// a host with no configured token: unarmed for that host, never armed wrong
-	t.Setenv("HARMOSTES_REVIEW_POST_TOKEN_FJ", "")
-	scoped = scopePostToken(base("git.rezus.cloud/tibrez/rhesadox"))
-	joined = strings.Join(scoped, "\n")
-	if strings.Contains(joined, "gh-token") || strings.Contains(joined, "HARMOSTES_REVIEW_POST_TOKEN=") {
-		t.Fatalf("a fork session without a fork token must carry NO posting credential: %v", scoped)
-	}
-	// absent repo env defaults to the github side (the historically armed host)
-	scoped = scopePostToken(base(""))
-	if !strings.Contains(strings.Join(scoped, "\n"), "HARMOSTES_REVIEW_POST_TOKEN=gh-token") {
-		t.Fatalf("absent repo defaults to github: %v", scoped)
 	}
 }

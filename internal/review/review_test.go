@@ -15,18 +15,21 @@ import (
 
 // fakeAPI stubs the gate's API surface for decision-logic tests.
 type fakeAPI struct {
-	pr           *PullRequest
-	prErr        error
-	labeledPulls []PullRequest
-	required     []string
-	reqErr       error
-	states       map[string]string
-	ctxErr       error
-	comments     []fakeComment
-	commentsErr  error
-	truncated    bool
-	posted       []postedComment
-	commentErr   error
+	deletedLabels  []bool
+	postedStatuses []bool
+	threads        []ReviewThread
+	pr             *PullRequest
+	prErr          error
+	labeledPulls   []PullRequest
+	required       []string
+	reqErr         error
+	states         map[string]string
+	ctxErr         error
+	comments       []fakeComment
+	commentsErr    error
+	truncated      bool
+	posted         []postedComment
+	commentErr     error
 }
 
 // fakeComment pairs an IssueComment with its host-side updated_at (the
@@ -34,6 +37,23 @@ type fakeAPI struct {
 type fakeComment struct {
 	IssueComment
 	updatedAt time.Time
+}
+
+// Phase-3 verbs: consume, merge status, thread gate. Fakes default to
+// no-ops with recorded calls; thread-capable fakes override ListReviewThreads.
+func (f *fakeAPI) DeleteLabel(_ context.Context, _ string, _ int, _ string) error {
+	f.deletedLabels = append(f.deletedLabels, true)
+	return nil
+}
+func (f *fakeAPI) PostCommitStatus(_ context.Context, _, _, _, _, _ string) error {
+	f.postedStatuses = append(f.postedStatuses, true)
+	return nil
+}
+func (f *fakeAPI) ListReviewThreads(_ context.Context, _ string, _ int) ([]ReviewThread, error) {
+	if f.threads != nil {
+		return f.threads, nil
+	}
+	return nil, nil
 }
 
 func (f *fakeAPI) GetPullRequest(ctx context.Context, repo string, n int) (*PullRequest, error) {

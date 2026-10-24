@@ -34,6 +34,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -64,6 +65,10 @@ type Envelope struct {
 	// (#577) — set only on verdict-standing refusals so the host-facing
 	// one-liner deep-links the author to the review they missed.
 	VerdictURL string `json:"verdictUrl,omitempty"`
+	// VerdictDecision: the standing verdict's decision (APPROVE /
+	// REQUEST_CHANGES / COMMENT) — #749 Phase 3: the converge-side consume
+	// sets pr-review/verdict from it without re-reading the conversation.
+	VerdictDecision string `json:"verdictDecision,omitempty"`
 }
 
 // Evaluation is one gate decision plus its reason.
@@ -163,6 +168,33 @@ type API interface {
 	// refusal of a head posts a one-line pointer to the missed verdict. The
 	// sweep runs worker-side (token-bearing); the controller never posts.
 	PostComment(ctx context.Context, repo string, number int, body string) error
+	// DeleteLabel removes one label (#749 Phase 3: the CONSUME moved here
+	// from post-review.sh — when the sweep records a standing verdict the
+	// label comes off worker-side; verdict-present + label-absent is then
+	// the sweep's doing, not a bash script's).
+	DeleteLabel(ctx context.Context, repo string, number int, label string) error
+	// PostCommitStatus sets a commit status (the pr-review/verdict merge
+	// currency, #749 Phase 3: ported from post-review.sh — success ⇔
+	// final APPROVE with every thread resolved/carried; failure on
+	// REQUEST_CHANGES; the caller decides and owns the fail-closed cases).
+	PostCommitStatus(ctx context.Context, repo, sha, state, statusContext, description string) error
+	// ListReviewThreads lists the PR's review threads (roots + replies)
+	// with host-native resolution state (#749 Phase 3: the gate math moved
+	// worker-side — the sweep decides pr-review/verdict from OPEN roots,
+	// not from a script's word). Forgejo: reviews route → per-review
+	// comments, resolver object = resolved (the flat route 404s); GitHub:
+	// flat comments + GraphQL isResolved mapped from databaseId.
+	ListReviewThreads(ctx context.Context, repo string, number int) ([]ReviewThread, error)
+}
+
+// ReviewThread is one review comment (root or reply) with its host-native
+// resolution state — the converge-side thread gate's primitive.
+type ReviewThread struct {
+	ID       int64
+	Body     string
+	Path     string
+	Resolved bool
+	IsReply  bool
 }
 
 // PullRequest is the normalized PR view the gate needs.
@@ -317,6 +349,12 @@ var errNotFound = fmt.Errorf("review: not found")
 // notice (#577): the sweep runs worker-side where the host tokens live, so
 // the one-line pointer to a missed verdict posts from here.
 func (a *RESTAPI) post(ctx context.Context, host Host, path string, payload any) error {
+	return a.postAuth(ctx, host, path, payload, nil, "token")
+}
+
+// postAuth is post with an explicit auth scheme override (GitHub GraphQL
+// wants "bearer") and an optional response decoder.
+func (a *RESTAPI) postAuth(ctx context.Context, host Host, path string, payload any, out any, authScheme string) error {
 	if a.Client == nil {
 		a.Client = http.DefaultClient
 	}
@@ -338,7 +376,7 @@ func (a *RESTAPI) post(ctx context.Context, host Host, path string, payload any)
 		}
 	}
 	if token != "" {
-		req.Header.Set("Authorization", "token "+token)
+		req.Header.Set("Authorization", authScheme+" "+token)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := a.Client.Do(req)
@@ -350,17 +388,44 @@ func (a *RESTAPI) post(ctx context.Context, host Host, path string, payload any)
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		return &httpError{Status: resp.StatusCode, Body: string(body)}
 	}
+	if out != nil {
+		return json.NewDecoder(resp.Body).Decode(out)
+	}
 	return nil
 }
 
-// PostComment writes one conversation comment (#577). Both host kinds
-// expose issue comments at the same path shape with the same {body} payload.
-func (a *RESTAPI) PostComment(ctx context.Context, repo string, number int, body string) error {
-	host, err := ResolveHost(repo)
+// delete issues one DELETE (the label consume); 404 maps to errNotFound
+// (DeleteLabel treats it as already-consumed).
+func (a *RESTAPI) delete(ctx context.Context, host Host, path string) error {
+	if a.Client == nil {
+		a.Client = http.DefaultClient
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, a.baseURL(host)+path, nil)
 	if err != nil {
 		return err
 	}
-	return a.post(ctx, host, fmt.Sprintf("/repos/%s/issues/%d/comments", host.RepoPath, number), map[string]string{"body": body})
+	token := ""
+	if a.TokenLookup != nil {
+		for _, env := range host.TokenEnvNames() {
+			if v := a.TokenLookup(env); v != "" {
+				token = v
+				break
+			}
+		}
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "token "+token)
+	}
+	resp, err := a.Client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return &httpError{Status: resp.StatusCode, Body: string(body)}
+	}
+	return nil
 }
 
 // httpError carries a non-2xx status from get().
@@ -379,7 +444,185 @@ func isForbidden(err error) bool {
 	return false
 }
 
-// GetPullRequest fetches the normalized PR view (labels, head, base, state).
+// PostComment writes one conversation comment (#577). Both host kinds
+// expose issue comments at the same path shape with the same {body} payload.
+func (a *RESTAPI) PostComment(ctx context.Context, repo string, number int, body string) error {
+	host, err := ResolveHost(repo)
+	if err != nil {
+		return err
+	}
+	return a.post(ctx, host, fmt.Sprintf("/repos/%s/issues/%d/comments", host.RepoPath, number), map[string]string{"body": body})
+}
+
+// DeleteLabel removes one label (the consume, #749 Phase 3). Same path
+// shape on both hosts; 404 (label already gone) is success — idempotent
+// consume.
+func (a *RESTAPI) DeleteLabel(ctx context.Context, repo string, number int, label string) error {
+	host, err := ResolveHost(repo)
+	if err != nil {
+		return err
+	}
+	err = a.delete(ctx, host, fmt.Sprintf("/repos/%s/issues/%d/labels/%s", host.RepoPath, number, url.PathEscape(label)))
+	if he, ok := err.(*httpError); ok && he.Status == http.StatusNotFound {
+		return nil
+	}
+	return err
+}
+
+// PostCommitStatus sets a commit status (both hosts share the route and
+// payload; the context name — pr-review/verdict — is the caller's).
+func (a *RESTAPI) PostCommitStatus(ctx context.Context, repo, sha, state, statusContext, description string) error {
+	host, err := ResolveHost(repo)
+	if err != nil {
+		return err
+	}
+	return a.post(ctx, host, fmt.Sprintf("/repos/%s/statuses/%s", host.RepoPath, sha), map[string]string{
+		"state": state, "context": statusContext, "description": description,
+	})
+}
+
+// ListReviewThreads lists the PR's review threads with host-native
+// resolution state (#749 Phase 3 — the converge-side thread gate). The
+// dialect decisions are the live-burned ones from the bash era: Forgejo
+// serves review comments ONLY via the reviews route (the flat route 404s,
+// verified live on git.rezus.cloud v16.0.3-rezus.1) and serializes a
+// resolve as the `resolver` object (absent = open); GitHub serves the
+// flat route and keeps resolution GraphQL-side, mapped from databaseId.
+func (a *RESTAPI) ListReviewThreads(ctx context.Context, repo string, number int) ([]ReviewThread, error) {
+	host, err := ResolveHost(repo)
+	if err != nil {
+		return nil, err
+	}
+	switch host.Kind {
+	case HostForgejo:
+		var reviews []struct {
+			ID int64 `json:"id"`
+		}
+		if err := a.get(ctx, host, fmt.Sprintf("/repos/%s/pulls/%d/reviews", host.RepoPath, number), "application/json", &reviews); err != nil {
+			return nil, err
+		}
+		var out []ReviewThread
+		for _, r := range reviews {
+			var cs []struct {
+				ID        int64          `json:"id"`
+				Body      string         `json:"body"`
+				Path      string         `json:"path"`
+				Resolver  map[string]any `json:"resolver"`
+				InReplyTo any            `json:"in_reply_to"`
+			}
+			if err := a.get(ctx, host, fmt.Sprintf("/repos/%s/pulls/%d/reviews/%d/comments", host.RepoPath, number, r.ID), "application/json", &cs); err != nil {
+				return nil, err
+			}
+			for _, c := range cs {
+				out = append(out, ReviewThread{
+					ID: c.ID, Body: c.Body, Path: c.Path,
+					Resolved: c.Resolver != nil,
+					IsReply:  c.InReplyTo != nil,
+				})
+			}
+		}
+		return out, nil
+	default: // GitHub: flat comments + GraphQL isResolved mapped from databaseId
+		var cs []struct {
+			ID        int64  `json:"id"`
+			Body      string `json:"body"`
+			Path      string `json:"path"`
+			InReplyTo int64  `json:"in_reply_to"`
+		}
+		if err := a.get(ctx, host, fmt.Sprintf("/repos/%s/pulls/%d/comments?per_page=100", host.RepoPath, number), "application/json", &cs); err != nil {
+			return nil, err
+		}
+		resolved := map[int64]bool{}
+		owner, name := host.RepoPath, ""
+		if i := strings.Index(host.RepoPath, "/"); i >= 0 {
+			owner, name = host.RepoPath[:i], host.RepoPath[i+1:]
+		}
+		after := ""
+		for range 10 { // pageInfo-paginated: >100 threads truncate silently otherwise
+			q := fmt.Sprintf(`{ repository(owner: %q, name: %q) { pullRequest(number: %d) { reviewThreads(first: 100%s) { pageInfo { hasNextPage endCursor } nodes { isResolved comments(first: 100) { nodes { databaseId } } } } } } }`,
+				owner, name, number, graphqlAfter(after))
+			page, err := a.graphqlThreadsPage(ctx, host, q)
+			if err != nil {
+				return nil, err
+			}
+			for id := range page.resolved {
+				resolved[id] = true
+			}
+			if !page.hasNext {
+				break
+			}
+			after = page.endCursor
+		}
+		out := make([]ReviewThread, 0, len(cs))
+		for _, c := range cs {
+			out = append(out, ReviewThread{
+				ID: c.ID, Body: c.Body, Path: c.Path,
+				Resolved: resolved[c.ID],
+				IsReply:  c.InReplyTo != 0,
+			})
+		}
+		return out, nil
+	}
+}
+
+// graphqlAfter renders the GraphQL `after` argument (empty when none).
+func graphqlAfter(after string) string {
+	if after == "" {
+		return ""
+	}
+	return fmt.Sprintf(", after: %q", after)
+}
+
+type graphqlThreadsResult struct {
+	hasNext   bool
+	endCursor string
+	resolved  map[int64]bool
+}
+
+// graphqlThreadsPage runs one reviewThreads page query and flattens the
+// resolved databaseIds (fail-closed: a null payload yields a zero page —
+// the caller then stops paginating, and unresolved stays unresolved).
+func (a *RESTAPI) graphqlThreadsPage(ctx context.Context, host Host, query string) (graphqlThreadsResult, error) {
+	res := graphqlThreadsResult{resolved: map[int64]bool{}}
+	var payload struct {
+		Data struct {
+			Repository struct {
+				PullRequest struct {
+					ReviewThreads struct {
+						PageInfo struct {
+							HasNextPage bool   `json:"hasNextPage"`
+							EndCursor   string `json:"endCursor"`
+						} `json:"pageInfo"`
+						Nodes []struct {
+							IsResolved bool `json:"isResolved"`
+							Comments   struct {
+								Nodes []struct {
+									DatabaseID int64 `json:"databaseId"`
+								} `json:"nodes"`
+							} `json:"comments"`
+						} `json:"nodes"`
+					} `json:"reviewThreads"`
+				} `json:"pullRequest"`
+			} `json:"repository"`
+		} `json:"data"`
+	}
+	if err := a.postAuth(ctx, host, "/graphql", map[string]string{"query": query}, &payload.Data, "bearer"); err != nil {
+		return res, err
+	}
+	rt := payload.Data.Repository.PullRequest.ReviewThreads
+	res.hasNext = rt.PageInfo.HasNextPage
+	res.endCursor = rt.PageInfo.EndCursor
+	for _, n := range rt.Nodes {
+		if !n.IsResolved {
+			continue
+		}
+		for _, c := range n.Comments.Nodes {
+			res.resolved[c.DatabaseID] = true
+		}
+	}
+	return res, nil
+}
+
 func (a *RESTAPI) GetPullRequest(ctx context.Context, repo string, number int) (*PullRequest, error) {
 	host, err := ResolveHost(repo)
 	if err != nil {
@@ -1080,8 +1323,9 @@ func Evaluate(ctx context.Context, api API, p Params) Result {
 		// The refusal carries its head + the verdict's anchor (#577: the
 		// host-facing one-liner deep-links the author to the review they
 		// missed) so the caller can memoise it; the other envelope fields
-		// stay empty — nothing was dispatched.
-		ev.Envelope = &Envelope{Repo: p.Repo, PR: p.PR, HeadSHA: pr.HeadSHA, Label: p.Label, VerdictURL: src.HTMLURL}
+		// stay empty — nothing was dispatched. VerdictDecision feeds the
+		// converge-side consume (#749 Phase 3).
+		ev.Envelope = &Envelope{Repo: p.Repo, PR: p.PR, HeadSHA: pr.HeadSHA, Label: p.Label, VerdictURL: src.HTMLURL, VerdictDecision: verdict}
 		return withPresence(ev, pr.HeadSHA, armedAt)
 	}
 

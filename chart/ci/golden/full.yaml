@@ -4787,9 +4787,10 @@ data:
       no longer exist is expired: do not propagate it. When your round
       established durable orientation facts a future round would
       re-derive at cost, write them — terse markdown, no secrets — to
-      /workspace/research-out.md; the pipeline publishes it to the
-      shared store with provenance. The store is shared across this
-      repo's workflows: write nothing PR-private into it.
+      /workspace/research-out.md, then call `review_research_publish`
+      once at round end: it stamps provenance and files the note in the
+      shared store atomically. The store is shared across this repo's
+      workflows: write nothing PR-private into it.
     
     ## Pillar todo (#727 follow-up)
     
@@ -4871,10 +4872,8 @@ data:
     ## Coverage — the round's closing statement
     
     When the workspace carried a ledger (pr-context.json has a
-    `coverage` block), you MUST close review.json with the coverage
-    block — the gate refuses an undeclared round: a round that ran but
-    declared nothing would advance nothing, and the ledger's round
-    count and open-findings count would go stale.
+    `coverage` block), you MUST call `review_coverage_publish` at round end
+    with the same covered/frontier arrays — the gate refuses an undeclared round (one that ran but declared nothing advances nothing, and the ledger's round count and open-findings count go stale). An APPROVE with a declared frontier is refused by the tool: fix the verdict first.
     
         "coverage": {
           "covered":  [{"path": "...", "note": "what full review meant"}],
@@ -4917,16 +4916,17 @@ data:
     round (**TODO** prefix; disposition fix-in-pr default): fixed in this
     PR, reply+resolve — they block the verdict like any thread. Only a
     design/architecture-scale item that outlives this diff goes out as
-    disposition architecture-carry (**Architecture-carry** prefix): the
-    deploy dedups against the tracker (open AND closed) and replies the
-    reference, resolves the thread — carried items never block. Minting
-    an issue is the EXCEPTION, not the default (#71): only a
-    severe/structural finding (security, data loss, outage, corruption —
-    or an explicit `mint:` marker in the body) with NO existing issue
-    covering it mints, and the minted issue carries NO milestone (#712).
-    Everything else resolves as a review-record carry: reply + resolve,
-    no issue. A reply alone never closes a thread: resolve is the
-    close-out.
+    disposition architecture-carry (**Architecture-carry** prefix):
+    `review_carry_file` dedups against the tracker (open AND closed),
+    replies the reference and resolves the thread — carried items never
+    block. Minting an issue is the EXCEPTION, not the default (#71):
+    only a severe/structural finding (security, data loss, outage,
+    corruption — or an explicit `mint:` marker in the body) with NO
+    existing issue covering it mints; the minted issue joins the
+    "Architecture & Design improvements" milestone when the repo has
+    one (#717), and never guesses a milestone (#712). Everything else
+    resolves as a review-record carry: reply + resolve, no issue.
+    A reply alone never closes a thread: resolve is the close-out.
     
     Then verify it parses:
     python3 -c "import json; r=json.load(open('/workspace/review.json')); print('OK', r['decision'])"
@@ -5680,17 +5680,6 @@ spec:
                   name: harmostes-review-post-token
                   key: token
                   optional: true
-            # The fork-forge half (#687): a github.com PAT re-bound as
-            # FORGEJO_TOKEN 401s every call in a fork session — the session
-            # picks by its PR host (scopePostToken). Comment-scoped on the
-            # fork (write:issue — verified live: comment 201, merge 403).
-            # OPTIONAL: absent = fork sessions stay unarmed.
-            - name: HARMOSTES_REVIEW_POST_TOKEN_FJ
-              valueFrom:
-                secretKeyRef:
-                  name: harmostes-review-post-token-forgejo
-                  key: token
-                  optional: true
             # Served-skills single source (#441): passed to the dispatcher so
             # per-Attempt Jobs' sync-skills init containers clone the SAME
             # repo the pool's own init container does. Empty = the Go default
@@ -5721,23 +5710,6 @@ spec:
                 secretKeyRef:
                   name: harmostes-forgejo-token
                   key: token
-            # harmostes-bot review identity (#480): native review objects post
-            # as the whitelisted bot — the primary token is the PR author's,
-            # and the forge 422s self-reviews. Optional: installs without the
-            # bot secret keep working (post-review falls back to the primary
-            # token and speaks the host's rejection in the artifact).
-            - name: HARMOSTES_FORGEJO_BOT_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: harmostes-forgejo-bot-token
-                  key: token
-                  optional: true
-            # The exact forge origin the bot credential is minted for (#480
-            # r2 t3): the deploy plugin overrides its auth only when the
-            # pr-context host matches this exactly — never on dialect alone
-            # (IS_FJ is "not github.com", true for any untrusted host).
-            - name: HARMOSTES_FORGEJO_BOT_HOST
-              value: "git.rezus.cloud"
             - name: LITELLM_URL
               valueFrom:
                 secretKeyRef:
@@ -6124,9 +6096,8 @@ spec:
     - grep
   deploy:
     plugin:
-      name: post-review
-      timeout: 10m
-  description: PR review (fetch PR → agent → pr-review → post review)
+      name: noop
+  description: PR review (fetch PR → agent → pr-review → consumed by the sweep)
   prepare:
     plugin:
       name: workspace

@@ -1,7 +1,9 @@
 # harmostes release pipeline — GitVersion + GoReleaser + OCI Helm chart.
 #
-# Pattern: push to main → GitVersion computes semver from conventional commits →
-# creates tag → GoReleaser builds 4 Go binaries, 3 Docker images, archives +
+# Pattern: push to main → harmostes-version computes the version by
+# deterministic git arithmetic (#755: one patch per merged PR — subjects
+# ending "(#N)"; direct pushes only increment the -N suffix) → creates tag →
+# GoReleaser builds 4 Go binaries, 3 Docker images, archives +
 # SBOM + cosign-signed checksums → publishes OCI Helm chart → GitHub Release.
 #
 # The OCI chart is consumed by Flux's HelmRepository(type:oci) in k8s-config,
@@ -46,40 +48,36 @@ jobs:
     # (~3 and ~10 min observed, 2026-08-26).
     timeout-minutes: 10
     outputs:
-      semVer: ${{ steps.gitversion.outputs.semVer }}
-      sha: ${{ steps.gitversion.outputs.sha }}
+      semVer: ${{ steps.version.outputs.semVer }}
+      sha: ${{ steps.version.outputs.sha }}
       tagExists: ${{ steps.check_tag.outputs.exists }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
-      - name: Setup .NET
-        run: |
-          curl -sSL https://dot.net/v1/dotnet-install.sh | bash /dev/stdin --channel 9.0 --install-dir "$HOME/.dotnet"
-          echo "$HOME/.dotnet" >> "$GITHUB_PATH"
-
-      - name: Install GitVersion
-        uses: gittools/actions/gitversion/setup@v4.5.0
+      - uses: actions/setup-go@v7
         with:
-          versionSpec: '6.7.x'
+          go-version-file: go.mod
+          cache: false
 
+      # #755: GitVersion is out — its CD mode froze the release base forever
+      # (1.2.0-335: 335 releases, the base never moved, because its own
+      # prerelease-shaped tags can never advance the version source). The
+      # versioner is deterministic git-tag/log arithmetic, unit-tested in
+      # internal/versioner, and needs no .NET runtime (~90s faster too).
       - name: Determine Version
-        id: gitversion
-        uses: gittools/actions/gitversion/execute@v4.5.0
-        with:
-          configFilePath: .github/GitVersion.yml
-          disableShallowCloneCheck: true
-
-      - name: Display Version
+        id: version
         run: |
-          echo "SemVer: ${{ steps.gitversion.outputs.semVer }}"
-          echo "MajorMinorPatch: ${{ steps.gitversion.outputs.majorMinorPatch }}"
+          SEMVER="$(go run ./cmd/harmostes-version)"
+          echo "semVer=$SEMVER" >> "$GITHUB_OUTPUT"
+          echo "sha=$(go run ./cmd/harmostes-version -sha)" >> "$GITHUB_OUTPUT"
+          echo "SemVer: $SEMVER"
 
       - name: Check if tag exists
         id: check_tag
         run: |
-          TAG="v${{ steps.gitversion.outputs.semVer }}"
+          TAG="v${{ steps.version.outputs.semVer }}"
           if git tag -l "$TAG" | grep -q .; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
             echo "Tag $TAG already exists"
@@ -93,8 +91,8 @@ jobs:
         uses: actions/github-script@v9
         with:
           script: |
-            const tag = `v${{ steps.gitversion.outputs.semVer }}`;
-            const sha = '${{ steps.gitversion.outputs.sha }}';
+            const tag = `v${{ steps.version.outputs.semVer }}`;
+            const sha = '${{ steps.version.outputs.sha }}';
             console.log(`Creating tag ${tag} at ${sha}`);
             await github.rest.git.createRef({
               owner: context.repo.owner,
@@ -187,31 +185,17 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Setup .NET
-        run: |
-          curl -sSL https://dot.net/v1/dotnet-install.sh | bash /dev/stdin --channel 9.0 --install-dir "$HOME/.dotnet"
-          echo "$HOME/.dotnet" >> "$GITHUB_PATH"
-
-      - name: Install GitVersion
-        uses: gittools/actions/gitversion/setup@v4.5.0
-        with:
-          versionSpec: '6.7.x'
-
-      - name: Determine Version
-        id: gitversion
-        uses: gittools/actions/gitversion/execute@v4.5.0
-        with:
-          configFilePath: .github/GitVersion.yml
-          disableShallowCloneCheck: true
-
-      - name: Display Version
-        run: |
-          echo "SemVer: ${{ steps.gitversion.outputs.semVer }}"
-
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: false
+
+      - name: Determine Version
+        id: version
+        run: |
+          SEMVER="$(go run ./cmd/harmostes-version)"
+          echo "semVer=$SEMVER" >> "$GITHUB_OUTPUT"
+          echo "SemVer: $SEMVER"
 
       - name: Log in to GHCR
         uses: docker/login-action@v4
@@ -244,7 +228,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HARMOSTES_GITHUB_TOKEN: ${{ secrets.HARMOSTES_GITHUB_TOKEN }}
-          GORELEASER_CURRENT_TAG: v${{ steps.gitversion.outputs.semVer }}
+          GORELEASER_CURRENT_TAG: v${{ steps.version.outputs.semVer }}
 
       - name: Set up Helm
         uses: azure/setup-helm@v5
@@ -254,6 +238,6 @@ jobs:
 
       - name: Publish OCI Helm chart (snapshot)
         env:
-          CHART_VERSION: ${{ steps.gitversion.outputs.semVer }}
+          CHART_VERSION: ${{ steps.version.outputs.semVer }}
           HARMOSTES_GITHUB_TOKEN: ${{ secrets.HARMOSTES_GITHUB_TOKEN }}
         run: bash .github/scripts/publish-chart.sh

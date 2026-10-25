@@ -24,6 +24,16 @@
 // reported at startup (unwiredChains, below). All ids live in the proxy
 // key's scope.
 export const DEFAULT_FALLBACKS: Record<string, string[]> = {
+  // The fleet's pinned review primary (owner directive 2026-10-25) is the
+  // ANTHROPIC-route variant — the #363 key below is a DIFFERENT proxy group
+  // (the bare alias), and a chain keyed for one id does not serve the other.
+  // The 2026-10-25 outage: every review round died at turn 1 because the
+  // live model id had NO wired chain and the upstream hiccuped. Net =
+  // glm-5.3-flash (verified live 2026-10-25: healthy at 23k-token contexts,
+  // 2.9s) — ali flash is the Token Plan quota-dead group until 2026-10-31
+  // (429 Throttling.AllocationQuota, verified), so it must not be the net
+  // of a production chain until that reset.
+  "mtplx/anthropic/qwen38-27b-optimized-speed-fp16": ["zai/anthropic/glm-5.3-flash"],
   "mtplx/qwen38-27b-optimized-speed-fp16": ["ali/anthropic/qwen3.8-flash"],
   "ali/anthropic/qwen3.8-flash": ["zai/anthropic/glm-5.3-flash"],
   // Night-window primary (owner directive): deepseek-v4.1-flash 16:00-02:00

@@ -98,6 +98,20 @@ worker:
   # tick of the last context landing instead of on the next cron sweep.
   # "0" = off (cron-only backstop).
   gateFastPoll: "30s"
+  # The GENERIC agent model (owner directive, 2026-10-25): ONE place to
+  # set the model for EVERY workflow — the worker resolves
+  # workflow-spec model (the per-workflow override) → this value → the
+  # built-in agent default. Empty = no generic default (spec models and
+  # the built-in default only). Rendered as HARMOSTES_AGENT_MODEL on the
+  # pool pod.
+  agentModel: ""
+  # LITELLM_FALLBACKS override (JSON, replaces the baked default chain —
+  # extensions/litellm-provider/fallbacks.ts): model-id → fallback ids,
+  # BARE proxy ids (no litellm/ prefix). Empty = the baked table. The
+  # off-switch is the literal '{}'. This is the ops surface for flipping
+  # a fallback net without a release (the baked table ships in the
+  # image).
+  litellmFallbacks: ""
   job:                     # per-Attempt Job pods (ADR-0007)
     # 5 (#687, 2026-10-13): two review workflows share these slots and the
     # wall-era rounds run 25-120m — at 3, a pair of long fork rounds

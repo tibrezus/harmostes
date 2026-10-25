@@ -89,6 +89,19 @@ spec:
               {{- end }}
             - name: HARMOSTES_JOB_TTL_SECONDS
               value: {{ .Values.worker.job.ttlSecondsAfterFinished | default 3600 | quote }}
+            {{- if .Values.worker.agentModel }}
+            # The generic agent model (owner directive 2026-10-25): one
+            # knob for every workflow; per-workflow spec.model overrides.
+            - name: HARMOSTES_AGENT_MODEL
+              value: {{ .Values.worker.agentModel | quote }}
+            {{- end }}
+            {{- if .Values.worker.litellmFallbacks }}
+            # The litellm-provider chain override (JSON) — the ops surface
+            # for fallback flips without a release; replaces the baked
+            # table wholesale.
+            - name: LITELLM_FALLBACKS
+              value: {{ .Values.worker.litellmFallbacks | quote }}
+            {{- end }}
             - name: HARMOSTES_WORKER_IMAGE
               value: {{ .Values.image.worker | quote }}
             - name: HARMOSTES_SERVICE_ACCOUNT

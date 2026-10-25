@@ -518,3 +518,25 @@ func TestDropSessionCredentials(t *testing.T) {
 		}
 	}
 }
+
+// TestResolveAgentModel — the fleet's model precedence (owner directive,
+// 2026-10-25): the workflow spec is the override; HARMOSTES_AGENT_MODEL is
+// the generic default configured once on the worker Deployment; both empty
+// → empty (the built-in agent default applies, nothing invented here).
+func TestResolveAgentModel(t *testing.T) {
+	getenv := func(k string) string {
+		if k == "HARMOSTES_AGENT_MODEL" {
+			return "litellm/test-fallback-group"
+		}
+		return ""
+	}
+	if got := resolveAgentModel("litellm/test-explicit-primary", getenv); got != "litellm/test-explicit-primary" {
+		t.Fatalf("a workflow's explicit model must win over the generic default, got %q", got)
+	}
+	if got := resolveAgentModel("", getenv); got != "litellm/test-fallback-group" {
+		t.Fatalf("an empty spec model must fall back to the generic default, got %q", got)
+	}
+	if got := resolveAgentModel("", func(string) string { return "" }); got != "" {
+		t.Fatalf("both empty must stay empty (the built-in default applies), got %q", got)
+	}
+}

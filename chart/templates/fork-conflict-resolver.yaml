@@ -107,9 +107,11 @@ spec:
             # The model id MUST carry the litellm/ provider prefix — the
             # provider is registered by the mounted litellm-provider extension;
             # an unqualified default (the script's own fallback) is unreachable
-            # under these settings (r1 review, P4).
+            # under these settings (r1 review, P4). Decision field (ADR-0011
+            # Amendment): required-if-enabled — enabling the resolver without
+            # deciding fails the render.
             - name: RESOLVER_MODEL
-              value: {{ $r.model | quote }}
+              value: {{ required "forkMaintenance.resolver.model is a deployment decision (ADR-0011 Amendment — wiki: Configuration Contract): set values.forkMaintenance.resolver.model in the GitOps HelmRelease. The resolver's model, litellm/-prefixed." $r.model | quote }}
             - name: HOME
               value: /root
             # LiteLLM proxy (pi + litellm/* via litellm-provider extension)

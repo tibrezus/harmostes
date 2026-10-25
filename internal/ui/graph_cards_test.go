@@ -5,8 +5,8 @@ import "testing"
 // wrapTitle: long model ids split at a path separator — the FULL id renders
 // (two lines), never an abbreviation (#502: model ids are exact).
 func TestWrapTitleModel(t *testing.T) {
-	t1, t2 := wrapTitle("litellm/ali/anthropic/qwen3.8-flash")
-	if t1 != "litellm/ali/anthropic/" || t2 != "qwen3.8-flash" {
+	t1, t2 := wrapTitle("litellm/test/fixture-reviewer")
+	if t1 != "litellm/test/" || t2 != "fixture-reviewer" {
 		t.Errorf("wrapTitle long = %q + %q", t1, t2)
 	}
 	t1, t2 = wrapTitle("litellm/zal/glm-5.3-flash")

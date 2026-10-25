@@ -660,3 +660,13 @@ jobs:
             exit 1
           fi
           echo "golden render byte-identical; empty-defs guard fails as required"
+          # Configuration contract (ADR-0011 Amendment): the chart ships NO
+          # decision values. A render without the deployment's decisions must
+          # FAIL — with the field's documentation in the error — and no
+          # production model id may live outside the logic allowlist (L1
+          # boundary guard; #777 is the cautionary tale).
+          if helm template harmostes chart/ > /dev/null 2>&1; then
+            echo "::error::contract probe: bare render succeeded — a decision field has been re-defaulted in the chart"
+            exit 1
+          fi
+          ./scripts/boundary-guard.sh

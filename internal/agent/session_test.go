@@ -265,7 +265,7 @@ func TestSessionRecordJSONRoundTrip(t *testing.T) {
 	original := SessionRecord{
 		Workflow:  "test-wf",
 		RunID:     "job-1",
-		Model:     "litellm/zai/glm-4.7",
+		Model:     "litellm/test/fixture-reviewer",
 		Skill:     "/skills/wiki/SKILL.md",
 		StartedAt: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC),
 		EndedAt:   time.Date(2026, 1, 1, 12, 5, 0, 0, time.UTC),

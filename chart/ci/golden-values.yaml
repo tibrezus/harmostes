@@ -49,7 +49,30 @@ forkMaintenance:
         platform: forgejo
   resolver:
     enabled: true
-    model: litellm/zai/glm-4.7
+    # Decision field with an obviously-test value — this fixture is the
+    # deployment for the golden render (ADR-0011 Amendment).
+    model: litellm/test/golden-resolver
+
+# The decision values (ADR-0011 Amendment): the chart ships none, so the
+# fixture decides them — with obviously-test ids. Deep-merges over the
+# chart's agent blocks (contract fields — skill, taskTemplate, tools,
+# plugins — come from the chart; decisions come from here).
+workflowTemplates:
+  pr-review:
+    agent:
+      model: litellm/test/golden-reviewer
+      models:
+        - model: litellm/test/golden-reviewer
+          start: "22:00"
+          end: "08:00"
+          tz: Asia/Shanghai
+      thinking: high
+      timeout: 3600
+      toolBudget: 0
+      maxFixes: 3
+  wiki-lint:
+    agent:
+      maxFixes: 3
 
 credentials:
   - name: golden-token

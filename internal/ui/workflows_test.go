@@ -74,7 +74,7 @@ func prReviewTemplate() *v1alpha1.WorkflowTemplate {
 				Detect: "changed",
 			},
 			Agent: v1alpha1.AgentSpec{
-				Model:        "litellm/zai/glm-4.7",
+				Model:        "litellm/test/fixture-reviewer",
 				Skill:        "/skills/pr-review/SKILL.md",
 				Tools:        []string{"read", "bash", "grep"},
 				TaskTemplate: v1alpha1.TaskTemplate{Name: "pr-review", ConfigMap: "harmostes-tasks", Key: "pr-review.txt"},
@@ -102,7 +102,7 @@ func TestResolveWorkflow_MergesTemplate(t *testing.T) {
 	s := workflowTestServer(prReviewTemplate(), thin)
 
 	merged := s.resolveWorkflow(context.Background(), thin)
-	if merged.Spec.Agent.Model != "litellm/zai/glm-4.7" {
+	if merged.Spec.Agent.Model != "litellm/test/fixture-reviewer" {
 		t.Errorf("merged model = %q, want inherited", merged.Spec.Agent.Model)
 	}
 	if merged.Spec.Prepare.Plugin.Name != "pr-fetch" {

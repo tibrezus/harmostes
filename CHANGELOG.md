@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.2](https://github.com/tibrezus/harmostes/compare/v1.3.1...v1.3.2) (2026-10-25)
+
+
+### Features
+
+* **PR-REVIEW-7:** the review starts only when CI is green ([#766](https://github.com/tibrezus/harmostes/pull/766))
+
 ## [1.3.1](https://github.com/tibrezus/harmostes/compare/v1.3.0...v1.3.1) (2026-10-24)
 
 

@@ -127,6 +127,11 @@ interface HostClient {
 	reply(ref: string, body: string): Promise<void>;
 	resolve(ref: string): Promise<void>;
 	postVerdictComment(decision: string, body: string): Promise<void>;
+	// Verdict currency check (#567 mirror, tool-side): does a verdict
+	// trailer comment already stand at the armed head? True = a round has
+	// already spoken at this SHA — a second verdict would be a duplicate
+	// currency the sweep's memo never asked for.
+	verdictStandingAt(): Promise<string | null>;
 	// #749 Phase 3: the carry tool's tracker verbs + the moved-head guard.
 	listIssues(): Promise<{ number: number; title: string }[]>;
 	createIssue(title: string, body: string, milestone?: number | string): Promise<number>;
@@ -152,6 +157,16 @@ async function call(t: HostTarget, method: string, path: string, body?: unknown)
 		// 204s and empty bodies are legal
 	}
 	return { status: res.status, json };
+}
+
+function verdictTrailerAt(comments: { body?: string }[], sha: string): string | null {
+	for (const c of comments) {
+		const m = /<!-- pr-review: (\w+) @ ([0-9a-f]+)/.exec(String(c.body ?? ""));
+		// prefix match: the trailer carries the full sha; the armed sha may
+		// be abbreviated by the trigger envelope
+		if (m && sha.startsWith(m[2])) return m[1];
+	}
+	return null;
 }
 
 function forgejoClient(t: HostTarget): HostClient {
@@ -202,6 +217,11 @@ function forgejoClient(t: HostTarget): HostClient {
 			const text = `${body}\n\n<!-- pr-review: ${decision} @ ${t.sha} -->`;
 			const { status, json } = await call(t, "POST", `/repos/${t.owner}/${t.repo}/issues/${t.number}/comments`, { body: text });
 			if (status !== 200 && status !== 201) throw new Error(`forgejo verdict ${status}: ${JSON.stringify(json)?.slice(0, 120)}`);
+		},
+		async verdictStandingAt() {
+			const { status, json } = await call(t, "GET", `/repos/${t.owner}/${t.repo}/issues/${t.number}/comments?limit=50`);
+			if (status !== 200 || !Array.isArray(json)) throw new Error(`forgejo verdict-lookup ${status}`);
+			return verdictTrailerAt(json, t.sha);
 		},
 		// ── the carry tool's tracker verbs + the moved-head guard (#749 Phase 3)
 		async listIssues() {
@@ -275,6 +295,11 @@ function githubClient(t: HostTarget): HostClient {
 			const text = `${body}\n\n<!-- pr-review: ${decision} @ ${t.sha} -->`;
 			const { status, json } = await call(t, "POST", `/repos/${t.owner}/${t.repo}/issues/${t.number}/comments`, { body: text });
 			if (status !== 200 && status !== 201) throw new Error(`github verdict ${status}: ${JSON.stringify(json)?.slice(0, 120)}`);
+		},
+		async verdictStandingAt() {
+			const { status, json } = await call(t, "GET", `/repos/${t.owner}/${t.repo}/issues/${t.number}/comments?per_page=50`);
+			if (status !== 200 || !Array.isArray(json)) throw new Error(`github verdict-lookup ${status}`);
+			return verdictTrailerAt(json, t.sha);
 		},
 		// ── the carry tool's tracker verbs + the moved-head guard (#749 Phase 3)
 		async listIssues() {
@@ -490,6 +515,22 @@ export default function (pi: ExtensionAPI) {
 				const live = await t.c.headSha();
 				if (live && !live.startsWith(t.t.sha)) {
 					return { content: [{ type: "text", text: `verdict REFUSED: the PR head moved (${t.t.sha.slice(0, 8)} → ${live.slice(0, 8)}) — review the new head; do not retry` }], details: { ...details(), error: "head-moved" } };
+				}
+				// Verdict currency (#567 mirror): one verdict per head. A
+				// re-post at a head whose trailer already stands (the #2845
+				// class: "unchanged from the previous round — same head")
+				// mints duplicate merge currency the sweep's memo never asked
+				// for. Lookup failure is fail-open (transient host noise must
+				// not cost the round its verdict) — the sweep memo still
+				// guards the gate side.
+				let standing: string | null = null;
+				try {
+					standing = await t.c.verdictStandingAt();
+				} catch {
+					// unavailable: proceed (currency stays the sweep's to enforce)
+				}
+				if (standing) {
+					return { content: [{ type: "text", text: `verdict REFUSED: a ${standing} verdict already stands at ${t.t.sha.slice(0, 8)} — the round has spoken (#567 currency); record any new evidence as findings or push a fix commit to re-review. Do not re-post.` }], details: { ...details(), error: "verdict-standing" } };
 				}
 				await t.c.postVerdictComment(params.decision, params.body);
 				verdict = params.decision;

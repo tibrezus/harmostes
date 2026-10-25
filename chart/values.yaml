@@ -194,9 +194,12 @@ forkMaintenance:
   resolver:
     enabled: false
     image: ghcr.io/tibrezus/llm-wiki-controller:0.3.0
-    # Must carry the litellm/ prefix — the provider comes from the mounted
-    # litellm-provider extension (unqualified ids are unreachable).
-    model: litellm/zai/glm-4.7
+    # Decision field (ADR-0011 Amendment): empty + required-if-enabled — the
+    # deployment decides which model resolves conflicts. Must carry the
+    # litellm/ prefix — the provider comes from the mounted litellm-provider
+    # extension (unqualified ids are unreachable). Enabling the resolver
+    # without deciding fails the render.
+    model: ""
     resources:
       requests: { cpu: 200m, memory: 1Gi }
       limits: { cpu: "2", memory: 8Gi }
@@ -307,7 +310,9 @@ workflowTemplates:
         name: arch-sync
         configMap: harmostes-tasks
         key: arch-sync.txt
-      maxFixes: 3
+      # maxFixes is a decision field (ADR-0011 Amendment): the deployment
+      # decides the fix-loop bound — see workflow-templates.yaml's contract
+      # enforcement; the error text is the documentation.
       gate:
         plugin:
           name: wiki-lint
@@ -319,61 +324,20 @@ workflowTemplates:
       gate:
         plugin:
           name: pr-review
-      maxFixes: 3
-      # OWNER DIRECTIVE (supersedes #542/#543): the night window stays on
-      # the SAME anthropic route as the day model — qwen3.8-flash. The
-      # qwen3.8-max window experiment (#542, Asia/Shanghai 22:00-08:00 =
-      # the Token Plan Night Plan 50%-off hours) FAILED its first live
-      # review round (2026-09-20, fleet PR #557): 45m of exploration hit
-      # the run bound, and the attempt-scoped resume then died on an EMPTY
-      # 0-token completion — the deepseek-class finalize failure
-      # (2026-09-16/17), at ~6x the cost per strike. The litellm flash
-      # fallback cannot catch it: an empty 200 is not a routing error, so
-      # the proxy chain never fires. Re-enable max ONLY after the
-      # empty-completion behavior is fixed proxy-side (or the run bound is
-      # raised to fit max's latency profile); the fallback chain
-      # (fallbacks.ts) stays — it is inert until the window model flips
-      # back. The discount-clock window (UTC+8, DST-proof) STAYS: it is
-      # exactly Alibaba's Night Plan off-peak and costs nothing while the
-      # model is flash. The worker image ships /usr/share/zoneinfo
-      # (verified live), so ResolveModel resolves the zone (#494 would
-      # degrade silently otherwise). Day stays qwen3.8-flash →
-      # glm-5.3-flash. History: deepseek-v4.1-flash owned this window
-      # until it failed to finalize (2026-09-16/17); #536 pinned flash;
-      # #542/#543 corrected to max on the discount clock; this reverts the
-      # MODEL to flash and keeps the clock for a future max retry.
-      model: litellm/ali/anthropic/qwen3.8-flash
-      models:
-        - model: litellm/ali/anthropic/qwen3.8-flash
-          start: "22:00"
-          end: "08:00"
-          tz: Asia/Shanghai
+      # ── Configuration contract (ADR-0011 Amendment) ─────────────────
+      # The decision fields — model, models (time windows), thinking,
+      # timeout, toolBudget, maxFixes — are NOT set here. The deployment
+      # (k8s-config HelmRelease values) decides every one of them; the
+      # render fails with per-field documentation until it does (enforced
+      # in workflow-templates.yaml). Decision history: the wiki's
+      # Configuration Contract page. Contract fields (skill, taskTemplate,
+      # tools, gate/deploy plugins) are kernel logic and stay.
+      # ────────────────────────────────────────────────────────────────
       skill: /skills/pr-review/SKILL.md
       taskTemplate:
         configMap: harmostes-tasks
         key: pr-review.txt
         name: pr-review
-      # #680 — the reviewer's declared intent. thinking: high is BOTH the
-      # reasoning-depth declaration and the fleet sampling policy's intent
-      # signal (medium+ omits the deterministic-lean override — the reviewer
-      # generates hypotheses; chilling its sampling collapsed findings from
-      # ~4 to 1-2 on large merges, observed live Oct 8+).
-      thinking: high
-      # #695 r3 (the owner's call, backed by the round data): NO numeric
-      # cap for the reviewer. The post-roll rounds measured call rates at
-      # 110/h AND 57/h — a 2x spread — so any count calibrated to one pace
-      # binds past the wall on the other (the live #2673 round would have
-      # hit 200 calls at ~210m, after the 120m wall). The reviewer is
-      # instead MANAGED conceptually (turn-budget v3, armed by
-      # PI_LOOP_BREAKER on review attempts only): a loop breaker refuses
-      # repeated identical calls (the wall-died round re-read one file ten
-      # times), a stagnation checkpoint fires on cycling, and the WALL
-      # itself drives convergence (checkpoint at <=20m left,
-      # finalize-lane-only at <=8m) — so a slow round composes a verdict
-      # instead of dying verdict-less. toolBudget stays the emergency knob
-      # for OTHER workflows (fleet default 32).
-      toolBudget: 0
-      timeout: 3600
       tools:
         - read
         - bash

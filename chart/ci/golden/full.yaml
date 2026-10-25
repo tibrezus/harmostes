@@ -5380,9 +5380,11 @@ spec:
             # The model id MUST carry the litellm/ provider prefix — the
             # provider is registered by the mounted litellm-provider extension;
             # an unqualified default (the script's own fallback) is unreachable
-            # under these settings (r1 review, P4).
+            # under these settings (r1 review, P4). Decision field (ADR-0011
+            # Amendment): required-if-enabled — enabling the resolver without
+            # deciding fails the render.
             - name: RESOLVER_MODEL
-              value: "litellm/zai/glm-4.7"
+              value: "litellm/test/golden-resolver"
             - name: HOME
               value: /root
             # LiteLLM proxy (pi + litellm/* via litellm-provider extension)
@@ -6112,10 +6114,10 @@ spec:
       plugin:
         name: pr-review
     maxFixes: 3
-    model: litellm/ali/anthropic/qwen3.8-flash
+    model: litellm/test/golden-reviewer
     models:
     - end: "08:00"
-      model: litellm/ali/anthropic/qwen3.8-flash
+      model: litellm/test/golden-reviewer
       start: "22:00"
       tz: Asia/Shanghai
     skill: /skills/pr-review/SKILL.md

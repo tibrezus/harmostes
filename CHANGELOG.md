@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.4](https://github.com/tibrezus/harmostes/compare/v1.3.3...v1.3.4) (2026-10-25)
+
+
+### Features
+
+* **#725:** the compound is served, not searched for — research-prior.md at assembly + the one-context pillar frame ([#770](https://github.com/tibrezus/harmostes/pull/770))
+
 ## [1.3.3](https://github.com/tibrezus/harmostes/compare/v1.3.2...v1.3.3) (2026-10-25)
 
 

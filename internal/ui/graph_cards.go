@@ -330,7 +330,10 @@ func cardDefs(n v1alpha1.NodeSpec, spec *v1alpha1.WorkflowSpec) []defRow {
 	c := cardFacts(n, spec)
 	var defs []defRow
 	if c.Title != "" && c.Title != n.ID {
-		defs = append(defs, defRow{Label: c.Chip, Value: c.Title})
+		// Title2 completes a wrapped headline (#502: model ids are displayed
+		// exactly — the panel row must carry the FULL id, never its first
+		// wrap segment).
+		defs = append(defs, defRow{Label: c.Chip, Value: c.Title + c.Title2})
 	}
 	for i, f := range c.Facts {
 		label := "Detail"

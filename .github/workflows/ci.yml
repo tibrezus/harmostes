@@ -379,9 +379,13 @@ jobs:
         run: helm lint chart/
 
       # Render smoke test — catches template/Go-template syntax errors and
-      # references to undefined values before they reach a cluster.
+      # references to undefined values before they reach a cluster. Renders
+      # WITH the fixture decisions (ADR-0011 Amendment): the chart ships no
+      # decision values, so a bare render fails the contract by design — the
+      # fixture is CI's deployment. The bare-render failure itself is
+      # asserted in the golden step's contract probe.
       - name: helm template (render smoke test)
-        run: helm template harmostes chart/ --set namespace=harmostes > /dev/null
+        run: helm template harmostes chart/ -f chart/ci/golden-values.yaml --set namespace=harmostes > /dev/null
 
       # Cancel-on-supersede knob reachability (#402 r2 P3): the template must
       # use hasKey, not `| default true` — Helm treats false as empty, so the
@@ -395,9 +399,9 @@ jobs:
           for case in "false:false" "true:true" "unset:true"; do
             set_val="${case%%:*}"; want="${case##*:}"
             if [ "$set_val" = unset ]; then
-              got=$(helm template harmostes chart/ --set namespace=harmostes | grep -A1 'HARMOSTES_CANCEL_ON_SUPERSEDE' | grep -o 'value: "[a-z]*"')
+              got=$(helm template harmostes chart/ -f chart/ci/golden-values.yaml --set namespace=harmostes | grep -A1 'HARMOSTES_CANCEL_ON_SUPERSEDE' | grep -o 'value: "[a-z]*"')
             else
-              got=$(helm template harmostes chart/ --set namespace=harmostes --set "worker.job.cancelOnSupersede=$set_val" | grep -A1 'HARMOSTES_CANCEL_ON_SUPERSEDE' | grep -o 'value: "[a-z]*"')
+              got=$(helm template harmostes chart/ -f chart/ci/golden-values.yaml --set namespace=harmostes --set "worker.job.cancelOnSupersede=$set_val" | grep -A1 'HARMOSTES_CANCEL_ON_SUPERSEDE' | grep -o 'value: "[a-z]*"')
             fi
             [ "$got" = "value: \"$want\"" ] || { echo "knob path $set_val: want value: \"$want\", got $got"; exit 1; }
           done
@@ -412,7 +416,7 @@ jobs:
       # present, resolver model prefixed, no producer-less plugin volume.
       - name: helm template (declarative layer assertions)
         run: |
-          helm template harmostes chart/ --set namespace=harmostes \
+          helm template harmostes chart/ -f chart/ci/golden-values.yaml --set namespace=harmostes \
             --set forkMaintenance.enabled=true \
             --set forkMaintenance.resolver.enabled=true \
             --set 'forkMaintenance.defs.forgejo\.yaml=name: forgejo' \
@@ -586,7 +590,7 @@ jobs:
           # boundary check exists to catch; making it BLOCKING is what
           # forces the two pins to move together.
           AGENTS_SHA="$(git rev-parse HEAD:.agents)"
-          REV="$(helm template harmostes chart/ --set namespace=harmostes             | grep -A1 'HARMOSTES_SKILLS_REV' | grep -oE '[0-9a-f]{40}' | head -1)"
+          REV="$(helm template harmostes chart/ -f chart/ci/golden-values.yaml --set namespace=harmostes             | grep -A1 'HARMOSTES_SKILLS_REV' | grep -oE '[0-9a-f]{40}' | head -1)"
           if [ -z "$REV" ]; then
             # empty rev = track default branch — allowed only if the submodule does too (it cannot; pin it)
             echo "::error::skills.rev renders empty (track-default) — the served supply chain must be pinned"; exit 1

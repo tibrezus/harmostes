@@ -41,6 +41,7 @@ test("default chain composition covers every live primary (#363, #401 r2)", () =
   // harmostes.py --model default). A live primary with no entry would
   // attach no failover at all — the condition #363 was filed to fix.
   assert.deepEqual(DEFAULT_FALLBACKS, {
+    "mtplx/anthropic/qwen38-27b-optimized-speed-fp16": ["zai/anthropic/glm-5.3-flash"],
     "mtplx/qwen38-27b-optimized-speed-fp16": ["ali/anthropic/qwen3.8-flash"],
     "ali/anthropic/qwen3.8-flash": ["zai/anthropic/glm-5.3-flash"],
     "ali/anthropic/deepseek-v4.1-flash": ["zai/anthropic/glm-5.3-flash"],
@@ -54,6 +55,7 @@ test("default chain composition covers every live primary (#363, #401 r2)", () =
   // purpose; max nets to flash, which is larger in both dims — no clamp;
   // glm clamps nothing (flash is larger in both dimensions).
   const proxy = new Map([
+    ["mtplx/anthropic/qwen38-27b-optimized-speed-fp16", { max_input_tokens: 262144, max_output_tokens: 32768 }],
     ["mtplx/qwen38-27b-optimized-speed-fp16", { max_input_tokens: 262144, max_output_tokens: 32768 }],
     ["ali/anthropic/qwen3.8-flash", { max_input_tokens: 1048576, max_output_tokens: 32768 }],
     ["ali/anthropic/qwen3.8-max", { max_input_tokens: 991808, max_output_tokens: 131072 }],
@@ -80,6 +82,7 @@ test("default chain composition covers every live primary (#363, #401 r2)", () =
   assert.deepEqual(wired.sort(), [
     "ali/anthropic/qwen3.8-flash → zai/anthropic/glm-5.3-flash", // wired entries are primary→fallback summaries
     "ali/anthropic/qwen3.8-max → ali/anthropic/qwen3.8-flash",
+    "mtplx/anthropic/qwen38-27b-optimized-speed-fp16 → zai/anthropic/glm-5.3-flash",
     "mtplx/qwen38-27b-optimized-speed-fp16 → ali/anthropic/qwen3.8-flash",
     "zai/anthropic/glm-5.3-flash → ali/anthropic/qwen3.8-flash",
   ]);
@@ -111,9 +114,10 @@ test("applyChains: a subset proxy reports exactly the unserved key", () => {
   ]);
   const twoModels = [...two.entries()].map(([id, m]) => ({ id, ...m }));
   const { wired, unwiredChains } = applyChains(twoModels, DEFAULT_FALLBACKS, two);
-  // insertion order of the default table: speed first, deepseek third,
-  // max fourth
+  // insertion order of the default table: the anthropic-route speed
+  // primary first, the bare speed alias second, deepseek, max
   assert.deepEqual(unwiredChains, [
+    "mtplx/anthropic/qwen38-27b-optimized-speed-fp16",
     "mtplx/qwen38-27b-optimized-speed-fp16",
     "ali/anthropic/deepseek-v4.1-flash",
     "ali/anthropic/qwen3.8-max",
@@ -282,6 +286,7 @@ test("resolveFallbackChains: the default does not leak by reference", () => {
   // Compare against the EXPECTED literal, not the export: with the leak,
   // `after` IS the mutated export and deepEqual(x, x) is trivially true.
   assert.deepEqual(after, {
+    "mtplx/anthropic/qwen38-27b-optimized-speed-fp16": ["zai/anthropic/glm-5.3-flash"],
     "mtplx/qwen38-27b-optimized-speed-fp16": ["ali/anthropic/qwen3.8-flash"],
     "ali/anthropic/qwen3.8-flash": ["zai/anthropic/glm-5.3-flash"],
     "ali/anthropic/deepseek-v4.1-flash": ["zai/anthropic/glm-5.3-flash"],
@@ -305,4 +310,17 @@ test("the night-window primary (owner directive) carries the glm-5.3-flash secon
 	assert.deepEqual(DEFAULT_FALLBACKS["ali/anthropic/qwen3.8-max"], [
 		"ali/anthropic/qwen3.8-flash",
 	]);
+});
+
+test("DEFAULT_FALLBACKS: the fleet's pinned review primary (the anthropic-route mtplx id) has a wired chain — the 2026-10-25 outage class", async () => {
+	// The outage: the template pinned mtplx/anthropic/... while the baked table
+	// keyed only the bare alias — the live primary ran with NO fallbacks, so
+	// an upstream hiccup was fatal. The table must carry a chain for the id
+	// the fleet actually pins, and its net must NOT be a quota-dead group.
+	const { chains } = resolveFallbackChains(undefined);
+	const live = "mtplx/anthropic/qwen38-27b-optimized-speed-fp16";
+	assert.ok(Array.isArray(chains[live]) && chains[live].length > 0, `no chain wired for the live primary ${live}`);
+	for (const net of chains[live]) {
+		assert.notEqual(net, "ali/anthropic/qwen3.8-flash", "the ali flash net is quota-dead until 2026-10-31 — it must not be a production net");
+	}
 });

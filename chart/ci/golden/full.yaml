@@ -4780,17 +4780,22 @@ data:
       notes (where things live, verified mechanisms, architecture
       observations) published by PRIOR rounds and OTHER workflows on
       this repository, each stamped with repo, workflow, PR, head SHA
-      and date. Start orientation there — it is the cheapest context
-      you own — but weigh by staleness: a note is a LEAD, not ground
-      truth. Verify against the tree before relying on it, and
-      re-derive nothing it already answers. A note naming paths that
-      no longer exist is expired: do not propagate it. When your round
-      established durable orientation facts a future round would
-      re-derive at cost, write them — terse markdown, no secrets — to
-      /workspace/research-out.md, then call `review_research_publish`
-      once at round end: it stamps provenance and files the note in the
-      shared store atomically. The store is shared across this repo's
-      workflows: write nothing PR-private into it.
+      and date. When prior rounds of THIS PR published notes, your
+      workspace carries them pre-folded at /workspace/research-prior.md
+      (newest first, pr-context.json's `research_prior` block says how
+      many) — read it FIRST, before any re-orientation: it is context
+      earlier rounds already paid for, and the cheapest thing you own.
+      Re-derive nothing it answers; weigh by staleness: a note is a
+      LEAD, not ground truth. Verify against the tree before relying
+      on it, and re-derive nothing it already answers. A note naming
+      paths that no longer exist is expired: do not propagate it. When
+      your round established durable orientation facts a future round
+      would re-derive at cost, write them — terse markdown, no secrets
+      — to /workspace/research-out.md, then call
+      `review_research_publish` once at round end: it stamps
+      provenance and files the note in the shared store atomically. The
+      store is shared across this repo's workflows: write nothing
+      PR-private into it.
     
     ## Pillar todo (#727 follow-up)
     
@@ -4799,6 +4804,9 @@ data:
     skill is the source; you never rebuild the list). On a fresh
     session it is unticked; a resumed session keeps its branch's
     ticks. The playbook's Pillar scan section governs how to work it.
+    Tick each pillar the moment its proven findings are posted — one
+    toggle, the cheapest progress marker the round has; an unticked
+    checklist after posted findings is drift, not diligence.
     
     ## Mid-round posting (#727)
     

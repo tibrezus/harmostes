@@ -7,14 +7,15 @@
  * of #359: valid JSON with a wrong shape is the accidental-value risk).
  */
 
-// Platform decision (#363): the review primary is the mtplx speed target
-// (ops template flip, k8s-config 8c1fb609) — speed → qwen3.8-flash.
-// History: speed was demoted 2026-09-08 (#373's rollback — it STALLED at
-// long context: an HTTP-level stall at ~20k tokens, nowhere near a window
-// boundary, so no window arithmetic prevents it; the honest justification
-// for re-promotion is the platform's call that the provider defect is
-// resolved — and if it recurs, this chain turns the stall into a mid-run
-// failover to flash instead of a dead stream).
+// Owner directive (#776): the review primary IS the mtplx speed target —
+// mtplx/anthropic/qwen38-27b-optimized-speed-fp16, with qwen3.8-flash as
+// its net. History: speed was demoted 2026-09-08 (#373's rollback — it
+// STALLED at long context: an HTTP-level stall at ~20k tokens, nowhere
+// near a window boundary, so no window arithmetic prevents it) and
+// re-promoted via the ops template (k8s-config 8c1fb609) before the owner
+// made it the chart default (#776). If the stall recurs, this chain turns
+// it into a mid-run failover to flash — the only id with green fleet
+// history on the review round — instead of a dead stream.
 //
 // The flash → glm entry (#373's chain) is retained deliberately: chains
 // are keyed by PRIMARY model id, so a single-entry table silently strips
@@ -24,7 +25,7 @@
 // reported at startup (unwiredChains, below). All ids live in the proxy
 // key's scope.
 export const DEFAULT_FALLBACKS: Record<string, string[]> = {
-  "mtplx/qwen38-27b-optimized-speed-fp16": ["ali/anthropic/qwen3.8-flash"],
+  "mtplx/anthropic/qwen38-27b-optimized-speed-fp16": ["ali/anthropic/qwen3.8-flash"],
   "ali/anthropic/qwen3.8-flash": ["zai/anthropic/glm-5.3-flash"],
   // Night-window primary (owner directive): deepseek-v4.1-flash 16:00-02:00
   // CET with glm-5.3-flash as the all-hours second option. The chain is

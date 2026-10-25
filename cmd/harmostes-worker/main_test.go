@@ -526,14 +526,14 @@ func TestDropSessionCredentials(t *testing.T) {
 func TestResolveAgentModel(t *testing.T) {
 	getenv := func(k string) string {
 		if k == "HARMOSTES_AGENT_MODEL" {
-			return "litellm/mtplx/anthropic/qwen38-27b-optimized-speed-fp16"
+			return "litellm/test-fallback-group"
 		}
 		return ""
 	}
-	if got := resolveAgentModel("litellm/ali/anthropic/qwen3.8-flash", getenv); got != "litellm/ali/anthropic/qwen3.8-flash" {
+	if got := resolveAgentModel("litellm/test-explicit-primary", getenv); got != "litellm/test-explicit-primary" {
 		t.Fatalf("a workflow's explicit model must win over the generic default, got %q", got)
 	}
-	if got := resolveAgentModel("", getenv); got != "litellm/mtplx/anthropic/qwen38-27b-optimized-speed-fp16" {
+	if got := resolveAgentModel("", getenv); got != "litellm/test-fallback-group" {
 		t.Fatalf("an empty spec model must fall back to the generic default, got %q", got)
 	}
 	if got := resolveAgentModel("", func(string) string { return "" }); got != "" {

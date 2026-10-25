@@ -36,7 +36,7 @@ test.describe('topology projection', () => {
     // 4 = the instance's virtual trigger + the merged shape (#541).
     await expect(nodes).toHaveCount(4);
     await expect(page.locator('[data-testid="topology-node"][data-node="agent"]')).toBeVisible();
-    await expect(page.locator('[data-testid="topology-node"][data-node="deploy"]')).toContainText('post-review');
+    await expect(page.locator('[data-testid="topology-node"][data-node="deploy"]')).toContainText('noop'); // #749 Phase 3: the deploy node runs noop — the sweep consumes
     // Identity cards: the trigger is the canvas root, the agent card
     // carries the template's model + fix-loop budget.
     await expect(page.locator('[data-testid="topology-node"][data-node="trigger"]')).toContainText('webhook');

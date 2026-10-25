@@ -122,6 +122,19 @@ func graphPresenceLine(graphPath string) (string, bool) {
 	return "", false
 }
 
+// resolveAgentModel — the fleet's model precedence (owner directive,
+// 2026-10-25): ONE generic agent model configured at the platform layer
+// (HARMOSTES_AGENT_MODEL on the worker Deployment — set it once, every
+// workflow picks it up), and a workflow's own spec.model OVERRIDES it
+// when non-empty. Empty on both → empty (pi keeps its built-in default;
+// no silent inventing of a model id here). getenv is injected for tests.
+func resolveAgentModel(specModel string, getenv func(string) string) string {
+	if specModel != "" {
+		return specModel
+	}
+	return getenv("HARMOSTES_AGENT_MODEL")
+}
+
 // spawnEnv extends the pi child env with the ADR-0009 rig freshness
 // contract (#338/#350), evaluated at agent-node spawn: the expectation is
 // armed from the reviewed SHA; the degradation signal (#338 r24 D5) says
@@ -581,7 +594,7 @@ func runOneShot() {
 			return spawnEnv(env, piargs.RigGraphPath, logf)
 		},
 		Opts: agent.RPCOptions{
-			Args: piargs.PiArgsLoadout(wf.Spec.Agent.Skill, wf.Spec.Agent.Model, wf.Spec.Agent.Tools, piargs.Loadout{
+			Args: piargs.PiArgsLoadout(wf.Spec.Agent.Skill, resolveAgentModel(wf.Spec.Agent.Model, os.Getenv), wf.Spec.Agent.Tools, piargs.Loadout{
 				ExcludeTools: wf.Spec.Agent.ExcludeTools,
 				NoMCP:        wf.Spec.Agent.NoMCPOrDefault(),
 				Thinking:     wf.Spec.Agent.Thinking,

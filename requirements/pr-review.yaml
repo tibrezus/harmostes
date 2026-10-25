@@ -61,3 +61,14 @@ requirements:
         contains: "review_thread_resolve"
       - file: chart/ci/golden/full.yaml
         contains: "A reply alone never closes a thread: resolve is the"
+
+  - id: PR-REVIEW-7
+    enforcement:
+      - file: internal/review/review.go
+        contains: "the review starts ONLY when CI is green"
+      - file: internal/review/review_test.go
+        contains: "TestNoProtectionWithRedObservedCIWaits"
+      - file: internal/review/review_test.go
+        contains: "TestNoProtectionAllObservedGreenProceeds"
+      - file: internal/review/review_test.go
+        contains: "TestSkippedRequiredContextIsGreen"

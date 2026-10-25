@@ -36,6 +36,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -798,6 +799,8 @@ func classifyRequiredContexts(required []string, states map[string]string) (red,
 			red = append(red, ctx)
 		case "pending": // a live run exists but is unfinished
 			running = append(running, ctx)
+		case "skipped": // a deliberately skipped check is green: branch-protection semantics (a skipped required check satisfies it) — the workflow decided this surface is not deterministic-checked
+			green = append(green, ctx)
 		default: // no record on either surface at this head
 			missing = append(missing, ctx)
 		}
@@ -1333,16 +1336,35 @@ func Evaluate(ctx context.Context, api API, p Params) Result {
 	if err != nil {
 		return withPresence(waiting("merge-rules fetch failed: "+err.Error()), pr.HeadSHA, armedAt)
 	}
-	if len(required) == 0 {
-		// No merge-rule contexts defined: the label is the whole contract.
-		// Reached only when NOT in flight — the in-flight branch above owns
-		// dispatched reviews regardless of protection (#256).
-		return proceed(p, pr, nil, nil)
-	}
 
 	states, err := api.ContextStates(ctx, p.Repo, pr.HeadSHA)
 	if err != nil {
 		return withPresence(waiting("contexts fetch failed: "+err.Error()), pr.HeadSHA, armedAt)
+	}
+
+	if len(required) == 0 {
+		// OWNER RULING (2026-10-24, Requirements-pr-review PR-REVIEW-7):
+		// the review starts ONLY when CI is green — deterministic checks
+		// are the developer's job, before the review ever runs. A repo
+		// whose merge rules declare no required contexts does NOT proceed
+		// on the label alone: every status context OBSERVED at the head
+		// (excluding this gate's own pr-review/* status) becomes the
+		// effective required set — red holds, running holds, skipped is
+		// deliberate and green, and absence is impossible by construction
+		// (the set is derived FROM the observations).
+		for c := range states {
+			if strings.HasPrefix(c, "pr-review/") {
+				continue
+			}
+			required = append(required, c)
+		}
+		sort.Strings(required)
+		if len(required) == 0 {
+			// No merge rules AND no observed statuses: nothing deterministic
+			// exists to wait for — the label is the whole contract (the
+			// no-CI-repo shape).
+			return proceed(p, pr, nil, nil)
+		}
 	}
 
 	red, running, missing, green := classifyRequiredContexts(required, states)

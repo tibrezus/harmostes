@@ -97,6 +97,8 @@ COPY plugins/wiki-lint/wiki-lint.sh /usr/local/lib/harmostes/plugins/wiki-lint.s
 COPY plugins/git-push/git-push.sh   /usr/local/lib/harmostes/plugins/git-push.sh
 COPY plugins/workspace/workspace.sh      /usr/local/lib/harmostes/plugins/workspace.sh
 COPY plugins/workspace/pr_context.py     /usr/local/lib/harmostes/plugins/pr_context.py
+COPY plugins/workspace/coverage_carry.py /usr/local/lib/harmostes/plugins/coverage_carry.py
+COPY plugins/workspace/research_digest.py /usr/local/lib/harmostes/plugins/research_digest.py
 COPY plugins/lib/                        /usr/local/lib/harmostes/lib/
 COPY plugins/pr-review/pr-review.sh      /usr/local/lib/harmostes/plugins/pr-review.sh
 COPY plugins/fork-sync/fork-sync.sh      /usr/local/lib/harmostes/plugins/fork-sync.sh

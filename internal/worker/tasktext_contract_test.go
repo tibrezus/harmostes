@@ -493,16 +493,25 @@ func TestTaskTextTeachesTheShippedPillarTodoSeed(t *testing.T) {
 
 // TestWorkspacePluginsAreBuiltin — ADR-0011: every production plugin is a
 // built-in. workspace.sh invokes sibling scripts by relative path; a
-// script missing from Dockerfile.worker's COPY set ships a plugin that
-// warns-and-skips in production (the 1.3.4 class: research_digest.py
-// released before its image existed).
+// script missing from an image Dockerfile's COPY set ships a plugin that
+// warns-and-skips in production (the 1.3.4/1.3.5 class: research_digest.py
+// released before its image existed, and coverage_carry.py had NEVER
+// shipped — both Dockerfiles drifted independently). BOTH images are
+// pinned: Dockerfile.worker (dev) AND .github/Dockerfile.worker.release
+// (what GoReleaser actually ships).
 func TestWorkspacePluginsAreBuiltin(t *testing.T) {
 	ws := pluginSource(t, "plugins/workspace/workspace.sh")
-	dockerfile := pluginSource(t, "Dockerfile.worker")
-	for _, m := range regexp.MustCompile(`\$\(dirname "\$0"\)/([a-z_]+\.(?:py|sh))`).FindAllStringSubmatch(ws, -1) {
-		script := m[1]
-		if !strings.Contains(dockerfile, "plugins/workspace/"+script) {
-			t.Errorf("workspace.sh invokes %s but Dockerfile.worker never COPYs it — the shipped image cannot run the plugin", script)
+	invoked := regexp.MustCompile(`\$\(dirname "\$0"\)/([a-z_]+\.(?:py|sh))`).FindAllStringSubmatch(ws, -1)
+	if len(invoked) == 0 {
+		t.Fatalf("the invocation regex found nothing — the guard passed vacuously; fix the pattern")
+	}
+	for _, dockerfile := range []string{"Dockerfile.worker", ".github/Dockerfile.worker.release"} {
+		df := pluginSource(t, dockerfile)
+		for _, m := range invoked {
+			script := m[1]
+			if !strings.Contains(df, "plugins/workspace/"+script) {
+				t.Errorf("workspace.sh invokes %s but %s never COPYs it — the shipped image cannot run the plugin", script, dockerfile)
+			}
 		}
 	}
 }

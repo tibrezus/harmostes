@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.1](https://github.com/tibrezus/harmostes/compare/v1.4.0...v1.4.1) (2026-10-26)
+
+
+### Features
+
+* **#781:** the generic agent model — one knob for every workflow + the wired fallback for the fleet's pinned primary ([#781](https://github.com/tibrezus/harmostes/pull/781))
+
 ## [1.4.0](https://github.com/tibrezus/harmostes/compare/v1.3.6...v1.4.0) (2026-10-25)
 
 

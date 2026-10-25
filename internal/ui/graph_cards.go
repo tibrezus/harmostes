@@ -44,7 +44,7 @@ type nodeCard struct {
 }
 
 // wrapTitle splits an over-long headline at its last path separator so the
-// FULL id renders — real model ids (litellm/ali/anthropic/qwen3.8-flash)
+// FULL id renders — real model ids (litellm/mtplx/anthropic/qwen38-27b-optimized-speed-fp16)
 // must not be abbreviated into look-alikes (#502 lesson: model ids are
 // verified and displayed exactly; truncation created qwe…-class ghosts).
 // Returns s, "" when it fits on one line.

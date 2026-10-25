@@ -71,9 +71,9 @@ test.describe('topology projection', () => {
 
     // The YAML diff pane carries added and removed lines with real deltas.
     // One added line per route: agent.model AND the night window's
-    // models[0].model — both qwen3.8-flash (values #536, day+window
+    // models[0].model — both the speed target (values #776, day+window
     // converged since the #557-era max revert).
-    await expect(page.locator('[data-testid="yaml-diff-line"][data-diff="added"]').filter({ hasText: 'litellm/ali/anthropic/qwen3.8-flash' })).toHaveCount(2);
+    await expect(page.locator('[data-testid="yaml-diff-line"][data-diff="added"]').filter({ hasText: 'litellm/mtplx/anthropic/qwen38-27b-optimized-speed-fp16' })).toHaveCount(2);
     await expect(page.locator('[data-testid="yaml-diff-line"][data-diff="removed"]').filter({ hasText: 'pr-fetch-stale' })).toHaveCount(1);
 
     // The legend explains the vocabulary.

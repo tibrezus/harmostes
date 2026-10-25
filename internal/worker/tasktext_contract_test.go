@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -488,4 +489,20 @@ func TestTaskTextTeachesTheShippedPillarTodoSeed(t *testing.T) {
 			t.Error("the served playbook lost its pillar block shape — the seed would extract nothing")
 		}
 	})
+}
+
+// TestWorkspacePluginsAreBuiltin — ADR-0011: every production plugin is a
+// built-in. workspace.sh invokes sibling scripts by relative path; a
+// script missing from Dockerfile.worker's COPY set ships a plugin that
+// warns-and-skips in production (the 1.3.4 class: research_digest.py
+// released before its image existed).
+func TestWorkspacePluginsAreBuiltin(t *testing.T) {
+	ws := pluginSource(t, "plugins/workspace/workspace.sh")
+	dockerfile := pluginSource(t, "Dockerfile.worker")
+	for _, m := range regexp.MustCompile(`\$\(dirname "\$0"\)/([a-z_]+\.(?:py|sh))`).FindAllStringSubmatch(ws, -1) {
+		script := m[1]
+		if !strings.Contains(dockerfile, "plugins/workspace/"+script) {
+			t.Errorf("workspace.sh invokes %s but Dockerfile.worker never COPYs it — the shipped image cannot run the plugin", script)
+		}
+	}
 }

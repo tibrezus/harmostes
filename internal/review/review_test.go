@@ -1202,3 +1202,57 @@ func TestHoldCauseOf(t *testing.T) {
 		}
 	}
 }
+
+// ── PR-REVIEW-7 (owner ruling 2026-10-24): the review starts ONLY when CI
+// is green. A repo whose merge rules declare no required contexts derives
+// its required set from the statuses OBSERVED at the head — the #2845
+// class: a review dispatched on red integration/latency checks because an
+// empty protection table meant "proceed on the label alone". ──
+
+func TestNoProtectionWithRedObservedCIWaits(t *testing.T) {
+	api := &fakeAPI{pr: openPR("needs-review"), required: nil, states: map[string]string{
+		"integration / integration (cuda)": "failure",
+		"ci / build-test":                  "success",
+	}}
+	r := Evaluate(context.Background(), api, base)
+	if r.Decision != DecisionWaiting || !strings.Contains(r.Reason, "ci red at head") {
+		t.Fatalf("red observed CI must hold the gate (waiting), got %s (%s)", r.Decision, r.Reason)
+	}
+}
+
+func TestNoProtectionAllObservedGreenProceeds(t *testing.T) {
+	// skipped counts green (branch-protection semantics); the gate's OWN
+	// pr-review/* status (a failure from a prior round) is excluded.
+	api := &fakeAPI{pr: openPR("needs-review"), required: nil, states: map[string]string{
+		"ci / build-test":       "success",
+		"integration / metal":   "success",
+		"performance / surface": "skipped",
+		"pr-review/verdict":     "failure",
+	}}
+	r := Evaluate(context.Background(), api, base)
+	if r.Decision != DecisionProceed {
+		t.Fatalf("all-observed-green (+skipped, minus pr-review/*) must proceed, got %s (%s)", r.Decision, r.Reason)
+	}
+}
+
+func TestNoProtectionPendingObservedCIWaits(t *testing.T) {
+	api := &fakeAPI{pr: openPR("needs-review"), required: nil, states: map[string]string{
+		"ci / build-test": "pending",
+	}}
+	r := Evaluate(context.Background(), api, base)
+	if r.Decision != DecisionWaiting || !strings.Contains(r.Reason, "ci pending at head") {
+		t.Fatalf("running observed CI must hold the gate, got %s (%s)", r.Decision, r.Reason)
+	}
+}
+
+func TestSkippedRequiredContextIsGreen(t *testing.T) {
+	// a required context the workflow deliberately SKIPPED satisfies the
+	// gate (branch-protection semantics), it never wedges it.
+	api := &fakeAPI{pr: openPR("needs-review"), required: []string{"heavy-matrix"}, states: map[string]string{
+		"heavy-matrix": "skipped",
+	}}
+	r := Evaluate(context.Background(), api, base)
+	if r.Decision != DecisionProceed {
+		t.Fatalf("a skipped required context is green (branch-protection semantics), got %s (%s)", r.Decision, r.Reason)
+	}
+}

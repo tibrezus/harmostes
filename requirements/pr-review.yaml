@@ -1,0 +1,74 @@
+# pr-review — enforcement map for the hard requirements.
+#
+# The CANONICAL statements live in the wiki (owner-editable, immutable
+# per the 2026-10-24 ruling):
+#   https://github.com/tibrezus/harmostes/wiki/Requirements-pr-review
+# This file is the machinery's answer: how each requirement stated there
+# is actually carried. conformance.py joins the two sides by requirement
+# ID, both directions:
+#   - requirement in the wiki without an entry here  -> RED (unenforced)
+#   - entry here without a requirement in the wiki   -> RED (orphaned)
+#   - a pointer that no longer holds                 -> RED (drift)
+workflow: pr-review
+wiki: Requirements-pr-review
+requirements:
+  - id: PR-REVIEW-1
+    enforcement:
+      - file: extensions/review-post/index.ts
+        contains: "Post a verified finding as a native anchored thread, NOW (progressive posting)"
+      - file: extensions/review-post/contract.test.ts
+        contains: "finding_post: happy path returns the host-issued thread_ref and records it"
+      - file: chart/ci/golden/full.yaml
+        contains: "Post each verified finding THE MOMENT you verify it"
+      - file: .agents/skills/pr-review/SKILL.md
+        contains: "Post each\nverified finding **immediately** as a native anchored thread — do not\nbatch"
+
+  - id: PR-REVIEW-2
+    enforcement:
+      - file: extensions/review-post/index.ts
+        contains: "HARMOSTES_FORGEJO_TOKEN"
+      - file: extensions/review-post/contract.test.ts
+        contains: "no credential: every tool degrades to the ledger message, nothing throws"
+      - file: internal/worker/dispatch.go
+        contains: "HARMOSTES_FORGEJO_TOKEN"
+
+  - id: PR-REVIEW-3
+    enforcement:
+      - file: extensions/review-post/contract.test.ts
+        contains: "finding_post: host failure — error result, NO thread_ref, no state mutation"
+      - file: extensions/review-post/contract.test.ts
+        contains: "resume: branch state reconstructs — a re-round sees the prior thread_ref without re-posting"
+
+  - id: PR-REVIEW-4
+    enforcement:
+      - file: extensions/review-post/contract.test.ts
+        contains: "verdict_post: carries the exact trailer, and is an ISSUE comment — never a review event"
+      - file: internal/worker/reviewgate_validation_test.go
+        contains: "TestReviewGateAcceptsNewContract"
+
+  - id: PR-REVIEW-5
+    enforcement:
+      - file: extensions/review-post/contract.test.ts
+        contains: "export: foreign keys survive (todos, coverage) — read-modify-write, never a clobber"
+      - file: chart/ci/golden/full.yaml
+        contains: "they maintain findings[],"
+      - file: internal/worker/reviewgate_validation_test.go
+        contains: "TestReviewGateAcceptsNewContract"
+
+  - id: PR-REVIEW-6
+    enforcement:
+      - file: extensions/review-post/index.ts
+        contains: "review_thread_resolve"
+      - file: chart/ci/golden/full.yaml
+        contains: "A reply alone never closes a thread: resolve is the"
+
+  - id: PR-REVIEW-7
+    enforcement:
+      - file: internal/review/review.go
+        contains: "the review starts ONLY when CI is green"
+      - file: internal/review/review_test.go
+        contains: "TestNoProtectionWithRedObservedCIWaits"
+      - file: internal/review/review_test.go
+        contains: "TestNoProtectionAllObservedGreenProceeds"
+      - file: internal/review/review_test.go
+        contains: "TestSkippedRequiredContextIsGreen"

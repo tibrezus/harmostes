@@ -466,6 +466,13 @@ func TestFilterEnvScrubBotToken(t *testing.T) {
 // (agent.FilterEnv / ChildEnv) stays as defense in depth; the grant and
 // its re-injection died with post-review.sh and the allowlist forwarding.
 
+// TestDropSessionCredentials (#749 Phase 3): the scoped-token era's
+// re-binding is gone — the fleet credential IS the posting credential and
+// the chart wires the CLI canonicals to it. What the spawn filter still
+// guarantees is the fail-closed walk: every allowlisted name NOT in the
+// explicit safe set is dropped from agent sessions, and NO safe-set name
+// is ever dropped (a credential justified into the set must reach the
+// session, or the tools silently disarm).
 func TestDropSessionCredentials(t *testing.T) {
 	// FULL-POPULATION fixture (r5 P2 — a fixture that names only two
 	// credentials went vacuous for the other five): every allowlisted name

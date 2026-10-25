@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.6](https://github.com/tibrezus/harmostes/compare/v1.3.5...v1.3.6) (2026-10-25)
+
+
+### Bug Fixes
+
+* **#704:** the release Dockerfile ships the plugins — both images pinned ([#774](https://github.com/tibrezus/harmostes/pull/774))
+
 ## [1.3.5](https://github.com/tibrezus/harmostes/compare/v1.3.4...v1.3.5) (2026-10-25)
 
 

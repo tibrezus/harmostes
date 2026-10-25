@@ -27,13 +27,22 @@ build:
 ## Node still gets a meaningful `make test-go`.
 # test-sol-pi is deliberately NOT here: it is the slow compat tier (installs
 # a second pi package set), run explicitly by CI next to the extensions tier.
-test: test-go test-extensions test-rig-emit
+test: test-go test-extensions test-rig-emit boundary-guard
 
 
 ## test-go: the Go tier alone.
 test-go:
 	git submodule update --init --recursive
 	$(GO) test ./...
+
+## boundary-guard: L1 of the configuration contract (ADR-0011 Amendment).
+## Production model ids are deployment decisions — they may appear ONLY in
+## the logic allowlist (litellm-provider fallbacks/sampling, sol-pi reducer
+## profile, the pinned chart copy). Anywhere else a production id means
+## config is being re-embedded into the kernel (#777). Runs in CI's golden
+## step and locally via make.
+boundary-guard:
+	@./scripts/boundary-guard.sh
 
 ## golden-update: regenerate the committed golden render (ADR-0011 #368-8).
 ## Renders chart/ with the fictional production-shaped fixture

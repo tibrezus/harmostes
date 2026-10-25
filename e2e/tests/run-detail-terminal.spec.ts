@@ -32,7 +32,7 @@ test('terminal run detail: graph, waterfall proportions, hover panel', async ({ 
   // 13m duration, with the transcript one click away.
   await page.locator('[data-node="agent"]').hover();
   const panel = page.locator('#rg-panel');
-  await expect(panel).toContainText('litellm/zai/glm-5.3-flash');
+  await expect(panel).toContainText('litellm/test/fixture-reviewer');
   await expect(panel).toContainText('skill pr-review');
   await expect(panel).toContainText('maxFixes 3');
   await expect(panel).toContainText('ok');

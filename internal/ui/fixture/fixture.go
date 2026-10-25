@@ -497,10 +497,36 @@ func loadChartTemplate(valuesFile, namespace string) (*v1alpha1.WorkflowTemplate
 	if !ok {
 		return nil, fmt.Errorf("%s: no workflowTemplates.pr-review — the fixture world tracks the chart's review template", valuesFile)
 	}
+	// Decision overlay (ADR-0011 Amendment): the chart ships NO decision
+	// fields anymore — a DEPLOYED cluster always carries the deployment's
+	// decisions rendered into the template. The fixture world simulates a
+	// deployed cluster, so it decides too — with obviously-test ids (this
+	// world is synthetic; the overlay is the "HelmRelease values" of the
+	// fixture namespace).
+	fixtureDecisions(&spec.Agent)
 	return &v1alpha1.WorkflowTemplate{
 		ObjectMeta: metav1.ObjectMeta{Name: "pr-review", Namespace: namespace},
 		Spec:       spec,
 	}, nil
+}
+
+// fixtureModelID is the fixture world's decision — deliberately-test, so a
+// real production id can never leak into UI snapshots through the fixture.
+const fixtureModelID = "litellm/test/fixture-reviewer"
+
+// fixtureDecisions applies the fixture world's decision values onto a
+// template's agent spec (see the decision overlay comment in
+// loadChartTemplate).
+func fixtureDecisions(agent *v1alpha1.AgentSpec) {
+	agent.Model = fixtureModelID
+	agent.Models = []v1alpha1.ModelWindow{{
+		Model: fixtureModelID, Start: "22:00", End: "08:00", TZ: "Asia/Shanghai",
+	}}
+	agent.Thinking = "high"
+	zero := 0
+	agent.ToolBudget = &zero
+	agent.Timeout = 3600
+	agent.MaxFixes = 3
 }
 
 // fixtureExtras seeds the objects the ADR-0012 write-path surfaces read: one

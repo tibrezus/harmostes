@@ -44,7 +44,7 @@ type nodeCard struct {
 }
 
 // wrapTitle splits an over-long headline at its last path separator so the
-// FULL id renders — real model ids (litellm/ali/anthropic/qwen3.8-flash)
+// FULL id renders — real model ids (litellm/-prefixed production ids)
 // must not be abbreviated into look-alikes (#502 lesson: model ids are
 // verified and displayed exactly; truncation created qwe…-class ghosts).
 // Returns s, "" when it fits on one line.
@@ -330,7 +330,10 @@ func cardDefs(n v1alpha1.NodeSpec, spec *v1alpha1.WorkflowSpec) []defRow {
 	c := cardFacts(n, spec)
 	var defs []defRow
 	if c.Title != "" && c.Title != n.ID {
-		defs = append(defs, defRow{Label: c.Chip, Value: c.Title})
+		// Title2 completes a wrapped headline (#502: model ids are displayed
+		// exactly — the panel row must carry the FULL id, never its first
+		// wrap segment).
+		defs = append(defs, defRow{Label: c.Chip, Value: c.Title + c.Title2})
 	}
 	for i, f := range c.Facts {
 		label := "Detail"

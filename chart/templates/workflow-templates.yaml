@@ -1,4 +1,7 @@
 {{- if .Values.workflowTemplates }}
+{{- /* Configuration contract: the deployment must decide every decision
+       field before anything renders (ADR-0011 Amendment). */ -}}
+{{- include "harmostes.requireDecisions" (dict "wf" .Values.workflowTemplates) }}
 {{- range $name, $tpl := .Values.workflowTemplates }}
 ---
 apiVersion: harmostes.dev/v1alpha1

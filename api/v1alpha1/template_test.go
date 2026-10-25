@@ -15,7 +15,7 @@ func tmplSpec() WorkflowTemplateSpec {
 			Config: json.RawMessage(`{"repos":["example/default"],"label":"needs-review"}`),
 		},
 		Agent: AgentSpec{
-			Model:        "litellm/zai/glm-4.7",
+			Model:        "litellm/test/fixture-reviewer",
 			Skill:        "/skills/pr-review/SKILL.md",
 			Tools:        []string{"read", "bash", "grep"},
 			TaskTemplate: TaskTemplate{Name: "pr-review", ConfigMap: "harmostes-tasks", Key: "pr-review.txt"},
@@ -41,7 +41,7 @@ func TestApplyTemplateDefaultsFullInheritance(t *testing.T) {
 	if s.Prepare.Detect != "changed" {
 		t.Fatalf("detect not inherited: %q", s.Prepare.Detect)
 	}
-	if s.Agent.Model != "litellm/zai/glm-4.7" || s.Agent.Skill != "/skills/pr-review/SKILL.md" {
+	if s.Agent.Model != "litellm/test/fixture-reviewer" || s.Agent.Skill != "/skills/pr-review/SKILL.md" {
 		t.Fatalf("agent model/skill not inherited: %+v", s.Agent)
 	}
 	if s.Agent.TaskTemplate.Key != "pr-review.txt" {

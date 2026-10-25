@@ -20,7 +20,7 @@ func TestAgentSpec_ResolveModel(t *testing.T) {
 	at0100UTC := time.Date(2026, 9, 14, 1, 0, 0, 0, time.UTC)
 
 	spec := AgentSpec{
-		Model: "litellm/ali/anthropic/qwen3.8-flash",
+		Model: "litellm/test/fixture-reviewer",
 		Models: []ModelWindow{{
 			Model: "litellm/ali/anthropic/deepseek-v4.1-flash",
 			Start: "16:00",

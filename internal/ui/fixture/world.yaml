@@ -18,7 +18,7 @@ spec:
   # and the gate that validates it. Mirrors what an operator resolves from
   # the pr-review template.
   agent:
-    model: litellm/zai/glm-5.3-flash
+    model: litellm/test/fixture-reviewer
     skill: github.com/tibrezus/harmostes-skills//skills/pr-review
     maxFixes: 3
     gate:

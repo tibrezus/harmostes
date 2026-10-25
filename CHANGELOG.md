@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.5](https://github.com/tibrezus/harmostes/compare/v1.3.4...v1.3.5) (2026-10-25)
+
+
+### Bug Fixes
+
+* **#704:** builtin-plugin image parity — coverage_carry.py and research_digest.py now ship ([#772](https://github.com/tibrezus/harmostes/pull/772))
+
 ## [1.3.4](https://github.com/tibrezus/harmostes/compare/v1.3.3...v1.3.4) (2026-10-25)
 
 

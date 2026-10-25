@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.3](https://github.com/tibrezus/harmostes/compare/v1.3.2...v1.3.3) (2026-10-25)
+
+
+### Features
+
+* **#749:** verdict_post refuses a second verdict at a head whose trailer already stands — the #567 currency mirrored tool-side ([#768](https://github.com/tibrezus/harmostes/pull/768))
+
 ## [1.3.2](https://github.com/tibrezus/harmostes/compare/v1.3.1...v1.3.2) (2026-10-25)
 
 

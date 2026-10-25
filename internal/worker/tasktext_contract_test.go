@@ -339,9 +339,14 @@ func TestTaskTextTeachesTheShippedResearchContract(t *testing.T) {
 
 	t.Run("every path the text teaches exists in the shipped plugins", func(t *testing.T) {
 		ws := pluginSource(t, "plugins/workspace/workspace.sh")
-		for _, needle := range []string{"_shared/research", "RESEARCH-LINK-START", `"$WORKDIR/research-out.md"`} {
+		for _, needle := range []string{"_shared/research", "RESEARCH-LINK-START", "RESEARCH-DIGEST-START", `"$WORKDIR/research-out.md"`} {
 			if !strings.Contains(ws, needle) {
 				t.Errorf("workspace.sh lost %q — the text teaches /workspace/research", needle)
+			}
+		}
+		for _, needle := range []string{"research-prior.md", "research_prior"} {
+			if !strings.Contains(pluginSource(t, "plugins/workspace/research_digest.py"), needle) {
+				t.Errorf("research_digest.py lost %q — the served compound's file/fact names", needle)
 			}
 		}
 		ext := extensionSource(t)

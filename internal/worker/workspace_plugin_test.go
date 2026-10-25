@@ -865,3 +865,144 @@ func hermeticEnv(ambient []string, fixtures ...string) []string {
 	}
 	return append(out, fixtures...)
 }
+
+// TestWorkspaceResearchDigest — the compound is SERVED, not searched for
+// (#2845 audit: five rounds published four research notes and read the
+// shared store zero times; every fix-push generation re-derived its
+// orientation from scratch). research_digest.py folds THIS PR's
+// prior-round notes into research-prior.md (newest first) and stamps the
+// fact into pr-context.json. Another PR's notes and prefix-less
+// repo-wide notes stay out. Cold rounds (no store, no notes) stay
+// exactly as before: no file, no failure.
+func TestWorkspaceResearchDigest(t *testing.T) {
+	py, err := exec.LookPath("python3")
+	if err != nil {
+		if os.Getenv("CI") != "" {
+			t.Fatalf("python3 missing in CI — the research digest is the compound's reader and must be tested")
+		}
+		t.Skip("python3 not available locally")
+	}
+
+	runDigest := func(t *testing.T, workdir, store, pr string) {
+		t.Helper()
+		script, err := filepath.Abs(filepath.Join("..", "..", "plugins", "workspace", "research_digest.py"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.Command(py, script)
+		cmd.Dir = workdir
+		cmd.Env = append(os.Environ(),
+			"HARMOSTES_WORKDIR="+workdir,
+			"HARMOSTES_SOL_PI_STORE="+store,
+			"HARMOSTES_TRIGGER_PR="+pr,
+		)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("research_digest crashed: %v — %s", err, out)
+		}
+	}
+
+	t.Run("this PR's notes served newest-first; other PRs and repo-wide notes excluded", func(t *testing.T) {
+		dir := t.TempDir()
+		store := t.TempDir()
+		src := filepath.Join(store, "_shared", "research")
+		if err := os.MkdirAll(src, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		older := strings.Join([]string{
+			"---",
+			"repo: tibrez/rhesadox",
+			"workflow: pr-review",
+			"pr: \"2845\"",
+			"head_sha: dbebaba",
+			"written_at: 2026-10-24T17:50:00Z",
+			"---",
+			"",
+			"# Round 1 orientation",
+			"",
+			"The CUDA decode path lives in src/backend/decode_cuda.zig.",
+			"",
+		}, "\n")
+		newer := strings.Join([]string{
+			"---",
+			"repo: tibrez/rhesadox",
+			"workflow: pr-review",
+			"pr: \"2845\"",
+			"head_sha: 6dfb0f2",
+			"written_at: 2026-10-24T22:30:00Z",
+			"---",
+			"",
+			"# Round 2 orientation",
+			"",
+			"Builds on round 1: the gate asserts the resolved-selection record.",
+			"",
+		}, "\n")
+		if err := os.WriteFile(filepath.Join(src, "2845-dbebaba.md"), []byte(older), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(src, "2845-6dfb0f2.md"), []byte(newer), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(src, "999-other-pr.md"), []byte("# another PR's context\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(src, "repo-wide.md"), []byte("# repo-wide note, no PR prefix\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "pr-context.json"), []byte(`{"number": 2845}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		runDigest(t, dir, store, "2845")
+
+		b, err := os.ReadFile(filepath.Join(dir, "research-prior.md"))
+		if err != nil {
+			t.Fatalf("research-prior.md not served: %v", err)
+		}
+		s := string(b)
+		if !strings.Contains(s, "2845-6dfb0f2.md") || !strings.Contains(s, "2845-dbebaba.md") {
+			t.Fatalf("both PR notes must be served, got:\n%s", s)
+		}
+		if strings.Contains(s, "999-other-pr.md") || strings.Contains(s, "repo-wide.md") {
+			t.Fatalf("other PRs' and prefix-less notes must stay out, got:\n%s", s)
+		}
+		// newest first: round 2's header before round 1's
+		if strings.Index(s, "2845-6dfb0f2.md") > strings.Index(s, "2845-dbebaba.md") {
+			t.Fatalf("notes must be newest-first, got:\n%s", s)
+		}
+		// the round learns about the compound from its ONE environment file
+		cb, err := os.ReadFile(filepath.Join(dir, "pr-context.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var ctx map[string]any
+		if err := json.Unmarshal(cb, &ctx); err != nil {
+			t.Fatal(err)
+		}
+		rp, _ := ctx["research_prior"].(map[string]any)
+		if rp == nil || rp["notes"] != float64(2) {
+			t.Fatalf("pr-context research_prior fact block missing/incorrect: %v", ctx["research_prior"])
+		}
+	})
+
+	t.Run("cold round: no notes → no file, no failure", func(t *testing.T) {
+		dir := t.TempDir()
+		store := t.TempDir()
+		runDigest(t, dir, store, "2845")
+		if _, err := os.Stat(filepath.Join(dir, "research-prior.md")); !os.IsNotExist(err) {
+			t.Fatalf("a cold round must not fabricate a digest")
+		}
+	})
+
+	t.Run("no store configured → silent no-op", func(t *testing.T) {
+		dir := t.TempDir()
+		script, err := filepath.Abs(filepath.Join("..", "..", "plugins", "workspace", "research_digest.py"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.Command(py, script)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "HARMOSTES_WORKDIR="+dir) // no store, no PR
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("digest must be a silent no-op without the store: %v — %s", err, out)
+		}
+	})
+}

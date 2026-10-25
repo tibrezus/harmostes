@@ -132,6 +132,17 @@ if [ -n "${HARMOSTES_SOL_PI_STORE:-}" ]; then
 fi
 # RESEARCH-LINK-END
 
+# ── Research digest (#725 follow-up): the compound is SERVED ──────────
+# RESEARCH-DIGEST-START (tested by TestWorkspaceResearchDigest via
+# research_digest.py — keep this invocation between the markers). The
+# link alone never got read — the #2845 audit: five rounds published
+# four notes and read the store ZERO times; every fix-push generation
+# re-derived its orientation from scratch. The digest folds this PR's
+# prior-round notes into ONE file the round cannot miss,
+# research-prior.md, and stamps the fact into pr-context.json.
+python3 "$(dirname "$0")/research_digest.py" || log "WARN: research digest failed (non-fatal — the linked store remains at /workspace/research)"
+# RESEARCH-DIGEST-END
+
 # ── Wiki + RIG (architecture graph for the Architect stance) ──────────────
 if [ -n "$WIKI_URL" ]; then
   WIKI_DIR="$WORKDIR/wiki"; rm -rf "$WIKI_DIR"

@@ -113,6 +113,8 @@ function baseResponses(): Map<string, { status: number; json: any }> {
 		["POST /repos/tibrez/rhesadox/issues/2833/comments", { status: 200, json: { id: 5001 } }],
 		// the moved-head guard reads the live head on every verdict
 		["GET /repos/tibrez/rhesadox/pulls/2833", { status: 200, json: { head: { sha: "bf994bb6" } } }],
+		// the verdict-currency lookup reads the conversation (no trailer = no standing verdict)
+		["GET /repos/tibrez/rhesadox/issues/2833/comments", { status: 200, json: [] }],
 	]);
 }
 
@@ -164,6 +166,43 @@ test("verdict_post: carries the exact trailer, and is an ISSUE comment — never
 	for (const c of h.fake.calls) {
 		if (c.method === "POST" && c.path.endsWith("/reviews")) assert.equal(c.body.event, "COMMENT");
 	}
+});
+
+test("verdict_post: REFUSED when a verdict trailer already stands at the armed head (#2845 duplicate-currency class)", async () => {
+	const responses = baseResponses();
+	responses.set("GET /repos/tibrez/rhesadox/issues/2833/comments", {
+		status: 200,
+		json: [{ id: 1, body: "earlier round text\n\n<!-- pr-review: REQUEST_CHANGES @ bf994bb6 -->" }],
+	});
+	const h = harness({ responses });
+	await h.api.start();
+	const r = await h.api.call("review_verdict_post", { decision: "REQUEST_CHANGES", body: "same-head re-post" });
+	assert.match(String(r.content[0].text), /REFUSED: a REQUEST_CHANGES verdict already stands at bf994bb6/);
+	// no second verdict comment was minted — the POST never happened
+	assert.equal(h.fake.calls.filter((c) => c.method === "POST" && c.path.includes("/issues/2833/comments")).length, 0);
+	assert.equal(r.details.error, "verdict-standing");
+});
+
+test("verdict_post: currency lookup failure is fail-open — a transient host error never costs the round its verdict", async () => {
+	const responses = baseResponses();
+	responses.set("GET /repos/tibrez/rhesadox/issues/2833/comments", { status: 503, json: { message: "unavailable" } });
+	const h = harness({ responses });
+	await h.api.start();
+	const r = await h.api.call("review_verdict_post", { decision: "APPROVE", body: "clean" });
+	assert.match(String(r.content[0].text), /verdict APPROVE posted/);
+	assert.equal(h.fake.calls.filter((c) => c.method === "POST" && c.path.includes("/issues/2833/comments")).length, 1);
+});
+
+test("verdict_post: a trailer at a DIFFERENT sha does not stand — the round at the new head posts", async () => {
+	const responses = baseResponses();
+	responses.set("GET /repos/tibrez/rhesadox/issues/2833/comments", {
+		status: 200,
+		json: [{ id: 1, body: "old round\n\n<!-- pr-review: APPROVE @ deadbeef -->" }],
+	});
+	const h = harness({ responses });
+	await h.api.start();
+	const r = await h.api.call("review_verdict_post", { decision: "REQUEST_CHANGES", body: "fresh head" });
+	assert.match(String(r.content[0].text), /verdict REQUEST_CHANGES posted/);
 });
 
 // ── 2. resume / no-double-post ───────────────────────────────────────────
@@ -370,6 +409,8 @@ test("coverage_publish: merges into the per-PR ledger; APPROVE+frontier is REFUS
 		["POST /repos/tibrez/rhesadox/issues/2833/comments", { status: 200, json: { id: 5001 } }],
 		// the moved-head guard reads the live head on every verdict
 		["GET /repos/tibrez/rhesadox/pulls/2833", { status: 200, json: { head: { sha: "bf994bb6" } } }],
+		// the verdict-currency lookup reads the conversation (no trailer = no standing verdict)
+		["GET /repos/tibrez/rhesadox/issues/2833/comments", { status: 200, json: [] }],
 	]);
 	const h = harness({ responses, env: { HARMOSTES_SOL_PI_STORE: store } });
 	process.env.HARMOSTES_SOL_PI_STORE = store;

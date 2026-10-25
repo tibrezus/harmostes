@@ -96,6 +96,7 @@ data:
       // harmostes.py --model default). A live primary with no entry would
       // attach no failover at all — the condition #363 was filed to fix.
       assert.deepEqual(DEFAULT_FALLBACKS, {
+        "mtplx/anthropic/qwen38-27b-optimized-speed-fp16": ["ali/anthropic/qwen3.8-flash"],
         "mtplx/qwen38-27b-optimized-speed-fp16": ["ali/anthropic/qwen3.8-flash"],
         "ali/anthropic/qwen3.8-flash": ["zai/anthropic/glm-5.3-flash"],
         "ali/anthropic/deepseek-v4.1-flash": ["zai/anthropic/glm-5.3-flash"],
@@ -140,7 +141,12 @@ data:
       ]);
       // deepseek-v4.1-flash is in the table but NOT in this proxy map — inert
       // by design (unwired) until the proxy serves it (owner directive).
-      assert.deepEqual(unwiredChains, ["ali/anthropic/deepseek-v4.1-flash"]);
+      // The #363 key (no anthropic segment) is unwired over THIS proxy map —
+      // the fleet's catalog serves the anthropic-routed variant (#776 flip).
+      assert.deepEqual(unwiredChains, [
+        "ali/anthropic/deepseek-v4.1-flash",
+        "mtplx/qwen38-27b-optimized-speed-fp16",
+      ]);
     });
     
     // The documented off-switch, pinned (#401 review r2: it had no test at any
@@ -169,6 +175,7 @@ data:
       // insertion order of the default table: speed first, deepseek third,
       // max fourth
       assert.deepEqual(unwiredChains, [
+        "mtplx/anthropic/qwen38-27b-optimized-speed-fp16",
         "mtplx/qwen38-27b-optimized-speed-fp16",
         "ali/anthropic/deepseek-v4.1-flash",
         "ali/anthropic/qwen3.8-max",
@@ -337,6 +344,7 @@ data:
       // Compare against the EXPECTED literal, not the export: with the leak,
       // `after` IS the mutated export and deepEqual(x, x) is trivially true.
       assert.deepEqual(after, {
+        "mtplx/anthropic/qwen38-27b-optimized-speed-fp16": ["ali/anthropic/qwen3.8-flash"],
         "mtplx/qwen38-27b-optimized-speed-fp16": ["ali/anthropic/qwen3.8-flash"],
         "ali/anthropic/qwen3.8-flash": ["zai/anthropic/glm-5.3-flash"],
         "ali/anthropic/deepseek-v4.1-flash": ["zai/anthropic/glm-5.3-flash"],
@@ -381,14 +389,22 @@ data:
     // resolved — and if it recurs, this chain turns the stall into a mid-run
     // failover to flash instead of a dead stream).
     //
+    // OWNER DIRECTIVE (#776, the flip that landed via k8s-config !315): the
+    // primary is the ANTHROPIC-ROUTED variant — mtplx/anthropic/qwen38-27b-
+    // optimized-speed-fp16 (day + night window). Chains are keyed by EXACT
+    // primary id (applyChains: chains[model.id]), so the #363 key without the
+    // anthropic segment matches nothing for this id — without its own entry
+    // the live primary attaches no failover at all (the dead-stream shape
+    // this table exists to prevent). Net = flash: the only id with green
+    // fleet history on the review round.
+    //
     // The flash → glm entry (#373's chain) is retained deliberately: chains
     // are keyed by PRIMARY model id, so a single-entry table silently strips
-    // failover from every other primary — and this chart's own default
-    // (chart/values.yaml pr-review) still runs flash. Both live directions
-    // ship; a key whose primary this proxy does not serve is inert and is
-    // reported at startup (unwiredChains, below). All ids live in the proxy
-    // key's scope.
+    // failover from every other primary. Both mtplx variants stay keyed — a
+    // key whose primary this proxy does not serve is inert and is reported at
+    // startup (unwiredChains, below). All ids live in the proxy key's scope.
     export const DEFAULT_FALLBACKS: Record<string, string[]> = {
+      "mtplx/anthropic/qwen38-27b-optimized-speed-fp16": ["ali/anthropic/qwen3.8-flash"],
       "mtplx/qwen38-27b-optimized-speed-fp16": ["ali/anthropic/qwen3.8-flash"],
       "ali/anthropic/qwen3.8-flash": ["zai/anthropic/glm-5.3-flash"],
       // Night-window primary (owner directive): deepseek-v4.1-flash 16:00-02:00
@@ -5312,7 +5328,7 @@ spec:
         # the fork-maintenance.yaml template output (scripts/checks/defs/
         # hooks/skill CMs) and the litellm extension payload.
         checksum/fork-maintenance: fe823fd8b973eee646faffafdc5b0066184c2e3ea743aa36df2be221912c4129
-        checksum/litellm-extension: 3de80377e77cd7b0650a1bb2de0c61fd40cd2fcbcc173a3880f9afec0d637446
+        checksum/litellm-extension: 5ffa99be8b0ff0234f9a049e5d15a497f1af7217790ea175612c05b3652898b9
     spec:
       imagePullSecrets:
         - name: ghcr-pull

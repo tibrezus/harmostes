@@ -41,6 +41,7 @@ test("default chain composition covers every live primary (#363, #401 r2)", () =
   // harmostes.py --model default). A live primary with no entry would
   // attach no failover at all — the condition #363 was filed to fix.
   assert.deepEqual(DEFAULT_FALLBACKS, {
+    "mtplx/anthropic/qwen38-27b-optimized-speed-fp16": ["ali/anthropic/qwen3.8-flash"],
     "mtplx/qwen38-27b-optimized-speed-fp16": ["ali/anthropic/qwen3.8-flash"],
     "ali/anthropic/qwen3.8-flash": ["zai/anthropic/glm-5.3-flash"],
     "ali/anthropic/deepseek-v4.1-flash": ["zai/anthropic/glm-5.3-flash"],
@@ -85,7 +86,14 @@ test("default chain composition covers every live primary (#363, #401 r2)", () =
   ]);
   // deepseek-v4.1-flash is in the table but NOT in this proxy map — inert
   // by design (unwired) until the proxy serves it (owner directive).
-  assert.deepEqual(unwiredChains, ["ali/anthropic/deepseek-v4.1-flash"]);
+  // The ANTHROPIC-ROUTED key (#776 flip) is unwired over THIS proxy map —
+  // it serves the #363-era variant; the fleet's catalog carries the
+  // anthropic-routed id. Insertion order: the routed key sits first in
+  // the table.
+  assert.deepEqual(unwiredChains, [
+    "mtplx/anthropic/qwen38-27b-optimized-speed-fp16",
+    "ali/anthropic/deepseek-v4.1-flash",
+  ]);
 });
 
 // The documented off-switch, pinned (#401 review r2: it had no test at any
@@ -114,6 +122,7 @@ test("applyChains: a subset proxy reports exactly the unserved key", () => {
   // insertion order of the default table: speed first, deepseek third,
   // max fourth
   assert.deepEqual(unwiredChains, [
+    "mtplx/anthropic/qwen38-27b-optimized-speed-fp16",
     "mtplx/qwen38-27b-optimized-speed-fp16",
     "ali/anthropic/deepseek-v4.1-flash",
     "ali/anthropic/qwen3.8-max",
@@ -282,6 +291,7 @@ test("resolveFallbackChains: the default does not leak by reference", () => {
   // Compare against the EXPECTED literal, not the export: with the leak,
   // `after` IS the mutated export and deepEqual(x, x) is trivially true.
   assert.deepEqual(after, {
+    "mtplx/anthropic/qwen38-27b-optimized-speed-fp16": ["ali/anthropic/qwen3.8-flash"],
     "mtplx/qwen38-27b-optimized-speed-fp16": ["ali/anthropic/qwen3.8-flash"],
     "ali/anthropic/qwen3.8-flash": ["zai/anthropic/glm-5.3-flash"],
     "ali/anthropic/deepseek-v4.1-flash": ["zai/anthropic/glm-5.3-flash"],

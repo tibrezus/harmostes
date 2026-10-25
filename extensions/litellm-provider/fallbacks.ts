@@ -16,14 +16,22 @@
 // resolved — and if it recurs, this chain turns the stall into a mid-run
 // failover to flash instead of a dead stream).
 //
+// OWNER DIRECTIVE (#776, the flip that landed via k8s-config !315): the
+// primary is the ANTHROPIC-ROUTED variant — mtplx/anthropic/qwen38-27b-
+// optimized-speed-fp16 (day + night window). Chains are keyed by EXACT
+// primary id (applyChains: chains[model.id]), so the #363 key without the
+// anthropic segment matches nothing for this id — without its own entry
+// the live primary attaches no failover at all (the dead-stream shape
+// this table exists to prevent). Net = flash: the only id with green
+// fleet history on the review round.
+//
 // The flash → glm entry (#373's chain) is retained deliberately: chains
 // are keyed by PRIMARY model id, so a single-entry table silently strips
-// failover from every other primary — and this chart's own default
-// (chart/values.yaml pr-review) still runs flash. Both live directions
-// ship; a key whose primary this proxy does not serve is inert and is
-// reported at startup (unwiredChains, below). All ids live in the proxy
-// key's scope.
+// failover from every other primary. Both mtplx variants stay keyed — a
+// key whose primary this proxy does not serve is inert and is reported at
+// startup (unwiredChains, below). All ids live in the proxy key's scope.
 export const DEFAULT_FALLBACKS: Record<string, string[]> = {
+  "mtplx/anthropic/qwen38-27b-optimized-speed-fp16": ["ali/anthropic/qwen3.8-flash"],
   "mtplx/qwen38-27b-optimized-speed-fp16": ["ali/anthropic/qwen3.8-flash"],
   "ali/anthropic/qwen3.8-flash": ["zai/anthropic/glm-5.3-flash"],
   // Night-window primary (owner directive): deepseek-v4.1-flash 16:00-02:00

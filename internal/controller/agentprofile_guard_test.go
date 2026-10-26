@@ -8,7 +8,7 @@ import (
 	"github.com/tibrezus/harmostes/api/v1alpha1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -115,7 +115,7 @@ func TestReconcileRefusedByIncompatibleProfile(t *testing.T) {
 	}
 	wf.Generation = 2
 	wf.Status.ObservedGeneration = 1 // spec-change → due
-	rec := record.NewFakeRecorder(8)
+	rec := &events.FakeRecorder{Events: make(chan string, 8)}
 	r := &WorkflowReconciler{
 		Client:        fake.NewClientBuilder().WithScheme(scheme).WithObjects(profile, wf).WithStatusSubresource(&v1alpha1.Workflow{}).Build(),
 		Scheme:        scheme,

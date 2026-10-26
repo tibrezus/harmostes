@@ -188,7 +188,7 @@ func main() {
 	if err := (&controller.WorkflowReconciler{
 		Client:        mgr.GetClient(),
 		Scheme:        mgr.GetScheme(),
-		Recorder:      mgr.GetEventRecorderFor("harmostes-controller"),
+		Recorder:      mgr.GetEventRecorder("harmostes-controller"),
 		KernelVersion: version.Version,
 		PollInterval:  pollInterval,
 		OTLPEndpoint:  otlpEndpoint,

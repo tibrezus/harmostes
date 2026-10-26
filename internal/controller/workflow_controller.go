@@ -19,7 +19,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"strings"
@@ -42,8 +42,8 @@ type WorkflowReconciler struct {
 
 	// Recorder emits the loud refusal events for the AgentProfile
 	// compatibility guard (ADR-0011 amendment, phase 1a). Wired from the
-	// manager in main; tests may pass a record.NewFakeRecorder.
-	Recorder record.EventRecorder
+	// manager in main; tests may pass an events.FakeRecorder.
+	Recorder events.EventRecorder
 
 	// KernelVersion is the running kernel's semantic version (the release
 	// image tag, e.g. "1.4.1") — what compatibility statements evaluate
@@ -129,7 +129,7 @@ func (r *WorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	if blocked, cause := r.profileCompat(ctx, wf.Namespace); blocked {
 		logger.Error(nil, "agent profile refuses dispatch", "workflow", wf.Name, "cause", cause)
 		if r.Recorder != nil {
-			r.Recorder.Event(&wf, corev1.EventTypeWarning, "AgentProfileIncompatible", cause)
+			r.Recorder.Eventf(&wf, nil, corev1.EventTypeWarning, "AgentProfileIncompatible", "DispatchRefused", "%s", cause)
 		}
 		return ctrl.Result{RequeueAfter: r.PollInterval}, nil
 	}

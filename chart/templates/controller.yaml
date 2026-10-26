@@ -53,11 +53,22 @@ spec:
               value: {{ .Values.controller.attemptRetention | default "720h" | quote }}
             - name: HARMOSTES_WORKER_IMAGE
               value: {{ .Values.image.worker }}
-            # #613: arms the controller's dapr sidecar startup guard (outside
-            # the observability gate on purpose — trigger scheduling without a
-            # sidecar strands every claim arm regardless of telemetry).
+            # #613: arms the controller's dapr sidecar startup guard — ONLY
+            # when the sidecar itself is rendered. The requirement and the
+            # injection are ONE contract: #613's guard treats a missing
+            # DAPR_HTTP_PORT as a misconfiguration and self-heal-deletes the
+            # pod, so arming it while observability.controllerSidecar leaves
+            # the annotations unrendered boot-loops the controller forever
+            # (hit live on harmostes-dev with 1.5.0: pod deleted every ~30s,
+            # zero dispatches). Deployments that want the sidecar set
+            # observability.controllerSidecar: true — then BOTH render, and
+            # the guard protects the event system exactly as #613 designed.
+            # Deployments that don't get the pre-#613 behavior: no sidecar,
+            # no requirement, webhook + OTel SDK carry the controller.
+            {{- if .Values.observability.controllerSidecar }}
             - name: HARMOSTES_DAPR_REQUIRED
               value: "true"
+            {{- end }}
             {{- if .Values.agentProfile }}
             # ADR-0011 amendment 2026-10-26 (phase 1a): the namespace's
             # AgentProfile — its compatibility statement gates dispatch.

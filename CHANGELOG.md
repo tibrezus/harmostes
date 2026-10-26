@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.6.0](https://github.com/tibrezus/harmostes/compare/v1.5.1...v1.6.0) (2026-10-26)
+
+
+### Features
+
+* **runtime:** the materialization seam — universal⊕template-delta extensions, harness pin, aggregated plugin mount ([#786](https://github.com/tibrezus/harmostes/issues/786)) ([#798](https://github.com/tibrezus/harmostes/issues/798)) ([fd7fc7f](https://github.com/tibrezus/harmostes/commit/fd7fc7f99a2509a4d6b679e0da1dffa04a4f4022))
+
 ## [1.5.1](https://github.com/tibrezus/harmostes/compare/v1.5.0...v1.5.1) (2026-10-26)
 
 

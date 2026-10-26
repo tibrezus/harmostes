@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.5.1](https://github.com/tibrezus/harmostes/compare/v1.5.0...v1.5.1) (2026-10-26)
+
+
+### Bug Fixes
+
+* **chart:** the controller's dapr requirement and its sidecar are ONE contract ([#795](https://github.com/tibrezus/harmostes/issues/795)) ([6518e19](https://github.com/tibrezus/harmostes/commit/6518e19a30579b871fb887f340116919cf67ced1))
+* **rbac:** grant events.events.k8s.io — the post-deprecation recorder writes v1 Events ([#797](https://github.com/tibrezus/harmostes/issues/797)) ([4b902ff](https://github.com/tibrezus/harmostes/commit/4b902ff917d35c463c520a41fdd4899f51276a09))
+
 ## [1.5.0](https://github.com/tibrezus/harmostes/compare/v1.4.1...v1.5.0) (2026-10-26)
 
 

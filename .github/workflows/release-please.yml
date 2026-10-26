@@ -59,6 +59,13 @@ jobs:
       # un-automerged).
       - uses: actions/checkout@v4
       - name: Release gate
+        # The labeled trigger exists for `minor-approved` ONLY. Creating a
+        # release PR also fires `labeled` (the autorelease: pending label
+        # is attached at creation), and at that instant the PR body may not
+        # be readable yet — the first live run false-rejected on the
+        # provenance marker exactly there (#801). Creation-time gating is
+        # the push event's job; label events only ever UNLOCK a hold.
+        if: github.event_name != 'pull_request_target' || github.event.label.name == 'minor-approved'
         env:
           GH_TOKEN: ${{ secrets.HARMOSTES_GITHUB_TOKEN }}
         run: ./scripts/release-gate.sh

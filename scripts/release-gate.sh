@@ -41,6 +41,15 @@ title="$(jq -r .t <<<"$meta")"
 body="$(jq -r .b <<<"$meta")"
 labels="$(jq -r '.l | join(",")' <<<"$meta")"
 
+# A brand-new release PR can fire events before its body is fully written
+# (the first live run false-rejected on the provenance marker exactly
+# there, #801). An unreadable body is a SKIP, never a verdict — the next
+# push or minor-approved label re-runs this gate against the settled PR.
+if [ -z "$body" ]; then
+  echo "release PR #$PR body not readable yet — skipping (will gate on the next run)"
+  exit 0
+fi
+
 has_label() { [[ ",$labels," == *",$1,"* ]]; }
 comment_once() { # $1 = dedup marker, $2 = body
   local existing

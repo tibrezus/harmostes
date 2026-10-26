@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.0](https://github.com/tibrezus/harmostes/compare/v1.4.1...v1.5.0) (2026-10-26)
+
+
+### Features
+
+* **#785:** AgentProfile CRD — the deployment's agentic decision surface (phase 1a, inert) ([#794](https://github.com/tibrezus/harmostes/issues/794)) ([9f8e0a3](https://github.com/tibrezus/harmostes/commit/9f8e0a3ff5e0e901a7d077b4bde29c53f4a414b9))
+
 ## [1.4.1](https://github.com/tibrezus/harmostes/compare/v1.4.0...v1.4.1) (2026-10-26)
 
 

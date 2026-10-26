@@ -202,13 +202,24 @@ type PrepareSpec struct {
 func (a AgentSpec) EnabledOrDefault() bool { return a.Enabled == nil || *a.Enabled }
 
 type AgentSpec struct {
-	Enabled      *bool         `json:"enabled,omitempty"`      // nil/true = run, false = skip (deterministic-only)
-	Model        string        `json:"model"`                  // e.g. litellm/zai/anthropic/glm-5.3-flash
-	Models       []ModelWindow `json:"models,omitempty"`       // time-windowed overrides (#494): first match at run start wins
-	Skill        string        `json:"skill"`                  // path to SKILL.md
-	Tools        []string      `json:"tools,omitempty"`        // tool allowlist
-	ExcludeTools []string      `json:"excludeTools,omitempty"` // #656: post-allowlist exclusions (pi 1.0.4 patterns, e.g. 'mcp__x__*')
-	NoMCP        *bool         `json:"noMcp,omitempty"`        // #656: kill MCP for this node (nil = fleet default, MCP per image)
+	Enabled *bool         `json:"enabled,omitempty"` // nil/true = run, false = skip (deterministic-only)
+	Model   string        `json:"model"`             // e.g. litellm/zai/anthropic/glm-5.3-flash
+	Models  []ModelWindow `json:"models,omitempty"`  // time-windowed overrides (#494): first match at run start wins
+	Skill   string        `json:"skill"`             // path to SKILL.md
+	Tools   []string      `json:"tools,omitempty"`   // tool allowlist
+	// Extensions is the template's pi-extension DELTA (ADR-0011 amendment,
+	// three-tier 1b / #786): entries composED OVER the AgentProfile's
+	// universal set at dispatch time (replace-by-name — a template entry
+	// shadows a universal one with the same name), materialized per-attempt
+	// by the materialize init container (npm, exact version + integrity,
+	// verified against the pin — never the registry's word alone). Empty =
+	// the universal set alone; both empty = no materialization step at all
+	// (inert by default). Declared extensions' tools are NOT auto-joined to
+	// the --tools allowlist: a task that needs them declares them in Tools,
+	// like every built-in extension's tools today.
+	Extensions   []ExtensionPin `json:"extensions,omitempty"`
+	ExcludeTools []string       `json:"excludeTools,omitempty"` // #656: post-allowlist exclusions (pi 1.0.4 patterns, e.g. 'mcp__x__*')
+	NoMCP        *bool          `json:"noMcp,omitempty"`        // #656: kill MCP for this node (nil = fleet default, MCP per image)
 	// Thinking declares the session's reasoning intent (#680): off/minimal/
 	// low/medium/high/xhigh/max, forwarded to `pi --thinking`. Empty = the
 	// runtime default. This is ALSO the fleet sampling policy's intent

@@ -136,6 +136,23 @@ type AttemptJobParams struct {
 	// run is not PR-shaped).
 	TriggerRepo string
 	AttemptName string
+
+	// Extensions + Harness (#786, three-tier 1b): the composed runtime
+	// manifest the dispatcher stamps at dispatch (profile universal ⊕
+	// template delta, pins validated there). Non-empty → the Job gains a
+	// `materialize` init container that fetches the exact npm artifacts,
+	// verifies each against ITS pin, and installs into /runtime; the run
+	// form validates presence and arms the pi invocation. All zero →
+	// byte-identical to a kernel without the seam (inert by default).
+	Extensions []v1alpha1.ExtensionPin
+	Harness    *v1alpha1.HarnessRef
+	// AggregatePlugins + PluginLabelValue (#786): the aggregated plugin
+	// mount — the materialize init projects every ConfigMap labeled
+	// harmostes.dev/plugin=<PluginLabelValue> in the namespace into the
+	// Job's /plugins emptyDir (template-count-agnostic; the resolver's
+	// existing /plugins/<cm>/<name>.sh contract just works). Inert default.
+	AggregatePlugins bool
+	PluginLabelValue string
 }
 
 // AttachmentSubPath derives the SubPath for a scoped shared attachment:
@@ -173,7 +190,7 @@ func AttachmentSubPath(scope, workflow, repo, attempt string) (string, bool) {
 // shared RWX claim over it writes one run's working tree into a claim
 // other workflows read) and duplicates a mount path in the PodSpec.
 func ReservedAttemptMountPaths() []string {
-	return []string{"/workspace", "/skills", "/cache", "/sessions", pluginsMountPrefix}
+	return []string{"/workspace", "/skills", "/cache", "/sessions", "/runtime", pluginsMountPrefix}
 }
 
 // pluginsMountPrefix is the fixed home the builder mounts plugin
@@ -387,7 +404,70 @@ func BuildJob(p AttemptJobParams) *batchv1.Job {
 		mounts = append(mounts, corev1.VolumeMount{Name: vol, MountPath: pluginsMountPrefix + "/" + cm, ReadOnly: true})
 	}
 
-	return &batchv1.Job{
+	// three-tier 1b (#786): the runtime materialization surface. Any of
+	// extensions / harness pin / plugin aggregation arms a `materialize`
+	// init container; ALL zero arms nothing — the Job renders byte-
+	// identically to a kernel without the seam (inert by default, pinned
+	// by k8s_test). The init runs the worker's init-runtime subcommand in
+	// the same image: fetch the exact npm artifacts, verify each against
+	// ITS pin (never the registry's word), install into /runtime, and
+	// project the namespace's labeled plugin ConfigMaps into /plugins.
+	// Fail-loud is the whole contract (#504): an init that cannot verify a
+	// pin exits non-zero with the artifact named — the Job dies now, the
+	// dispatcher's re-arm mints a fresh pod, and the refusal is visible in
+	// the pod events. Never a silently-empty extension set.
+	wantRuntimeMount := len(p.Extensions) > 0 || p.Harness != nil
+	initEnv := []corev1.EnvVar{
+		{Name: "HARMOSTES_NAMESPACE", Value: p.Namespace},
+	}
+	initMounts := []corev1.VolumeMount{}
+	if len(p.Extensions) > 0 {
+		raw, err := v1alpha1.RenderExtensionManifest(p.Extensions)
+		if err != nil {
+			panic(fmt.Sprintf("attempt job: render extension manifest (validated at dispatch; cannot fail here): %v", err))
+		}
+		initEnv = append(initEnv, corev1.EnvVar{Name: "HARMOSTES_EXTENSION_MANIFEST", Value: raw})
+		env = append(env, corev1.EnvVar{Name: "HARMOSTES_EXTENSION_MANIFEST", Value: raw})
+	}
+	if p.Harness != nil {
+		raw, err := v1alpha1.RenderHarnessManifest(*p.Harness)
+		if err != nil {
+			panic(fmt.Sprintf("attempt job: render harness manifest (validated at dispatch; cannot fail here): %v", err))
+		}
+		initEnv = append(initEnv, corev1.EnvVar{Name: "HARMOSTES_HARNESS_MANIFEST", Value: raw})
+		env = append(env, corev1.EnvVar{Name: "HARMOSTES_HARNESS_MANIFEST", Value: raw})
+	}
+	if wantRuntimeMount {
+		initMounts = append(initMounts, corev1.VolumeMount{Name: "runtime", MountPath: "/runtime"})
+		volumes = append(volumes, corev1.Volume{Name: "runtime", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}})
+		mounts = append(mounts, corev1.VolumeMount{Name: "runtime", MountPath: "/runtime", ReadOnly: true})
+	}
+	if p.AggregatePlugins {
+		initEnv = append(initEnv,
+			corev1.EnvVar{Name: "HARMOSTES_AGGREGATE_PLUGINS", Value: "true"},
+			corev1.EnvVar{Name: "HARMOSTES_PLUGIN_LABEL_VALUE", Value: p.PluginLabelValue},
+		)
+		initMounts = append(initMounts, corev1.VolumeMount{Name: "plugins", MountPath: pluginsMountPrefix})
+		volumes = append(volumes, corev1.Volume{Name: "plugins", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}})
+		// The static plugin-CM mounts (legacy list) still render: a deeper
+		// mount shadows the projected dir per-CM with identical content, and
+		// unlabeled legacy entries keep working unchanged.
+		mounts = append(mounts, corev1.VolumeMount{Name: "plugins", MountPath: pluginsMountPrefix, ReadOnly: true})
+	}
+	// Init order: materialize FIRST — a #504 refusal must surface before the
+	// skills clone burns network on a pod that can never run.
+	materializeInit := []corev1.Container{}
+	if wantRuntimeMount || p.AggregatePlugins {
+		materializeInit = append(materializeInit, corev1.Container{
+			Name:         "materialize",
+			Image:        p.Image,
+			Command:      []string{"/usr/local/bin/harmostes-worker", "init-runtime"},
+			Env:          initEnv,
+			VolumeMounts: initMounts,
+		})
+	}
+
+	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			// GenerateName: a Job name is unique PER RUN (an Attempt
 			// continues across triggers, ADR-0005) — the Attempt itself is
@@ -414,7 +494,7 @@ func BuildJob(p AttemptJobParams) *batchv1.Job {
 				Spec: corev1.PodSpec{
 					ServiceAccountName: p.ServiceAccount,
 					RestartPolicy:      corev1.RestartPolicyNever,
-					InitContainers: []corev1.Container{{
+					InitContainers: append(materializeInit, []corev1.Container{{
 						Name:    "sync-skills",
 						Image:   p.Image,
 						Command: skillsSyncCommand(),
@@ -426,7 +506,7 @@ func BuildJob(p AttemptJobParams) *batchv1.Job {
 							{Name: "HARMOSTES_SKILLS_REV", Value: SkillsRev()},
 						},
 						VolumeMounts: []corev1.VolumeMount{{Name: "skills", MountPath: "/skills"}},
-					}},
+					}}...),
 					Containers: []corev1.Container{{
 						Name:         "run",
 						Image:        p.Image,
@@ -439,6 +519,7 @@ func BuildJob(p AttemptJobParams) *batchv1.Job {
 			},
 		},
 	}
+	return job
 }
 
 // ListActiveJobs returns the workflow's unfinished attempt Jobs — the

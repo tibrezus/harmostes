@@ -204,6 +204,18 @@ func main() {
 		os.Exit(2)
 	}
 	switch os.Args[1] {
+	case "init-runtime":
+		// three-tier 1b (#786): the attempt Job's materialize init container.
+		// Fetches+verifies the pinned extensions/harness into /runtime and
+		// projects the namespace's labeled plugin ConfigMaps into /plugins.
+		// Fail-loud is the contract (#504): any refusal prints the artifact
+		// named and exits 1 — the Job dies visibly, the dispatcher's re-arm
+		// mints a fresh pod, and the wall is never burned on a run whose
+		// runtime could not be assembled.
+		logger = slog.Default().With("component", "harmostes-worker")
+		if err := worker.RunInitRuntime(context.Background()); err != nil {
+			fatal("materialize: %v", err)
+		}
 	case "consumer":
 		// Minimal logger so fatal() (which uses the global logger) doesn't
 		// panic with a nil pointer if RunConsumer returns an error.
@@ -426,6 +438,25 @@ func runOneShot() {
 		wf.Spec.Agent.Model = wf.Spec.Agent.ResolveModel(time.Now())
 	}
 
+	// three-tier 1b (#786): validate the materialized runtime BEFORE the
+	// graph compiles. The materialize init produced /runtime content per
+	// the dispatcher's manifest; a declared-but-absent extension or a
+	// missing harness binary is a torn pod and refuses here, with the
+	// artifact named — a declared set must never silently shrink (#504).
+	// The resolved paths arm the pi invocation (ExtraExtensions → -e; the
+	// pinned harness replaces the baked pi binary). Nothing declared =
+	// zero effect (the inert default).
+	mat, err := worker.ConsumeMaterializedRuntime(os.Getenv)
+	if err != nil {
+		fatal("materialized runtime: %v", err)
+	}
+	if len(mat.ExtensionPaths) > 0 {
+		logf("declared extensions: %s", strings.Join(mat.ExtensionPaths, ","))
+	}
+	if mat.PiPath != "" {
+		logf("harness: pinned pi at %s", mat.PiPath)
+	}
+
 	runID := runName()
 	sessionMeta := agent.SessionMeta{
 		Workflow: workflow,
@@ -621,10 +652,14 @@ func runOneShot() {
 			return spawnEnv(env, piargs.RigGraphPath, logf)
 		},
 		Opts: agent.RPCOptions{
+			// PiPath (#786): a pinned harness spawns the materialized pi
+			// binary instead of the image's baked one. Empty = baked pi.
+			PiPath: mat.PiPath,
 			Args: piargs.PiArgsLoadout(wf.Spec.Agent.Skill, resolveAgentModel(wf.Spec.Agent.Model, os.Getenv), wf.Spec.Agent.Tools, piargs.Loadout{
-				ExcludeTools: wf.Spec.Agent.ExcludeTools,
-				NoMCP:        wf.Spec.Agent.NoMCPOrDefault(),
-				Thinking:     wf.Spec.Agent.Thinking,
+				ExcludeTools:    wf.Spec.Agent.ExcludeTools,
+				NoMCP:           wf.Spec.Agent.NoMCPOrDefault(),
+				Thinking:        wf.Spec.Agent.Thinking,
+				ExtraExtensions: mat.ExtensionPaths,
 			}),
 			Workdir:     workdir,
 			Env:         piEnv,

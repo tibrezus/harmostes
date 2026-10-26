@@ -80,6 +80,16 @@ type DispatchConfig struct {
 	DaprdImage           string
 	PluginConfigMaps     []string
 	ExtraConfigMapMounts []k8s.ConfigMapMount
+	// AggregatePlugins (#786, three-tier 1b): when on, the per-attempt
+	// materialize init projects EVERY ConfigMap labeled
+	// harmostes.dev/plugin=<value> in the workflow's namespace into the
+	// Job's /plugins emptyDir — template-count-agnostic (the chart value
+	// gates it; the static PluginConfigMaps list stays for unlabeled
+	// mounts). Inert default.
+	AggregatePlugins bool
+	// PluginLabelValue is the required value of harmostes.dev/plugin for
+	// the aggregation projection (default "true").
+	PluginLabelValue string
 }
 
 // DispatchConfigFromEnv resolves the fleet-level dispatch configuration
@@ -136,6 +146,17 @@ func DispatchConfigFromEnv(logf func(string, ...any)) (DispatchConfig, error) {
 	if cfg.ExtraConfigMapMounts, err = extraConfigMapMountsFromEnv(); err != nil {
 		return cfg, err
 	}
+	// #786 aggregation knob: malformed values fail fast (the #311 doctrine).
+	if v := os.Getenv("HARMOSTES_AGGREGATE_PLUGINS"); v != "" {
+		on, err := strconv.ParseBool(v)
+		if err != nil {
+			return cfg, fmt.Errorf("HARMOSTES_AGGREGATE_PLUGINS=%q: must be a boolean", v)
+		}
+		cfg.AggregatePlugins = on
+	}
+	if cfg.PluginLabelValue = os.Getenv("HARMOSTES_PLUGIN_LABEL_VALUE"); cfg.PluginLabelValue == "" {
+		cfg.PluginLabelValue = "true"
+	}
 	if v := os.Getenv("HARMOSTES_MAX_CONCURRENT"); v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil || n <= 0 {
@@ -191,8 +212,11 @@ func (c DispatchConfig) Validate() error {
 // JobParams derives the STATIC Job shape from the fleet config. One method
 // so a config fact cannot be dropped at a struct-copy hop (#311/#314):
 // callers supply only the per-run fields (attempt, workflow, namespace,
-// extraEnv).
-func (c DispatchConfig) JobParams(at *v1alpha1.Attempt, workflow, namespace string, runBound time.Duration, cache *v1alpha1.CacheSpec, sessions *v1alpha1.SessionsSpec, attachments []v1alpha1.SharedAttachment, triggerRepo string, extraEnv []string) k8s.AttemptJobParams {
+// extraEnv) plus the per-run runtime materialization facts (#786): the
+// composed extension manifest and the profile's harness pin — both already
+// validated (ComposeExtensions + ValidateExtensionPins/ValidateHarnessPin)
+// by the time they reach here.
+func (c DispatchConfig) JobParams(at *v1alpha1.Attempt, workflow, namespace string, runBound time.Duration, cache *v1alpha1.CacheSpec, sessions *v1alpha1.SessionsSpec, attachments []v1alpha1.SharedAttachment, triggerRepo string, extraEnv []string, extensions []v1alpha1.ExtensionPin, harness *v1alpha1.HarnessRef) k8s.AttemptJobParams {
 	return k8s.AttemptJobParams{
 		Attempt:                 at,
 		WorkflowName:            workflow,
@@ -210,7 +234,44 @@ func (c DispatchConfig) JobParams(at *v1alpha1.Attempt, workflow, namespace stri
 		Attachments:             attachments,
 		TriggerRepo:             triggerRepo,
 		AttemptName:             at.Name,
+		Extensions:              extensions,
+		Harness:                 harness,
+		AggregatePlugins:        c.AggregatePlugins,
+		PluginLabelValue:        c.PluginLabelValue,
 	}
+}
+
+// composeRuntime resolves the per-attempt runtime materialization facts
+// (#786, three-tier 1b): the AgentProfile's UNIVERSAL extension set ⊕ the
+// resolved workflow's template DELTA (replace-by-name), plus the profile's
+// harness pin. Composed at DISPATCH — the Job's materialize init container
+// consumes a manifest, not a decision: the pool resolves profile+template
+// once (they are in memory here already) and stamps the exact pins; the pod
+// never re-reads CRs to know what to install.
+//
+// Malformed pins refuse HERE (#504, earliest surface): a range-spec pin or a
+// missing integrity never reaches a pod. Absent profile env + no template
+// extensions = nil,nil — the inert default (no materialization step at all).
+func (d *Dispatcher) composeRuntime(ctx context.Context, namespace string, wf *v1alpha1.Workflow) ([]v1alpha1.ExtensionPin, *v1alpha1.HarnessRef, error) {
+	var universal []v1alpha1.ExtensionPin
+	var harness v1alpha1.HarnessRef
+	if ref := v1alpha1.AgentProfileRefFromEnv(os.Getenv); ref != "" {
+		p, err := FetchAgentProfile(ctx, d.cl, namespace, ref)
+		if err != nil {
+			return nil, nil, fmt.Errorf("agent profile: %w", err)
+		}
+		universal = p.Spec.Extensions
+		harness = p.Spec.Harness
+	}
+	composed, h, err := ComposeRuntime(universal, wf.Spec.Agent.Extensions, harness)
+	if err != nil {
+		return nil, nil, fmt.Errorf("workflow %s: %w", wf.Name, err)
+	}
+	if len(composed) == 0 && h == nil {
+		return nil, nil, nil // inert: nothing to materialize
+	}
+	d.logf("dispatch: runtime materialization armed — %d extension(s)%s", len(composed), map[bool]string{true: " + harness pin", false: ""}[h != nil])
+	return composed, h, nil
 }
 
 // formatConfigMapMounts renders mounts name=path[=mode] for the startup
@@ -611,13 +672,21 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req RunRequest) error {
 		if err := d.cl.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: g.Attempt}, &at); err != nil {
 			return fmt.Errorf("get claim attempt %s: %w", g.Attempt, err)
 		}
+		// three-tier 1b (#786): the per-attempt runtime manifest composes at
+		// dispatch (profile universal ⊕ template delta) and stamps into the
+		// Job — malformed pins refused ABOVE, before any pod is burned.
+		extensions, harness, err := d.composeRuntime(ctx, req.Namespace, wf)
+		if err != nil {
+			return fmt.Errorf("runtime materialization: %w", err)
+		}
 		triggerRepo := ""
 		if g.Envelope != nil {
 			triggerRepo = g.Envelope.Repo
 		}
 		job := k8s.BuildJob(d.cfg.JobParams(&at, req.Workflow, req.Namespace, runBound, cache, wf.Spec.Sessions,
 			wf.Spec.Attachments, triggerRepo,
-			append(jobCredentialEnv(&budgetPolicy{workflow: wf, attempt: &at}), dispatchEnv(req, &at, g.Envelope)...)))
+			append(jobCredentialEnv(&budgetPolicy{workflow: wf, attempt: &at}), dispatchEnv(req, &at, g.Envelope)...),
+			extensions, harness))
 		logEffectiveAttachments(d.logf, at.Name, job, wf.Spec.Attachments)
 		// #666 intent-before-side-effect: the INTENT is committed BEFORE
 		// the Job exists (record-then-act; a failed record aborts dispatch

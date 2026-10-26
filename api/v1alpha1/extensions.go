@@ -99,7 +99,8 @@ func ValidateSRI(sri string) error {
 		return fmt.Errorf("integrity %q: sha512 base64 body has %d chars (want 43..88)", sri, len(b64))
 	}
 	for _, r := range b64 {
-		if !(r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '+' || r == '/' || r == '=') {
+		alpha := r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' || r >= '0' && r <= '9'
+		if !alpha && r != '+' && r != '/' && r != '=' {
 			return fmt.Errorf("integrity %q: invalid base64 character %q", sri, string(r))
 		}
 	}
@@ -123,7 +124,7 @@ func RenderExtensionManifest(pins []ExtensionPin) (string, error) {
 	}
 	m := make([]ExtensionManifest, len(pins))
 	for i, p := range pins {
-		m[i] = ExtensionManifest{Name: p.Name, Source: p.Source, Integrity: p.Integrity}
+		m[i] = ExtensionManifest(p)
 	}
 	b, err := json.Marshal(m)
 	if err != nil {
@@ -167,7 +168,7 @@ func RenderHarnessManifest(h HarnessRef) (string, error) {
 	if h.Runtime == "" && h.Source == "" && h.Integrity == "" {
 		return "", nil
 	}
-	b, err := json.Marshal(HarnessManifest{Runtime: h.Runtime, Source: h.Source, Integrity: h.Integrity})
+	b, err := json.Marshal(HarnessManifest(h))
 	if err != nil {
 		return "", fmt.Errorf("render harness manifest: %w", err)
 	}

@@ -205,7 +205,7 @@ func extractPkgTarball(tarball []byte, destDir string) error {
 	if err != nil {
 		return fmt.Errorf("gunzip: %w", err)
 	}
-	defer gz.Close()
+	defer func() { _ = gz.Close() }()
 	tr := tar.NewReader(gz)
 	for {
 		hdr, err := tr.Next()
@@ -248,10 +248,12 @@ func extractPkgTarball(tarball []byte, destDir string) error {
 				return err
 			}
 			if _, err := io.Copy(f, tr); err != nil {
-				f.Close()
+				_ = f.Close()
 				return fmt.Errorf("write %s: %w", rel, err)
 			}
-			f.Close()
+			if err := f.Close(); err != nil {
+				return fmt.Errorf("close %s: %w", rel, err)
+			}
 		case tar.TypeSymlink:
 			// npm packages legitimately ship relative symlinks (bin
 			// shims); absolute or escaping targets refuse.
@@ -355,7 +357,7 @@ func getBytes(ctx context.Context, hc *http.Client, url string) ([]byte, error) 
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("GET %s: status %d", url, resp.StatusCode)
 	}

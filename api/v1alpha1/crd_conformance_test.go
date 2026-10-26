@@ -29,6 +29,7 @@ func TestCRDConformance(t *testing.T) {
 		{File: "attempts.harmostes.dev.yaml", Type: reflect.TypeOf(Attempt{})},
 		{File: WorkflowCRDFile, Type: reflect.TypeOf(Workflow{})},
 		{File: WorkflowTemplateCRDFile, Type: reflect.TypeOf(WorkflowTemplate{})},
+		{File: AgentProfileCRDFile, Type: reflect.TypeOf(AgentProfile{})},
 		{File: "connectionprofiles.harmostes.dev.yaml", Type: reflect.TypeOf(ConnectionProfile{})},
 	}
 	crdDir := filepath.Join("..", "..", "chart", "crds") + string(filepath.Separator)

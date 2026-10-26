@@ -186,13 +186,15 @@ func main() {
 	}
 
 	if err := (&controller.WorkflowReconciler{
-		Client:       mgr.GetClient(),
-		Scheme:       mgr.GetScheme(),
-		PollInterval: pollInterval,
-		OTLPEndpoint: otlpEndpoint,
-		OTLPInsecure: otlpInsecure,
-		DaprClient:   daprClient,
-		TriggerTopic: triggerTopic,
+		Client:        mgr.GetClient(),
+		Scheme:        mgr.GetScheme(),
+		Recorder:      mgr.GetEventRecorderFor("harmostes-controller"),
+		KernelVersion: version.Version,
+		PollInterval:  pollInterval,
+		OTLPEndpoint:  otlpEndpoint,
+		OTLPInsecure:  otlpInsecure,
+		DaprClient:    daprClient,
+		TriggerTopic:  triggerTopic,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog("controller setup", err)
 		os.Exit(1)

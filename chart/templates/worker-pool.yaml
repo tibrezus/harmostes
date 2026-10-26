@@ -71,6 +71,13 @@ spec:
                   fieldPath: metadata.namespace
             - name: HARMOSTES_CONSUMER_PORT
               value: "8084"
+            {{- if .Values.agentProfile }}
+            # ADR-0011 amendment 2026-10-26 (phase 1a): forwarded to attempt
+            # Jobs via the dispatch allowlist — the profile's model windows
+            # resolve first and its compatibility statement gates the run.
+            - name: HARMOSTES_AGENT_PROFILE
+              value: {{ .Values.agentProfile | quote }}
+            {{- end }}
             # ── Dispatcher knobs (ADR-0007 phase 3) ──
             - name: HARMOSTES_MAX_CONCURRENT
               value: {{ .Values.worker.job.maxConcurrent | default 3 | quote }}

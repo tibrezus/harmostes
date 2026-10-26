@@ -9,14 +9,17 @@ package controller
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/robfig/cron/v3"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"strings"
@@ -30,11 +33,23 @@ import (
 	"github.com/tibrezus/harmostes/internal/attempt"
 	"github.com/tibrezus/harmostes/internal/dapr"
 	"github.com/tibrezus/harmostes/internal/observability"
+	"github.com/tibrezus/harmostes/version"
 )
 
 // WorkflowReconciler publishes trigger events for due Workflows.
 type WorkflowReconciler struct {
 	client.Client
+
+	// Recorder emits the loud refusal events for the AgentProfile
+	// compatibility guard (ADR-0011 amendment, phase 1a). Wired from the
+	// manager in main; tests may pass a record.NewFakeRecorder.
+	Recorder record.EventRecorder
+
+	// KernelVersion is the running kernel's semantic version (the release
+	// image tag, e.g. "1.4.1") — what compatibility statements evaluate
+	// against. Empty falls back to the build's version package.
+	KernelVersion string
+
 	Scheme       *runtime.Scheme
 	PollInterval time.Duration
 	OTLPEndpoint string // OTLP collector endpoint (stamped on trigger events for the worker)
@@ -99,6 +114,24 @@ func (r *WorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	)
 	if !due {
 		return ctrl.Result{RequeueAfter: requeueAfter}, nil
+	}
+
+	// AgentProfile compatibility guard (ADR-0011 amendment 2026-10-26,
+	// phase 1a — inert by default): the deployment may wire a namespace
+	// AgentProfile (HARMOSTES_AGENT_PROFILE, same env the worker reads).
+	// Its compatibility statement gates DISPATCH: an unsatisfied or
+	// malformed statement refuses the run loudly — a warning Event names
+	// the cause on the workflow, nothing publishes, the trigger slot is
+	// not consumed. Unset env (or a profile without a statement) never
+	// refuses. Deliberately a direct GET at due-time, not a watch: profiles
+	// change on config-delivery cadence (Flux), not fleet cadence —
+	// revisit informer caching in phase 2 when profiles become common.
+	if blocked, cause := r.profileCompat(ctx, wf.Namespace); blocked {
+		logger.Error(nil, "agent profile refuses dispatch", "workflow", wf.Name, "cause", cause)
+		if r.Recorder != nil {
+			r.Recorder.Event(&wf, corev1.EventTypeWarning, "AgentProfileIncompatible", cause)
+		}
+		return ctrl.Result{RequeueAfter: r.PollInterval}, nil
 	}
 
 	// Trigger slot (#343 fix 2): claim BEFORE publishing. Two racing
@@ -520,4 +553,34 @@ func setCondition(conds []metav1.Condition, c metav1.Condition) []metav1.Conditi
 		}
 	}
 	return append(conds, c)
+}
+
+// profileCompat reports whether the namespace's wired AgentProfile (env
+// HARMOSTES_AGENT_PROFILE) refuses dispatch, and if so the named cause. No
+// env → (false, "") — the inert default. A configured-but-absent profile or
+// a malformed/unsatisfied compatibility statement refuses (fail loud, #504):
+// dispatching would only produce attempts the worker fatal-fails at run
+// start, later and louder.
+// runningKernelVersion reports the version compatibility statements evaluate
+// against: the reconciler's explicit field, else the build-injected version.
+func (r *WorkflowReconciler) runningKernelVersion() string {
+	if r.KernelVersion != "" {
+		return r.KernelVersion
+	}
+	return version.Version
+}
+
+func (r *WorkflowReconciler) profileCompat(ctx context.Context, namespace string) (bool, string) {
+	ref := v1alpha1.AgentProfileRefFromEnv(nil)
+	if ref == "" {
+		return false, ""
+	}
+	var p v1alpha1.AgentProfile
+	if err := r.Get(ctx, client.ObjectKey{Namespace: namespace, Name: ref}, &p); err != nil {
+		return true, fmt.Sprintf("agent profile %s/%s is wired (HARMOSTES_AGENT_PROFILE) but cannot be read: %v — fix the profile or unset the env", namespace, ref, err)
+	}
+	if cause := p.Spec.CompatibilityCause(r.runningKernelVersion()); cause != "" {
+		return true, cause
+	}
+	return false, ""
 }

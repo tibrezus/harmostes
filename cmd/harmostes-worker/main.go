@@ -397,7 +397,34 @@ func runOneShot() {
 	// the in-memory spec — pi args, events, graph config and session
 	// metadata all carry the SAME model, and a run never switches models
 	// mid-flight because the clock crossed a window boundary.
-	wf.Spec.Agent.Model = wf.Spec.Agent.ResolveModel(time.Now())
+	//
+	// AgentProfile (ADR-0011 amendment 2026-10-26, phase 1a — inert by
+	// default): when HARMOSTES_AGENT_PROFILE names a profile, its windows
+	// resolve FIRST and its compatibility statement gates the run; no env
+	// (or no match) and the template's own model applies exactly as before.
+	// A configured-but-absent profile, a malformed compatibility statement,
+	// or an unsatisfied one all refuse LOUDLY with the cause named (#504):
+	// a misconfigured decision surface must never silently degrade to the
+	// old behavior.
+	var profile *v1alpha1.AgentProfile
+	if ref := v1alpha1.AgentProfileRefFromEnv(os.Getenv); ref != "" {
+		var err error
+		profile, err = worker.FetchAgentProfile(ctx, cl, namespace, ref)
+		if err != nil {
+			fatal("agent profile: %v — the deployment wired HARMOSTES_AGENT_PROFILE=%s; fix the profile or unset it", err, ref)
+		}
+		if cause := profile.Spec.CompatibilityCause(version.Version); cause != "" {
+			fatal("agent profile %s: %s", ref, cause)
+		}
+		if m := profile.Spec.ResolveModel(time.Now()); m != "" {
+			wf.Spec.Agent.Model = m
+		} else {
+			wf.Spec.Agent.Model = wf.Spec.Agent.ResolveModel(time.Now())
+		}
+		logf("agent profile %s: model %s (kernel %s compatible)", ref, wf.Spec.Agent.Model, version.Version)
+	} else {
+		wf.Spec.Agent.Model = wf.Spec.Agent.ResolveModel(time.Now())
+	}
 
 	runID := runName()
 	sessionMeta := agent.SessionMeta{

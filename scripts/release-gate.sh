@@ -21,7 +21,11 @@
 set -euo pipefail
 
 LABEL="${GATE_LABEL:-minor-approved}"
-BOT_MARKER="generated with Release Please"
+# release-please's footer is "This PR was generated with [Release Please](...)":
+# the words "was generated with" are the stable, plain-text part (the name
+# itself is a markdown link). Chosen over the bare name — a changelog entry
+# can legitimately mention release-please; this phrasing cannot.
+BOT_MARKER="was generated with"
 HOLD_MARKER="release-gate: minor hold"
 REJECT_MARKER="release-gate: provenance reject"
 

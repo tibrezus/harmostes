@@ -4,8 +4,12 @@
 # X.Y.Z" — CHANGELOG.md + version) from the merged conventional subjects:
 # feat → minor, fix/deps → patch, feat!/BREAKING CHANGE → major; chore, ci
 # and docs merge fine but release nothing — they ride along into the next
-# releasable release. The release PR AUTO-MERGES when its checks pass
-# (continuous releases — every releasable merge ships), and merging it
+# releasable release. The release PR AUTO-MERGES when its checks pass —
+# but only through the release gate (scripts/release-gate.sh, ADR-0020
+# Amendment 2026-10-26): patch bumps ship continuously; minor/major bumps
+# are HELD until the owner adds the `minor-approved` label (milestone
+# batching — a held PR keeps absorbing later merges into ONE version).
+# Hand-rolled release PRs are rejected outright. Merging the release PR
 # creates the vX.Y.Z tag, which fires release.yml (GoReleaser builds +
 # atomic OCI chart publish).
 #
@@ -20,6 +24,8 @@ on:
   push:
     branches: [main]
   workflow_dispatch: # manual re-run hook (e.g. after a GitHub API hiccup)
+  pull_request_target:
+    types: [labeled] # the gate re-runs when the owner adds `minor-approved`
 
 permissions:
   contents: write # release PR + tag + GitHub Release
@@ -35,38 +41,24 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: googleapis/release-please-action@v4
+        if: github.event_name != 'pull_request_target' # label events only re-run the gate
         id: release
         with:
           release-type: go
           token: ${{ secrets.HARMOSTES_GITHUB_TOKEN }}
 
-      # Continuous releases (ADR-0020): the release PR merges itself once
-      # green. Delete this step to switch to human-gated release trains —
-      # nothing else changes.
-      #
-      # No checkout in this job: gh gets the repo via -R (a bare gh pr
-      # merge needs a local git repo otherwise), and the PR is found by its
-      # autorelease: pending label so the step is idempotent — it re-arms
-      # automerge on a PR the action created (or updated) in an earlier run
-      # too (first live run failed exactly there: #760 sat un-automerged).
-      - name: Enable auto-merge on the release PR
+      # The release gate (ADR-0020, Amendment 2026-10-26): bot-only
+      # provenance, patch-only automerge, owner-gated minors. Delete this
+      # step to switch to fully manual releases — nothing else changes.
+      # No checkout was needed when this was a bare `gh pr merge`; the gate
+      # is repo logic, so main is checked out — for pull_request_target
+      # that is the BASE ref (never the labeler's code). The PR is found
+      # by its autorelease: pending label so the step is idempotent — it
+      # re-arms automerge on a PR the action created (or updated) in an
+      # earlier run too (first live run failed exactly there: #760 sat
+      # un-automerged).
+      - uses: actions/checkout@v4
+      - name: Release gate
         env:
           GH_TOKEN: ${{ secrets.HARMOSTES_GITHUB_TOKEN }}
-        run: |
-          PR="$(gh pr list -R "$GITHUB_REPOSITORY" --label "autorelease: pending" --state open --json number --jq '.[0].number')"
-          if [ -z "$PR" ]; then
-            echo "no pending release PR — nothing to arm"
-            exit 0
-          fi
-          echo "auto-merge armed on release PR #$PR"
-          gh pr merge "$PR" -R "$GITHUB_REPOSITORY" --auto --squash
-          # Strict branch protection ("require branch up to date") stalls
-          # an armed automerge whenever ANY main merge lands between arming
-          # and completion — including non-releasable ci/chore merges, which
-          # release-please does not consider worth updating its PR for. Keep
-          # the release branch current so the armed merge can land; every
-          # push to main re-runs this step, so the cycle converges.
-          if gh pr view "$PR" -R "$GITHUB_REPOSITORY" --json mergeStateStatus --jq -e '. == "BEHIND"'; then
-            echo "release PR #$PR is BEHIND — updating branch"
-            gh pr update-branch "$PR" -R "$GITHUB_REPOSITORY"
-          fi
+        run: ./scripts/release-gate.sh

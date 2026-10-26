@@ -58,6 +58,12 @@ spec:
             # sidecar strands every claim arm regardless of telemetry).
             - name: HARMOSTES_DAPR_REQUIRED
               value: "true"
+            {{- if .Values.agentProfile }}
+            # ADR-0011 amendment 2026-10-26 (phase 1a): the namespace's
+            # AgentProfile — its compatibility statement gates dispatch.
+            - name: HARMOSTES_AGENT_PROFILE
+              value: {{ .Values.agentProfile | quote }}
+            {{- end }}
             {{- if .Values.observability.enabled }}
             # Controller's own OTel SDK: exports its reconcile/create-worker spans +
             # metrics (Phase 4). Without these, observability.Init is a no-op.

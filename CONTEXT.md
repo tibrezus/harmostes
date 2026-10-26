@@ -80,6 +80,10 @@ _Avoid_: runtime-discovered authority
 A trusted internal configuration entry that defines how Harmostes speaks to a host type or endpoint family, including transport, auth, webhook, and API behavior.
 _Avoid_: per-workflow host mechanics
 
+**Agent Profile**:
+The per-environment agentic configuration record (ADR-0011 amendment, the three-tier split): the deployment's decision surface for the agent runtime pin, the universal extension set, the model windows, the skills pin, and the kernel compatibility statement. The kernel reads it; it never writes it. Absent or inert by default — no profile means the fleet behaves exactly as before.
+_Avoid_: fleet defaults in chart values, per-workflow decision values
+
 **Canonical Surface Kind**:
 A small kernel-recognized category of external surface, such as repository, issue tracker, wiki, review, release target, or webhook origin.
 _Avoid_: plugin-private surface taxonomy

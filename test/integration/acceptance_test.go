@@ -33,6 +33,7 @@ func TestCRDAcceptanceMatrix(t *testing.T) {
 		{File: "attempts.harmostes.dev.yaml", Type: reflect.TypeOf(v1alpha1.Attempt{})},
 		{File: v1alpha1.WorkflowCRDFile, Type: reflect.TypeOf(v1alpha1.Workflow{})},
 		{File: v1alpha1.WorkflowTemplateCRDFile, Type: reflect.TypeOf(v1alpha1.WorkflowTemplate{})},
+		{File: v1alpha1.AgentProfileCRDFile, Type: reflect.TypeOf(v1alpha1.AgentProfile{})},
 		{File: "connectionprofiles.harmostes.dev.yaml", Type: reflect.TypeOf(v1alpha1.ConnectionProfile{})},
 	}
 

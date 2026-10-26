@@ -1,0 +1,135 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: agentprofiles.harmostes.dev
+  annotations:
+    harmostes.dev/framework-version: v0.1
+    harmostes.dev/adr: "ADR-0011 amendment 2026-10-26"
+spec:
+  group: harmostes.dev
+  names:
+    kind: AgentProfile
+    listKind: AgentProfileList
+    singular: agentprofile
+    plural: agentprofiles
+    shortNames: [aprofile]
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      additionalPrinterColumns:
+        - name: Harness
+          type: string
+          jsonPath: .spec.harness.runtime
+        - name: Compat
+          type: string
+          jsonPath: .spec.compatibility
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          type: object
+          description: >-
+            The per-environment agentic configuration (ADR-0011 amendment
+            2026-10-26 - the three-tier split). One profile per namespace or
+            env: the deployment decides how the agent thinks and runs. Phase
+            1a is inert by default: only the model windows and the
+            compatibility statement are consumed; the harness pin, the
+            universal extension set, and the skills pin are carried for the
+            materialization phase.
+          properties:
+            spec:
+              type: object
+              description: >-
+                Every field is optional: a profile that only declares model
+                windows is legal and is the first useful shape.
+              properties:
+                harness:
+                  type: object
+                  description: >-
+                    The pinned agent runtime. pi holds the one privileged
+                    runtime slot; everything else in the agentic world is an
+                    extension. Carried, not consumed, until the
+                    materialization seam lands.
+                  properties:
+                    runtime:
+                      type: string
+                      description: >-
+                        The pinned runtime identity, e.g. pi@1.3.0.
+                    integrity:
+                      type: string
+                      description: >-
+                        The npm integrity hash of the pinned runtime artifact
+                        (e.g. sha512-...). Declared hashes must be exact.
+                extensions:
+                  type: array
+                  description: >-
+                    The UNIVERSAL extension set: exact npm versions plus
+                    integrity hashes, never ranges. Carried, not consumed,
+                    until materialization lands.
+                  items:
+                    type: object
+                    properties:
+                      name:
+                        type: string
+                        description: The extension identity in logs and the composed set.
+                      source:
+                        type: string
+                        description: >-
+                          The exact npm spec, e.g. @tibrezus/sol-pi@1.2.3. A
+                          version range is a fleet-stall hazard and is
+                          rejected by the materialization contract.
+                      integrity:
+                        type: string
+                        description: The npm integrity hash of the exact artifact.
+                models:
+                  type: array
+                  description: >-
+                    The time-windowed model schedule for this environment
+                    (consumed NOW): the worker resolves profile windows
+                    first; when no window matches the template's own agent
+                    model applies. Malformed windows never match - a bad
+                    schedule degrades to the next surface, never fails a run.
+                  items:
+                    type: object
+                    required: [model, start, end]
+                    properties:
+                      model:
+                        type: string
+                        description: The model this window resolves to.
+                      start:
+                        type: string
+                        description: HH:MM in TZ - the window start.
+                      end:
+                        type: string
+                        description: HH:MM in TZ - the window end (midnight wrap allowed).
+                      tz:
+                        type: string
+                        description: IANA zone; empty means UTC.
+                skills:
+                  type: object
+                  description: >-
+                    The served skills repo pin. Carried, not consumed, until
+                    the skills pin migrates to the profile.
+                  properties:
+                    repo:
+                      type: string
+                      description: The skills git repository.
+                    rev:
+                      type: string
+                      description: >-
+                        The pinned revision - a full 40-hex object name
+                        (fetch-by-SHA refuses abbreviations), or empty for
+                        the repo default.
+                compatibility:
+                  type: string
+                  description: >-
+                    The kernel compatibility statement, the single documented
+                    form: kernel >=X.Y.Z. The controller refuses to dispatch
+                    and the worker refuses to run - loudly, with the
+                    statement named - while the running kernel does not
+                    satisfy it. Absent means no statement. Present but
+                    malformed refuses everywhere: a constraint that cannot be
+                    parsed cannot be honored.

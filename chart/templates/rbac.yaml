@@ -68,6 +68,14 @@ rules:
   # ADR-0012 §5): when Flux delivers a spec change, the controller records
   # the revision window into template.harmostes.dev/revisions — annotations
   # only, never spec; git stays the authoring source of truth.
+  # AgentProfile (ADR-0011 amendment 2026-10-26, phase 1a): the controller
+  # reads the namespace's profile at due-time to evaluate its compatibility
+  # statement; the worker reads it at run start for model resolution.
+  # Read-only by construction — profiles are the DEPLOYMENT's decision
+  # surface (delivered via Flux), never written by the kernel.
+  - apiGroups: ["harmostes.dev"]
+    resources: ["agentprofiles"]
+    verbs: ["get", "list", "watch"]
   - apiGroups: ["harmostes.dev"]
     resources: ["workflowtemplates"]
     verbs: ["get", "list", "watch", "update", "patch"]

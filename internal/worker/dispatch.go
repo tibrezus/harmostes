@@ -670,6 +670,12 @@ func triggerSubject(req RunRequest) timeline.Subject {
 // boundary, and future credentials are added here explicitly.
 var jobEnvAllowlist = []string{
 	"HARMOSTES_FORGEJO_TOKEN",
+	// HARMOSTES_AGENT_PROFILE (ADR-0011 amendment 2026-10-26, phase 1a):
+	// the deployment's AgentProfile name — profile windows resolve the
+	// run's model first, and the profile's compatibility statement gates
+	// the run. Forwarded so attempt Jobs (where the model pin happens)
+	// see the same decision the pool and controller see. Unset = inert.
+	"HARMOSTES_AGENT_PROFILE",
 	// CLI-canonical alias names (#374 protocol): the chart aliases the
 	// shared forge secrets at the exact names the agent CLIs read natively
 	// (worker-pool.yaml "CLI aliases" block) — the review agents drive

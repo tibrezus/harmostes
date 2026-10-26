@@ -82,6 +82,14 @@ dapr:
   valkeyDB: "3"
   injectWorker: true    # Dapr sidecar injected into worker Jobs (events/state + clean shutdown)
 
+# AgentProfile (ADR-0011 amendment 2026-10-26, phase 1a): the name of the
+# namespace's AgentProfile CR. Empty (default) = no profile = inert — the
+# fleet behaves exactly as before. When set, the profile's model windows
+# resolve first and its compatibility statement gates dispatch and runs
+# (controller + pool + attempt Jobs all see the same env). The profile CR
+# itself is created by the deployment (phase 2 delivers it via Flux).
+agentProfile: ""
+
 # Worker deployment-node RBAC (G6: vela-app, flux-reconcile). Opt-in —
 # grants cluster-wide access to KubeVela Application + Flux CRs.
 worker:

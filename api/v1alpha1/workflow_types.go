@@ -27,11 +27,13 @@ const Version = "v1alpha1"
 const (
 	WorkflowCRDName         = "workflows." + GroupName
 	WorkflowTemplateCRDName = "workflowtemplates." + GroupName
+	AgentProfileCRDName     = "agentprofiles." + GroupName
 
 	// The chart file names the CRDs ship as (chart/crds/) — derived, so a
 	// rename moves the file references too.
 	WorkflowCRDFile         = WorkflowCRDName + ".yaml"
 	WorkflowTemplateCRDFile = WorkflowTemplateCRDName + ".yaml"
+	AgentProfileCRDFile     = AgentProfileCRDName + ".yaml"
 )
 
 // SchemeGroupVersion is the group:version used to register these types.
@@ -50,6 +52,7 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 	scheme.AddKnownTypes(SchemeGroupVersion, &Attempt{}, &AttemptList{})
 	scheme.AddKnownTypes(SchemeGroupVersion, &ConnectionProfile{}, &ConnectionProfileList{})
 	scheme.AddKnownTypes(SchemeGroupVersion, &WorkflowTemplate{}, &WorkflowTemplateList{})
+	scheme.AddKnownTypes(SchemeGroupVersion, &AgentProfile{}, &AgentProfileList{})
 	metav1.AddToGroupVersion(scheme, SchemeGroupVersion)
 	return nil
 }
@@ -244,26 +247,8 @@ type ModelWindow struct {
 // run start — one resolution per run, so a run that starts inside a window
 // finishes with that window's model even if the clock crosses out.
 func (a AgentSpec) ResolveModel(now time.Time) string {
-	for _, w := range a.Models {
-		loc, err := time.LoadLocation(w.tzOrUTC())
-		if err != nil {
-			continue // unknown zone: the window cannot match, by design
-		}
-		start, err1 := minutesOfDay(w.Start)
-		end, err2 := minutesOfDay(w.End)
-		if err1 != nil || err2 != nil {
-			continue
-		}
-		local := now.In(loc)
-		nowMin := local.Hour()*60 + local.Minute()
-		if w.wrapsMidnight() {
-			// "16:00"→"02:00": the window is [start, 24:00) ∪ [0, end).
-			if nowMin >= start || nowMin < end {
-				return w.Model
-			}
-		} else if nowMin >= start && nowMin < end {
-			return w.Model
-		}
+	if m := resolveModelWindows(a.Models, now); m != "" {
+		return m
 	}
 	return a.Model
 }

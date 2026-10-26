@@ -219,6 +219,18 @@ forkMaintenance:
 # use this for out-of-tree plugins that cannot ship in the image.
 pluginConfigMaps: []
 
+# pluginAggregation: the aggregated plugin mount (#786, three-tier 1b) —
+# when enabled, every ConfigMap labeled harmostes.dev/plugin=<labelValue> in
+# the workflow's namespace projects into each attempt Job's /plugins emptyDir
+# at dispatch (the materialize init; resolved as
+# PluginRef{Name: "<key-without-.sh>", ConfigMap: "<cm-name>"} exactly like
+# the legacy list). Template-count-agnostic: template repos deliver plugin
+# payloads as labeled ConfigMaps and this chart never lists them by name.
+# labelValue lets a deployment namespace the contract (e.g. a tenant value).
+pluginAggregation:
+  enabled: false
+  labelValue: "true"
+
 # harmostes-ui: self-service multi-tenant web interface (HTMX + Go templates).
 # Authenticated via Authentik forward-auth. Each user sees only workflows
 # labeled harmostes.dev/owner=<their-username>; members of ui.adminGroups see

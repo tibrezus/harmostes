@@ -141,6 +141,21 @@ spec:
                           tz: { type: string, description: IANA timezone (default UTC) }                    # litellm/zai/anthropic/glm-5.3-flash
                     skill: { type: string }                    # /skills/…/SKILL.md
                     tools: { type: array, items: { type: string } }
+                    extensions:
+                      type: array
+                      description: >-
+                        The agent's pi-extension DELTA (#786): composED over the
+                        AgentProfile's universal set at dispatch time
+                        (replace-by-name), materialized per-attempt by the
+                        materialize init container — npm, exact version +
+                        integrity, verified against the pin.
+                      items:
+                        type: object
+                        required: [name, source, integrity]
+                        properties:
+                          name: { type: string }
+                          source: { type: string }
+                          integrity: { type: string }
                     excludeTools: { type: array, items: { type: string } }
                     noMcp: { type: boolean }
                     thinking: { type: string, description: "reasoning intent (off..max) → pi --thinking; medium+ also exempts the fleet's deterministic-lean sampling (#680)" }

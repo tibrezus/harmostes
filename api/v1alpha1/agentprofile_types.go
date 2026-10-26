@@ -79,9 +79,19 @@ type HarnessRef struct {
 	// the one privileged runtime slot (ADR-0011 amendment); everything
 	// else in the agentic world is an extension.
 	Runtime string `json:"runtime,omitempty"`
+	// Source is the exact npm spec of the pinned runtime artifact, e.g.
+	// "@earendil-works/pi-coding-agent@1.3.0" — the identity (Runtime) and
+	// the fetchable artifact (Source) are deliberately separate: the
+	// package name may change without the runtime identity changing.
+	// Consumed by the materialization seam (#786); a declared Runtime
+	// without an exact Source and an Integrity hash refuses at dispatch
+	// (a pin that cannot be verified is a silent no-op pretending to be a
+	// pin, #504).
+	Source string `json:"source,omitempty"`
 	// Integrity is the npm integrity hash of the pinned runtime artifact
-	// (e.g. "sha512-..."). Optional until materialization (#786) wires
-	// verification; declared hashes must be exact — no ranges by design.
+	// (e.g. "sha512-..."). Consumed by the materialization seam (#786):
+	// the tarball is verified against THIS hash, never the registry's own
+	// word. Declared hashes must be exact — no ranges by design.
 	Integrity string `json:"integrity,omitempty"`
 }
 

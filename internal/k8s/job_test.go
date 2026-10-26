@@ -781,3 +781,127 @@ func TestBuildJobStampsRunStartedMs(t *testing.T) {
 		t.Fatalf("stamp %v outside the build window [%v, %v]", ms, before, after)
 	}
 }
+
+// #786 (three-tier 1b): the materialization surface is INERT by default —
+// a Job with no extensions, no harness pin, and no aggregation renders
+// without the materialize init, without the runtime/plugins volumes, and
+// without the manifest env vars. Byte-identity of the whole shape is the
+// contract; the next test pins the armed shape.
+func TestBuildJobMaterializationInertByDefault(t *testing.T) {
+	params := AttemptJobParams{
+		Attempt:          jobTestAttempt(),
+		WorkflowName:     "pr-review-harmostes",
+		Namespace:        "harmostes",
+		Extensions:       nil,
+		Harness:          nil,
+		AggregatePlugins: false,
+	}
+	job := BuildJob(params)
+	pod := job.Spec.Template.Spec
+	for _, init := range pod.InitContainers {
+		if init.Name == "materialize" {
+			t.Fatal("inert params rendered a materialize init container")
+		}
+	}
+	for _, v := range pod.Volumes {
+		if v.Name == "runtime" || v.Name == "plugins" {
+			t.Fatalf("inert params rendered volume %q", v.Name)
+		}
+	}
+	for _, c := range pod.Containers {
+		for _, e := range c.Env {
+			if e.Name == "HARMOSTES_EXTENSION_MANIFEST" || e.Name == "HARMOSTES_HARNESS_MANIFEST" {
+				t.Fatalf("inert params rendered env %q on %s", e.Name, c.Name)
+			}
+		}
+	}
+}
+
+func TestBuildJobMaterializationArmed(t *testing.T) {
+	params := AttemptJobParams{
+		Attempt:      jobTestAttempt(),
+		WorkflowName: "pr-review-harmostes",
+		Namespace:    "harmostes",
+		Extensions: []v1alpha1.ExtensionPin{
+			{Name: "left-pad", Source: "left-pad@1.3.0", Integrity: "sha512-AAAA"},
+		},
+		Harness:          &v1alpha1.HarnessRef{Runtime: "pi@1.3.0", Source: "@earendil-works/pi-coding-agent@1.3.0", Integrity: "sha512-BBBB"},
+		AggregatePlugins: true,
+		PluginLabelValue: "true",
+	}
+	job := BuildJob(params)
+	pod := job.Spec.Template.Spec
+
+	// The materialize init exists, runs the worker's init-runtime
+	// subcommand, carries BOTH manifests + the aggregation flag, and mounts
+	// runtime + plugins.
+	var mat *corev1.Container
+	for i := range pod.InitContainers {
+		if pod.InitContainers[i].Name == "materialize" {
+			mat = &pod.InitContainers[i]
+		}
+	}
+	if mat == nil {
+		t.Fatal("armed params rendered no materialize init container")
+	}
+	if len(mat.Command) != 2 || mat.Command[1] != "init-runtime" {
+		t.Fatalf("materialize command = %v, want init-runtime", mat.Command)
+	}
+	env := map[string]string{}
+	for _, e := range mat.Env {
+		env[e.Name] = e.Value
+	}
+	if env["HARMOSTES_EXTENSION_MANIFEST"] == "" || !strings.Contains(env["HARMOSTES_EXTENSION_MANIFEST"], "left-pad@1.3.0") {
+		t.Errorf("init extension manifest = %q", env["HARMOSTES_EXTENSION_MANIFEST"])
+	}
+	if env["HARMOSTES_HARNESS_MANIFEST"] == "" || !strings.Contains(env["HARMOSTES_HARNESS_MANIFEST"], "pi-coding-agent@1.3.0") {
+		t.Errorf("init harness manifest = %q", env["HARMOSTES_HARNESS_MANIFEST"])
+	}
+	if env["HARMOSTES_AGGREGATE_PLUGINS"] != "true" {
+		t.Errorf("aggregation flag = %q", env["HARMOSTES_AGGREGATE_PLUGINS"])
+	}
+	mounts := map[string]bool{}
+	for _, m := range mat.VolumeMounts {
+		mounts[m.MountPath] = true
+	}
+	if !mounts["/runtime"] || !mounts["/plugins"] {
+		t.Errorf("init mounts = %v, want /runtime + /plugins", mounts)
+	}
+
+	// The RUN container consumes the same manifests (presence validation +
+	// pi -e arming) and mounts runtime read-only + plugins.
+	var run *corev1.Container
+	for i := range pod.Containers {
+		if pod.Containers[i].Name == "run" {
+			run = &pod.Containers[i]
+		}
+	}
+	if run == nil {
+		t.Fatal("no run container")
+	}
+	runEnv := map[string]string{}
+	for _, e := range run.Env {
+		runEnv[e.Name] = e.Value
+	}
+	if runEnv["HARMOSTES_EXTENSION_MANIFEST"] != env["HARMOSTES_EXTENSION_MANIFEST"] {
+		t.Error("run container's extension manifest differs from the init's — pool and pod would disagree")
+	}
+	if runEnv["HARMOSTES_HARNESS_MANIFEST"] != env["HARMOSTES_HARNESS_MANIFEST"] {
+		t.Error("run container's harness manifest differs from the init's")
+	}
+	runMounts := map[string]corev1.VolumeMount{}
+	for _, m := range run.VolumeMounts {
+		runMounts[m.MountPath] = m
+	}
+	if m, ok := runMounts["/runtime"]; !ok || !m.ReadOnly {
+		t.Error("run container's /runtime must be read-only (materialized content is init-owned)")
+	}
+	if _, ok := runMounts["/plugins"]; !ok {
+		t.Error("run container lacks the aggregated /plugins mount")
+	}
+	// Init order: materialize BEFORE sync-skills (a #504 refusal surfaces
+	// before the clone burns network).
+	if pod.InitContainers[0].Name != "materialize" {
+		t.Errorf("init order = %q first, want materialize first", pod.InitContainers[0].Name)
+	}
+}

@@ -52,6 +52,12 @@ func ApplyTemplateDefaults(wf *Workflow, tmpl *WorkflowTemplate) {
 	if len(a.Tools) == 0 {
 		a.Tools = ta.Tools
 	}
+	// #786: the template's extension delta flows through templateRef like
+	// every other agent field — a template declaring pi extensions must arm
+	// templateRef workflows, else the materialization is inert on instances.
+	if len(a.Extensions) == 0 {
+		a.Extensions = ta.Extensions
+	}
 	if len(a.ExcludeTools) == 0 {
 		a.ExcludeTools = ta.ExcludeTools
 	}

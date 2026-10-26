@@ -175,10 +175,20 @@ type Loadout struct {
 	// `pi --thinking <level>` when non-empty. Empty = the runtime default
 	// (undeclared nodes must not drift an existing invocation).
 	Thinking string
+	// ExtraExtensions (#786, three-tier 1b): DECLARED extension paths beyond
+	// the image's built-ins — the materialize init's /runtime output,
+	// presence-validated by the run form BEFORE this struct is built (a
+	// declared set never silently shrinks: the caller refuses loudly, #504).
+	// They append to the -e set AFTER the built-ins; their tools join the
+	// --tools allowlist only via the task's declared Tools (extensionTools
+	// maps BUILT-IN paths only — a declared extension's tools are its
+	// task's contract, not the image's). Zero value = byte-identical to
+	// the historical output.
+	ExtraExtensions []string
 }
 
 func PiArgsLoadout(skill, model string, tools []string, lo Loadout) []string {
-	args := buildPiArgs(skill, model, tools, Extensions, os.Stat)
+	args := buildPiArgs(skill, model, tools, append(append([]string{}, Extensions...), lo.ExtraExtensions...), os.Stat)
 	if len(lo.ExcludeTools) > 0 {
 		args = append(args, "--exclude-tools", strings.Join(lo.ExcludeTools, ","))
 	}

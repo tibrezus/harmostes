@@ -121,6 +121,18 @@ spec:
             - name: HARMOSTES_PLUGIN_CONFIGMAPS
               value: {{ . | join "," | quote }}
             {{- end }}
+            {{- if .Values.pluginAggregation.enabled }}
+            {{- /* three-tier 1b (#786): the aggregated plugin mount — every
+                   ConfigMap labeled harmostes.dev/plugin=<labelValue> in the
+                   workflow's namespace projects into each attempt Job's
+                   /plugins emptyDir at dispatch. Template-count-agnostic:
+                   template repos (#789/#790) deliver plugin payloads as
+                   labeled ConfigMaps and the kernel chart never lists them. */}}
+            - name: HARMOSTES_AGGREGATE_PLUGINS
+              value: "true"
+            - name: HARMOSTES_PLUGIN_LABEL_VALUE
+              value: {{ .Values.pluginAggregation.labelValue | default "true" | quote }}
+            {{- end }}
             {{- if .Values.forkMaintenance.enabled }}
             {{- /* Pool-only mounts must reach the per-Attempt Jobs too, or
                    pool-only plugins exec against missing files (#311). The

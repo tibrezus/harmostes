@@ -5092,6 +5092,15 @@ rules:
   - apiGroups: [""]
     resources: ["configmaps", "events"]
     verbs: ["get", "list", "watch", "create", "update", "patch"]
+  # The recorder (mgr.GetEventRecorder, the post-deprecation events API,
+  # #794) writes v1 Events: events.events.k8s.io — core "" events is the
+  # LEGACY surface the old GetEventRecorderFor used. Both groups granted:
+  # the AgentProfile compat refusal (#785) must be VISIBLE (kubectl events /
+  # the UI), not just a controller log line (hit live on harmostes-dev:
+  # "Server rejected event ... cannot create resource events.events.k8s.io").
+  - apiGroups: ["events.k8s.io"]
+    resources: ["events"]
+    verbs: ["create", "patch", "update"]
   # Webhook handler reads Secrets to resolve webhook.secretRef for HMAC verification.
   - apiGroups: [""]
     resources: ["secrets"]

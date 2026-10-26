@@ -1,0 +1,51 @@
+# PR Title Lint (ADR-0020, Amendment 2026-10-26).
+#
+# Squash merges use the PR title as the commit subject, and release-please
+# reads those subjects to compute versions and changelogs. A title it
+# cannot parse (`update stuff`, `WIP`, `feat(#725) missing colon`) is not
+# an error there — it is INVISIBLE: the change merges to main and never
+# ships (that is how #770 stranded until a hand-rolled release PR rescued
+# it — the exact failure this workflow prevents).
+#
+# Accepted: Conventional Commits — `type(scope): description`, with the
+# standard types and `!`/BREAKING CHANGE support. A trailing `(#N)` from
+# the squash-merge suffix is fine. Examples:
+#   fix(piargs): tolerate empty model
+#   feat(#778): the kernel ships logic, not decisions
+#   chore(main): release 1.4.1        (the release PR itself)
+#   chore(deps-dev): bump vitest      (dependabot)
+name: PR Title Lint
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, ready_for_review]
+
+permissions: {} # no secrets needed — a failed check is the whole point
+
+concurrency:
+  group: title-lint-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check PR title is a conventional commit
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          re='^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([A-Za-z0-9._,#/ -]+\))?!?: .+'
+          if [[ "$TITLE" =~ $re ]]; then
+            echo "title OK: $TITLE"
+            exit 0
+          fi
+          echo "::error::PR title is not a conventional commit: '$TITLE'"
+          echo ""
+          echo "The title becomes the squash-merge commit; the release machine"
+          echo "ships ONLY what it can parse. Use: type(scope): description"
+          echo "  types: feat fix docs style refactor perf test build ci chore revert"
+          echo "  e.g.  fix(piargs): tolerate empty model"
+          echo "An unconsumable title merges fine but NEVER releases — the change"
+          echo "strands on main until the next parseable merge (see ADR-0020)."
+          exit 1

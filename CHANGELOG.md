@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.8.0](https://github.com/tibrezus/harmostes/compare/v1.7.1...v1.8.0) (2026-10-28)
+
+
+### Features
+
+* **three-tier 1c:** the Template CR becomes self-describing; the write path retargets ([#808](https://github.com/tibrezus/harmostes/issues/808)) ([727261a](https://github.com/tibrezus/harmostes/commit/727261aeed99465d6442758d658a8d5685e0940c))
+
 ## [1.7.1](https://github.com/tibrezus/harmostes/compare/v1.7.0...v1.7.1) (2026-10-28)
 
 

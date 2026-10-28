@@ -190,6 +190,31 @@ spec:
                     pvc: { type: string }
                     ttl: { type: string }
 
+                # three-tier 1c (#787): the template's own repo — one source
+                # of truth. Set = the MR bridge proposes against THIS repo
+                # (standalone document) and signed pushes land as revision
+                # identity. Unset = the environment's shared template source.
+                source:
+                  type: object
+                  required: [forge, repo, path]
+                  properties:
+                    forge: { type: string, enum: [github, gitlab], description: "REST dialect for the propose bridge" }
+                    repo: { type: string, description: "owner/name" }
+                    path: { type: string, description: "the template document inside the repo" }
+                    branch: { type: string, description: "default main" }
+                    secretRef:
+                      type: object
+                      required: [name, key]
+                      properties:
+                        name: { type: string }
+                        key: { type: string }
+
+                # three-tier 1c (#787): the template's own plugin payload —
+                # an explicit ConfigMap ref (no naming conventions), projected
+                # into /plugins by the materialize init next to the
+                # label-aggregated set. Empty = aggregation path alone.
+                pluginsConfigMapRef: { type: string }
+
                 # scoped shared storage components (#516 C2): sandboxes stay
                 # isolated per attempt; named stores are shared on demand at
                 # the declared scope (workflow | repository | attempt).

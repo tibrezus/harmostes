@@ -130,8 +130,14 @@ type WorkflowSpec struct {
 	//     pvc: harmostes-worker-sessions
 	//     mountPath: /attachments/sol-pi
 	Attachments []SharedAttachment `json:"attachments,omitempty"`
-	Scaling     *ScalingSpec       `json:"scaling,omitempty"`
-	Disabled    bool               `json:"disabled,omitempty"`
+	// PluginsConfigMapRef names an explicitly-referenced plugin payload
+	// ConfigMap (three-tier 1c): the template declares the default
+	// (WorkflowTemplateSpec.PluginsConfigMapRef), the instance may point
+	// elsewhere. Projected into /plugins by the materialize init next to
+	// the label-aggregated set. Empty = none.
+	PluginsConfigMapRef string       `json:"pluginsConfigMapRef,omitempty"`
+	Scaling             *ScalingSpec `json:"scaling,omitempty"`
+	Disabled            bool         `json:"disabled,omitempty"`
 }
 
 // WorkspaceRepoSpec is the repo a pipeline operates on. The worker fetches it

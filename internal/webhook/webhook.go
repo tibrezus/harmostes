@@ -62,6 +62,9 @@ type PushEvent struct {
 	} `json:"repository"`
 	After  string `json:"after"`  // new HEAD commit SHA
 	Before string `json:"before"` // old HEAD commit SHA (0000000000000000000000000000000000000000 = new branch)
+	Pusher struct {
+		Name string `json:"name"` // who pushed (template landing identity, three-tier 1c)
+	} `json:"pusher"`
 }
 
 // PullRequestEvent is the GitHub-consolidated pull_request event (GitHub

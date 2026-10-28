@@ -86,6 +86,9 @@ spec:
                           properties:
                             name: { type: string } # Secret name
                             key: { type: string }  # Secret key
+                # three-tier 1c (#787): the template's plugin payload ref
+                # (merged from the template by default; instance wins)
+                pluginsConfigMapRef: { type: string }
                 workspaceRepo:                      # the repo the pipeline operates on (the wiki; the fork)
                   type: object
                   properties:

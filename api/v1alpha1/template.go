@@ -52,6 +52,11 @@ func ApplyTemplateDefaults(wf *Workflow, tmpl *WorkflowTemplate) {
 	if len(a.Tools) == 0 {
 		a.Tools = ta.Tools
 	}
+	// #787: the template's own plugin payload flows through templateRef
+	// like every other config field — instance wins, template default fills.
+	if s.PluginsConfigMapRef == "" {
+		s.PluginsConfigMapRef = t.PluginsConfigMapRef
+	}
 	// #786: the template's extension delta flows through templateRef like
 	// every other agent field — a template declaring pi extensions must arm
 	// templateRef workflows, else the materialization is inert on instances.
@@ -157,4 +162,19 @@ type TemplateRevision struct {
 	Rev         int                  `json:"rev"`
 	Description string               `json:"description,omitempty"`
 	Spec        WorkflowTemplateSpec `json:"spec"`
+	// Landing records the git delivery event the revision corresponds to
+	// (three-tier 1c): the signed push webhook stashes it as a pending
+	// annotation; the history recorder consumes it on the next append.
+	// Nil = uncorrelated (the default when no webhook is configured — the
+	// revision is still authoritative, it just carries no commit identity).
+	Landing *TemplateRevisionLanding `json:"landing,omitempty"`
+}
+
+// TemplateRevisionLanding is the commit identity of a template landing:
+// the minimum a push event proves (HEAD sha + who pushed). Full commit
+// metadata stays in the template repo's git log — this is the pointer.
+type TemplateRevisionLanding struct {
+	Sha    string `json:"sha"`
+	Pusher string `json:"pusher,omitempty"`
+	At     string `json:"at,omitempty"` // RFC3339, when the webhook landed
 }

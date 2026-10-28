@@ -186,3 +186,130 @@ func indent(s, pad string) string {
 	}
 	return strings.Join(lines, "\n")
 }
+
+// TestSpliceTemplateDocument_PreservesEverythingExceptSpec pins the
+// document-mode splice (three-tier 1c): the template-repo file's non-spec
+// sections survive verbatim, the spec's internal comments re-attach by
+// structural path, a REMOVED key's comment drops with it (#459), and a
+// full-leaf probe document survives the round trip losslessly.
+func TestSpliceTemplateDocument_PreservesEverythingExceptSpec(t *testing.T) {
+	raw := fmt.Sprintf(`# The pr-review template, maintained in its own repo.
+apiVersion: %s
+kind: WorkflowTemplate
+metadata:
+  name: pr-review  # the CR name
+  labels:
+    harmostes.dev/owner: platform
+spec:
+  # What this pipeline does, in one line.
+  description: review PRs
+  prepare:
+    plugin:
+      # vendored-first workspace build
+      name: workspace
+  agent:
+    enabled: false
+    model: litellm/zai/anthropic/glm-5.3-flash # night window model
+    gate:
+      plugin:
+        name: pr-review
+  deploy:
+    plugin:
+      name: noop
+`, v1alpha1.SchemeGroupVersion.Identifier())
+
+	// The proposal: same template, deploy dropped, model changed, the
+	// prepare comment's key kept.
+	var doc templateDocument
+	if err := sigsyaml.Unmarshal([]byte(raw), &doc); err != nil {
+		t.Fatalf("decode fixture: %v", err)
+	}
+	doc.Spec.Agent.Model = "litellm/mtplx/anthropic/qwen38-27b"
+	doc.Spec.Deploy = v1alpha1.DeploySpec{}
+
+	updated, oldSpecYAML, newSpecYAML, err := spliceTemplateDocument(raw, doc.Spec)
+	if err != nil {
+		t.Fatalf("splice: %v", err)
+	}
+
+	// Non-spec sections byte-identical.
+	for _, want := range []string{
+		"# The pr-review template, maintained in its own repo.",
+		"name: pr-review  # the CR name",
+		"harmostes.dev/owner: platform",
+	} {
+		if !strings.Contains(updated, want) {
+			t.Errorf("non-spec content lost:\n%q\nnot in:\n%s", want, updated)
+		}
+	}
+	// Surviving spec-internal comment re-attached; removed key's comment gone.
+	if !strings.Contains(updated, "# What this pipeline does, in one line.") {
+		t.Error("surviving spec comment dropped")
+	}
+	if !strings.Contains(updated, "# vendored-first workspace build") {
+		t.Error("prepare comment dropped")
+	}
+	// Comments are KEY-scoped (#459 structural path): a changed value keeps
+	// its line comment — the comment documents the key's intent, not the
+	// literal. The propose diff shows the value change; the comment rides.
+	if !strings.Contains(updated, "# night window model") {
+		t.Error("model's line comment dropped on a value change — comments are key-scoped")
+	}
+	if strings.Contains(updated, "deploy") {
+		t.Errorf("removed deploy still present:\n%s", updated)
+	}
+	if strings.Contains(updated, "name: noop") {
+		t.Error("removed deploy's content survived")
+	}
+	// The changed value landed.
+	if !strings.Contains(updated, "qwen38-27b") {
+		t.Error("the proposed model did not land")
+	}
+
+	// The updated file parses as the same template.
+	var after templateDocument
+	if err := sigsyaml.Unmarshal([]byte(updated), &after); err != nil {
+		t.Fatalf("spliced file no longer decodes: %v\n%s", err, updated)
+	}
+	if after.Metadata.Name != "pr-review" || after.Spec.Agent.Model != doc.Spec.Agent.Model {
+		t.Fatalf("spliced document drifted: %+v", after)
+	}
+
+	// Canonical old spec is non-empty (the no-op check compares these).
+	if oldSpecYAML == "" || newSpecYAML == "" {
+		t.Fatalf("canonical specs empty: old=%q new=%q", oldSpecYAML, newSpecYAML)
+	}
+}
+
+// TestTemplateSourceOf pins target resolution: nil spec → the env source in
+// values mode; a declared spec → the template's repo in document mode; a
+// declared-but-invalid source REFUSES (never silently falls back to the
+// shared file — the wrong-repo edit is worse than no edit).
+func TestTemplateSourceOf(t *testing.T) {
+	env := &TemplateSource{Host: "github", Owner: "tibrezus", Repo: "harmostes", BaseBranch: "main", Path: "chart/values.yaml", ValuesKey: "workflowTemplates"}
+
+	ts, doc, err := templateSourceOf(env, nil)
+	if err != nil || doc || ts != env {
+		t.Fatalf("nil spec = %+v, doc=%v, %v; want env source, values mode", ts, doc, err)
+	}
+
+	src := &v1alpha1.TemplateSourceSpec{Forge: "gitlab", Repo: "tibrez/templates", Path: "templates/pr-review.yaml"}
+	ts, doc, err = templateSourceOf(env, src)
+	if err != nil || !doc {
+		t.Fatalf("declared spec = %+v, doc=%v, %v; want template repo, document mode", ts, doc, err)
+	}
+	if ts.Host != "gitlab" || ts.Owner != "tibrez" || ts.Repo != "templates" || ts.BaseBranch != "main" || ts.Path != "templates/pr-review.yaml" {
+		t.Fatalf("resolved target = %+v", ts)
+	}
+
+	bad := &v1alpha1.TemplateSourceSpec{Forge: "gitea", Repo: "x/y", Path: "t.yaml"}
+	if _, _, err := templateSourceOf(env, bad); err == nil {
+		t.Fatal("invalid declared source did not refuse")
+	}
+
+	// No env source AND no declared source: the propose surface degrades to
+	// absent — an explicit error, never a nil-deref.
+	if _, _, err := templateSourceOf(nil, nil); err == nil {
+		t.Fatal("no source at all did not refuse")
+	}
+}

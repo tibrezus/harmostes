@@ -153,6 +153,11 @@ type AttemptJobParams struct {
 	// existing /plugins/<cm>/<name>.sh contract just works). Inert default.
 	AggregatePlugins bool
 	PluginLabelValue string
+	// PluginRefs (#787, three-tier 1c): ConfigMaps explicitly referenced by
+	// the resolved template's pluginsConfigMapRef — projected into /plugins
+	// alongside the label-aggregated set, independent of the aggregation
+	// switch. Empty = none (the inert default).
+	PluginRefs []string
 }
 
 // AttachmentSubPath derives the SubPath for a scoped shared attachment:
@@ -442,11 +447,26 @@ func BuildJob(p AttemptJobParams) *batchv1.Job {
 		volumes = append(volumes, corev1.Volume{Name: "runtime", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}})
 		mounts = append(mounts, corev1.VolumeMount{Name: "runtime", MountPath: "/runtime", ReadOnly: true})
 	}
+	// The run form's half (three-tier 1c): ConsumeMaterializedRuntime
+	// verifies every declared ref materialized — the run container carries
+	// the same list the init projected.
+	if len(p.PluginRefs) > 0 {
+		env = append(env, corev1.EnvVar{Name: "HARMOSTES_PLUGIN_REFS", Value: strings.Join(p.PluginRefs, ",")})
+	}
 	if p.AggregatePlugins {
 		initEnv = append(initEnv,
 			corev1.EnvVar{Name: "HARMOSTES_AGGREGATE_PLUGINS", Value: "true"},
 			corev1.EnvVar{Name: "HARMOSTES_PLUGIN_LABEL_VALUE", Value: p.PluginLabelValue},
 		)
+	}
+	// Explicit template payload refs (three-tier 1c): independent of the
+	// label aggregation — a template's own ConfigMap projects even where the
+	// fleet label mode is off (the ref is template-scoped, the label is
+	// fleet-wide).
+	if len(p.PluginRefs) > 0 {
+		initEnv = append(initEnv, corev1.EnvVar{Name: "HARMOSTES_PLUGIN_REFS", Value: strings.Join(p.PluginRefs, ",")})
+	}
+	if p.AggregatePlugins || len(p.PluginRefs) > 0 {
 		initMounts = append(initMounts, corev1.VolumeMount{Name: "plugins", MountPath: pluginsMountPrefix})
 		volumes = append(volumes, corev1.Volume{Name: "plugins", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}})
 		// The static plugin-CM mounts (legacy list) still render: a deeper
@@ -457,7 +477,7 @@ func BuildJob(p AttemptJobParams) *batchv1.Job {
 	// Init order: materialize FIRST — a #504 refusal must surface before the
 	// skills clone burns network on a pod that can never run.
 	materializeInit := []corev1.Container{}
-	if wantRuntimeMount || p.AggregatePlugins {
+	if wantRuntimeMount || p.AggregatePlugins || len(p.PluginRefs) > 0 {
 		materializeInit = append(materializeInit, corev1.Container{
 			Name:         "materialize",
 			Image:        p.Image,

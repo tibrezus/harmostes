@@ -256,3 +256,42 @@ func TestProjectPlugins(t *testing.T) {
 }
 
 // --- fake-client plumbing -------------------------------------------------
+
+// TestProjectPluginRefs pins the explicit-ref path (three-tier 1c): the
+// template's own payload projects by NAME, label-independent; an unknown
+// ref is a loud error (#504), never a silent empty dir; duplicate names
+// project once.
+func TestProjectPluginRefs(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	named := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "ns", Name: "tpl-own-plugins"}, // NO label — the ref is the contract
+		Data:       map[string]string{"deploy.sh": "#!/bin/sh\necho own\n"},
+	}
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(named).Build()
+	dest := t.TempDir()
+
+	n, err := ProjectPluginRefs(context.Background(), cl, "ns", []string{"tpl-own-plugins"}, dest)
+	if err != nil || n != 1 {
+		t.Fatalf("refs projection = %d, %v; want 1, nil", n, err)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "tpl-own-plugins", "deploy.sh")); err != nil {
+		t.Fatalf("named payload not projected: %v", err)
+	}
+
+	// Dedupe: the same name twice projects once.
+	dest2 := t.TempDir()
+	n, err = ProjectPluginRefs(context.Background(), cl, "ns", []string{"tpl-own-plugins", "tpl-own-plugins"}, dest2)
+	if err != nil || n != 1 {
+		t.Fatalf("deduped projection = %d, %v; want 1, nil", n, err)
+	}
+
+	// An unknown ref refuses with the name — an explicit declaration must
+	// resolve or the run never starts.
+	_, err = ProjectPluginRefs(context.Background(), cl, "ns", []string{"no-such-cm"}, dest)
+	if err == nil || !strings.Contains(err.Error(), "no-such-cm") {
+		t.Fatalf("unknown ref not refused with the name: %v", err)
+	}
+}

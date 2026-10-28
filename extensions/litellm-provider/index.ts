@@ -71,8 +71,9 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { applyChains, resolveFallbackChains, wiringSummary } from "./fallbacks.ts";
 import { FLEET_SAMPLING_BY_THINKING_LEVEL } from "./sampling.ts";
+import { deserializeThinking, wireThinkingMap } from "./thinking.ts";
 
-export default async function (_pi: ExtensionAPI) {
+export default async function (pi: ExtensionAPI) {
   const rawUrl = process.env.LITELLM_URL;
   const apiKey = process.env.LITELLM_API_KEY;
 
@@ -143,7 +144,16 @@ export default async function (_pi: ExtensionAPI) {
     models: annotated.map((model) => ({
       id: model.id,
       name: model.id,
-      reasoning: false,
+      // The hybrid engines on this proxy (qwen3.8-class) REASON BY DEFAULT
+      // and unboundedly when undeclared — measured on the pinned speed
+      // group: 80% of decoded tokens were reasoning at ~7.3 tok/s (see
+      // thinking.ts for the numbers). Declaring reasoning lets pi carry
+      // the template's thinking level; string-thinking + the wire map
+      // translate it into the ONE shape these routes honor (the anthropic
+      // object — reasoning_effort, enable_thinking and chat_template_kwargs
+      // were all measured inert). thinking.ts owns the table.
+      reasoning: true,
+      thinkingLevelMap: wireThinkingMap(),
       input: ["text" as const],
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       contextWindow: model.contextWindow,
@@ -166,9 +176,19 @@ export default async function (_pi: ExtensionAPI) {
         // LiteLLM proxies upstream providers; use the broadest-compatible flags.
         supportsDeveloperRole: false,
         maxTokensField: "max_tokens",
+        // pi serializes the level through ThinkingLevelMap verbatim (a JSON
+        // string — pi's map is string-typed); before_provider_request below
+        // parses the envelope back onto the wire.
+        thinkingFormat: "string-thinking",
       },
     })),
   });
+
+  // The wire rewrite: string envelopes from the level map become the
+  // anthropic thinking objects these routes honor. Pure and table-tested
+  // (thinking.ts / thinking.test.ts); anything that isn't our envelope
+  // passes through untouched.
+  pi.on("before_provider_request", (event) => deserializeThinking(event.payload));
 
   for (const model of annotated) {
     for (const id of model.droppedIds) {

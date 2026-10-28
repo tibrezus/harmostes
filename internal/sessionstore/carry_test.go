@@ -181,7 +181,7 @@ func TestExtractCarryOnRealOutageBlob(t *testing.T) {
 	// context_edit) and land far under the cap.
 	var transcript strings.Builder
 	transcript.WriteString(line(t, map[string]any{"type": "session", "id": "harmostes-2833", "timestamp": "2026-10-22T12:18:27Z", "version": 3}) + "\n")
-	transcript.WriteString(line(t, map[string]any{"type": "model_change", "modelId": "ali/anthropic/qwen3.8-flash", "timestamp": "2026-10-22T12:18:27Z"}) + "\n")
+	transcript.WriteString(line(t, map[string]any{"type": "model_change", "modelId": "litellm/test/legacy-primary", "timestamp": "2026-10-22T12:18:27Z"}) + "\n")
 	transcript.WriteString(line(t, map[string]any{"type": "custom", "customType": "sol-pi-online-context-state-v1", "data": map[string]any{"epoch": 0}, "timestamp": "2026-10-22T12:18:28Z"}) + "\n")
 	for i := 0; i < 320; i++ {
 		transcript.WriteString(line(t, map[string]any{"type": "message", "timestamp": "2026-10-28T18:00:00Z", "message": map[string]any{
@@ -196,7 +196,7 @@ func TestExtractCarryOnRealOutageBlob(t *testing.T) {
 	if len(carry) > MaxCarryBytes {
 		t.Fatalf("carry %d over cap", len(carry))
 	}
-	if !strings.Contains(carry, "bash×320") || !strings.Contains(carry, "ali/anthropic/qwen3.8-flash") {
+	if !strings.Contains(carry, "bash×320") || !strings.Contains(carry, "litellm/test/legacy-primary") {
 		t.Errorf("outage-shape extraction lost facts:\n%s", carry)
 	}
 	if !strings.Contains(carry, "Coverage declared in review.json") {

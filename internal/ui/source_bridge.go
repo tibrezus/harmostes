@@ -335,7 +335,7 @@ func captureComments(n *goyaml.Node, path string, into map[string]commentSet) {
 // key's commentSet to the VALUE node at the top of the recursion, so every
 // head comment rendered TWICE (once before the key, once before the next —
 // latent in values mode too: its real entries carry no internal comments,
-// so nothing looked). 
+// so nothing looked).
 func attachCommentsInner(n *goyaml.Node, path string, from map[string]commentSet) {
 	switch n.Kind {
 	case goyaml.MappingNode:

@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.7.1](https://github.com/tibrezus/harmostes/compare/v1.7.0...v1.7.1) (2026-10-28)
+
+
+### Bug Fixes
+
+* **worker:** the usage string knows init-runtime ([#786](https://github.com/tibrezus/harmostes/issues/786) follow-up) — the subcommand shipped but both help strings still said run|consumer ([#806](https://github.com/tibrezus/harmostes/issues/806)) ([0afa324](https://github.com/tibrezus/harmostes/commit/0afa324662490f24c2de0acbd0a0076da24fe89c))
+
 ## [1.7.0](https://github.com/tibrezus/harmostes/compare/v1.6.0...v1.7.0) (2026-10-28)
 
 

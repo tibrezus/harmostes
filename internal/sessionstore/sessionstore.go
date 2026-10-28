@@ -135,7 +135,17 @@ type Lineage struct {
 	// File is the pi-side FILENAME of the live conversation (pi renames
 	// sessions to "<ts>_<id>.jsonl" after the first turn); fetch must
 	// materialize under the SAME name or pi cannot adopt it (r21 P4.1).
+	// LEGACY (ADR-0022): transcripts are no longer stored — new publishes
+	// leave Session and File empty and store the bounded Carry instead.
+	// The fields remain for the one-way read path: a legacy lineage's
+	// transcript is folded to a carry at fetch, then never resumed.
 	File string `json:"file,omitempty"`
+	// Carry is the bounded deterministic trace of prior rounds (ADR-0022):
+	// what they did (tools, files, models) and concluded (closing
+	// rationale), newest first, folded across rounds, capped by
+	// MaxCarryBytes. Served to the next round as the session note — the
+	// round starts FRESH and carries the trace, never the transcript.
+	Carry string `json:"carry,omitempty"`
 }
 
 // Advance is the server-side publish rule: the generation is
@@ -206,19 +216,55 @@ func (s Store) Publish(ctx context.Context, repo, pr string, in Lineage) error {
 	return err
 }
 
-// Materialize writes the stored lineage's session under a pi-ADOPTABLE
-// name in dir and reports whether the run resumes. Only a basename ending
-// in "_"+id+".jsonl" is honored (client-settable File must never become a
-// traversal write path — r24 P4.1).
-func Materialize(dir, id string, l Lineage) (name string, ok bool, err error) {
-	name = filepath.Base(l.File)
-	if !strings.HasSuffix(name, "_"+id+".jsonl") {
-		name = filepath.Base(LineageSessionPath(dir, id))
+// TailBytes returns the last max bytes of s, cut at a line boundary
+// (the oldest lines fall off; the newest turns and the closing rationale
+// survive). A transcript grows by APPENDING, so the tail is the newest
+// content — the part a trace exists for.
+func TailBytes(s string, max int) string {
+	if len(s) <= max {
+		return s
 	}
-	if err = os.WriteFile(filepath.Join(dir, name), []byte(l.Session), 0o600); err != nil {
-		return "", false, err
+	cut := s[len(s)-max:]
+	if i := strings.IndexByte(cut, '\n'); i >= 0 && i < len(cut)-1 {
+		cut = cut[i+1:]
 	}
-	return name, l.Session != "", nil
+	return cut
+}
+
+// TailBytesB is TailBytes over bytes.
+func TailBytesB(b []byte, max int) []byte {
+	return []byte(TailBytes(string(b), max))
+}
+
+// ResetLineage removes this PR's local session files (the pi-adoptable
+// "<ts>_<id>.jsonl" set and the legacy bare id) so a spawn with the stable
+// id cannot silently ADOPT a stale transcript from the workflow-shared
+// PVC (ADR-0022: rounds start fresh). Same-PR attempts are serialized by
+// the review claim, so only this PR's files are touched. Returns the
+// number of files removed.
+func ResetLineage(dir, id string) (int, error) {
+	patterns := []string{
+		filepath.Join(dir, "*_"+id+".jsonl"),
+		filepath.Join(dir, id+".jsonl"), // legacy bare name
+	}
+	removed := 0
+	seen := map[string]bool{}
+	for _, p := range patterns {
+		matches, err := filepath.Glob(p)
+		if err != nil {
+			return removed, err
+		}
+		for _, m := range matches {
+			if seen[m] {
+				continue
+			}
+			seen[m] = true
+			if err := os.Remove(m); err == nil {
+				removed++
+			}
+		}
+	}
+	return removed, nil
 }
 
 // LinkComponent is the lineage-dir component the vendored SoL-Pi

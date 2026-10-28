@@ -133,7 +133,7 @@ export default async function (pi: ExtensionAPI) {
     console.error(`[litellm-provider] note: default-table primary not served by this proxy (chain inert): ${unwiredChains.join(", ")}`);
   }
 
-  _pi.registerProvider("litellm", {
+  pi.registerProvider("litellm", {
     name: "LiteLLM Proxy",
     baseUrl: `${baseUrl}/v1`,
     apiKey: "$LITELLM_API_KEY",

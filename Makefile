@@ -80,6 +80,7 @@ test-extensions:
 		extensions/rig-query/index.runtime.test.ts \
 		extensions/litellm-provider/fallbacks.test.ts \
 		extensions/litellm-provider/thinking.test.ts \
+		extensions/litellm-provider/factory.test.ts \
 		extensions/turn-budget/policy.test.ts \
 		extensions/turn-budget/index.test.ts \
 		extensions/turn-budget/contract.test.ts \

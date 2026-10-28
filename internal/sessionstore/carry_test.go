@@ -89,7 +89,9 @@ func TestExtractCarryRoundsSkeleton(t *testing.T) {
 
 func TestExtractCarryDeterministic(t *testing.T) {
 	raw := sampleTranscript(t)
-	if ExtractCarry(raw, "", "deadbeef") != ExtractCarry(raw, "", "deadbeef") {
+	first := ExtractCarry(raw, "", "deadbeef")
+	second := ExtractCarry(raw, "", "deadbeef")
+	if first != second {
 		t.Error("extraction is not deterministic")
 	}
 }
@@ -103,7 +105,7 @@ func TestExtractCarryFoldsPriorNewestFirst(t *testing.T) {
 	if hi < 0 || mid < 0 || lo < 0 {
 		t.Fatalf("folded carry missing a layer:\n%s", carry)
 	}
-	if !(hi < mid && mid < lo) {
+	if hi >= mid || mid >= lo {
 		t.Errorf("fold order is not newest-first (head@%d, prior@%d, older@%d)", hi, mid, lo)
 	}
 	if !strings.Contains(carry, "Earlier rounds") {

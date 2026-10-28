@@ -559,14 +559,18 @@ func runOneShot() {
 			logf("sessions TTL %q unparsable — lineages not pruned", ttl)
 		}
 	}
-	// ADR-0010: PR-shaped runs own ONE session lineage — resume, don't
-	// rebuild. The delta note (HARMOSTES_SESSION_RESUME) is read by the
-	// graph agent executor; this process runs exactly one review, so the
-	// process env is the correct scope for it.
-	maxLineageBytes := 20 << 20 // Lineage durability bound — mirrors SavePiSession (r22 P5)
-	lineageDir, sessionID, actorID := "", "", ""
+	// ADR-0010 → ADR-0022: PR-shaped runs own ONE session lineage, but the
+	// lineage carries the TRACE, never the transcript. The mtplx engine
+	// prefills at ~100 tok/s (owner measurement, 2026-10-25); a resumed
+	// lineage reached ~162k window tokens on rhesadox#2833 — a ~27-minute
+	// prefill that timed out every dispatch before turn one. Rounds start
+	// FRESH and receive the prior rounds' bounded carry as the session
+	// note (the executor appends it verbatim; the kernel holds no
+	// pr-review vocabulary of its own).
+	maxLineageBytes := 20 << 20 // extraction read bound — mirrors SavePiSession (r22 P5)
+	lineageDir, sessionID, actorID, priorCarry, lineageGen := "", "", "", "", 0
 	if piSessions != "" {
-		if dir, id, aid, resume, err := sessionLineageForRun(piSessions); err != nil {
+		if dir, id, aid, _, err := sessionLineageForRun(piSessions); err != nil {
 			logf("session lineage unavailable, per-run persistence: %v", err)
 		} else if dir != "" {
 			lineageDir, sessionID, actorID = dir, id, aid
@@ -580,42 +584,39 @@ func runOneShot() {
 			// cross-workflow reads stay off until an upstream redaction hook
 			// lands — per-workflow dedup and TTL immunity are live now.
 			sessionstore.LinkSharedStore(dir, workflow, os.Getenv("HARMOSTES_SOL_PI_STORE"), logf)
-			// Durable half (r20 P1): Job pods die with /tmp — the PRLineage
-			// ACTOR owns the lineage (isolated + durable + turn-based);
-			// fetch it and materialize as the local session file, so the
-			// stable id RESUMES the real conversation (KV-cache economics).
+			// Durable half (r20 P1, reversed by ADR-0022): the actor still
+			// owns the lineage (isolated + durable + turn-based) — but what
+			// it stores is the CARRY. A legacy lineage's raw transcript is
+			// folded to a carry here, once, and never resumed.
 			store := sessionstore.Store{Actors: deps.Dapr}
 			sess, ferr := store.Fetch(ctx, triggerRepo(), triggerPR())
 			if ferr != nil {
 				logf("session lineage fetch failed (fresh if absent): %v", ferr)
-			} else if sess.Session != "" {
-				// Materialize under the pi-ADOPTABLE name (the stored
-				// filename if the actor has one). VALIDATED (r24 P4.1):
-				// File is client-settable state; only a basename ending in
-				// "_"+id+".jsonl" is honored — traversal strings are not
-				// write paths.
-				name, resumed, merr := sessionstore.Materialize(dir, id, sess)
-				if merr != nil {
-					logf("session lineage materialize failed: %v", merr)
-				} else {
-					resume = resumed
-					logf("session lineage: actor gen=%d lastHead=%s file=%s", sess.Generation, sess.LastHead, name)
-				}
 			}
-			if resume {
-				_ = os.Setenv("HARMOSTES_SESSION_RESUME", "1")
-				// C4: the note TEXT is composed here — the process that owns
-				// the lineage fact and the new head — and carried to the
-				// executor as data. The kernel-side executor renders
-				// envelope-provided notes verbatim; it holds no
-				// pr-review vocabulary of its own.
-				note := "Session note: this is a RESUMED session. Your prior orientation, findings, and verdict reasoning are already in the transcript above — do not redo that work. Verify only what changed since your last turn"
+			priorCarry, lineageGen = sess.Carry, sess.Generation
+			if priorCarry == "" && sess.Session != "" {
+				if len(sess.Session) > maxLineageBytes {
+					logf("WARN: legacy transcript %d bytes over the %d cap — folding the tail (newest) only", len(sess.Session), maxLineageBytes)
+					sess.Session = sessionstore.TailBytes(sess.Session, maxLineageBytes)
+				}
+				priorCarry = sessionstore.ExtractCarry([]byte(sess.Session), "", sess.LastHead)
+				logf("session lineage: legacy transcript folded to a %d-byte carry (never resumed)", len(priorCarry))
+			}
+			// Fresh by construction: clear any stale local transcript the
+			// shared PVC kept, so the stable id cannot silently adopt it.
+			if n, rerr := sessionstore.ResetLineage(dir, id); rerr != nil {
+				logf("session lineage reset failed: %v", rerr)
+			} else if n > 0 {
+				logf("session lineage: pruned %d local transcript(s) — fresh start (ADR-0022)", n)
+			}
+			if priorCarry != "" {
+				note := "Session note: this is a FRESH session — prior rounds' transcripts are deliberately NOT loaded (context minimization, ADR-0022). The trace below is the record of what those rounds did and concluded; do not redo that work. Verify only what changed since it was written"
 				if sha := envOr("HARMOSTES_TRIGGER_SHA", ""); sha != "" {
 					note += " (new head: " + sha + ")"
 				}
-				_ = os.Setenv("HARMOSTES_SESSION_NOTE", note+".")
+				_ = os.Setenv("HARMOSTES_SESSION_NOTE", note+".\n\n"+priorCarry)
 			}
-			logf("session lineage: resume=%v id=%s", resume, id)
+			logf("session lineage: fresh id=%s gen=%d lastHead=%s carry=%d bytes", id, lineageGen, sess.LastHead, len(priorCarry))
 		}
 	}
 	// Research journal (#494): the workflow's recent outcomes — compact,
@@ -676,31 +677,38 @@ func runOneShot() {
 		// Upload the forkable session alongside the transcript record —
 		// best-effort, the run already succeeded.
 		SessionFiles: func(fctx context.Context, files []string) {
-			// Durable half (r20 P1): publish back THROUGH the PRLineage
-			// actor — turn-based, so concurrent reviews of one PR
-			// serialize instead of racing; the actor owns the monotonic
-			// generation counter.
+			// Durable half (r20 P1, ADR-0022): publish back THROUGH the
+			// PRLineage actor — turn-based, so concurrent reviews of one
+			// PR serialize instead of racing; the actor owns the monotonic
+			// generation counter. What is published is the TRACE, not the
+			// transcript: a bounded deterministic carry folded onto the
+			// prior rounds' carry. The transcript itself stays in the
+			// per-workflow session store (SavePiSession below, TTL-pruned)
+			// — durable for forensics, never prefilled by the next round.
 			if lineageDir != "" && actorID != "" {
 				// The live conversation is the NEWEST <ts>_<id>.jsonl (pi
 				// renames after the first turn) — never the bare id (r22 P4.1:
 				// the bare read ENOENT'd every round, publishing nothing).
-				// Redact BEFORE it enters durable state (#115 class, r22 P5);
-				// bound it like SavePiSession (OOM vector, r22 P5).
+				// Redact BEFORE it enters durable state (#115 class, r22 P5).
 				if file, raw, err := sessionstore.FindLineageSession(lineageDir, sessionID); err == nil {
 					if len(raw) > maxLineageBytes {
-						// WARN-visible (r26 P4): continuity loss must be attributable
-						// from the run summary alone, not only from a log grep.
-						logf("WARN: session lineage publish REFUSED: %s is %d bytes (cap %d) — fresh next round", filepath.Base(file), len(raw), maxLineageBytes)
+						// WARN-visible (r26 P4): continuity loss must be
+						// attributable from the run summary alone, not only
+						// from a log grep. The carry still publishes — the
+						// TAIL of the transcript holds the newest turns and
+						// the closing rationale, the parts a trace exists for.
+						logf("WARN: session carry extraction capped: %s is %d bytes (read cap %d) — folding the tail (newest) only", filepath.Base(file), len(raw), maxLineageBytes)
+						raw = sessionstore.TailBytesB(raw, maxLineageBytes)
+					}
+					carry := sessionstore.ExtractCarry([]byte(worker.Redact(string(raw))), priorCarry, envOr("HARMOSTES_TRIGGER_SHA", ""))
+					pub := sessionstore.Lineage{Carry: carry, LastHead: envOr("HARMOSTES_TRIGGER_SHA", "")}
+					if perr := (sessionstore.Store{Actors: deps.Dapr}).Publish(fctx, triggerRepo(), triggerPR(), pub); perr != nil {
+						logf("session carry publish failed: %v", perr)
 					} else {
-						pub := sessionstore.Lineage{Session: worker.Redact(string(raw)), LastHead: envOr("HARMOSTES_TRIGGER_SHA", ""), File: filepath.Base(file)}
-						if perr := (sessionstore.Store{Actors: deps.Dapr}).Publish(fctx, triggerRepo(), triggerPR(), pub); err != nil {
-							logf("session lineage publish failed: %v", perr)
-						} else {
-							logf("session lineage published %s redacted (%d bytes)", filepath.Base(file), len(raw))
-						}
+						logf("session carry published (%d bytes) from %s", len(carry), filepath.Base(file))
 					}
 				} else {
-					logf("session lineage publish skipped (no session file): %v", err)
+					logf("session carry publish skipped (no session file): %v", err)
 				}
 			}
 			if err := worker.SavePiSession(fctx, deps.Dapr, deps.DaprStateStore, workflow, runID, files); err != nil {

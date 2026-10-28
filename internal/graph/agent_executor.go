@@ -87,8 +87,10 @@ func (e *AgentExecutor) Execute(ctx context.Context, node v1alpha1.NodeSpec, env
 		task = task + "\n\n" + cfg.Scope
 	}
 
-	// Resume context arrives as DATA (HARMOSTES_SESSION_NOTE, composed by
-	// the dispatch path that owns the lineage fact — C4). The kernel-side
+	// Continuity context arrives as DATA (HARMOSTES_SESSION_NOTE, composed
+	// by the dispatch path that owns the lineage fact — C4; since ADR-0022
+	// the note carries the prior rounds' bounded TRACE on a fresh session,
+	// not a resume delta). The kernel-side
 	// executor carries no pr-review vocabulary of its own: it renders
 	// envelope-provided notes verbatim, like cfg.Scope above.
 	if note := os.Getenv("HARMOSTES_SESSION_NOTE"); note != "" {

@@ -34,6 +34,7 @@ import (
 	"time"
 
 	goyaml "gopkg.in/yaml.v3"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	sigsyaml "sigs.k8s.io/yaml"
 
 	v1alpha1 "github.com/tibrezus/harmostes/api/v1alpha1"
@@ -122,14 +123,9 @@ func (s *Server) handleTemplatePropose(w http.ResponseWriter, r *http.Request) {
 		s.renderErrorStatus(w, r, http.StatusForbidden, "You do not have write access — template changes are proposed via MR by writers only")
 		return
 	}
-	ts := s.templateSource
-	if ts == nil {
-		s.renderErrorStatus(w, r, http.StatusNotImplemented, "No template source is configured for this environment")
-		return
-	}
 	var req proposeRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.Document) == "" {
-		s.renderErrorStatus(w, r, http.StatusBadRequest, "A document is required (JSON body {document: <yaml>})")
+		s.renderErrorStatus(w, r, http.StatusBadRequest, "A document is required (JSON body {document: <yaml>} )")
 		return
 	}
 
@@ -157,6 +153,26 @@ func (s *Server) handleTemplatePropose(w http.ResponseWriter, r *http.Request) {
 	// projections and the controller use.
 	graph.CompileTemplate(&v1alpha1.WorkflowTemplate{Spec: doc.Spec})
 
+	// Target resolution (three-tier 1c): the template's OWN repo when its
+	// live CR declares spec.source (the cluster's CR is authoritative — a
+	// proposal cannot move its own target mid-flight), else the
+	// environment-level source. Document mode commits the whole template
+	// file; values mode splices the shared values map.
+	var liveSpec *v1alpha1.TemplateSourceSpec
+	var live v1alpha1.WorkflowTemplate
+	if err := s.k8sClient.Get(r.Context(), client.ObjectKey{Namespace: s.namespace, Name: name}, &live); err == nil {
+		liveSpec = live.Spec.Source
+	}
+	ts, documentMode, err := templateSourceOf(s.templateSource, liveSpec)
+	if err != nil {
+		code := http.StatusNotImplemented
+		if liveSpec != nil {
+			code = http.StatusConflict // a DECLARED source that cannot serve is the template's defect
+		}
+		s.renderErrorStatus(w, r, code, err.Error())
+		return
+	}
+
 	ctx := r.Context()
 	forge := s.forgeFor(ts, s.sourceToken)
 
@@ -171,7 +187,20 @@ func (s *Server) handleTemplatePropose(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	updated, oldSpecYAML, newSpecYAML, err := spliceTemplateIntoValues(string(currentRaw), ts.ValuesKey, name, doc.Spec)
+	var updated, oldSpecYAML, newSpecYAML string
+	if documentMode {
+		// The declared file must hold THIS template — committing template A
+		// over template B's file would corrupt the repo silently.
+		var current templateDocument
+		if err := sigsyaml.Unmarshal(currentRaw, &current); err != nil || current.Metadata.Name != name {
+			s.renderErrorStatus(w, r, http.StatusConflict,
+				fmt.Sprintf("The declared source file %s does not hold template %q — the source has drifted; reconcile first", ts.Path, name))
+			return
+		}
+		updated, oldSpecYAML, newSpecYAML, err = spliceTemplateDocument(string(currentRaw), doc.Spec)
+	} else {
+		updated, oldSpecYAML, newSpecYAML, err = spliceTemplateIntoValues(string(currentRaw), ts.ValuesKey, name, doc.Spec)
+	}
 	if err != nil {
 		s.renderErrorStatus(w, r, http.StatusConflict, err.Error())
 		return
@@ -185,7 +214,7 @@ func (s *Server) handleTemplatePropose(w http.ResponseWriter, r *http.Request) {
 	}
 
 	branch := fmt.Sprintf("harmostes-ui/%s-%d", name, time.Now().UnixNano()%1_000_000)
-	commitMsg := fmt.Sprintf("templates(%s): propose via harmostes UI\n\nAuthored in the harmostes UI by %s; applies the edited\ntemplate to the chart values (ADR-0012 §5: git stays the source of\ntruth — the cluster receives this through Flux reconciliation).", name, id.Username)
+	commitMsg := fmt.Sprintf("templates(%s): propose via harmostes UI\n\nAuthored in the harmostes UI by %s; applies the edited\ntemplate to %s (ADR-0012 §5: git stays the source of\ntruth — the cluster receives this through Flux reconciliation).", name, id.Username, ts.Path)
 	if err := forge.createBranch(ctx, branch, baseSHA); err != nil {
 		s.renderErrorStatus(w, r, http.StatusBadGateway, "Cannot create branch on "+ts.Host+": "+err.Error())
 		return
@@ -497,6 +526,166 @@ func spliceTemplateIntoValues(raw, valuesKey, name string, spec v1alpha1.Workflo
 		out.WriteString(strings.Join(lines[entryEnd:], "\n"))
 	}
 	return out.String(), oldSpecYAML, newSpecYAML, nil
+}
+
+// spliceTemplateDocument is the DOCUMENT-mode splice (three-tier 1c): the
+// source file is a standalone WorkflowTemplate YAML (the template's own
+// repo), so the whole `spec` mapping is the entry — everything else
+// (apiVersion, kind, metadata, their comments) stays verbatim via the same
+// byte-range discipline as the values mode, and the spec's internal
+// commentary re-attaches by structural path (#459: removed keys drop their
+// comments). Returns the updated file text plus canonical old/new spec
+// YAML for the semantic no-op check and the MR diff.
+func spliceTemplateDocument(raw string, spec v1alpha1.WorkflowTemplateSpec) (updated, oldSpecYAML, newSpecYAML string, err error) {
+	var root goyaml.Node
+	if err := goyaml.Unmarshal([]byte(raw), &root); err != nil {
+		return "", "", "", fmt.Errorf("source file is not valid YAML: %w", err)
+	}
+	if len(root.Content) == 0 {
+		return "", "", "", fmt.Errorf("source file is empty")
+	}
+	top := root.Content[0]
+	if top.Kind != goyaml.MappingNode {
+		return "", "", "", fmt.Errorf("source file is not a mapping — cannot splice a template document")
+	}
+	// Defense in depth: the file must BE a WorkflowTemplate document.
+	for i := 0; i+1 < len(top.Content); i += 2 {
+		switch top.Content[i].Value {
+		case "kind":
+			if top.Content[i+1].Value != "WorkflowTemplate" {
+				return "", "", "", fmt.Errorf("source file declares kind %q, not WorkflowTemplate — the source has drifted", top.Content[i+1].Value)
+			}
+		case "apiVersion":
+			if top.Content[i+1].Value != v1alpha1.SchemeGroupVersion.Identifier() {
+				return "", "", "", fmt.Errorf("source file declares apiVersion %q, not %s — the source has drifted", top.Content[i+1].Value, v1alpha1.SchemeGroupVersion.Identifier())
+			}
+		}
+	}
+
+	// Locate the spec mapping and the byte span it owns (its key line
+	// through the next top-level sibling's line, or EOF).
+	parentBlockEnd := len(strings.Split(raw, "\n")) + 1
+	var specNode *goyaml.Node
+	specKeyIdx := -1
+	for i := 0; i+1 < len(top.Content); i += 2 {
+		if top.Content[i].Value == "spec" {
+			specNode = top.Content[i+1]
+			specKeyIdx = i
+			if i+2 < len(top.Content) {
+				parentBlockEnd = top.Content[i+2].Line
+			}
+			break
+		}
+	}
+	if specNode == nil || specNode.Kind != goyaml.MappingNode {
+		return "", "", "", fmt.Errorf("no \"spec\" mapping in the source document")
+	}
+
+	specYAML, err := sigsyaml.Marshal(spec)
+	if err != nil {
+		return "", "", "", fmt.Errorf("marshal spec: %w", err) // typed struct; unreachable
+	}
+	var fresh goyaml.Node
+	if err := goyaml.Unmarshal(specYAML, &fresh); err != nil {
+		return "", "", "", fmt.Errorf("re-parse spec: %w", err) // our own output
+	}
+	newMapping := fresh.Content[0]
+	pruneEmpty(newMapping)
+	newSpecYAML = marshalSpecPlainOf(newMapping)
+
+	entryStart, entryEnd := top.Content[specKeyIdx].Line-1, parentBlockEnd-1
+
+	// Comment preservation (#459 rule, carried to document mode): capture
+	// from the old spec subtree by structural path, re-attach to the
+	// rewrite; the canonical newSpecYAML stays comment-free for the no-op
+	// comparison.
+	comments := map[string]commentSet{}
+	captureComments(specNode, "", comments)
+	specKeyLineComment := top.Content[specKeyIdx].LineComment
+
+	var prev map[string]any
+	if err := specNode.Decode(&prev); err == nil {
+		if b, err := sigsyaml.Marshal(prev); err == nil {
+			oldSpecYAML = string(b)
+		}
+	}
+	if oldSpecYAML == "" {
+		oldSpecYAML = marshalSpecPlainOf(specNode)
+	}
+
+	lines := strings.Split(raw, "\n")
+	if entryEnd > len(lines) {
+		entryEnd = len(lines)
+	}
+	keyIndentLen := len(lines[entryStart]) - len(strings.TrimLeft(lines[entryStart], " "))
+	keyIndent, bodyIndent := strings.Repeat(" ", keyIndentLen), strings.Repeat(" ", keyIndentLen+2)
+
+	var body strings.Builder
+	entryText := newSpecYAML
+	if len(comments) > 0 {
+		attachComments(newMapping, "", comments)
+		entryText = marshalSpecPlainOf(newMapping)
+	}
+	for _, line := range strings.Split(strings.TrimSuffix(entryText, "\n"), "\n") {
+		if strings.TrimSpace(line) == "" {
+			body.WriteString("\n")
+		} else {
+			body.WriteString(bodyIndent + line + "\n")
+		}
+	}
+	trailing := ""
+	for entryEnd-1 > entryStart && strings.TrimSpace(lines[entryEnd-1]) == "" {
+		trailing = "\n" + trailing
+		entryEnd--
+	}
+
+	var out strings.Builder
+	if entryStart > 0 {
+		out.WriteString(strings.Join(lines[:entryStart], "\n") + "\n")
+	}
+	specKey := keyIndent + "spec:"
+	if specKeyLineComment != "" {
+		specKey += " " + specKeyLineComment
+	}
+	out.WriteString(specKey + "\n")
+	out.WriteString(body.String())
+	out.WriteString(trailing)
+	if entryEnd < len(lines) {
+		out.WriteString(strings.Join(lines[entryEnd:], "\n"))
+	}
+	return out.String(), oldSpecYAML, newSpecYAML, nil
+}
+
+// templateSourceOf resolves the propose target for a template (three-tier
+// 1c): the CR's own spec.source when declared (the template knows its home),
+// else the environment-level source (the kernel chart values — the
+// pre-three-tier shape). A declared-but-invalid source refuses — a template
+// pointing at an unusable repo must not silently fall back to the shared
+// values file (that would put the edit in the WRONG repo, which is worse
+// than no edit). The bool is true when the target is a standalone template
+// document (document mode) rather than a values fragment.
+func templateSourceOf(env *TemplateSource, spec *v1alpha1.TemplateSourceSpec) (*TemplateSource, bool, error) {
+	if spec == nil {
+		if env == nil {
+			return nil, false, fmt.Errorf("no source configured")
+		}
+		return env, false, nil // values mode
+	}
+	if err := spec.Validate(); err != nil {
+		return nil, false, err
+	}
+	branch := spec.Branch
+	if branch == "" {
+		branch = "main"
+	}
+	slash := strings.Index(spec.Repo, "/")
+	return &TemplateSource{
+		Host:       spec.Forge,
+		Owner:      spec.Repo[:slash],
+		Repo:       spec.Repo[slash+1:],
+		BaseBranch: branch,
+		Path:       spec.Path,
+	}, true, nil // document mode
 }
 
 // ── forge client surface ─────────────────────────────────────────────────────

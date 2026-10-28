@@ -200,7 +200,7 @@ func main() {
 	// execs "run" children and the per-Attempt Job runs "run" directly —
 	// one code path, no implicit env-selected modes.
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: harmostes-worker run|consumer")
+		fmt.Fprintln(os.Stderr, "usage: harmostes-worker run|consumer|init-runtime")
 		os.Exit(2)
 	}
 	switch os.Args[1] {
@@ -248,7 +248,7 @@ func main() {
 	case "run":
 		runOneShot()
 	default:
-		fmt.Fprintf(os.Stderr, "unknown subcommand %q (want run|consumer)\n", os.Args[1])
+		fmt.Fprintf(os.Stderr, "unknown subcommand %q (want run|consumer|init-runtime)\n", os.Args[1])
 		os.Exit(2)
 	}
 }

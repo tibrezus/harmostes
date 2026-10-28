@@ -216,7 +216,7 @@ func (c DispatchConfig) Validate() error {
 // composed extension manifest and the profile's harness pin — both already
 // validated (ComposeExtensions + ValidateExtensionPins/ValidateHarnessPin)
 // by the time they reach here.
-func (c DispatchConfig) JobParams(at *v1alpha1.Attempt, workflow, namespace string, runBound time.Duration, cache *v1alpha1.CacheSpec, sessions *v1alpha1.SessionsSpec, attachments []v1alpha1.SharedAttachment, triggerRepo string, extraEnv []string, extensions []v1alpha1.ExtensionPin, harness *v1alpha1.HarnessRef) k8s.AttemptJobParams {
+func (c DispatchConfig) JobParams(at *v1alpha1.Attempt, workflow, namespace string, runBound time.Duration, cache *v1alpha1.CacheSpec, sessions *v1alpha1.SessionsSpec, attachments []v1alpha1.SharedAttachment, triggerRepo string, extraEnv []string, extensions []v1alpha1.ExtensionPin, harness *v1alpha1.HarnessRef, pluginRefs []string) k8s.AttemptJobParams {
 	return k8s.AttemptJobParams{
 		Attempt:                 at,
 		WorkflowName:            workflow,
@@ -238,6 +238,7 @@ func (c DispatchConfig) JobParams(at *v1alpha1.Attempt, workflow, namespace stri
 		Harness:                 harness,
 		AggregatePlugins:        c.AggregatePlugins,
 		PluginLabelValue:        c.PluginLabelValue,
+		PluginRefs:              pluginRefs,
 	}
 }
 
@@ -686,7 +687,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req RunRequest) error {
 		job := k8s.BuildJob(d.cfg.JobParams(&at, req.Workflow, req.Namespace, runBound, cache, wf.Spec.Sessions,
 			wf.Spec.Attachments, triggerRepo,
 			append(jobCredentialEnv(&budgetPolicy{workflow: wf, attempt: &at}), dispatchEnv(req, &at, g.Envelope)...),
-			extensions, harness))
+			extensions, harness, pluginRefsFrom(wf)))
 		logEffectiveAttachments(d.logf, at.Name, job, wf.Spec.Attachments)
 		// #666 intent-before-side-effect: the INTENT is committed BEFORE
 		// the Job exists (record-then-act; a failed record aborts dispatch
@@ -713,6 +714,18 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req RunRequest) error {
 			return fmt.Errorf("record dispatch edge %s: %w", at.Name, err)
 		}
 		d.logf("dispatch: job %s created for attempt %s (workflow %s)", job.Name, at.Name, req.Workflow)
+	}
+	return nil
+}
+
+// pluginRefsFrom extracts the resolved workflow's explicit plugin payload
+// refs (#787): one ConfigMap name (template default, instance override —
+// ApplyTemplateDefaults merged it), validated non-empty here so an empty
+// ref can never reach a pod. Slice so the Job env joins cleanly and future
+// multi-payload templates need no signature churn.
+func pluginRefsFrom(wf *v1alpha1.Workflow) []string {
+	if ref := strings.TrimSpace(wf.Spec.PluginsConfigMapRef); ref != "" {
+		return []string{ref}
 	}
 	return nil
 }

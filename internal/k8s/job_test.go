@@ -905,3 +905,74 @@ func TestBuildJobMaterializationArmed(t *testing.T) {
 		t.Errorf("init order = %q first, want materialize first", pod.InitContainers[0].Name)
 	}
 }
+
+// TestJobPluginRefs pins the explicit template-payload ref path (three-tier
+// 1c): refs alone (no aggregate, no extensions) still render the materialize
+// init + the /plugins mount, the init AND run containers carry
+// HARMOSTES_PLUGIN_REFS, and nil refs render nothing (inert).
+func TestJobPluginRefs(t *testing.T) {
+	base := AttemptJobParams{
+		Attempt:      &v1alpha1.Attempt{ObjectMeta: metav1.ObjectMeta{Name: "attempt-refs", Namespace: "default"}},
+		WorkflowName: "wf",
+		Namespace:    "default",
+	}
+
+	// Refs alone arm the materialize init.
+	job := BuildJob(base)
+	job.Spec.Template.Spec.InitContainers = nil // BuildJob with zero-value params: re-build with refs
+	job = BuildJob(AttemptJobParams{
+		Attempt:      base.Attempt,
+		WorkflowName: "wf",
+		Namespace:    "default",
+		PluginRefs:   []string{"tpl-own-plugins"},
+	})
+	pod := job.Spec.Template.Spec
+	var mat *corev1.Container
+	for i := range pod.InitContainers {
+		if pod.InitContainers[i].Name == "materialize" {
+			mat = &pod.InitContainers[i]
+		}
+	}
+	if mat == nil {
+		t.Fatal("plugin refs alone rendered no materialize init container")
+	}
+	initEnv := map[string]string{}
+	for _, e := range mat.Env {
+		initEnv[e.Name] = e.Value
+	}
+	if initEnv["HARMOSTES_PLUGIN_REFS"] != "tpl-own-plugins" {
+		t.Errorf("init refs env = %q", initEnv["HARMOSTES_PLUGIN_REFS"])
+	}
+	var run *corev1.Container
+	for i := range pod.Containers {
+		if pod.Containers[i].Name == "run" {
+			run = &pod.Containers[i]
+		}
+	}
+	runEnv := map[string]bool{}
+	for _, e := range run.Env {
+		runEnv[e.Name] = true
+	}
+	if !runEnv["HARMOSTES_PLUGIN_REFS"] {
+		t.Error("run container missing HARMOSTES_PLUGIN_REFS — the consume check would never see the declared set")
+	}
+	mounted := false
+	for _, v := range pod.Volumes {
+		if v.Name == "plugins" {
+			mounted = true
+		}
+	}
+	if !mounted {
+		t.Error("plugin refs alone rendered no /plugins volume")
+	}
+
+	// Inert: no refs → no refs env anywhere.
+	job2 := BuildJob(AttemptJobParams{Attempt: base.Attempt, WorkflowName: "wf", Namespace: "default"})
+	for _, c := range append(job2.Spec.Template.Spec.InitContainers, job2.Spec.Template.Spec.Containers...) {
+		for _, e := range c.Env {
+			if e.Name == "HARMOSTES_PLUGIN_REFS" {
+				t.Errorf("inert params rendered %s on %s", e.Name, c.Name)
+			}
+		}
+	}
+}

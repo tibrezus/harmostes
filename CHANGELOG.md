@@ -1,5 +1,33 @@
 # Changelog
 
+## [1.8.0](https://github.com/tibrezus/harmostes/compare/v1.7.1...v1.8.0) (2026-10-28)
+
+
+### Features
+
+* **three-tier 1c:** the Template CR becomes self-describing; the write path retargets ([#808](https://github.com/tibrezus/harmostes/issues/808)) ([727261a](https://github.com/tibrezus/harmostes/commit/727261aeed99465d6442758d658a8d5685e0940c))
+
+## [1.7.1](https://github.com/tibrezus/harmostes/compare/v1.7.0...v1.7.1) (2026-10-28)
+
+
+### Bug Fixes
+
+* **worker:** the usage string knows init-runtime ([#786](https://github.com/tibrezus/harmostes/issues/786) follow-up) — the subcommand shipped but both help strings still said run|consumer ([#806](https://github.com/tibrezus/harmostes/issues/806)) ([0afa324](https://github.com/tibrezus/harmostes/commit/0afa324662490f24c2de0acbd0a0076da24fe89c))
+
+## [1.7.0](https://github.com/tibrezus/harmostes/compare/v1.6.0...v1.7.0) (2026-10-28)
+
+
+### Features
+
+* **#2833:** the lineage carries the trace, not the transcript (ADR-0022) ([#805](https://github.com/tibrezus/harmostes/issues/805)) ([7a0c12b](https://github.com/tibrezus/harmostes/commit/7a0c12b4781baa3ff684512bcacc61b5d5ca591f))
+* **release:** the release gate — patch-only automation, owner-gated minors ([#800](https://github.com/tibrezus/harmostes/issues/800)) ([10a8fbc](https://github.com/tibrezus/harmostes/commit/10a8fbc950cc90526f945cf7c4c2c5378c917db3))
+
+
+### Bug Fixes
+
+* **release:** gate provenance marker matches the bot's actual footer ([#803](https://github.com/tibrezus/harmostes/issues/803)) ([de2986b](https://github.com/tibrezus/harmostes/commit/de2986b54ea85b539030993cb2caa18d04d6956b))
+* **release:** gate skips creation-time label events and unreadable bodies ([#802](https://github.com/tibrezus/harmostes/issues/802)) ([fa46206](https://github.com/tibrezus/harmostes/commit/fa462069e70aa7c4c05b61b8d3d372311a64c4fd))
+
 ## [1.6.0](https://github.com/tibrezus/harmostes/compare/v1.5.1...v1.6.0) (2026-10-26)
 
 

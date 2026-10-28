@@ -160,10 +160,21 @@ func main() {
 		webhookMux := http.NewServeMux()
 		webhookHandler := webhook.NewHandler(webhookClient, namespace, ctrl.Log.WithName("webhook"))
 
-		// Register routes: /webhook/{workflow-name}
+		// Register routes: /webhook/{workflow-name} and the template landing
+		// surface (three-tier 1c): /webhook/templates/{template-name} — a
+		// signed push to a template's own repo, recorded as pending revision
+		// identity. Reserved path segment checked first.
 		webhookMux.HandleFunc("/webhook/", func(w http.ResponseWriter, req *http.Request) {
 			// Extract workflow name from path
 			workflowName := strings.TrimPrefix(req.URL.Path, "/webhook/")
+			if rest, ok := strings.CutPrefix(workflowName, "templates/"); ok {
+				if rest == "" {
+					http.Error(w, "template name required", http.StatusBadRequest)
+					return
+				}
+				webhookHandler.ServeTemplateLanding(w, req, rest)
+				return
+			}
 			if workflowName == "" {
 				http.Error(w, "workflow name required", http.StatusBadRequest)
 				return

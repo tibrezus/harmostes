@@ -48,10 +48,19 @@ func (r *TemplateHistoryReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, nil // head already records this spec — nothing landed
 	}
 
-	revs = append(revs, v1alpha1.TemplateRevision{
-		Rev:  len(revs) + 1,
-		Spec: tmpl.Spec,
-	})
+	rev := &v1alpha1.TemplateRevision{Rev: len(revs) + 1, Spec: tmpl.Spec}
+	// Landing correlation (three-tier 1c): a signed push webhook stashed
+	// its commit identity as a pending annotation BEFORE Flux delivered
+	// this spec — the revision the push delivered carries it. Consumed
+	// exactly once (the annotation clears with the update).
+	if raw := tmpl.Annotations[v1alpha1.TemplatePendingLandingAnnotation]; raw != "" {
+		var landing v1alpha1.TemplateRevisionLanding
+		if err := json.Unmarshal([]byte(raw), &landing); err == nil && landing.Sha != "" {
+			rev.Landing = &landing
+		}
+		delete(tmpl.Annotations, v1alpha1.TemplatePendingLandingAnnotation)
+	}
+	revs = append(revs, *rev)
 	if n := len(revs); n > v1alpha1.MaxTemplateRevisions {
 		// Bounded window: drop the oldest and renumber so the ascending
 		// head convention (Rev = len+1) survives truncation. The full

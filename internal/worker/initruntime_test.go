@@ -51,7 +51,7 @@ func TestConsumeMaterializedRuntime(t *testing.T) {
 	getenv := func(k string) string { return env[k] }
 	stat := func(p string) (os.FileInfo, error) { return os.Stat(p) }
 
-	mat, err := consumeMaterializedRuntime(getenv, extRoot, harnessRoot, stat)
+	mat, err := consumeMaterializedRuntime(getenv, extRoot, harnessRoot, PluginsRoot, stat)
 	if err != nil {
 		t.Fatalf("consume: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestConsumeMaterializedRuntime(t *testing.T) {
 	if err := os.RemoveAll(filepath.Join(extRoot, "tpl-ext")); err != nil {
 		t.Fatal(err)
 	}
-	_, err = consumeMaterializedRuntime(getenv, extRoot, harnessRoot, stat)
+	_, err = consumeMaterializedRuntime(getenv, extRoot, harnessRoot, PluginsRoot, stat)
 	if err == nil || !strings.Contains(err.Error(), "tpl-ext") || !strings.Contains(err.Error(), "not materialized") {
 		t.Fatalf("shrunken set not refused with the artifact named: %v", err)
 	}
@@ -79,14 +79,52 @@ func TestConsumeMaterializedRuntime(t *testing.T) {
 		t.Fatal(err)
 	}
 	env2 := map[string]string{EnvHarnessManifest: harnessManifest}
-	_, err = consumeMaterializedRuntime(func(k string) string { return env2[k] }, extRoot, emptyHarness, stat)
+	_, err = consumeMaterializedRuntime(func(k string) string { return env2[k] }, extRoot, emptyHarness, PluginsRoot, stat)
 	if err == nil || !strings.Contains(err.Error(), "is missing") {
 		t.Fatalf("harness without .pi-path not refused: %v", err)
 	}
 
 	// Nothing declared = zero effect (the inert default).
-	mat, err = consumeMaterializedRuntime(func(string) string { return "" }, extRoot, harnessRoot, stat)
+	mat, err = consumeMaterializedRuntime(func(string) string { return "" }, extRoot, harnessRoot, PluginsRoot, stat)
 	if err != nil || mat.ExtensionPaths != nil || mat.PiPath != "" {
 		t.Fatalf("inert consume = %+v, %v; want empty, nil", mat, err)
+	}
+}
+
+// TestConsumeMaterializedRuntime_PluginRefs pins the run form's explicit-ref
+// verification (three-tier 1c): a declared ref with a projected dir passes;
+// a declared ref WITHOUT its dir is the torn-pod class — refuse with the
+// name (#504); no refs env = inert.
+func TestConsumeMaterializedRuntime_PluginRefs(t *testing.T) {
+	root := t.TempDir()
+	pluginsRoot := filepath.Join(root, "plugins")
+	if err := os.MkdirAll(filepath.Join(pluginsRoot, "tpl-own-plugins"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	getenv := func(k string) string {
+		if k == EnvPluginRefs {
+			return "tpl-own-plugins"
+		}
+		return ""
+	}
+	stat := func(p string) (os.FileInfo, error) { return os.Stat(p) }
+
+	if _, err := consumeMaterializedRuntime(getenv, filepath.Join(root, "ext"), filepath.Join(root, "harness"), pluginsRoot, stat); err != nil {
+		t.Fatalf("materialized ref refused: %v", err)
+	}
+
+	// The torn pod: the dir is gone — the run refuses with the ref named.
+	if err := os.RemoveAll(filepath.Join(pluginsRoot, "tpl-own-plugins")); err != nil {
+		t.Fatal(err)
+	}
+	_, err := consumeMaterializedRuntime(getenv, filepath.Join(root, "ext"), filepath.Join(root, "harness"), pluginsRoot, stat)
+	if err == nil || !strings.Contains(err.Error(), "tpl-own-plugins") || !strings.Contains(err.Error(), "not materialized") {
+		t.Fatalf("shrunken refs not refused with the name: %v", err)
+	}
+
+	// No refs env: inert.
+	mat, err := consumeMaterializedRuntime(func(string) string { return "" }, filepath.Join(root, "ext"), filepath.Join(root, "harness"), pluginsRoot, stat)
+	if err != nil || mat.ExtensionPaths != nil {
+		t.Fatalf("inert consume = %+v, %v", mat, err)
 	}
 }

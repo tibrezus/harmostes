@@ -50,6 +50,15 @@ const (
 	// recent MaxTemplateRevisions entries.
 	TemplateRevisionsAnnotation = "template.harmostes.dev/revisions"
 
+	// TemplatePendingLandingAnnotation stashes a signed push webhook's
+	// commit identity (three-tier 1c) until the history recorder's next
+	// append consumes it: the webhook lands BEFORE Flux delivers the new
+	// spec, so the landing waits here, timestamped, and rides the revision
+	// it actually corresponds to. JSON-encoded TemplateRevisionLanding.
+	// Overwritten per landing (the newest push wins — a stale pending
+	// landing that never matches a spec ages out on the next one).
+	TemplatePendingLandingAnnotation = "template.harmostes.dev/pending-landing"
+
 	// TriggerRepoAnnotation carries the CI wake's repository
 	// (host/owner/name) from a check_suite/workflow_run/status event to the
 	// Review-Ready Gate (#556). CI completions carry no PR number — the

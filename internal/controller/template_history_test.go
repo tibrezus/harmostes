@@ -181,3 +181,91 @@ func revNums(revs []v1alpha1.TemplateRevision) []int {
 	}
 	return out
 }
+
+// TestTemplateHistory_LandingCorrelation pins the three-tier 1c flow: a
+// signed push webhook stashes pending landing identity → the revision the
+// push delivered carries it → the annotation is consumed exactly once (a
+// follow-up no-landing change records a revision with NO landing).
+func TestTemplateHistory_LandingCorrelation(t *testing.T) {
+	cl := fake.NewClientBuilder().WithScheme(historyScheme(t)).Build()
+	tmpl := templateWithSpec("pr-review", "model-a", nil)
+	if err := cl.Create(context.Background(), tmpl); err != nil {
+		t.Fatal(err)
+	}
+	// The webhook fires BEFORE Flux delivers the spec: stash, then change.
+	landing := v1alpha1.TemplateRevisionLanding{Sha: "abc123", Pusher: "tibrez", At: "2026-10-26T12:00:00Z"}
+	raw, _ := json.Marshal(landing)
+	if err := reconcileTemplate(t, cl, "pr-review"); err != nil {
+		t.Fatal(err) // records rev1 (creation)
+	}
+	var staged v1alpha1.WorkflowTemplate
+	if err := cl.Get(context.Background(), types.NamespacedName{Namespace: "test-ns", Name: "pr-review"}, &staged); err != nil {
+		t.Fatal(err)
+	}
+	if staged.Annotations == nil {
+		staged.Annotations = map[string]string{}
+	}
+	staged.Annotations[v1alpha1.TemplatePendingLandingAnnotation] = string(raw)
+	if err := cl.Update(context.Background(), &staged); err != nil {
+		t.Fatal(err)
+	}
+	var after v1alpha1.WorkflowTemplate
+	_ = cl.Get(context.Background(), types.NamespacedName{Namespace: "test-ns", Name: "pr-review"}, &after)
+	after.Spec.Agent.Model = "model-b"
+	if err := cl.Update(context.Background(), &after); err != nil {
+		t.Fatal(err)
+	}
+	if err := reconcileTemplate(t, cl, "pr-review"); err != nil {
+		t.Fatal(err)
+	}
+
+	revs := storedHistory(t, cl, "pr-review")
+	if len(revs) != 2 {
+		t.Fatalf("history = %d revisions, want 2", len(revs))
+	}
+	head := revs[len(revs)-1]
+	if head.Spec.Agent.Model != "model-b" {
+		t.Fatalf("head spec = %s, want model-b", head.Spec.Agent.Model)
+	}
+	if head.Landing == nil || head.Landing.Sha != "abc123" || head.Landing.Pusher != "tibrez" {
+		t.Fatalf("head revision missing landing identity: %+v", head.Landing)
+	}
+
+	// The pending annotation is consumed: gone from the live object.
+	var consumed v1alpha1.WorkflowTemplate
+	if err := cl.Get(context.Background(), types.NamespacedName{Namespace: "test-ns", Name: "pr-review"}, &consumed); err != nil {
+		t.Fatal(err)
+	}
+	if consumed.Annotations[v1alpha1.TemplatePendingLandingAnnotation] != "" {
+		t.Fatal("pending landing annotation not cleared — it would corrupt the NEXT revision")
+	}
+
+	// A landing for a spec that never changed is inert (the head-equal
+	// guard returns before the append; the annotation stays pending until
+	// a real spec change arrives — never attached to the WRONG revision).
+	if err := reconcileTemplate(t, cl, "pr-review"); err != nil {
+		t.Fatal(err)
+	}
+	var stable v1alpha1.WorkflowTemplate
+	_ = cl.Get(context.Background(), types.NamespacedName{Namespace: "test-ns", Name: "pr-review"}, &stable)
+	if len(storedHistory(t, cl, "pr-review")) != 2 {
+		t.Fatal("a no-op reconcile appended a revision")
+	}
+
+	// A subsequent change WITHOUT a landing records a landing-less revision.
+	var fresh v1alpha1.WorkflowTemplate
+	if err := cl.Get(context.Background(), types.NamespacedName{Namespace: "test-ns", Name: "pr-review"}, &fresh); err != nil {
+		t.Fatal(err)
+	}
+	fresh.Spec.Agent.Model = "model-c"
+	if err := cl.Update(context.Background(), &fresh); err != nil {
+		t.Fatal(err)
+	}
+	if err := reconcileTemplate(t, cl, "pr-review"); err != nil {
+		t.Fatal(err)
+	}
+	revs = storedHistory(t, cl, "pr-review")
+	if last := revs[len(revs)-1]; last.Spec.Agent.Model != "model-c" || last.Landing != nil {
+		t.Fatalf("landing-less change = %+v landing=%+v; want no landing", last.Spec.Agent.Model, last.Landing)
+	}
+}

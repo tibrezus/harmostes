@@ -42,6 +42,7 @@ const (
 	EnvHarnessManifest   = "HARMOSTES_HARNESS_MANIFEST"
 	EnvAggregatePlugins  = "HARMOSTES_AGGREGATE_PLUGINS"
 	EnvPluginLabelValue  = "HARMOSTES_PLUGIN_LABEL_VALUE"
+	EnvPluginRefs        = "HARMOSTES_PLUGIN_REFS"
 )
 
 // RuntimeMaterialization is the run form's view of what the init container
@@ -98,7 +99,33 @@ func RunInitRuntime(ctx context.Context) error {
 		}
 		slog.Info("materialize: plugin ConfigMaps projected", "count", n, "root", PluginsRoot)
 	}
+	// Explicit template payload refs (three-tier 1c): independent of the
+	// label mode. An unknown ref refuses HERE — an explicit declaration
+	// that does not resolve is a broken template, not an empty dir (#504).
+	if refs := pluginRefsFromEnv(os.Getenv); len(refs) > 0 {
+		n, err := materialize.ProjectPluginRefs(ctx, cl, os.Getenv("HARMOSTES_NAMESPACE"), refs, PluginsRoot)
+		if err != nil {
+			return err
+		}
+		slog.Info("materialize: plugin refs projected", "count", n, "root", PluginsRoot)
+	}
 	return nil
+}
+
+// pluginRefsFromEnv parses the comma-separated explicit plugin refs the Job
+// stamps (HARMOSTES_PLUGIN_REFS). Empty segments ignored.
+func pluginRefsFromEnv(getenv func(string) string) []string {
+	raw := getenv(EnvPluginRefs)
+	if raw == "" {
+		return nil
+	}
+	var refs []string
+	for _, name := range strings.Split(raw, ",") {
+		if name = strings.TrimSpace(name); name != "" {
+			refs = append(refs, name)
+		}
+	}
+	return refs
 }
 
 // ConsumeMaterializedRuntime is the run form's half: validate that every
@@ -108,16 +135,25 @@ func RunInitRuntime(ctx context.Context) error {
 // #504) and resolve the harness's pi path. Called AFTER the profile's model
 // pin, BEFORE the graph compiles.
 func ConsumeMaterializedRuntime(getenv func(string) string) (*RuntimeMaterialization, error) {
-	return consumeMaterializedRuntime(getenv, ExtensionsRoot, HarnessRoot, os.Stat)
+	return consumeMaterializedRuntime(getenv, ExtensionsRoot, HarnessRoot, PluginsRoot, os.Stat)
 }
 
 // consumeMaterializedRuntime is the injectable core (roots + stat for tests
 // — the refusal paths must be testable without a /runtime on the host).
-func consumeMaterializedRuntime(getenv func(string) string, extensionsRoot, harnessRoot string, stat func(string) (os.FileInfo, error)) (*RuntimeMaterialization, error) {
+func consumeMaterializedRuntime(getenv func(string) string, extensionsRoot, harnessRoot, pluginsRoot string, stat func(string) (os.FileInfo, error)) (*RuntimeMaterialization, error) {
 	out := &RuntimeMaterialization{}
 	pins, err := v1alpha1.ParseExtensionManifest(getenv(EnvExtensionManifest))
 	if err != nil {
 		return nil, err
+	}
+	// Explicit plugin refs (three-tier 1c): a declared payload that did not
+	// materialize is the same torn-pod class as a missing extension —
+	// refuse, never run with a silently-smaller set (#504).
+	for _, ref := range pluginRefsFromEnv(getenv) {
+		dir := filepath.Join(pluginsRoot, ref)
+		if _, err := stat(dir); err != nil {
+			return nil, fmt.Errorf("declared plugin ref %s is not materialized at %s — the materialize init failed or did not run; refusing (a declared set must never silently shrink, #504)", ref, dir)
+		}
 	}
 	for _, pin := range pins {
 		dir := filepath.Join(extensionsRoot, pin.Name)

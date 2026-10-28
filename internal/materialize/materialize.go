@@ -300,9 +300,41 @@ func ProjectPlugins(ctx context.Context, cl client.Client, namespace, labelValue
 	}); err != nil {
 		return 0, fmt.Errorf("list plugin ConfigMaps (label harmostes.dev/plugin=%s in %s): %w", labelValue, namespace, err)
 	}
-	count := 0
+	names := make([]string, 0, len(list.Items))
 	for i := range list.Items {
-		cm := &list.Items[i]
+		names = append(names, list.Items[i].Name)
+	}
+	return projectConfigMaps(ctx, cl, namespace, names, destDir)
+}
+
+// ProjectPluginRefs projects EXPLICITLY referenced ConfigMaps (three-tier
+// 1c, template pluginsConfigMapRef): same /plugins/<cm>/<key> layout, no
+// label coupling. Unknown names are an error — an explicit ref that does
+// not resolve is a broken template declaration, not an empty dir (#504).
+func ProjectPluginRefs(ctx context.Context, cl client.Client, namespace string, refs []string, destDir string) (int, error) {
+	return projectConfigMaps(ctx, cl, namespace, refs, destDir)
+}
+
+// projectConfigMaps fetches the named ConfigMaps and writes every data key
+// under destDir/<cm>/<key> (executable, matching the legacy volume-mount
+// semantics the resolver has always run scripts with). Names are deduped
+// in order; a missing ConfigMap is a loud error (explicit intent must
+// resolve), a hostile key is refused.
+func projectConfigMaps(ctx context.Context, cl client.Client, namespace string, names []string, destDir string) (int, error) {
+	seen := map[string]bool{}
+	ordered := make([]string, 0, len(names))
+	for _, n := range names {
+		if n != "" && !seen[n] {
+			seen[n] = true
+			ordered = append(ordered, n)
+		}
+	}
+	count := 0
+	for _, name := range ordered {
+		cm := &corev1.ConfigMap{}
+		if err := cl.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, cm); err != nil {
+			return count, fmt.Errorf("project plugin ConfigMap %s: %w", name, err)
+		}
 		cmDir := filepath.Join(destDir, cm.Name)
 		if err := os.MkdirAll(cmDir, 0o755); err != nil {
 			return count, fmt.Errorf("project %s: %w", cm.Name, err)

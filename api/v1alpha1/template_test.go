@@ -314,3 +314,51 @@ func TestApplyTemplateDefaultsAttachmentsInherit(t *testing.T) {
 		t.Fatalf("absent attachments must stay empty, got %+v", none.Spec.Attachments)
 	}
 }
+
+// TestApplyTemplateDefaults_PluginsConfigMapRef pins the three-tier 1c
+// merge: the template's payload ref is the DEFAULT, the instance wins, and
+// neither side set = empty.
+func TestApplyTemplateDefaults_PluginsConfigMapRef(t *testing.T) {
+	tmpl := &WorkflowTemplate{}
+	tmpl.Spec.PluginsConfigMapRef = "tpl-payload"
+
+	wf := &Workflow{}
+	ApplyTemplateDefaults(wf, tmpl)
+	if wf.Spec.PluginsConfigMapRef != "tpl-payload" {
+		t.Fatalf("template default not merged: %q", wf.Spec.PluginsConfigMapRef)
+	}
+
+	wf2 := &Workflow{}
+	wf2.Spec.PluginsConfigMapRef = "instance-own"
+	ApplyTemplateDefaults(wf2, tmpl)
+	if wf2.Spec.PluginsConfigMapRef != "instance-own" {
+		t.Fatalf("instance override clobbered: %q", wf2.Spec.PluginsConfigMapRef)
+	}
+}
+
+// TestTemplateSourceSpecValidate pins the declared-source shape: forge
+// enum, owner/name repo, non-empty path, paired secretRef.
+func TestTemplateSourceSpecValidate(t *testing.T) {
+	valid := TemplateSourceSpec{Forge: "github", Repo: "o/r", Path: "t.yaml"}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("valid source refused: %v", err)
+	}
+	for name, bad := range map[string]TemplateSourceSpec{
+		"no forge":       {Repo: "o/r", Path: "t.yaml"},
+		"bad forge":      {Forge: "gitea", Repo: "o/r", Path: "t.yaml"},
+		"repo no slash":  {Forge: "github", Repo: "justname", Path: "t.yaml"},
+		"repo trailing":  {Forge: "github", Repo: "o/", Path: "t.yaml"},
+		"empty path":     {Forge: "github", Repo: "o/r"},
+		"half secretRef": {Forge: "github", Repo: "o/r", Path: "t.yaml", SecretRef: &SecretRef{Name: "s"}},
+	} {
+		if err := bad.Validate(); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	// branch optional, secretRef optional.
+	optional := valid
+	optional.Branch = "trunk"
+	if err := optional.Validate(); err != nil {
+		t.Fatalf("optional fields refused: %v", err)
+	}
+}

@@ -329,26 +329,14 @@ func captureComments(n *goyaml.Node, path string, into map[string]commentSet) {
 	}
 }
 
-// attachComments mirrors the capture walk over the canonical rewrite,
-// re-attaching every comment whose structural path still exists. Paths that
-// the edit removed (pruned keys) keep no comment — the comment described
-// content that is gone. Never overwrites a comment the rewrite already
-// carries.
-func attachComments(n *goyaml.Node, path string, from map[string]commentSet) {
-	apply := func(node *goyaml.Node, cs commentSet) {
-		if node.HeadComment == "" {
-			node.HeadComment = cs.head
-		}
-		if node.LineComment == "" {
-			node.LineComment = cs.line
-		}
-		if node.FootComment == "" {
-			node.FootComment = cs.foot
-		}
-	}
-	if cs, ok := from[path]; ok {
-		apply(n, cs)
-	}
+// attachCommentsInner applies path-scoped comments WITHOUT re-applying the
+// node's own set — the caller (the mapping/sequence walk) has already put
+// head on the key and line/foot on the value. The old shape re-applied the
+// key's commentSet to the VALUE node at the top of the recursion, so every
+// head comment rendered TWICE (once before the key, once before the next —
+// latent in values mode too: its real entries carry no internal comments,
+// so nothing looked). 
+func attachCommentsInner(n *goyaml.Node, path string, from map[string]commentSet) {
 	switch n.Kind {
 	case goyaml.MappingNode:
 		for i := 0; i+1 < len(n.Content); i += 2 {
@@ -365,17 +353,45 @@ func attachComments(n *goyaml.Node, path string, from map[string]commentSet) {
 					v.FootComment = cs.foot
 				}
 			}
-			attachComments(v, p, from)
+			attachCommentsInner(v, p, from)
 		}
 	case goyaml.SequenceNode:
 		for j, item := range n.Content {
 			p := path + "/" + strconv.Itoa(j)
 			if cs, ok := from[p]; ok {
-				apply(item, cs)
+				if item.HeadComment == "" {
+					item.HeadComment = cs.head
+				}
+				if item.LineComment == "" {
+					item.LineComment = cs.line
+				}
+				if item.FootComment == "" {
+					item.FootComment = cs.foot
+				}
 			}
-			attachComments(item, p, from)
+			attachCommentsInner(item, p, from)
 		}
 	}
+}
+
+// attachComments mirrors the capture walk over the canonical rewrite,
+// re-attaching every comment whose structural path still exists. Paths that
+// the edit removed (pruned keys) keep no comment — the comment described
+// content that is gone. Never overwrites a comment the rewrite already
+// carries.
+func attachComments(n *goyaml.Node, path string, from map[string]commentSet) {
+	if cs, ok := from[path]; ok {
+		if n.HeadComment == "" {
+			n.HeadComment = cs.head
+		}
+		if n.LineComment == "" {
+			n.LineComment = cs.line
+		}
+		if n.FootComment == "" {
+			n.FootComment = cs.foot
+		}
+	}
+	attachCommentsInner(n, path, from)
 }
 
 // spliceTemplateIntoValues performs the surgical values edit: locate the

@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.9.1](https://github.com/tibrezus/harmostes/compare/v1.9.0...v1.9.1) (2026-10-28)
+
+
+### Bug Fixes
+
+* **ui:** comment re-attachment applies once (1c live-verification follow-up) ([#810](https://github.com/tibrezus/harmostes/issues/810)) ([b176e44](https://github.com/tibrezus/harmostes/commit/b176e441434928dded0f4967fda91944ec1f7e0f))
+
 ## [1.9.0](https://github.com/tibrezus/harmostes/compare/v1.8.0...v1.9.0) (2026-10-28)
 
 

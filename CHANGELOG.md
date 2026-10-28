@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.9.0](https://github.com/tibrezus/harmostes/compare/v1.8.0...v1.9.0) (2026-10-28)
+
+
+### Features
+
+* **fleet:** the template's thinking knob becomes real on the wire — anthropic-object thinking for the mtplx-class engines ([#811](https://github.com/tibrezus/harmostes/issues/811)) ([60e4ba0](https://github.com/tibrezus/harmostes/commit/60e4ba09be6bbb9c2bd25b5ce92943a02ae5b6e0))
+
 ## [1.8.0](https://github.com/tibrezus/harmostes/compare/v1.7.1...v1.8.0) (2026-10-28)
 
 

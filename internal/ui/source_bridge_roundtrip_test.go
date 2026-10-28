@@ -246,6 +246,14 @@ spec:
 	if !strings.Contains(updated, "# What this pipeline does, in one line.") {
 		t.Error("surviving spec comment dropped")
 	}
+	// EXACTLY once (the attach-once regression: the value node re-applied
+	// the key's comment set and every head comment rendered twice — latent
+	// in values mode too, invisible until a real MR carried comments).
+	for _, c := range []string{"# What this pipeline does, in one line.", "# vendored-first workspace build"} {
+		if n := strings.Count(updated, c); n != 1 {
+			t.Errorf("comment %q appears %d times, want exactly 1:\n%s", c, n, updated)
+		}
+	}
 	if !strings.Contains(updated, "# vendored-first workspace build") {
 		t.Error("prepare comment dropped")
 	}

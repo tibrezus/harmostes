@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.9.2](https://github.com/tibrezus/harmostes/compare/v1.9.1...v1.9.2) (2026-10-28)
+
+
+### Bug Fixes
+
+* **fleet:** the thinking-wire extension crashed at load — the factory parameter rename missed the call site ([#814](https://github.com/tibrezus/harmostes/issues/814)) ([60f4801](https://github.com/tibrezus/harmostes/commit/60f4801932a434f3d721d0d4ec72006aca031952))
+
 ## [1.9.1](https://github.com/tibrezus/harmostes/compare/v1.9.0...v1.9.1) (2026-10-28)
 
 

@@ -257,7 +257,7 @@ func (s *Server) handleTemplateDetail(w http.ResponseWriter, r *http.Request) {
 			}
 			return sourceSummaryOf(ts)
 		}(),
-		MayWrite:      s.mayWrite(identityFromContext(r.Context())),
+		MayWrite: s.mayWrite(identityFromContext(r.Context())),
 	}
 	s.render(w, r, "pages/template_detail.html", data)
 }

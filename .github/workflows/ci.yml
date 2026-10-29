@@ -407,7 +407,6 @@ jobs:
           helm template harmostes chart/ -f chart/ci/golden-values.yaml --set namespace=harmostes \
             --set forkMaintenance.enabled=true \
             --set forkMaintenance.resolver.enabled=true \
-            --set 'forkMaintenance.defs.forgejo\.yaml=name: forgejo' \
             --set credentials[0].name=ci-test \
             --set credentials[0].template.type=Opaque \
             --set credentials[0].data[0].secretKey=k \
@@ -424,135 +423,27 @@ jobs:
               if not cond:
                   fail.append(msg)
 
-          # Engine payload: every script key non-empty. (11 since conflict-event.sh —
-          # the unified conflict-escalation lib, #637; 10 since subtree-mode retired:
-          # derive-release-version.sh — the shared identity-mapping helper.)
-          scripts = cms.get("fork-maintenance-scripts", {})
-          check(len(scripts) == 11, f"fork-maintenance-scripts: want 11 keys, got {len(scripts)}")
-          check(all(scripts.values()), "fork-maintenance-scripts has an empty key (silent .Files.Get?)")
+          # Phase 4 (#792): the chart renders ZERO templates, ZERO task
+          # texts, ZERO engine payload. Absence is the contract — each
+          # leftover render is the two-writer thrash class.
+          wts = by_kind("WorkflowTemplate")
+          check(wts == [], f"chart renders WorkflowTemplates: {[w['metadata']['name'] for w in wts]} — templates ship from their repos")
+          check("harmostes-tasks" not in cms, "harmostes-tasks still rendered — task texts ride the template repos")
+          for cm in ("fork-maintenance-scripts", "fork-maintenance-checks", "fork-maintenance-hooks", "fork-maintenance-defs", "fork-maintenance-skill"):
+              check(cm not in cms, f"{cm} still rendered — the engine payload is repo/config delivered")
 
           # litellm extension: relative imports must resolve to rendered keys
           # (the incompleteness class — index.ts importing fallbacks.ts that
           # no .Files.Get rendered).
           ext = cms.get("litellm-provider-extension", {})
           check("index.ts" in ext and "package.json" in ext, "litellm-provider-extension missing index.ts/package.json")
-          for imp in re.findall(r'from\s+"\./(.*?)";', ext.get("index.ts", "")):
+          for imp in re.findall(r'from\s+"\\./(.*?)";', ext.get("index.ts", "")):
               check(imp in ext, f"litellm-provider-extension: index.ts imports ./{imp} — NOT rendered")
-
-          # Declarative layer present.
-          wts = by_kind("WorkflowTemplate")
-          check({w["metadata"]["name"] for w in wts} >= {"wiki-lint", "pr-review", "fork-maintenance", "noop"},
-                f"WorkflowTemplates incomplete: {[w['metadata']['name'] for w in wts]}")
-          tasks = cms.get("harmostes-tasks", {})
-          check(tasks.get("pr-review.txt") and tasks.get("arch-sync.txt"), "harmostes-tasks prompts missing/empty")
-          check(cms.get("fork-maintenance-defs", {}).get("forgejo.yaml"), "fork-maintenance-defs: forgejo.yaml not rendered")
-
-          # Resolver: model env must be litellm/-prefixed (unreachable default class).
-          deps = [d for d in by_kind("Deployment") if d["metadata"]["name"] == "fork-conflict-resolver"]
-          check(len(deps) == 1, "fork-conflict-resolver Deployment not rendered")
-          if deps:
-              env = {e["name"]: e.get("value", "") for e in deps[0]["spec"]["template"]["spec"]["containers"][0]["env"]}
-              check(env.get("RESOLVER_MODEL", "").startswith("litellm/"), f"RESOLVER_MODEL not litellm-prefixed: {env.get('RESOLVER_MODEL')}")
-              # Checksum roll annotations (#368-1): ConfigMap-only changes must
-              # roll the Recreate/fixed-tag resolver pod.
-              ann = deps[0]["spec"]["template"]["metadata"].get("annotations", {})
-              check(ann.get("checksum/fork-maintenance"), "resolver pod missing checksum/fork-maintenance annotation")
-              check(ann.get("checksum/litellm-extension"), "resolver pod missing checksum/litellm-extension annotation")
-
-          # No producer-less plugin volume on the worker pool (P3 regression guard).
-          pools = [d for d in by_kind("Deployment") if d["metadata"]["name"] == "harmostes-worker-pool"]
-          if pools:
-              vols = [v["name"] for v in pools[0]["spec"]["template"]["spec"]["volumes"]]
-              check("fork-plugins" not in vols, "worker-pool still mounts the producer-less fork-plugins volume")
 
           check(by_kind("ExternalSecret"), "ExternalSecret not rendered from values.credentials")
 
-          # Skill/prompt boundary parity (#404, reworked #680): the prompt
-          # is now ENVIRONMENT FACTS ONLY and defers all methodology to the
-          # skill — the old count-parity (the #374 class: a 9th pillar in
-          # the skill while the prompt said 8) is superseded by:
-          #  (a) the SKILL stays INTERNALLY consistent (description count
-          #      == "## The N pillars" body header) — extractor generalized
-          #      to both skill generations ("cover nine CI quality pillars"
-          #      and "across nine quality pillars");
-          #  (b) the PROMPT defers methodology to the skill and carries the
-          #      LEDGER contract markers (findings/thread_ref, the scoped
-          #      posting token) — a prompt that re-grows methodology or
-          #      loses the ledger contract REDS;
-          #  (c) a MISSING marker is its own named failure, never vacuous
-          #      green (kept from the r2/r3 hardening).
-          _words = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
-                    "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10}
-          def _num(w):
-              return int(w) if w.isdigit() else _words.get(w.lower())
-          def _pillar_count(text):
-              for pat in (r"[Cc]over(?:s|ing)? (\w+) CI quality pillars",
-                          r"(?:across|over) (\w+)(?: CI)? quality pillars"):
-                  for m in re.findall(pat, text):
-                      n = _num(m)
-                      if n is not None:
-                          return n
-              return None
-          def _header_count(text):
-              m = re.search(r"## The (\w+) pillars", text)
-              return _num(m.group(1)) if m else None
-          # self-probe: the extractor reads both skill generations' wording,
-          # refuses prose, and the header parser exists
-          check(_pillar_count("covering 9 CI quality pillars") == 9, "pillar extractor broken: digit")
-          check(_pillar_count("covers nine CI quality pillars") == 9, "pillar extractor broken: word")
-          check(_pillar_count("Reviews the delta across nine quality pillars") == 9, "pillar extractor broken: across-wording")
-          check(_pillar_count("no pillar phrase here") is None, "pillar extractor broken: no-refusal")
-          check(_header_count("## The 9 pillars") == 9 and _header_count("## The nine pillars") == 9,
-                "pillar header parser broken")
-          skill_path = ".agents/skills/pr-review/SKILL.md"
-          if not os.path.exists(skill_path):
-              check(False, f"{skill_path} missing — checkout lost the .agents submodule content; parity cannot run")
-          skill = open(skill_path).read() if os.path.exists(skill_path) else ""
-          prompt = cms.get("harmostes-tasks", {}).get("pr-review.txt", "")
-          n_skill = _pillar_count(skill)
-          n_skill_header = _header_count(skill)
-          # (a) SKILL internal consistency: description count == body header
-          # count, across both skill generations. Fails on the revision
-          # that motivated the check (f94ad46: description 'nine', header
-          # 'eight') and is revision-agnostic.
-          if n_skill is None:
-              check(False, "SKILL states no extractable pillar count (missing phrase or unparseable count word) — fix the skill upstream and re-pin")
-          elif n_skill_header is None:
-              check(False, "SKILL has no '## The N pillars' body header — the internal-consistency leg cannot run")
-          elif n_skill != n_skill_header:
-              check(False, f"SKILL internally inconsistent: description says {n_skill}, body header says {n_skill_header} — fix the skill upstream and re-pin")
-          # (b) prompt = environment facts + ledger contract, methodology
-          # deferred. Each marker missing is its own named failure.
-          for marker, why in (
-              ("skill provides the", "prompt must defer methodology to the loaded skill"),
-              ("findings", "prompt lost the ledger findings[] contract"),
-              ("thread_ref", "prompt lost the posted-thread ledger marker"),
-              ("review_finding_post", "prompt lost the posting-tools contract (#749 Phase 2 — the tools are the posting path; token names live in the extension, not the prompt)"),
-              ("/workspace/review.json", "prompt lost the ledger path"),
-          ):
-              check(marker in prompt, f"pr-review.txt missing contract marker: {why}")
-          for stale in ("Architect: (1)", " minute 8"):
-              check(stale not in prompt, f"pr-review.txt re-grew methodology/budget doctrine: {stale!r} present")
-          check(re.search(r"## The \w+ pillars", prompt) is None, "pr-review.txt re-grew a pillar heading (methodology belongs to the skill)")
-          # Budget COHERENCE (r2 P2 — the guard must not ban the fact): the
-          # prompt may mention the turn cap if and only if the rendered
-          # pr-review template actually enforces one. toolBudget: 0 =
-          # uncapped → the prompt must NOT speak of a cap; a set cap (or the
-          # fleet default, when the knob is absent) → the prompt MUST tell
-          # the agent its wall (an enforced cap the prompt hides is the
-          # #484 failure mode in reverse).
-          _wt = next((w for w in docs
-                      if w.get("kind") == "WorkflowTemplate" and w.get("metadata", {}).get("name") == "pr-review"), None)
-          check(_wt is not None, "rendered pr-review WorkflowTemplate missing — budget coherence cannot run")
-          _tb = (_wt or {}).get("spec", {}).get("agent", {}).get("toolBudget")
-          _capped = _tb is None or int(_tb) != 0
-          _mentions = "PI_TOOL_BUDGET" in prompt
-          if _capped and not _mentions:
-              check(False, "pr-review agent runs under a turn cap (toolBudget unset/set) but pr-review.txt hides it — the prompt must state the wall")
-          if not _capped and _mentions:
-              check(False, "pr-review agent is uncapped (toolBudget: 0) but pr-review.txt still speaks of PI_TOOL_BUDGET — remove the cap doctrine")
-          print(f"skill/prompt boundary: SKILL pillars {n_skill} (header {n_skill_header}); prompt defers methodology, ledger contract present")
-
+          # Pillar/skill parity moved to the template repo's CI (phase 4:
+          # both the skill pin and the task text are repo-side facts now).
           if fail:
               print("RENDER ASSERTIONS FAILED:", *fail, sep="\n  - ", file=sys.stderr)
               sys.exit(1)
@@ -636,29 +527,14 @@ jobs:
             echo "::error::golden render drift — run 'make golden-update' and commit the golden with your change"
             exit 1
           }
-          # #595 ordinal-contract guard: the engine payload must carry the
-          # base-10 ordinal parse (octal trap on padded cuts) and the
-          # tag-shape contract comment. The golden diff alone cannot catch
-          # their removal — regenerating the golden makes any payload drift
-          # green; this probe is the mechanical backstop. (#627: the parse
-          # moved into derive-release-version.sh's next_rezus_ordinal.)
-          grep -qF '10#${last_n:-0}' /tmp/golden-render.yaml \
-            || { echo "::error::render-guard: base-10 ordinal guard missing from the engine payload (#595/#627)"; exit 1; }
-          grep -q 'dash-fused' /tmp/golden-render.yaml \
-            || { echo "::error::render-guard: phase_tag tag-shape contract comment missing from the engine payload (#595)"; exit 1; }
-          if helm template harmostes chart/ -f chart/ci/golden-values.yaml \
-               --set forkMaintenance.defs=null > /dev/null 2>&1; then
-            echo "::error::empty-defs render guard did not fail (forkMaintenance.defs=null + enabled=true must fail)"
-            exit 1
-          fi
-          echo "golden render byte-identical; empty-defs guard fails as required"
-          # Configuration contract (ADR-0011 Amendment): the chart ships NO
-          # decision values. A render without the deployment's decisions must
-          # FAIL — with the field's documentation in the error — and no
-          # production model id may live outside the logic allowlist (L1
-          # boundary guard; #777 is the cautionary tale).
-          if helm template harmostes chart/ > /dev/null 2>&1; then
-            echo "::error::contract probe: bare render succeeded — a decision field has been re-defaulted in the chart"
+          # Phase 4 (#792): the engine payload + decision guards moved with
+          # what they guard — ordinal/tag-shape contracts live in the
+          # template repo's engine-contracts CI; decision presence is the
+          # DELIVERY's contract (config tier + patches), not the chart's.
+          # The bare render now SUCCEEDS by design: zero templates, zero
+          # decisions to require.
+          if ! helm template harmostes chart/ > /dev/null 2>&1; then
+            echo "::error::contract probe: bare render failed — the chart must render clean with zero templates (phase 4)"
             exit 1
           fi
           ./scripts/boundary-guard.sh

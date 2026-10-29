@@ -2,7 +2,8 @@
 # L1 boundary guard (ADR-0011 Amendment — wiki: Configuration Contract).
 #
 # The kernel ships logic and documentation only. Production model ids are
-# deployment decisions: they live in k8s-config HelmRelease values and — as
+# deployment decisions: they live in the config tier (AgentProfile,
+# harmostes-config) and the delivery patches (k8s-config) and — as
 # resilience-contract LOGIC — in the litellm-provider fallbacks/sampling
 # sources and the sol-pi reducer profile (each with its own gate). Anywhere
 # else — chart values, templates, fixtures, tests, e2e specs — a production

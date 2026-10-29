@@ -184,11 +184,23 @@ workerPool:
 #   See harmostes.wiki ADR-0011 and the skill's safeguards.md.
 forkMaintenance:
   enabled: false
+  # WHO renders the engine payload ConfigMaps (scripts/checks/hooks/defs/
+  # skill). "chart" (default): this chart renders them from its embedded
+  # copies — today's posture, inert. "external" (three-tier 3a, #789): the
+  # chart renders ONLY the consumers (pool mounts + HARMOSTES_EXTRA_
+  # CONFIGMAP_MOUNTS + the resolver's mounts) and the deployment brings the
+  # ConfigMaps itself — the template repo delivers scripts/checks/hooks/skill
+  # (code), the config tier delivers defs (per-env data). One writer per
+  # object: never run both (chart values + repo delivery) for one namespace.
+  payload: chart
   scriptsConfigMap: fork-maintenance-scripts
   checksConfigMap: fork-maintenance-checks
   defsConfigMap: fork-maintenance-defs
   hooksConfigMap: fork-maintenance-hooks
   # Fork definitions: key = file name (forks/<name>.yaml), value = content.
+  # Rendered ONLY when payload=chart; with payload=external the defs live in
+  # the config tier (tibrezus/harmostes-config overlays) — defs here are
+  # ignored (not merged, not validated).
   defs: {}
   # Conflict resolver: always-on HTTP service receiving
   # fork.conflict.needs-resolution events; runs the pi-agent resolution

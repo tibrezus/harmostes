@@ -1,6 +1,8 @@
 {{- if .Values.forkMaintenance.enabled }}
 {{- $fm := .Values.forkMaintenance }}
-{{- if not $fm.defs }}{{- fail "forkMaintenance.enabled=true requires forkMaintenance.defs — at least one forks/<name>.yaml definition (render-time guard, #368-3: an empty defs ConfigMap only fails deep inside sync-fork.sh at 3 a.m.)" }}{{- end }}
+{{- if not (or (eq $fm.payload "chart") (eq $fm.payload "external")) }}{{- fail (printf "forkMaintenance.payload must be 'chart' or 'external', got %q (render-time guard — a typo here silently renders the wrong posture, #504)" $fm.payload) }}{{- end }}
+{{- if eq $fm.payload "chart" }}
+{{- if not $fm.defs }}{{- fail "forkMaintenance.enabled=true (payload=chart) requires forkMaintenance.defs — at least one forks/<name>.yaml definition (render-time guard, #368-3: an empty defs ConfigMap only fails deep inside sync-fork.sh at 3 a.m.)" }}{{- end }}
 # ── Fork-maintenance engine payload (ADR-0011) ──────────────────────────────
 # The sync engine is CODE and ships inside this chart (chart/fork-maintenance/).
 # Only the fork DEFINITIONS are values (forkMaintenance.defs) — they are the
@@ -86,4 +88,15 @@ data:
   {{ $key }}: |
     {{- $content | nindent 4 }}
   {{- end }}
+{{- else }}
+# ── External payload (three-tier 3a, #789) ─────────────────────────────────
+# The deployment brings the engine ConfigMaps itself under the SAME names the
+# mounts consume: the template repo delivers scripts/checks/hooks/skill (code),
+# the config tier delivers defs (per-env data). The chart renders ONLY the
+# consumers — pool mounts, HARMOSTES_EXTRA_CONFIGMAP_MOUNTS, the resolver's
+# mounts. A missing ConfigMap fails the pod at rollout
+# (CreateContainerConfigError): fail-loud at the boundary, not at 3 a.m.
+# One writer per object: never enable payload=chart and repo delivery for the
+# same namespace — the transition flips BOTH in one change.
+{{- end }}
 {{- end }}

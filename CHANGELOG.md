@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.9.3](https://github.com/tibrezus/harmostes/compare/v1.9.2...v1.9.3) (2026-10-29)
+
+
+### Bug Fixes
+
+* **chart:** forkMaintenance.payload chart|external — the engine payload writer moves out (three-tier 3a, [#789](https://github.com/tibrezus/harmostes/issues/789)) ([#817](https://github.com/tibrezus/harmostes/issues/817)) ([17215dc](https://github.com/tibrezus/harmostes/commit/17215dcc628c16bf218b28804339a83a5c924885))
+
 ## [1.9.2](https://github.com/tibrezus/harmostes/compare/v1.9.1...v1.9.2) (2026-10-28)
 
 

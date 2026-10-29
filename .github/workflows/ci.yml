@@ -129,11 +129,6 @@ jobs:
       - name: rig-emit validator
         run: make test-rig-emit
 
-      # Fork engine release-identity contract (#627): upstream-exact
-      # major.minor.patch mapping, -rezus.NN reset at every upstream change,
-      # release-line behind-detection. Hermetic file:// git fixtures.
-      - name: fork-maintenance release identity
-
       # Skill drift (#606): the agents-repo fork-maintenance skill's
       # templates are VERBATIM copies of the chart's live engine scripts —
       # when they drift, an agent reads a different engine than the cluster

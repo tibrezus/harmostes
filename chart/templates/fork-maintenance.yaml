@@ -1,102 +1,14 @@
 {{- if .Values.forkMaintenance.enabled }}
 {{- $fm := .Values.forkMaintenance }}
-{{- if not (or (eq $fm.payload "chart") (eq $fm.payload "external")) }}{{- fail (printf "forkMaintenance.payload must be 'chart' or 'external', got %q (render-time guard — a typo here silently renders the wrong posture, #504)" $fm.payload) }}{{- end }}
-{{- if eq $fm.payload "chart" }}
-{{- if not $fm.defs }}{{- fail "forkMaintenance.enabled=true (payload=chart) requires forkMaintenance.defs — at least one forks/<name>.yaml definition (render-time guard, #368-3: an empty defs ConfigMap only fails deep inside sync-fork.sh at 3 a.m.)" }}{{- end }}
-# ── Fork-maintenance engine payload (ADR-0011) ──────────────────────────────
-# The sync engine is CODE and ships inside this chart (chart/fork-maintenance/).
-# Only the fork DEFINITIONS are values (forkMaintenance.defs) — they are the
-# declarative per-fork configuration. ConfigMap names match the worker-pool
-# mounts (forkMaintenance.*ConfigMap), so the worker pods see the same
-# /workspace layout the k8s-config kustomize generator used to produce.
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: {{ $fm.scriptsConfigMap }}
-  namespace: {{ $.Values.namespace }}
-  labels:
-    app.kubernetes.io/name: harmostes
-    app.kubernetes.io/managed-by: {{ $.Release.Service }}
-data:
-  {{- range $script := list "sync-fork.sh" "mapping-mode.sh" "conflict-event.sh" "derive-release-version.sh" "backport.sh" "git-host.sh" "resolve-conflict.sh" "conflict-subscriber.py" "generate-manifest.sh" "verify-patches.sh" "divergence-track.sh" }}
-  {{- $content := $.Files.Get (printf "fork-maintenance/scripts/%s" $script) }}
-  {{- if not $content }}{{- fail (printf "engine payload missing or empty: fork-maintenance/scripts/%s (render-time guard, #368-3)" $script) }}{{- end }}
-  {{ $script }}: |
-    {{- $content | nindent 4 }}
-  {{- end }}
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: {{ $fm.checksConfigMap }}
-  namespace: {{ $.Values.namespace }}
-  labels:
-    app.kubernetes.io/name: harmostes
-    app.kubernetes.io/managed-by: {{ $.Release.Service }}
-data:
-  {{- range $check := list "validate-fork.sh" "gate-resolved.sh" }}
-  {{- $content := $.Files.Get (printf "fork-maintenance/checks/%s" $check) }}
-  {{- if not $content }}{{- fail (printf "engine payload missing or empty: fork-maintenance/checks/%s (render-time guard, #368-3)" $check) }}{{- end }}
-  {{ $check }}: |
-    {{- $content | nindent 4 }}
-  {{- end }}
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: {{ $fm.hooksConfigMap }}
-  namespace: {{ $.Values.namespace }}
-  labels:
-    app.kubernetes.io/name: harmostes
-    app.kubernetes.io/managed-by: {{ $.Release.Service }}
-data:
-  {{- range $hook := list "dapr.sh" "signoz.sh" }}
-  {{- $content := $.Files.Get (printf "fork-maintenance/hooks/%s" $hook) }}
-  {{- if not $content }}{{- fail (printf "engine payload missing or empty: fork-maintenance/hooks/%s (render-time guard, #368-3)" $hook) }}{{- end }}
-  {{ $hook }}: |
-    {{- $content | nindent 4 }}
-  {{- end }}
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: {{ $fm.defsConfigMap }}
-  namespace: {{ $.Values.namespace }}
-  labels:
-    app.kubernetes.io/name: harmostes
-    app.kubernetes.io/managed-by: {{ $.Release.Service }}
-data:
-  {{- range $file, $content := $fm.defs }}
-  {{- if not (trim $content) }}{{- fail (printf "forkMaintenance.defs.%s is empty — a def with no content renders a valid ConfigMap that fails inside sync-fork.sh (render-time guard, #368-3)" $file) }}{{- end }}
-  {{ $file }}: |
-    {{- $content | nindent 4 }}
-  {{- end }}
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: fork-maintenance-skill
-  namespace: {{ $.Values.namespace }}
-  labels:
-    app.kubernetes.io/name: harmostes
-    app.kubernetes.io/managed-by: {{ $.Release.Service }}
-data:
-  {{- range $key, $path := dict "SKILL.md" "fork-maintenance/skill/SKILL.md" "conflict-resolution.md" "fork-maintenance/skill/references/conflict-resolution.md" "safeguards.md" "fork-maintenance/skill/references/safeguards.md" "architecture.md" "fork-maintenance/skill/references/architecture.md" }}
-  {{- $content := $.Files.Get $path }}
-  {{- if not $content }}{{- fail (printf "engine payload missing or empty: %s (render-time guard, #368-3)" $path) }}{{- end }}
-  {{ $key }}: |
-    {{- $content | nindent 4 }}
-  {{- end }}
-{{- else }}
-# ── External payload (three-tier 3a, #789) ─────────────────────────────────
-# The deployment brings the engine ConfigMaps itself under the SAME names the
-# mounts consume: the template repo delivers scripts/checks/hooks/skill (code),
-# the config tier delivers defs (per-env data). The chart renders ONLY the
-# consumers — pool mounts, HARMOSTES_EXTRA_CONFIGMAP_MOUNTS, the resolver's
-# mounts. A missing ConfigMap fails the pod at rollout
+{{- if $fm.payload }}{{- if not (eq $fm.payload "external") }}{{- fail (printf "forkMaintenance.payload must be 'external' (or empty) — chart payload mode was REMOVED in three-tier phase 4 (#792): the engine lives in tibrezus/harmostes-template-fork-maintenance and the defs in the config tier. got %q" $fm.payload) }}{{- end }}{{- end }}
+# ── Fork-maintenance engine consumers (ADR-0011; phase 4: #792) ─────────────
+# The engine PAYLOAD (scripts/checks/hooks/skill = code; defs = per-env data)
+# is delivered by the deployment under the SAME names the mounts consume:
+#   - tibrezus/harmostes-template-fork-maintenance → scripts/checks/hooks/skill
+#   - the config tier (harmostes-config overlays)   → defs
+# The chart renders ONLY the consumers — the worker-pool mounts +
+# HARMOSTES_EXTRA_CONFIGMAP_MOUNTS + the fork-conflict-resolver mounts (those
+# live in their own templates). A missing ConfigMap fails the pod at rollout
 # (CreateContainerConfigError): fail-loud at the boundary, not at 3 a.m.
-# One writer per object: never enable payload=chart and repo delivery for the
-# same namespace — the transition flips BOTH in one change.
-{{- end }}
+# One writer per object: exactly one delivery per namespace, by construction.
 {{- end }}

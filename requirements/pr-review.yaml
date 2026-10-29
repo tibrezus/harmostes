@@ -18,8 +18,6 @@ requirements:
         contains: "Post a verified finding as a native anchored thread, NOW (progressive posting)"
       - file: extensions/review-post/contract.test.ts
         contains: "finding_post: happy path returns the host-issued thread_ref and records it"
-      - file: chart/ci/golden/full.yaml
-        contains: "Post each verified finding THE MOMENT you verify it"
       - file: .agents/skills/pr-review/SKILL.md
         contains: "Post each\nverified finding **immediately** as a native anchored thread — do not\nbatch"
 
@@ -50,8 +48,6 @@ requirements:
     enforcement:
       - file: extensions/review-post/contract.test.ts
         contains: "export: foreign keys survive (todos, coverage) — read-modify-write, never a clobber"
-      - file: chart/ci/golden/full.yaml
-        contains: "they maintain findings[],"
       - file: internal/worker/reviewgate_validation_test.go
         contains: "TestReviewGateAcceptsNewContract"
 
@@ -59,8 +55,6 @@ requirements:
     enforcement:
       - file: extensions/review-post/index.ts
         contains: "review_thread_resolve"
-      - file: chart/ci/golden/full.yaml
-        contains: "A reply alone never closes a thread: resolve is the"
 
   - id: PR-REVIEW-7
     enforcement:

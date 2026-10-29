@@ -20,15 +20,23 @@ import (
 	"github.com/tibrezus/harmostes/internal/ui/fixture"
 )
 
-const committedValuesFile = `namespace: fixture-ns
-workflowTemplates:
-  # The PR review archetype.
-  pr-review:
-    description: PR review
-    agent:
-      model: mistral-small-latest
-  other:
-    description: untouched
+// committedTemplateFile plays the template repo's template.yaml — document
+// mode (#787): the bridge splices the pr-review document INSIDE this file.
+const committedTemplateFile = `# The PR review template — this file is the template's home.
+apiVersion: harmostes.dev/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: pr-review
+spec:
+  description: PR review
+  source:
+    forge: github
+    repo: golden-owner/golden-repo
+    path: template.yaml
+  agent:
+    model: mistral-small-latest
+  reviewReady:
+    label: needs-review
 `
 
 // fakeForge records the bridge's calls in order and serves just enough of
@@ -52,10 +60,10 @@ func (f *fakeForge) handler() http.Handler {
 		f.calls = append(f.calls, "ref")
 		write(w, `{"object":{"sha":"`+f.baseSHA+`"}}`)
 	})
-	mux.HandleFunc("GET /repos/golden-owner/golden-repo/contents/chart/values.yaml", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /repos/golden-owner/golden-repo/contents/template.yaml", func(w http.ResponseWriter, r *http.Request) {
 		f.assertAuth(r)
 		f.calls = append(f.calls, "get-contents")
-		b64 := encodeB64(committedValuesFile)
+		b64 := encodeB64(committedTemplateFile)
 		write(w, `{"sha":"`+f.blobSHA+`","content":"`+b64+`"}`)
 	})
 	mux.HandleFunc("POST /repos/golden-owner/golden-repo/git/refs", func(w http.ResponseWriter, r *http.Request) {
@@ -66,7 +74,7 @@ func (f *fakeForge) handler() http.Handler {
 		f.branchName, _ = body["ref"].(string)
 		write(w, `{}`)
 	})
-	mux.HandleFunc("PUT /repos/golden-owner/golden-repo/contents/chart/values.yaml", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("PUT /repos/golden-owner/golden-repo/contents/template.yaml", func(w http.ResponseWriter, r *http.Request) {
 		f.assertAuth(r)
 		f.calls = append(f.calls, "put-contents")
 		var body map[string]any
@@ -130,10 +138,12 @@ func newProposeServer(t *testing.T) (*httptest.Server, *fakeForge) {
 	if err != nil {
 		t.Fatalf("fixture server: %v", err)
 	}
+	// Document mode (phase 4): the fixture CR's spec.source names the target
+	// (golden-owner/golden-repo, path template.yaml); the server-side
+	// override carries ONLY the transport — APIBase at the fake forge, the
+	// token via SetSourceToken.
 	srv.Server().SetTemplateSource(&ui.TemplateSource{
-		Host: "github", Owner: "golden-owner", Repo: "golden-repo",
-		BaseBranch: "main", Path: "chart/values.yaml", ValuesKey: "workflowTemplates",
-		APIBase: forgeSrv.URL,
+		Host: "github", APIBase: forgeSrv.URL,
 	})
 	srv.Server().SetSourceToken(forge.secret)
 	ts := httptest.NewServer(srv.Server().Routes())
@@ -180,8 +190,14 @@ metadata:
     harmostes.dev/owner: whatever
 spec:
   description: PR review
+  source:
+    forge: github
+    repo: golden-owner/golden-repo
+    path: template.yaml
   agent:
     model: llama3:8b
+  reviewReady:
+    label: needs-review
 `
 
 // TestComponent_Propose_HappyPath: the whole choreography against the fake
@@ -204,15 +220,16 @@ func TestComponent_Propose_HappyPath(t *testing.T) {
 		t.Errorf("branch ref = %q, want refs/heads/harmostes-ui/pr-review-*", forge.branchName)
 	}
 
-	// The committed content: the new model in, the old out, the untouched
-	// template + comment preserved (the surgical edit, end to end).
+	// The committed content: the new model in, the old out, the document's
+	// untouched structure + comment preserved (the surgical splice, end to
+	// end — document mode #787/#459).
 	contentB64, _ := forge.commitBody["content"].(string)
 	content := decodeB64(contentB64)
 	if !strings.Contains(content, "llama3:8b") || strings.Contains(content, "mistral-small-latest") {
-		t.Error("committed file does not carry the edit")
+		t.Error("committed document does not carry the edit")
 	}
-	if !strings.Contains(content, "# The PR review archetype.") || !strings.Contains(content, "other:") {
-		t.Error("committed file lost untouched content — the edit was not surgical")
+	if !strings.Contains(content, "# The PR review template") || !strings.Contains(content, "reviewReady:") {
+		t.Error("committed document lost untouched content — the splice was not surgical")
 	}
 	if forge.commitBody["sha"] != "blobsha" {
 		t.Error("commit must carry the blob sha (fast-forward guard)")
@@ -282,16 +299,9 @@ func TestComponent_Propose_Rejections(t *testing.T) {
 	if code, _ := postPropose(t, ts, "pr-review", "not: [valid"); code != http.StatusBadRequest {
 		t.Errorf("broken YAML: status = %d, want 400", code)
 	}
-	// Identical document — nothing to propose.
-	if code, _ := postPropose(t, ts, "pr-review", `apiVersion: harmostes.dev/v1alpha1
-kind: WorkflowTemplate
-metadata:
-  name: pr-review
-spec:
-  description: PR review
-  agent:
-    model: mistral-small-latest
-`); code != http.StatusBadRequest {
+	// Identical document — nothing to propose (document mode: the committed
+	// template.yaml itself is the semantic no-op).
+	if code, _ := postPropose(t, ts, "pr-review", committedTemplateFile); code != http.StatusBadRequest {
 		t.Errorf("identical document: status = %d, want 400", code)
 	}
 }
@@ -305,6 +315,12 @@ func TestComponent_Propose_Unconfigured(t *testing.T) {
 	srv, err := fixture.NewWorld(fixtureNamespace, logger, "../../chart")
 	if err != nil {
 		t.Fatalf("fixture server: %v", err)
+	}
+	// Phase 4: the fixture CR carries spec.source by default — strip it so
+	// NEITHER the CR nor the server override names a target (the absent
+	// surface posture).
+	if err := srv.ClearTemplateSource("pr-review"); err != nil {
+		t.Fatalf("strip source: %v", err)
 	}
 	srv.Server().SetTemplateSource(nil)
 	ts := httptest.NewServer(srv.Server().Routes())
@@ -327,8 +343,8 @@ func TestComponent_ProposePanel_DOM(t *testing.T) {
 	if n := doc.Find(`[data-testid="propose-panel"]`).Length(); n != 1 {
 		t.Fatal("propose panel missing")
 	}
-	if src := doc.Find(`[data-testid="propose-source"]`).Text(); !strings.Contains(src, "golden-owner/golden-repo") || !strings.Contains(src, "chart/values.yaml") {
-		t.Errorf("source label = %q, want repo + path", src)
+	if src := doc.Find(`[data-testid="propose-source"]`).Text(); !strings.Contains(src, "golden-owner/golden-repo") || !strings.Contains(src, "template.yaml") {
+		t.Errorf("source label = %q, want repo + path (document mode)", src)
 	}
 	if n := doc.Find(`[data-testid="propose-button"]`).Length(); n != 1 {
 		t.Error("propose button missing")

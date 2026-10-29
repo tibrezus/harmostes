@@ -1,8 +1,8 @@
 # Golden-render fixture (#368-8) — a production-SHAPED but fictional values
 # file that exercises every gated template layer in one render:
-# fork-maintenance engine + defs + hooks, the conflict resolver (with its
-# checksum annotations), credentials, and the default-on declarative layer
-# (workflowTemplates, tasks).
+# fork-maintenance consumers (phase 4: the engine itself rides the template
+# repo), the conflict resolver (with its checksum annotations), credentials,
+# and the MR-bridge env. Phase 4 (#792): zero templates, zero task texts.
 #
 # `make golden-update` renders this into chart/ci/golden/full.yaml; CI diffs
 # a fresh render against the committed golden, so any rendered-output change
@@ -14,65 +14,19 @@
 # out of the golden — they change every release and carry no information.
 namespace: harmostes-ci
 
+# Phase 4 (#792): the engine payload + defs ride the template repo / config
+# tier — the chart renders only consumers. The fixture keeps forkMaintenance
+# enabled to exercise the consumer render (mounts + env + resolver).
 forkMaintenance:
   enabled: true
-  defs:
-    golden.yaml: |
-      # Golden fixture def — production-shaped, entirely fictional (#368-8).
-      name: golden
-      upstream:
-        url: https://example.com/upstream/golden.git
-        branch: main
-      fork:
-        url: https://example.com/forks/golden.git
-        default_branch: rezus/main
-        mirror_branch: main
-        platform: github
-      auto:
-        merge: true
-        release: false
-      validate:
-        - name: golden-build
-          command: make build
-      patches:
-        - path: README.golden.md
-          signature: golden-marker
-    silver.yaml: |
-      name: silver
-      upstream:
-        url: https://example.com/upstream/silver.git
-        branch: main
-      fork:
-        url: https://example.com/forks/silver.git
-        default_branch: rezus/main
-        mirror_branch: main
-        platform: forgejo
   resolver:
     enabled: true
     # Decision field with an obviously-test value — this fixture is the
     # deployment for the golden render (ADR-0011 Amendment).
     model: litellm/test/golden-resolver
 
-# The decision values (ADR-0011 Amendment): the chart ships none, so the
-# fixture decides them — with obviously-test ids. Deep-merges over the
-# chart's agent blocks (contract fields — skill, taskTemplate, tools,
-# plugins — come from the chart; decisions come from here).
-workflowTemplates:
-  pr-review:
-    agent:
-      model: litellm/test/golden-reviewer
-      models:
-        - model: litellm/test/golden-reviewer
-          start: "22:00"
-          end: "08:00"
-          tz: Asia/Shanghai
-      thinking: high
-      timeout: 3600
-      toolBudget: 0
-      maxFixes: 3
-  wiki-lint:
-    agent:
-      maxFixes: 3
+# Phase 4 (#792): workflowTemplates are repo-delivered — the fixture
+# carries none; the chart renders zero templates by construction.
 
 credentials:
   - name: golden-token

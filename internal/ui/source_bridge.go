@@ -695,12 +695,17 @@ func templateSourceOf(env *TemplateSource, spec *v1alpha1.TemplateSourceSpec) (*
 		branch = "main"
 	}
 	slash := strings.Index(spec.Repo, "/")
+	apiBase := ""
+	if env != nil {
+		apiBase = env.APIBase // transport override only (self-hosted hosts; the fake forge in tests)
+	}
 	return &TemplateSource{
 		Host:       spec.Forge,
 		Owner:      spec.Repo[:slash],
 		Repo:       spec.Repo[slash+1:],
 		BaseBranch: branch,
 		Path:       spec.Path,
+		APIBase:    apiBase,
 	}, true, nil // document mode
 }
 

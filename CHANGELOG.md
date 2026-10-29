@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.9.4](https://github.com/tibrezus/harmostes/compare/v1.9.3...v1.9.4) (2026-10-29)
+
+
+### Bug Fixes
+
+* **chart:** phase 4 decommission — the engine and every template leave the chart ([#823](https://github.com/tibrezus/harmostes/issues/823)) ([541b2ea](https://github.com/tibrezus/harmostes/commit/541b2ea3378d8ec04c8d625e73a647301e347c52))
+
 ## [1.9.3](https://github.com/tibrezus/harmostes/compare/v1.9.2...v1.9.3) (2026-10-29)
 
 

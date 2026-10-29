@@ -9,13 +9,13 @@ package fixture
 
 import (
 	"bytes"
+	"context"
 	_ "embed"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -316,8 +316,24 @@ func DevIdentity(next http.Handler) http.Handler {
 // World is the fixture's assembled runtime: the UI server over the seeded
 // in-memory world, plus the handles its middleware stack drives.
 type World struct {
-	server   *ui.Server
-	timeline *FixTimeline
+	server    *ui.Server
+	timeline  *FixTimeline
+	k8sClient ctrlclient.Client
+	namespace string
+}
+
+// ClearTemplateSource strips a template's spec.source in the fixture world
+// (test surface: CRs without a source are the "absent surface" posture —
+// the propose bridge refuses with 501 when neither CR nor server override
+// carries one).
+func (w *World) ClearTemplateSource(name string) error {
+	var tmpl v1alpha1.WorkflowTemplate
+	ctx := context.Background()
+	if err := w.k8sClient.Get(ctx, ctrlclient.ObjectKey{Namespace: w.namespace, Name: name}, &tmpl); err != nil {
+		return err
+	}
+	tmpl.Spec.Source = nil
+	return w.k8sClient.Update(ctx, &tmpl)
 }
 
 // Server returns the UI server (component tests drive it directly).
@@ -405,13 +421,13 @@ func NewWorld(namespace string, logger *slog.Logger, chartDir string) (*World, e
 	// panel's DOM and the glue run; a real POST fails honestly at the forge.
 	server.SetTemplateSource(&ui.TemplateSource{
 		Host: "github", Owner: "golden-owner", Repo: "golden-repo",
-		BaseBranch: "main", Path: "chart/values.yaml", ValuesKey: "workflowTemplates",
+		BaseBranch: "main", Path: "template.yaml",
 	})
 	// Event Timeline (ADR-0012 §4): the seeded fake reader (no sidecar here) —
 	// kept as a *FixTimeline so Routes()' ingest middleware can grow it.
 	tl := NewTimelineReader()
 	server.SetTimelineReader(tl)
-	return &World{server: server, timeline: tl}, nil
+	return &World{server: server, timeline: tl, k8sClient: k8sClient, namespace: namespace}, nil
 }
 
 // chartWorld holds what the fixture loads from the repo's chart directory:
@@ -435,7 +451,7 @@ func loadChartWorld(chartDir, namespace string) (*chartWorld, error) {
 	if err != nil {
 		return nil, err
 	}
-	tmpl, err := loadChartTemplate(chartDir+"values.yaml", namespace)
+	tmpl, err := loadChartTemplate(namespace)
 	if err != nil {
 		return nil, err
 	}
@@ -479,36 +495,83 @@ func loadChartCRDs(crdDir string) ([]runtime.Object, error) {
 	return out, nil
 }
 
-// loadChartTemplate reads workflowTemplates.pr-review out of the chart's
-// values.yaml — the same file the MR bridge edits, so the fixture's head
-// document IS the production template.
-func loadChartTemplate(valuesFile, namespace string) (*v1alpha1.WorkflowTemplate, error) {
-	raw, err := os.ReadFile(valuesFile)
-	if err != nil {
-		return nil, fmt.Errorf("fixture values: %w", err)
+func loadChartTemplate(namespace string) (*v1alpha1.WorkflowTemplate, error) {
+	var tmpl v1alpha1.WorkflowTemplate
+	if err := yaml.Unmarshal([]byte(fixturePrReviewTemplate), &tmpl); err != nil {
+		return nil, fmt.Errorf("fixture pr-review template: %w", err)
 	}
-	var doc struct {
-		WorkflowTemplates map[string]v1alpha1.WorkflowTemplateSpec `json:"workflowTemplates"`
-	}
-	if err := yaml.Unmarshal(raw, &doc); err != nil {
-		return nil, fmt.Errorf("parse %s: %w", valuesFile, err)
-	}
-	spec, ok := doc.WorkflowTemplates["pr-review"]
-	if !ok {
-		return nil, fmt.Errorf("%s: no workflowTemplates.pr-review — the fixture world tracks the chart's review template", valuesFile)
-	}
-	// Decision overlay (ADR-0011 Amendment): the chart ships NO decision
-	// fields anymore — a DEPLOYED cluster always carries the deployment's
-	// decisions rendered into the template. The fixture world simulates a
-	// deployed cluster, so it decides too — with obviously-test ids (this
-	// world is synthetic; the overlay is the "HelmRelease values" of the
+	tmpl.Namespace = namespace
+	// Decision overlay (ADR-0011 Amendment): a DEPLOYED cluster always
+	// carries the deployment's decisions — the AgentProfile resolves the
+	// model, the delivery patch carries tuning. The fixture world simulates
+	// a deployed cluster, so it decides too — with obviously-test ids (this
+	// world is synthetic; the overlay is the "AgentProfile + patch" of the
 	// fixture namespace).
-	fixtureDecisions(&spec.Agent)
-	return &v1alpha1.WorkflowTemplate{
-		ObjectMeta: metav1.ObjectMeta{Name: "pr-review", Namespace: namespace},
-		Spec:       spec,
-	}, nil
+	fixtureDecisions(&tmpl.Spec.Agent)
+	return &tmpl, nil
 }
+
+// fixturePrReviewTemplate mirrors the template repo's CR shape
+// (tibrezus/harmostes-template-pr-review/template.yaml) structurally: same
+// nodes, same task-ConfigMap wiring, same reviewReady contract. The source
+// targets the fixture-convention repo (golden-owner/golden-repo — the
+// propose component tier's fake forge plays it); real deployments carry the
+// real repo from the repo's own template.yaml. Decision fields arrive via
+// fixtureDecisions, not here.
+const fixturePrReviewTemplate = `
+apiVersion: harmostes.dev/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: pr-review
+spec:
+  description: PR review (fetch PR → agent → pr-review → consumed by the sweep)
+  source:
+    forge: github
+    repo: golden-owner/golden-repo
+    path: template.yaml
+    branch: main
+    secretRef:
+      name: harmostes-template-webhook
+      key: secret
+  scope:
+    - name: label
+      kind: string
+      label: Label trigger
+      description: only act when this label is present on a PR
+      default: needs-review
+    - name: repos
+      kind: list
+      label: Repos
+      description: the scope the prepare plugin operates on (owner/repo)
+    - name: wiki
+      kind: string
+      label: Wiki repo
+      description: context repo some agents use for design evidence
+  prepare:
+    plugin:
+      name: workspace
+      timeout: 5m
+  agent:
+    skill: /skills/pr-review/SKILL.md
+    taskTemplate:
+      name: pr-review
+      configMap: pr-review-tasks
+      key: pr-review.txt
+    tools: [read, bash, grep]
+    gate:
+      plugin:
+        name: pr-review
+  deploy:
+    plugin:
+      name: noop
+  reviewReady:
+    label: needs-review
+    horizon: 6h
+    dispatchTimeout: 135m
+    runBound: 120m
+  sessions:
+    pvc: harmostes-worker-sessions
+`
 
 // fixtureModelID is the fixture world's decision — deliberately-test, so a
 // real production id can never leak into UI snapshots through the fixture.

@@ -246,7 +246,17 @@ func (s *Server) handleTemplateDetail(w http.ResponseWriter, r *http.Request) {
 		InspectNode:   inspectNode,
 		Inspect:       inspectFieldsFor(spec, inspectNode, historical),
 		Historical:    historical,
-		Propose:       sourceSummaryOf(s.templateSource),
+		// Propose target (#787/phase 4): the CR's spec.source decides when it
+		// carries one (document mode — every repo-delivered template does);
+		// the server-level source remains the fallback + transport (APIBase).
+		// Neither → nil: the propose surface is absent, not an error.
+		Propose: func() *sourceSummary {
+			ts, _, err := templateSourceOf(s.templateSource, spec.Source)
+			if err != nil {
+				return nil
+			}
+			return sourceSummaryOf(ts)
+		}(),
 		MayWrite:      s.mayWrite(identityFromContext(r.Context())),
 	}
 	s.render(w, r, "pages/template_detail.html", data)

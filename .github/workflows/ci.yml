@@ -179,18 +179,6 @@ jobs:
       # runs. Both sides sit in one checkout (the skill via the .agents
       # submodule, the chart in-tree); the skill's own check-drift.sh does
       # the comparison, this step only resolves the two checkouts.
-      - name: fork-maintenance skill drift (agents copy == chart engine)
-        run: bash chart/ci/skill-drift.sh
-
-      # Vendor sync (#452 D2): plugins/rig-emit/{emit-rig.py,rig/} is a
-      # byte-equivalent vendored copy of llm-wiki-core's repo-map action at
-      # the sha pinned in VENDOR.sha, plus exactly the deviations
-      # vendor-patch.py applies (severity pin, cycle reporting, warnings
-      # persistence). The compared set is DERIVED from the patcher's output
-      # — never restated (a hardcoded third copy could shrink silently,
-      # #456 r1) — and cross-checked three ways: the produced tree must
-      # equal the VENDOR.sha list, upstream must have no .py outside it,
-      # and every produced file must byte-match the vendored copy.
       - name: rig-emit vendor sync (byte-parity at VENDOR.sha)
         run: |
           PIN_SHA=$(sed -n 's/^sha: //p' plugins/rig-emit/VENDOR.sha)

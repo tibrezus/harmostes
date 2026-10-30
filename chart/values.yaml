@@ -28,7 +28,7 @@ skills:
   # list arrives pre-populated from this playbook's pillar block
   # (#727 follow-up); work it top-down, never rebuild it.
   # Prior: eb296e5 (#726 repository-wiki + #727 pillar-scan sections).
-  rev: "f7fdf227b5c4252cf8a02ebc798862ead4af72a8"
+  rev: "37475fe97279187ebe0046bbb570cfcf5a33ab22"
 
 agent:
   # Hard tool-call cap per agent session (#484): past the cap only the

@@ -1733,6 +1733,9 @@ spec:
           # pins the served revision the same way ("$HARMOSTES_SKILLS_REV",
           # fetch+checkout when non-empty). Byte-identical literal to
           # internal/k8s.skillsSyncCommand (Go side, per-Attempt Jobs).
+          # tokenSecret: the helper string is fixed path-only data (the token
+          # itself is read from the mounted file at credential time by git's
+          # helper shell — never interpolated into this literal).
           command: ["sh", "-c", "git clone --depth 1 \"$HARMOSTES_SKILLS_REPO\" /tmp/agents && { [ -z \"$HARMOSTES_SKILLS_REV\" ] || { git -C /tmp/agents fetch --depth 1 origin \"$HARMOSTES_SKILLS_REV\" && git -C /tmp/agents checkout --detach FETCH_HEAD; }; } && mkdir -p /skills && cp -r /tmp/agents/skills/. /skills/ && { echo \"[sync-skills] served skills revision: $(git -C /tmp/agents rev-parse HEAD)\"; (find /skills -name 'SKILL.md' | sort | xargs -r sha256sum > /skills/.manifest) || echo \"[sync-skills] manifest write failed (non-fatal)\"; true; }"]
           env:
             - name: HARMOSTES_SKILLS_REPO
@@ -1851,6 +1854,12 @@ spec:
             # per-Attempt Jobs serve the SAME revision the pool serves.
             - name: HARMOSTES_SKILLS_REV
               value: "f7fdf227b5c4252cf8a02ebc798862ead4af72a8"
+            # Skills-repo auth (private agents repo): the dispatcher forwards
+            # the ESO-synced secret NAME to BuildJob, which mounts it into
+            # each per-Attempt Job's sync-skills init container. Empty =
+            # anonymous clone.
+            - name: HARMOSTES_SKILLS_TOKEN_SECRET
+              value: ""
             # GH_TOKEN deliberately aliases the same secret the dispatch path
             # already mounts as HARMOSTES_GIT_TOKEN — the gh CLI wants its
             # canonical name; one credential, one secret, two env spellings.

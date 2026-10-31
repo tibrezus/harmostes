@@ -51,6 +51,27 @@ func SkillsRev() string {
 	return os.Getenv("HARMOSTES_SKILLS_REV")
 }
 
+// SkillsTokenMountPath is where the OPTIONAL skills-token secret mounts in
+// every sync-skills init container (pool pod + per-Attempt Jobs). Fixed
+// path, read-only; the key inside is "token".
+const (
+	SkillsTokenMountPath = "/var/run/secrets/harmostes-skills"
+	SkillsTokenKey       = "token"
+)
+
+// SkillsTokenSecret resolves the OPTIONAL name of the ESO-synced secret
+// carrying the agents-repo access token (the repo went private 2026-10-29).
+// The chart sets it from values.skills.tokenSecret; empty = anonymous clone
+// (public repos). Volume mount, not the Dapr secret store: the clone runs
+// in an init container, which starts BEFORE the daprd sidecar is ready.
+// The token value itself never enters env, command lines, or git remote
+// URLs — the clone's git credential helper cats the mounted file at
+// credential time, so rotation (BSM → ESO refresh → kubelet sync) lands on
+// the next clone without pod recreation.
+func SkillsTokenSecret() string {
+	return os.Getenv("HARMOSTES_SKILLS_TOKEN_SECRET")
+}
+
 // skillsSyncCommand mirrors the chart's sync-skills init container byte
 // for byte: clone the agents repo fresh, copy skills/, write the sha256
 // manifest the pool's startup check consumes. Every attempt therefore
@@ -69,8 +90,65 @@ func SkillsRev() string {
 // shallow-fetch that exact commit and check it out (clone --branch cannot
 // take an arbitrary SHA); empty → the clone's default branch stands. The
 // rev travels as env data too — same injection argument as the repo URL.
-func skillsSyncCommand() []string {
-	return []string{"sh", "-c", `git clone --depth 1 "$HARMOSTES_SKILLS_REPO" /tmp/agents && { [ -z "$HARMOSTES_SKILLS_REV" ] || { git -C /tmp/agents fetch --depth 1 origin "$HARMOSTES_SKILLS_REV" && git -C /tmp/agents checkout --detach FETCH_HEAD; }; } && mkdir -p /skills && cp -r /tmp/agents/skills/. /skills/ && { echo "[sync-skills] served skills revision: $(git -C /tmp/agents rev-parse HEAD)"; (find /skills -name 'SKILL.md' | sort | xargs -r sha256sum > /skills/.manifest) || echo "[sync-skills] manifest write failed (non-fatal)"; true; }`}
+//
+// tokenSecret non-empty → the clone authenticates via a git credential
+// helper that cats the mounted token file AT CREDENTIAL TIME (git runs the
+// helper through its own shell when the host asks for credentials — the
+// helper string here is fixed path-only data, never the token). `clone -c`
+// writes the helper into the new repo's config, so the pinned-rev fetch
+// inherits it. The helper echoes an empty password if the mount is absent,
+// which GitHub answers with 401 — a loud init failure, not a silent
+// anonymous clone.
+func skillsSyncCommand(tokenSecret string) []string {
+	cloneArgs := `--depth 1`
+	if tokenSecret != "" {
+		cloneArgs = `-c 'credential.helper=!f() { echo username=x-access-token; echo "password=$(cat ` + SkillsTokenMountPath + `/` + SkillsTokenKey + `)"; }; f' --depth 1`
+	}
+	return []string{"sh", "-c", `git clone ` + cloneArgs + ` "$HARMOSTES_SKILLS_REPO" /tmp/agents && { [ -z "$HARMOSTES_SKILLS_REV" ] || { git -C /tmp/agents fetch --depth 1 origin "$HARMOSTES_SKILLS_REV" && git -C /tmp/agents checkout --detach FETCH_HEAD; }; } && mkdir -p /skills && cp -r /tmp/agents/skills/. /skills/ && { echo "[sync-skills] served skills revision: $(git -C /tmp/agents rev-parse HEAD)"; (find /skills -name 'SKILL.md' | sort | xargs -r sha256sum > /skills/.manifest) || echo "[sync-skills] manifest write failed (non-fatal)"; true; }`}
+}
+
+// skillsInit builds the sync-skills init container (chart mirror: the
+// worker-pool init of the same name — keep the env/mounts in sync). With
+// SkillsTokenSecret set it also mounts the token secret read-only for the
+// credential helper in skillsSyncCommand.
+func skillsInit(p *AttemptJobParams) []corev1.Container {
+	tokenSecret := SkillsTokenSecret()
+	mounts := []corev1.VolumeMount{{Name: "skills", MountPath: "/skills"}}
+	if tokenSecret != "" {
+		mounts = append(mounts, corev1.VolumeMount{
+			Name:      "skills-token",
+			MountPath: SkillsTokenMountPath,
+			ReadOnly:  true,
+		})
+	}
+	return []corev1.Container{{
+		Name:    "sync-skills",
+		Image:   p.Image,
+		Command: skillsSyncCommand(tokenSecret),
+		// #407/#408: clone source, pinned rev, and the token SECRET NAME
+		// travel as env data, never spliced into the shell string (see
+		// skillsSyncCommand).
+		Env: []corev1.EnvVar{
+			{Name: "HARMOSTES_SKILLS_REPO", Value: SkillsRepo()},
+			{Name: "HARMOSTES_SKILLS_REV", Value: SkillsRev()},
+		},
+		VolumeMounts: mounts,
+	}}
+}
+
+// skillsTokenVolumes returns the secret volume backing skills-token mounts;
+// empty when no token secret is configured (anonymous mode).
+func skillsTokenVolumes() []corev1.Volume {
+	name := SkillsTokenSecret()
+	if name == "" {
+		return nil
+	}
+	return []corev1.Volume{{
+		Name: "skills-token",
+		VolumeSource: corev1.VolumeSource{
+			Secret: &corev1.SecretVolumeSource{SecretName: name},
+		},
+	}}
 }
 
 // AttemptJobParams parameterize BuildJob — the per-Attempt Job pod shape
@@ -514,19 +592,7 @@ func BuildJob(p AttemptJobParams) *batchv1.Job {
 				Spec: corev1.PodSpec{
 					ServiceAccountName: p.ServiceAccount,
 					RestartPolicy:      corev1.RestartPolicyNever,
-					InitContainers: append(materializeInit, []corev1.Container{{
-						Name:    "sync-skills",
-						Image:   p.Image,
-						Command: skillsSyncCommand(),
-						// #407/#408: clone source and pinned rev travel as env
-						// data, never spliced into the shell string (see
-						// skillsSyncCommand).
-						Env: []corev1.EnvVar{
-							{Name: "HARMOSTES_SKILLS_REPO", Value: SkillsRepo()},
-							{Name: "HARMOSTES_SKILLS_REV", Value: SkillsRev()},
-						},
-						VolumeMounts: []corev1.VolumeMount{{Name: "skills", MountPath: "/skills"}},
-					}}...),
+					InitContainers:     append(materializeInit, skillsInit(&p)...),
 					Containers: []corev1.Container{{
 						Name:         "run",
 						Image:        p.Image,
@@ -534,7 +600,7 @@ func BuildJob(p AttemptJobParams) *batchv1.Job {
 						Env:          env,
 						VolumeMounts: mounts,
 					}},
-					Volumes: volumes,
+					Volumes: append(volumes, skillsTokenVolumes()...),
 				},
 			},
 		},

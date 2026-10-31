@@ -29,8 +29,19 @@ skills:
   # (#727 follow-up); work it top-down, never rebuild it.
   # Prior: eb296e5 (#726 repository-wiki + #727 pillar-scan sections).
   rev: "37475fe97279187ebe0046bbb570cfcf5a33ab22"
+  # OPTIONAL access token for the skills repo (the agents repo went private
+  # 2026-10-29). Name of an ESO-synced secret (ClusterSecretStore bitwarden;
+  # BSM key HARMOSTES_GITHUB_TOKEN) whose key "token" carries a GitHub PAT.
+  # Empty string = anonymous clone (public repos — the pre-privacy behavior).
+  # When set, the sync-skills init containers mount the secret read-only at
+  # /var/run/secrets/harmostes-skills and the clone authenticates through a
+  # git credential helper that cats the mounted file AT CLONE TIME — the
+  # token never enters env, command lines, or git remote URLs, and rotation
+  # (BSM → ESO refresh → kubelet sync) lands on the next clone without pod
+  # recreation. Volume mount, not the Dapr secret store: the clone runs in
+  # an init container, which starts BEFORE the daprd sidecar is ready.
+  tokenSecret: ""
 
-agent:
   # Hard tool-call cap per agent session (#484): past the cap only the
   # finalize lane stays open — bash commands touching toolBudgetAllow and
   # registered file-writer tools still execute, so the agent can always

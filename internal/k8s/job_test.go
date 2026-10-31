@@ -262,29 +262,91 @@ func TestSyncSkillsCommandMatchesChartTemplate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read chart template: %v", err)
 	}
-	var cmdLine string
+	// Both template variants must exist and match the Go builder for their
+	// branch: anonymous (values.skills.tokenSecret empty) and token
+	// (private agents repo). The anchors pin the branch conditionals too —
+	// if the template moves, update here.
+	anchors := map[string]string{
+		`command: ["sh", "-c", "git clone --depth 1`:                  "",
+		`command: ["sh", "-c", "git clone -c 'credential.helper=!f()`: "token",
+	}
+	found := map[string]string{}
 	for _, line := range strings.Split(string(raw), "\n") {
 		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, `command: ["sh", "-c", "git clone --depth 1`) {
-			cmdLine = trimmed
-			break
+		for a, branch := range anchors {
+			if strings.HasPrefix(trimmed, a) {
+				found[branch] = trimmed
+			}
 		}
 	}
-	if cmdLine == "" {
-		t.Fatal("worker-pool.yaml carries no sync-skills command line — template moved? update this test's anchor")
+	if len(found) != len(anchors) {
+		t.Fatalf("worker-pool.yaml must carry BOTH sync-skills command variants (anonymous + token), found %d of %d — template moved? update these anchors", len(found), len(anchors))
 	}
-	// Strip the mapping key — the flow sequence parses standalone.
-	flow := strings.TrimPrefix(cmdLine, "command: ")
-	var parsed []string
-	if err := sigsyaml.Unmarshal([]byte(flow), &parsed); err != nil {
-		t.Fatalf("parse chart command scalar: %v", err)
+	for branch, cmdLine := range found {
+		flow := strings.TrimPrefix(cmdLine, "command: ")
+		var parsed []string
+		if err := sigsyaml.Unmarshal([]byte(flow), &parsed); err != nil {
+			t.Fatalf("parse chart command scalar (%s branch): %v", branch, err)
+		}
+		if len(parsed) != 3 || parsed[0] != "sh" || parsed[1] != "-c" {
+			t.Fatalf("chart command shape (%s branch) = %#v, want [sh -c <script>]", branch, parsed)
+		}
+		want := skillsSyncCommand(branch)[2]
+		if parsed[2] != want {
+			t.Errorf("chart and Go sync-skills literals DIVERGED (%s branch):\nchart: %s\ngo:    %s", branch, parsed[2], want)
+		}
 	}
-	if len(parsed) != 3 || parsed[0] != "sh" || parsed[1] != "-c" {
-		t.Fatalf("chart command shape = %#v, want [sh -c <script>]", parsed)
+}
+
+// Private agents repo (2026-10-29): with skills.tokenSecret set, the
+// sync-skills init mounts the ESO-synced secret read-only and the clone
+// authenticates via the credential helper — the secret NAME appears only
+// in the volume source, the token VALUE nowhere.
+func TestBuildJobSkillsTokenAuth(t *testing.T) {
+	t.Setenv("HARMOSTES_SKILLS_TOKEN_SECRET", "harmostes-github-token")
+	job := BuildJob(AttemptJobParams{
+		Attempt:        jobTestAttempt(),
+		WorkflowName:   "pr-review-harmostes",
+		Namespace:      "harmostes",
+		Image:          "ghcr.io/tibrezus/harmostes-worker:1.2.3",
+		ServiceAccount: "harmostes-controller",
+	})
+	pod := job.Spec.Template.Spec
+	ic := pod.InitContainers[len(pod.InitContainers)-1]
+	if ic.Name != "sync-skills" {
+		t.Fatalf("last init must be sync-skills, got %q", ic.Name)
 	}
-	want := skillsSyncCommand()[2]
-	if parsed[2] != want {
-		t.Errorf("chart and Go sync-skills literals DIVERGED:\nchart: %s\ngo:    %s", parsed[2], want)
+	cmd := strings.Join(ic.Command, " ")
+	if !strings.Contains(cmd, `-c 'credential.helper=!f() { echo username=x-access-token; echo "password=$(cat /var/run/secrets/harmostes-skills/token)"; }; f'`) {
+		t.Fatalf("token mode must clone via the fixed-path credential helper, got %q", cmd)
+	}
+	// The secret VALUE has no business anywhere in the podspec; the NAME
+	// only in the volume source (never the command, never env).
+	if strings.Contains(cmd, "harmostes-github-token") {
+		t.Fatalf("secret name must not appear in the command, got %q", cmd)
+	}
+	for _, e := range ic.Env {
+		if strings.Contains(e.Value, "harmostes-github-token") || e.Name == "HARMOSTES_SKILLS_TOKEN_SECRET" {
+			t.Fatalf("init env must not carry the token secret (%s=%s)", e.Name, e.Value)
+		}
+	}
+	var tokenVol *corev1.Volume
+	for i := range pod.Volumes {
+		if pod.Volumes[i].Name == "skills-token" {
+			tokenVol = &pod.Volumes[i]
+		}
+	}
+	if tokenVol == nil || tokenVol.Secret == nil || tokenVol.Secret.SecretName != "harmostes-github-token" {
+		t.Fatalf("pod must mount the skills-token secret volume, got %+v", tokenVol)
+	}
+	var tokMount bool
+	for _, m := range ic.VolumeMounts {
+		if m.Name == "skills-token" && m.MountPath == SkillsTokenMountPath && m.ReadOnly {
+			tokMount = true
+		}
+	}
+	if !tokMount {
+		t.Fatalf("sync-skills init must mount the token secret read-only at %s, got %+v", SkillsTokenMountPath, ic.VolumeMounts)
 	}
 }
 
@@ -319,9 +381,6 @@ func TestBuildJobServesFreshSkills(t *testing.T) {
 	}
 	if !strings.Contains(cmd, `[ -z "$HARMOSTES_SKILLS_REV" ]`) || !strings.Contains(cmd, `fetch --depth 1 origin "$HARMOSTES_SKILLS_REV"`) {
 		t.Fatalf("sync-skills must carry the pinned-rev fetch/checkout segment referencing the env var quoted, got %q", cmd)
-	}
-	if strings.Contains(cmd, DefaultSkillsRepo) {
-		t.Fatalf("#407: the repo URL must never be spliced into the command string, got %q", cmd)
 	}
 	if strings.Contains(cmd, DefaultSkillsRepo) {
 		t.Fatalf("#407: the repo URL must never be spliced into the command string, got %q", cmd)

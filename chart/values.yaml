@@ -42,6 +42,7 @@ skills:
   # an init container, which starts BEFORE the daprd sidecar is ready.
   tokenSecret: ""
 
+agent:
   # Hard tool-call cap per agent session (#484): past the cap only the
   # finalize lane stays open — bash commands touching toolBudgetAllow and
   # registered file-writer tools still execute, so the agent can always

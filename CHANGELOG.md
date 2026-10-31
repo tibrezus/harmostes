@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.9.5](https://github.com/tibrezus/harmostes/compare/v1.9.4...v1.9.5) (2026-10-31)
+
+
+### Bug Fixes
+
+* **skills:** bump the served-revision pin to live agents main ([#827](https://github.com/tibrezus/harmostes/issues/827)) ([bfe65fb](https://github.com/tibrezus/harmostes/commit/bfe65fbc64d0eeb6c98658530807553640d46756))
+
 ## [1.9.4](https://github.com/tibrezus/harmostes/compare/v1.9.3...v1.9.4) (2026-10-29)
 
 

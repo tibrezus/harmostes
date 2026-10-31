@@ -295,12 +295,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
         with:
-          submodules: recursive
           fetch-depth: 0
 
-      - name: DEBUG secret hash (temporary)
+      - name: Init agents submodule (authenticated)
+        # actions/checkout's own submodule fetch path fails here with
+        # "Repository not found" while the identical token+auth works for the
+        # sibling jobs' checkouts (and for this helper from any shell) — so
+        # init the submodule explicitly through the credential helper. The
+        # token never lands in the URL or git config: the helper reads it
+        # from the environment at credential time.
+        env:
+          HARMOSTES_GITHUB_TOKEN: ${{ secrets.HARMOSTES_GITHUB_TOKEN }}
         run: |
-          if [ -z "${{ secrets.HARMOSTES_GITHUB_TOKEN }}" ]; then echo "SECRET EMPTY"; else printf '%s' "${{ secrets.HARMOSTES_GITHUB_TOKEN }}" | sha256sum; fi
+          git -c 'credential.helper=!f() { echo username=x-access-token; echo "password=${HARMOSTES_GITHUB_TOKEN}"; }; f' submodule update --init --depth 1
       - name: Validate workflows against the invariants
         run: python3 .agents/skills/dev-workflow/scripts/ci-conformance.py --repo . --base origin/main
 

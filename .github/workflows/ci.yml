@@ -34,7 +34,10 @@ jobs:
         with:
           # .agents is a submodule (tibrezus/agents) — skills the worker image
           # bakes in. Init it so the build/test environment matches `make test`.
+          # The repo went private 2026-10-29: the default GITHUB_TOKEN cannot
+          # read cross-repo private repos, so submodules checkout needs the PAT.
           submodules: recursive
+          token: ${{ secrets.HARMOSTES_GITHUB_TOKEN }}
 
       - name: Set up Go
         uses: actions/setup-go@v7
@@ -308,7 +311,9 @@ jobs:
           # submodules: the render assertions read the pinned SKILL
           # (.agents/skills/pr-review/SKILL.md) for the pillar-parity check
           # (#404) — without the submodule content the check cannot run.
+          # PAT for the private submodule (see the Go job's checkout note).
           submodules: recursive
+          token: ${{ secrets.HARMOSTES_GITHUB_TOKEN }}
 
       - name: Set up Helm
         uses: azure/setup-helm@v5

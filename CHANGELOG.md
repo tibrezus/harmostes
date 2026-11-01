@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.11.0](https://github.com/tibrezus/harmostes/compare/v1.10.0...v1.11.0) (2026-11-01)
+
+
+### Features
+
+* **fork-sync:** group defs — trust an aggregate PluginResult when the sync emits one ([#839](https://github.com/tibrezus/harmostes/issues/839)) ([41553d1](https://github.com/tibrezus/harmostes/commit/41553d14d8d8cf44a15d24d233d5a0ed0f87a576))
+
 ## [1.10.0](https://github.com/tibrezus/harmostes/compare/v1.9.5...v1.10.0) (2026-11-01)
 
 

@@ -1741,7 +1741,7 @@ spec:
             - name: HARMOSTES_SKILLS_REPO
               value: "https://github.com/tibrezus/agents.git"
             - name: HARMOSTES_SKILLS_REV
-              value: "37475fe97279187ebe0046bbb570cfcf5a33ab22"
+              value: "7ba8ccdd59b310c23c36483b888a5ee2a4740574"
           volumeMounts:
             - name: skills
               mountPath: /skills
@@ -1853,7 +1853,7 @@ spec:
             # #408 item 9: the dispatcher passes the pinned rev through so
             # per-Attempt Jobs serve the SAME revision the pool serves.
             - name: HARMOSTES_SKILLS_REV
-              value: "37475fe97279187ebe0046bbb570cfcf5a33ab22"
+              value: "7ba8ccdd59b310c23c36483b888a5ee2a4740574"
             # Skills-repo auth (private agents repo): the dispatcher forwards
             # the ESO-synced secret NAME to BuildJob, which mounts it into
             # each per-Attempt Job's sync-skills init container. Empty =

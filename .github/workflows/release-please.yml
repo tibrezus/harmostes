@@ -1,17 +1,32 @@
 # Conventional-Commits release automation (ADR-0020).
 #
 # release-please maintains ONE release PR on main ("chore(main): release
-# X.Y.Z" — CHANGELOG.md + version) from the merged conventional subjects:
-# feat → minor, fix/deps → patch, feat!/BREAKING CHANGE → major; chore, ci
-# and docs merge fine but release nothing — they ride along into the next
-# releasable release. The release PR AUTO-MERGES when its checks pass —
-# but only through the release gate (scripts/release-gate.sh, ADR-0020
-# Amendment 2026-10-26): patch bumps ship continuously; minor/major bumps
-# are HELD until the owner adds the `minor-approved` label (milestone
-# batching — a held PR keeps absorbing later merges into ONE version).
-# Hand-rolled release PRs are rejected outright. Merging the release PR
-# creates the vX.Y.Z tag, which fires release.yml (GoReleaser builds +
-# atomic OCI chart publish).
+# X.Y.Z" — CHANGELOG.md + version) from the merged conventional subjects.
+# VERSION POLICY (ADR-0020, Amendment 2026-11-01 — release-please-config.json):
+#   • AUTOMATIC CUTS ARE PATCH-ONLY — the package pins the native
+#     versioning strategy "always-bump-patch", so feat/fix/deps all bump
+#     X.Y.Z → X.Y.Z+1 and SHIP continuously (the changelog still groups
+#     them under Features/Bug Fixes — the strategy changes the bump, not
+#     the sections). No minor or major can arise from commit types.
+#   • MINORS ARE MILESTONE-DRIVEN — the versioning-strategy base checks
+#     any commit's `Release-As: vX.Y.0` trailer ABOVE the strategy, so a
+#     milestone-closure commit carrying that trailer cuts exactly vX.Y.0.
+#     Procedure: close the milestone with
+#       git commit --allow-empty -m "chore: close milestone <name>
+#
+#       Release-As: v$(next-minor).0"
+#     (major = v$(next-major).0 for the rare breaking milestone). The
+#     gate below then HELDs the minor until the `minor-approved` label,
+#     so the batched version ships on the owner's word — release-please
+#     keeps absorbing later merges into it meanwhile.
+# chore, ci and docs merge fine but release nothing — they ride along
+# into the next releasable release. The release PR AUTO-MERGES when its
+# checks pass — but only through the release gate (scripts/release-gate.sh,
+# ADR-0020 Amendment 2026-10-26): patch bumps ship continuously; minor/major
+# bumps (now only ever Release-As-driven) are HELD until the owner adds the
+# `minor-approved` label. Hand-rolled release PRs are rejected outright.
+# Merging the release PR creates the vX.Y.Z tag, which fires release.yml
+# (GoReleaser builds + atomic OCI chart publish).
 #
 # Token: HARMOSTES_GITHUB_TOKEN (PAT) for BOTH the action and the
 # auto-merge. Tags, PRs and merges created with the built-in GITHUB_TOKEN
@@ -44,7 +59,8 @@ jobs:
         if: github.event_name != 'pull_request_target' # label events only re-run the gate
         id: release
         with:
-          release-type: go
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
           token: ${{ secrets.HARMOSTES_GITHUB_TOKEN }}
 
       # The release gate (ADR-0020, Amendment 2026-10-26): bot-only

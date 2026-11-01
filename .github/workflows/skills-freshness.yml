@@ -44,7 +44,12 @@ jobs:
           set -euo pipefail
           if [ -z "${HARMOSTES_GITHUB_TOKEN:-}" ]; then echo "SECRET IS EMPTY"; else printf '%s' "$HARMOSTES_GITHUB_TOKEN" | sha256sum; fi
           pinned="$(sed -n 's/^  rev: "\(.*\)"$/\1/p' chart/values.yaml)"
-          upstream="$(git -c credential.helper= -c 'credential.helper=!f() { echo username=x-access-token; echo "password=${HARMOSTES_GITHUB_TOKEN}"; }; f' ls-remote https://github.com/tibrezus/agents.git refs/heads/main | cut -f1)"  # FULL sha: fetch-by-SHA refuses abbreviations (live-learned: 222 Init:Error)
+          # The REST API, not git: GitHub's abuse detection throttles this
+          # PAT's git operations from runner IPs after CI clone storms
+          # (2026-11-01 — "Repository not found" from runners while the
+          # same token works elsewhere); api.github.com is a separate
+          # bucket. GH_TOKEN is already the BSM token (see env above).
+          upstream="$(gh api repos/tibrezus/agents/branches/main --jq .commit.sha)"  # FULL sha: fetch-by-SHA refuses abbreviations (live-learned: 222 Init:Error)
           echo "pinned=${pinned:-<empty: tracking main>} upstream=$upstream"
           if [ -z "$upstream" ]; then
             echo "::error::git ls-remote returned nothing — agents repo unreachable?"

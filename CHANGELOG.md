@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.10.0](https://github.com/tibrezus/harmostes/compare/v1.9.5...v1.10.0) (2026-11-01)
+
+
+### Features
+
+* **tools:** the CR conformance tool moves into the kernel ([#832](https://github.com/tibrezus/harmostes/issues/832)) ([82e7372](https://github.com/tibrezus/harmostes/commit/82e7372b9cc25938e84bba90c5e53c01dc03580a))
+
 ## [1.9.5](https://github.com/tibrezus/harmostes/compare/v1.9.4...v1.9.5) (2026-10-31)
 
 

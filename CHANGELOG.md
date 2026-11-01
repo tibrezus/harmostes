@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.11.1](https://github.com/tibrezus/harmostes/compare/v1.11.0...v1.11.1) (2026-11-01)
+
+
+### Features
+
+* **release:** patch-only automatic cuts — minors become milestone-driven (Release-As) ([#842](https://github.com/tibrezus/harmostes/issues/842)) ([efad9c7](https://github.com/tibrezus/harmostes/commit/efad9c7450aa00c74ef051197db77136671dbddd))
+
 ## [1.11.0](https://github.com/tibrezus/harmostes/compare/v1.10.0...v1.11.0) (2026-11-01)
 
 

@@ -61,6 +61,20 @@ SYNC_MSG="$(printf '%s' "$SYNC_OUT" | grep -v '^[[:space:]]*$' | tail -n 1 || tr
 [ -n "$SYNC_MSG" ] || SYNC_MSG="sync completed"
 set -e
 
+# Group defs (kind: group) end in an aggregate PluginResult JSON whose
+# `changed` already reflects the WHOLE group — trusting the marker-grep
+# here would misreport a mixed group (one member no-op + one member merged
+# → the grep sees "Already up to date" and reports changed:false). When the
+# last line IS a PluginResult, it IS the result: pass it through verbatim.
+if printf '%s' "$SYNC_MSG" | python3 -c 'import json,sys;
+d=json.loads(sys.stdin.read()); sys.exit(0 if isinstance(d,dict) and "changed" in d else 1)' 2>/dev/null; then
+  printf '%s\n' "$SYNC_MSG"
+  case "$SYNC_EXIT" in
+    0|2) exit 0 ;;   # 0 = group fine; 2 = a member conflict → the resolver handles it async
+    *)   exit 1 ;;
+  esac
+fi
+
 case "$SYNC_EXIT" in
   0)
     # Success — up to date, PR created/merged, or a self-hosted pointer
@@ -85,7 +99,7 @@ case "$SYNC_EXIT" in
     # Conflict — sync-fork.sh created a needs-conflict-resolution PR.
     # The conflict-resolver deployment picks it up asynchronously.
     # Exit 0 so harmostes doesn't mark the run as failed.
-    printf '{"changed":false,"artifact":"conflict","message":"merge conflict — resolution PR created"}\n' "$FORK_NAME"
+    printf '%s\n' '{"changed":false,"artifact":"conflict","message":"merge conflict — resolution PR created"}'
     exit 0
     ;;
   *)

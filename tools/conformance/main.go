@@ -96,6 +96,11 @@ var allowedPlainConfigMaps = map[string]string{
 func main() {
 	crdDir := flag.String("crds", "", "directory of CRD yamls")
 	dirsList := flag.String("objects", "", "comma-separated directories of rendered objects")
+	allowWorkloads := flag.Bool("allow-workloads", false,
+		"template repos carry their WORKFLOW'S core-K8s components (Deployment/Service/…) "+
+			"alongside the harmostes CRs — apply them as conformance. The CONFIG TIER must NOT "+
+			"pass this: it stays harmostes-CRs-only (the component-localization hard "+
+			"requirement, ADR-0011 amendment 2026-11-03)")
 	flag.Parse()
 	dirs := strings.Split(*dirsList, ",")
 	if *crdDir == "" {
@@ -233,6 +238,29 @@ func main() {
 			u := &unstructured.Unstructured{Object: obj}
 			gv, _ := schema.ParseGroupVersion(u.GetAPIVersion())
 			if gv.Group != "harmostes.dev" {
+				// Template repos (allow-workloads) legitimately carry their
+				// WORKFLOW'S core-K8s components — apply them as conformance.
+				// Without the flag this stays refused: the config tier carries
+				// harmostes CRs only (plus the narrow ConfigMap allowlist).
+				if *allowWorkloads {
+					if gvr, ok := builtinGVR(u.GetAPIVersion(), u.GetKind()); ok {
+						ns := u.GetNamespace()
+						if ns == "" {
+							ns = "default"
+						}
+						if _, err := dyn.Resource(gvr).Namespace(ns).Create(context.Background(), u, metav1.CreateOptions{FieldValidation: metav1.FieldValidationStrict}); err != nil {
+							body, _ := json.Marshal(u.Object)
+							fmt.Fprintf(os.Stderr, "FAIL %s doc %d (%s %s): %v\n%s\n", f, i+1, u.GetKind(), u.GetName(), err, snippet(string(body)))
+							failures++
+							continue
+						}
+						applied++
+						continue
+					}
+					fmt.Fprintf(os.Stderr, "FAIL %s doc %d: core kind %s (%s) not in the allow-workloads table\n", f, i+1, u.GetKind(), u.GetAPIVersion())
+					failures++
+					continue
+				}
 				// Narrow allowlist: plain ConfigMaps that carry per-env DATA an
 				// engine consumes by mount contract (the fork DEFS — key = def
 				// file name, mounted at /workspace/forks by the pool). These are
@@ -283,4 +311,32 @@ func snippet(s string) string {
 		return s[:600] + "…"
 	}
 	return s
+}
+
+// builtinGVR maps the core-K8s kinds a template repo may carry for its
+// WORKFLOW (the component-localization hard requirement) to their GVRs —
+// served natively by the envtest apiserver, no chart CRD needed.
+func builtinGVR(apiVersion, kind string) (schema.GroupVersionResource, bool) {
+	if apiVersion == "v1" {
+		switch kind {
+		case "Service":
+			return schema.GroupVersionResource{Group: "", Version: "v1", Resource: "services"}, true
+		case "ConfigMap":
+			return schema.GroupVersionResource{Group: "", Version: "v1", Resource: "configmaps"}, true
+		case "Secret":
+			return schema.GroupVersionResource{Group: "", Version: "v1", Resource: "secrets"}, true
+		}
+	}
+	if apiVersion == "apps/v1" {
+		switch kind {
+		case "Deployment":
+			return schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}, true
+		case "StatefulSet":
+			return schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "statefulsets"}, true
+		}
+	}
+	if apiVersion == "batch/v1" && kind == "Job" {
+		return schema.GroupVersionResource{Group: "batch", Version: "v1", Resource: "jobs"}, true
+	}
+	return schema.GroupVersionResource{}, false
 }

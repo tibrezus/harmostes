@@ -13,8 +13,10 @@
 #   3. OWNER-GATED MINORS/MAJORS — any larger bump is HELD until the
 #      `minor-approved` label is set by the owner. A held release PR keeps
 #      absorbing later releasable merges (release-please updates it in
-#      place), so a milestone's ten feats batch into ONE minor when the
-#      owner labels it once.
+#      place). Minors/majors arise ONLY from a milestone-closure commit
+#      carrying the native `Release-As:` trailer (automatic cuts are
+#      patch-only via the always-bump-patch strategy — ADR-0020,
+#      Amendment 2026-11-01); the label then ships the batched version.
 #
 # Idempotent: run on every push to main and on the `minor-approved` label
 # event; holds post at most one comment (marker-deduped).

@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.11.4](https://github.com/tibrezus/harmostes/compare/v1.11.3...v1.11.4) (2026-11-04)
+
+
+### Bug Fixes
+
+* **skills:** bump pinned skills rev to 0b3ebc5 (coding-style v3) ([#859](https://github.com/tibrezus/harmostes/issues/859)) ([bcc285b](https://github.com/tibrezus/harmostes/commit/bcc285bffe7a373cb0303074a7f6837d46576f34)), closes [#858](https://github.com/tibrezus/harmostes/issues/858)
+
 ## [1.11.3](https://github.com/tibrezus/harmostes/compare/v1.11.2...v1.11.3) (2026-11-04)
 
 

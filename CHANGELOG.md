@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.11.2](https://github.com/tibrezus/harmostes/compare/v1.11.1...v1.11.2) (2026-11-04)
+
+
+### Features
+
+* **resolver:** the fork-conflict-resolver localizes to its template repo — the chart stops carrying it ([#851](https://github.com/tibrezus/harmostes/issues/851)) ([485d4ed](https://github.com/tibrezus/harmostes/commit/485d4ed32a5d6373d0e35fbfbbab8f8e71ad4105))
+
 ## [1.11.1](https://github.com/tibrezus/harmostes/compare/v1.11.0...v1.11.1) (2026-11-01)
 
 

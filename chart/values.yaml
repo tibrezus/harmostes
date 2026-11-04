@@ -28,7 +28,7 @@ skills:
   # list arrives pre-populated from this playbook's pillar block
   # (#727 follow-up); work it top-down, never rebuild it.
   # Prior: eb296e5 (#726 repository-wiki + #727 pillar-scan sections).
-  rev: "7ba8ccdd59b310c23c36483b888a5ee2a4740574"
+  rev: "84a63ea5d698c97b0d555ee2fad3e6c18bf76497"
   # OPTIONAL access token for the skills repo (the agents repo went private
   # 2026-10-29). Name of an ESO-synced secret (ClusterSecretStore bitwarden;
   # BSM key HARMOSTES_GITHUB_TOKEN) whose key "token" carries a GitHub PAT.

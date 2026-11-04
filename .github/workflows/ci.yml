@@ -403,13 +403,12 @@ jobs:
           for cm in ("fork-maintenance-scripts", "fork-maintenance-checks", "fork-maintenance-hooks", "fork-maintenance-defs", "fork-maintenance-skill"):
               check(cm not in cms, f"{cm} still rendered — the engine payload is repo/config delivered")
 
-          # litellm extension: relative imports must resolve to rendered keys
-          # (the incompleteness class — index.ts importing fallbacks.ts that
-          # no .Files.Get rendered).
-          ext = cms.get("litellm-provider-extension", {})
-          check("index.ts" in ext and "package.json" in ext, "litellm-provider-extension missing index.ts/package.json")
-          for imp in re.findall(r'from\s+"\\./(.*?)";', ext.get("index.ts", "")):
-              check(imp in ext, f"litellm-provider-extension: index.ts imports ./{imp} — NOT rendered")
+          # The litellm-provider extension CM is ABSENT here by design: the
+          # resolver component moved to harmostes-template-fork-maintenance
+          # (ADR-0011 amendment 2026-11-03), whose CI carries the
+          # incompleteness assertion against its own rendered CM.
+          check("litellm-provider-extension" not in cms,
+                "litellm-provider-extension still chart-rendered — the resolver component lives in its template repo")
 
           check(by_kind("ExternalSecret"), "ExternalSecret not rendered from values.credentials")
 

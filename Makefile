@@ -88,19 +88,10 @@ test-extensions:
 		extensions/review-post/contract.test.ts
 	@node --experimental-strip-types -e 'await import("./extensions/litellm-provider/index.ts")'
 	python3 extensions/rig-query/fixtures/freshness.py
-	@# Chart copy drift gate: the resolver's litellm-provider ConfigMap source
-	@# (chart/files/litellm-provider/) is a pinned copy of the canonical
-	@# extension — Helm .Files cannot reach outside chart/. Fail on drift so
-	@# the copy can never silently go stale (ADR-0011).
-	@for f in extensions/litellm-provider/*; do \
-	  n=$$(basename $$f); \
-	  cmp -s $$f chart/files/litellm-provider/$$n || { echo "DRIFT/MISSING: chart/files/litellm-provider/$$n vs extensions/litellm-provider/ — re-copy the canonical source" >&2; exit 1; }; \
-	done; \
-	for f in chart/files/litellm-provider/*; do \
-	  n=$$(basename $$f); \
-	  [ -e extensions/litellm-provider/$$n ] || { echo "EXTRA: chart/files/litellm-provider/$$n has no canonical counterpart — stale copy" >&2; exit 1; }; \
-	done; \
-	echo "litellm-provider chart copy: complete + in sync with extensions/litellm-provider/"
+	@# The chart's litellm-provider COPY drift gate is RETIRED: the resolver
+	@# component moved to harmostes-template-fork-maintenance, whose CI carries
+	@# the drift guard against THIS repo at the KERNEL_CHART pin (ADR-0011
+	@# amendment 2026-11-03 — component localization).
 
 # sol-pi (#425): the vendored NVlabs/SoL-Pi suite run against the FLEET's pi
 # packages, not the vendored lockfile's 0.84.2 dev-deps — the PR-tier half of

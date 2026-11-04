@@ -68,7 +68,7 @@ jobs:
             || { echo "tool pin mismatch"; exit 1; }
 
       - name: Setup Node.js 22 + LikeC4 + graphviz
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "22"
       - run: |

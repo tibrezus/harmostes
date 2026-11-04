@@ -134,7 +134,7 @@ gh pr merge "$PR" -R "$GITHUB_REPOSITORY" --auto --squash
 # consider worth updating its PR for. Keep the release branch current so
 # the armed merge can land; every push to main re-runs this gate, so the
 # cycle converges.
-if gh pr view "$PR" -R "$GITHUB_REPOSITORY" --json mergeStateStatus --jq -e '. == "BEHIND"'; then
+if [ "$(gh pr view "$PR" -R "$GITHUB_REPOSITORY" --json mergeStateStatus --jq '.mergeStateStatus == "BEHIND"')" = "true" ]; then
   echo "release PR #$PR is BEHIND — updating branch"
   gh pr update-branch "$PR" -R "$GITHUB_REPOSITORY"
 fi

@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.11.5](https://github.com/tibrezus/harmostes/compare/v1.11.4...v1.11.5) (2026-11-04)
+
+
+### Bug Fixes
+
+* **release:** gate BEHIND rescue — gh --jq takes one argument ([#862](https://github.com/tibrezus/harmostes/issues/862)) ([8343400](https://github.com/tibrezus/harmostes/commit/834340087d9aa5a50d7141c1d7fc600c1c8562fc)), closes [#861](https://github.com/tibrezus/harmostes/issues/861)
+
 ## [1.11.4](https://github.com/tibrezus/harmostes/compare/v1.11.3...v1.11.4) (2026-11-04)
 
 

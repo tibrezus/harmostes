@@ -28,6 +28,22 @@ enforcement on purpose.
 
 Design rationale: `ADR-0011` in the wiki (Amendment 2026-10-25).
 
+## Workflow components are LOCALIZED in their workflow (hard requirement)
+
+**Every logic, workload shape, and agent brain related to a workflow lives
+in that workflow's template repo.** The kernel chart renders ONLY the
+workflow-core unifier (controller, worker pool, UI, generic machinery) —
+never a workflow-specific component. Configurations live in k8s-config as
+patches on the repo-delivered resources. Concretely (ADR-0011, Amendment
+2026-11-03): the fork-conflict-resolver's Deployment/Service/extension CM
+are delivered by `harmostes-template-fork-maintenance`, its model/resources
+are patches in k8s-config, and the chart's renderer + values block are
+deleted. Do not re-add workflow-specific workloads, payload, or decision
+defaults to this chart — the boundary is the localization requirement, not
+a convention. Ownership handover order when MOVING a component: flip the
+chart values off (prune) → deliver from the template repo → patch the
+decisions in the config tier.
+
 ## Versions are NOT decided here either
 
 The version moves only through the release machine (ADR-0020, as amended

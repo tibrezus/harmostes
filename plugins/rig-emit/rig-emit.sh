@@ -141,4 +141,32 @@ if [ -f "$MODEL_FILE" ]; then
 fi
 
 log "RIG changed — agent will run"
+
+# Publish rig.db as a generic package artifact — NEVER committed to the wiki
+# (llm-wiki-core#24/#25: it is a regenerated build cache; the wiki guard
+# hard-fails on raw/arch/**/rig.db and the instance .gitignore excludes it
+# from git add -A). The workspace copy above stays untracked so the in-run
+# agent and the cross-run cmp keep their graph paths.
+#
+# Configure via (WorkflowTemplate instance config, best-effort — a failed
+# upload logs a WARN and never fails the pipeline):
+#   HARMOSTES_RIG_PACKAGE_HOST   Forgejo/Gitea API base, e.g. https://codeberg.org/api/v1
+#   HARMOSTES_RIG_PACKAGE_OWNER  package owner (user/org), e.g. tibrez
+#   HARMOSTES_RIG_PACKAGE_TOKEN  token with package:write (chart-rendered ExternalSecret)
+# Package: rig-<project>, version <rig_hash> (content-addressed — re-uploads dedupe).
+if [ -n "${HARMOSTES_RIG_PACKAGE_HOST:-}" ] && [ -n "${HARMOSTES_RIG_PACKAGE_TOKEN:-}" ]; then
+  PKG_OWNER="${HARMOSTES_RIG_PACKAGE_OWNER:?HARMOSTES_RIG_PACKAGE_OWNER required with HARMOSTES_RIG_PACKAGE_HOST}"
+  PKG_URL="$HARMOSTES_RIG_PACKAGE_HOST/packages/$PKG_OWNER/generic/rig-$PROJECT/$RIG_HASH/rig.db"
+  if curl -sfS -m 120 -X PUT \
+       -H "Authorization: token $HARMOSTES_RIG_PACKAGE_TOKEN" \
+       -H "Content-Type: application/octet-stream" \
+       --data-binary @"$DEST_DIR/rig.db" "$PKG_URL" > /dev/null; then
+    log "rig.db published as package artifact rig-$PROJECT/$RIG_HASH"
+  else
+    log "WARN: rig.db package upload failed (non-fatal) — $PKG_URL"
+  fi
+else
+  log "rig.db package upload skipped: HARMOSTES_RIG_PACKAGE_HOST/TOKEN not configured"
+fi
+
 echo "{\"changed\":true,\"artifact\":\"raw/arch/$PROJECT/rig.db\",\"status\":\"ok\",\"event\":{\"components\":$COMPONENTS,\"rig_hash\":\"$RIG_HASH\"}}"

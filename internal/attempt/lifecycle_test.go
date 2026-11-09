@@ -410,6 +410,67 @@ func TestReapStuckAttempts(t *testing.T) {
 	}
 }
 
+// #874: run evidence beats the creation clock — the LIVE fleet shape.
+// A recurring weekly is ONE attempt object accumulating episodes (same
+// revision → same attempt, ADR-0005): created 14d ago, three succeeded
+// runs, the newest 5h old — it must NEVER reap, yet the #653 reaper read
+// only CreationTimestamp and stamped it "failed / suspected worker loss"
+// (three prod weeklies lied on the wall, 2026-11-07). The mirror shape —
+// evidence stale past the window — still reaps: genuine worker loss stops
+// writing evidence and ages into the reap on its own clock.
+func TestReapStuckAttemptsRespectsRunEvidence(t *testing.T) {
+	ctx := context.Background()
+	c := newFakeClient(t)
+	const ns = "default"
+	weeklies := func(name string, creation, lastRun metav1.Time, runPhase string, ended bool) *v1alpha1.Attempt {
+		runs := make([]v1alpha1.RunRecord, 0, 3)
+		for i := 3; i > 0; i-- {
+			r := v1alpha1.RunRecord{Name: name + "-run", Phase: runPhase, StartedAt: lastRun}
+			if ended {
+				r.EndedAt = lastRun
+			}
+			runs = append(runs, r)
+		}
+		at := &v1alpha1.Attempt{ObjectMeta: metav1.ObjectMeta{
+			Name: name, Namespace: ns, CreationTimestamp: creation,
+			Labels: map[string]string{"harmostes.dev/workflow": "fork-maintenance-dapr-weekly"},
+		}, Status: v1alpha1.AttemptStatus{
+			Phase: v1alpha1.AttemptPhaseReconciling, LastRunAt: lastRun, Runs: runs,
+		}}
+		return at
+	}
+	for _, at := range []*v1alpha1.Attempt{
+		// the live #874 victim: 3× succeeded runs, newest 5h before the reap
+		weeklies("healthy-weekly", metav1.NewTime(time.Now().Add(-14*24*time.Hour)),
+			metav1.NewTime(time.Now().Add(-5*time.Hour)), "succeeded", true),
+		// a run started Nov-era and never ended — evidence is 8d stale, it ages in
+		weeklies("lost-mid-run", metav1.NewTime(time.Now().Add(-14*24*time.Hour)),
+			metav1.NewTime(time.Now().Add(-8*24*time.Hour)), "running", false),
+	} {
+		if err := c.Create(ctx, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	n, err := ReapStuckAttempts(ctx, c, ns, 7*24*time.Hour)
+	if err != nil || n != 1 {
+		t.Fatalf("reaped %d (err %v), want 1 (only the stale-evidence attempt)", n, err)
+	}
+	var alive v1alpha1.Attempt
+	if err := c.Get(ctx, client.ObjectKey{Namespace: ns, Name: "healthy-weekly"}, &alive); err != nil {
+		t.Fatal(err)
+	}
+	if alive.Status.Phase != v1alpha1.AttemptPhaseReconciling || alive.Status.Message != "" {
+		t.Fatalf("healthy weekly must stay reconciling untouched, got phase=%s msg=%q", alive.Status.Phase, alive.Status.Message)
+	}
+	var dead v1alpha1.Attempt
+	if err := c.Get(ctx, client.ObjectKey{Namespace: ns, Name: "lost-mid-run"}, &dead); err != nil {
+		t.Fatal(err)
+	}
+	if dead.Status.Phase != v1alpha1.AttemptPhaseFailed || !strings.Contains(dead.Status.Message, "reaped") {
+		t.Fatalf("stale-evidence attempt must reap, got phase=%s msg=%q", dead.Status.Phase, dead.Status.Message)
+	}
+}
+
 // ===========================================================================
 // SupersedePriorAttempts (#583): the ADR-0005 superseded leg
 // ===========================================================================

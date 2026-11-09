@@ -559,6 +559,18 @@ func ReapStuckAttempts(ctx context.Context, c client.Client, namespace string, o
 			at.CreationTimestamp.After(cutoff) {
 			continue
 		}
+		// #874: run evidence beats the creation clock. A recurring
+		// (schedule-kind) attempt accumulates episodes on ONE object — the
+		// same revision keeps the same attempt forever, so an old
+		// CreationTimestamp does NOT mean a stuck run. If the attempt
+		// recorded run activity inside the window, it is ALIVE: a healthy
+		// weekly that ran this morning must never read "failed / suspected
+		// worker loss" on the wall (#874 — three green weeklies reaped hours
+		// after their runs). Genuine worker loss stops writing evidence: its
+		// LastRunAt ages past the window and the reap fires on its own clock.
+		if !at.Status.LastRunAt.IsZero() && at.Status.LastRunAt.After(cutoff) {
+			continue
+		}
 		r := at.Status.Review
 		if r != nil && !r.Released {
 			// Release first ("reaped" — terminal, no churn strike). A FAILED

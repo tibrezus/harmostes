@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.11.6](https://github.com/tibrezus/harmostes/compare/v1.11.5...v1.11.6) (2026-11-09)
+
+
+### Bug Fixes
+
+* **attempt:** reaper respects run evidence — green weeklies never reap ([#874](https://github.com/tibrezus/harmostes/issues/874)) ([#877](https://github.com/tibrezus/harmostes/issues/877)) ([723df69](https://github.com/tibrezus/harmostes/commit/723df69a3af64c4374f002b06591d84e207e20fd))
+
 ## [1.11.5](https://github.com/tibrezus/harmostes/compare/v1.11.4...v1.11.5) (2026-11-04)
 
 

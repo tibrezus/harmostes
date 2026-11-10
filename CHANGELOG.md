@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.11.6](https://github.com/tibrezus/harmostes/compare/v1.11.5...v1.11.6) (2026-11-09)
+
+
+### Bug Fixes
+
+* **attempt:** reaper respects run evidence — green weeklies never reap ([#874](https://github.com/tibrezus/harmostes/issues/874)) ([#877](https://github.com/tibrezus/harmostes/issues/877)) ([723df69](https://github.com/tibrezus/harmostes/commit/723df69a3af64c4374f002b06591d84e207e20fd))
+
+## [1.11.5](https://github.com/tibrezus/harmostes/compare/v1.11.4...v1.11.5) (2026-11-04)
+
+
+### Bug Fixes
+
+* **release:** gate BEHIND rescue — gh --jq takes one argument ([#862](https://github.com/tibrezus/harmostes/issues/862)) ([8343400](https://github.com/tibrezus/harmostes/commit/834340087d9aa5a50d7141c1d7fc600c1c8562fc)), closes [#861](https://github.com/tibrezus/harmostes/issues/861)
+
+## [1.11.4](https://github.com/tibrezus/harmostes/compare/v1.11.3...v1.11.4) (2026-11-04)
+
+
+### Bug Fixes
+
+* **skills:** bump pinned skills rev to 0b3ebc5 (coding-style v3) ([#859](https://github.com/tibrezus/harmostes/issues/859)) ([bcc285b](https://github.com/tibrezus/harmostes/commit/bcc285bffe7a373cb0303074a7f6837d46576f34)), closes [#858](https://github.com/tibrezus/harmostes/issues/858)
+
 ## [1.11.3](https://github.com/tibrezus/harmostes/compare/v1.11.2...v1.11.3) (2026-11-04)
 
 

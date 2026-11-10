@@ -35,6 +35,15 @@ export const DEFAULT_FALLBACKS: Record<string, string[]> = {
   // of a production chain until that reset.
   "mtplx/anthropic/qwen38-27b-optimized-speed-fp16": ["zai/anthropic/glm-5.3-flash"],
   "mtplx/qwen38-27b-optimized-speed-fp16": ["ali/anthropic/qwen3.8-flash"],
+  // Fleet primary (owner directive 2026-11-04): strata/anthropic/q2_0 is
+  // the generic agent model, chained qwen3.8-flash then glm-5.3-flash.
+  // q2_0 is the SMALLEST live group in both dimensions (262144 in /
+  // 131072 out, vs flash 991808/131072 and glm 1024000/131072), so this
+  // chain clamps nothing — the zero-capacity-cost shape. The config tier
+  // carries the same chain as the LITELLM_FALLBACKS override (the
+  // decision surface); this entry is the baked default for pools that
+  // don't set the override (preview, manual).
+  "strata/anthropic/q2_0": ["ali/anthropic/qwen3.8-flash", "zai/anthropic/glm-5.3-flash"],
   "ali/anthropic/qwen3.8-flash": ["zai/anthropic/glm-5.3-flash"],
   // Night-window primary (owner directive): deepseek-v4.1-flash 16:00-02:00
   // CET with glm-5.3-flash as the all-hours second option. The chain is

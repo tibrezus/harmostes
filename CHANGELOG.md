@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.11.7](https://github.com/tibrezus/harmostes/compare/v1.11.6...v1.11.7) (2026-11-10)
+
+
+### Features
+
+* the fleet chain nets strata/anthropic/q2_0 → qwen3.8-flash → glm-5.3-flash ([#880](https://github.com/tibrezus/harmostes/issues/880)) ([0c9b705](https://github.com/tibrezus/harmostes/commit/0c9b7054f27a57dec62afa5cc87b08266283253c))
+
 ## [1.11.6](https://github.com/tibrezus/harmostes/compare/v1.11.5...v1.11.6) (2026-11-09)
 
 

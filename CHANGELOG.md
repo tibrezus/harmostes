@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.11.8](https://github.com/tibrezus/harmostes/compare/v1.11.7...v1.11.8) (2026-11-12)
+
+
+### Bug Fixes
+
+* **#707:** uid separation for worker pods — inert by default, with a boot ownership migration ([#884](https://github.com/tibrezus/harmostes/issues/884)) ([50560de](https://github.com/tibrezus/harmostes/commit/50560de327298d098f6e1121695fe236b188bfc4))
+
 ## [1.11.7](https://github.com/tibrezus/harmostes/compare/v1.11.6...v1.11.7) (2026-11-10)
 
 

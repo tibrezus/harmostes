@@ -105,6 +105,23 @@ agentProfile: ""
 # Worker deployment-node RBAC (G6: vela-app, flux-reconcile). Opt-in —
 # grants cluster-wide access to KubeVela Application + Flux CRs.
 worker:
+  # Run identity for the pool pod AND every per-Attempt Job (#707 gate half 2):
+  # 0/empty = the image's uid (root, the historical posture) — byte-identical
+  # render. A non-zero uid makes the lineage leaf's 0700/0600 modes an
+  # ENFORCEMENT boundary instead of an organizing one: uid separation is what
+  # turns "same mount, one trust domain" into per-workflow isolation.
+  #
+  # Two hard dependencies ride the flip (verified live on harmostes-dev,
+  # 2026-11-12): existing lineage dirs are uid-0 with 0700, so a non-root Job
+  # cannot write there — resume breaks; and the image's git identity lives in
+  # root's HOME. The `session-ownership` init container migrates the claim and
+  # seeds a home/git identity for the new uid; it is rendered ONLY when the
+  # uid is set. RWX claims must accept the uid (juicefs does; NFS root-squash
+  # deployments need no_root_squash or fsGroup — mounts succeed, writes fail
+  # loudly).
+  runAsUser: 0        # 0 = image uid (root). Set e.g. 10001 to arm separation.
+  runAsGroup: 0
+  fsGroup: 0          # RWX claim group; 0 = unset (image default)
   # The forge origin the bot review credential (harmostes-forgejo-bot-token)
   # is minted for — the deploy plugin overrides its auth only when the
   # pr-context host matches exactly (#480). Leave at the default unless the

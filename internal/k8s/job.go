@@ -231,6 +231,15 @@ type AttemptJobParams struct {
 	// existing /plugins/<cm>/<name>.sh contract just works). Inert default.
 	AggregatePlugins bool
 	PluginLabelValue string
+	// RunUID (#707 gate half 2): the per-pod run identity. Zero = the image's
+	// uid (root, the historical posture) — byte-identical Job. Non-zero arms
+	// uid separation, which makes the lineage leaf's 0700 modes an
+	// ENFORCEMENT boundary; the session-ownership init migrates the claim.
+	RunUID int64
+	// RunGID/FSGroup: group identity + RWX claim group. Zero = unset.
+	RunGID  int64
+	FSGroup int64
+
 	// PluginRefs (#787, three-tier 1c): ConfigMaps explicitly referenced by
 	// the resolved template's pluginsConfigMapRef — projected into /plugins
 	// alongside the label-aggregated set, independent of the aggregation
@@ -281,6 +290,33 @@ func ReservedAttemptMountPaths() []string {
 // set — empty on the shipped chart, real for deployments that set it).
 // One literal, consumed by the builder and the reserved list (r6: the
 // list originally forgot it).
+
+// sessionOwnershipCommand is the boot migration for the uid flip (#707). It
+// must run as root: the claim tree is uid-0 with 0700, and only the owner can
+// chown it. It then seeds the identity the non-root run needs — a HOME and the
+// git config (the image bakes git identity into root's HOME, so a uid flip
+// without a seeded home authorises no commits).
+//
+// Failure is loud (#504 rule): a chown/seed failure exits non-zero and fails
+// the Job, never silently stranding a run on a tree it cannot write.
+const sessionOwnershipCommand = `set -eu
+uid="$HARMOSTES_RUN_UID"
+home="/home/$uid"
+# Migrate the workflow leaf (the mount is the SubPath leaf) to the target uid.
+# The tree is uid-0 with 0700 today, so a non-root runner cannot resume it.
+chown -R "$uid:$uid" /sessions
+# Seed the run identity: the image bakes git config into root's HOME, so a uid
+# flip without a seeded config authorises no commits. HOME is an emptyDir (per
+# pod) — deliberately NOT on the sessions claim: a fresh .gitconfig inside the
+# lineage tree would make the janitor's newest-file clock read activity on an
+# idle PR and defeat the TTL prune.
+mkdir -p "$home"
+git config --file "$home/.gitconfig" user.name 'harmostes-bot'
+git config --file "$home/.gitconfig" user.email 'harmostes-bot@harmostes.dev'
+git config --file "$home/.gitconfig" --add safe.directory '*'
+chown "$uid:$uid" "$home/.gitconfig"
+echo "[session-ownership] migrated /sessions to uid $uid; home seeded at $home"`
+
 const pluginsMountPrefix = "/plugins"
 
 // ConfigMapMount is one additional ConfigMap volume: name (the ConfigMap and
@@ -307,6 +343,46 @@ func (p AttemptJobParams) runBoundSeconds() time.Duration {
 		return p.RunBound
 	}
 	return v1alpha1.OneShotRunBound
+}
+
+// ownershipInitSlice keeps the init ordering explicit: the ownership migration
+// runs BEFORE the skills clone (it seeds the identity the later containers use).
+func ownershipInitSlice(init *corev1.Container) []corev1.Container {
+	if init == nil {
+		return nil
+	}
+	return []corev1.Container{*init}
+}
+
+// runSecurityContext renders the run identity ONLY when a uid is set — uid 0
+// keeps the historical container shape byte-identical.
+func runSecurityContext(p AttemptJobParams) *corev1.SecurityContext {
+	if p.RunUID <= 0 {
+		return nil
+	}
+	sc := &corev1.SecurityContext{
+		RunAsUser:                ptr.To(p.RunUID),
+		AllowPrivilegeEscalation: ptr.To(false),
+	}
+	if p.RunGID > 0 {
+		sc.RunAsGroup = ptr.To(p.RunGID)
+	}
+	return sc
+}
+
+// podSecurityContext carries the POD-level fields (fsGroup) plus runAsNonRoot
+// when a uid is set. Zero uid = nil, keeping the Job byte-identical.
+func podSecurityContext(p AttemptJobParams) *corev1.PodSecurityContext {
+	if p.RunUID <= 0 {
+		return nil
+	}
+	sc := &corev1.PodSecurityContext{
+		RunAsNonRoot: ptr.To(true),
+	}
+	if p.FSGroup > 0 {
+		sc.FSGroup = ptr.To(p.FSGroup)
+	}
+	return sc
 }
 
 func BuildJob(p AttemptJobParams) *batchv1.Job {
@@ -401,6 +477,7 @@ func BuildJob(p AttemptJobParams) *batchv1.Job {
 			env = append(env, corev1.EnvVar{Name: "XDG_CACHE_HOME", Value: "/cache/xdg"})
 		}
 	}
+	var ownershipInit *corev1.Container
 	// Persistent session lineages (ADR-0010): one RWX PVC, SubPath per
 	// workflow — the per-PR lineage dirs (<repo>-<hash>~<pr>, and the
 	// SoL-Pi data inside them) survive across per-Attempt Jobs, so a
@@ -420,6 +497,37 @@ func BuildJob(p AttemptJobParams) *batchv1.Job {
 			ttl = "336h"
 		}
 		env = append(env, corev1.EnvVar{Name: "HARMOSTES_SESSIONS_TTL", Value: ttl})
+		// #707: the uid flip's boot migration. Existing lineage dirs are the
+		// image's uid (root) with 0700 — a non-root runner cannot resume them.
+		// The init chowns the workflow leaf's tree to the target uid and seeds
+		// a HOME + git identity for it (the image's git config lives in root's
+		// HOME). Rendered ONLY when the uid is set: uid 0 Jobs stay
+		// byte-identical. It runs as the target uid, so it cannot chown what it
+		// does not own — the failure is loud, never silent.
+		if p.RunUID > 0 {
+			volumes = append(volumes, corev1.Volume{Name: "home", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}})
+			mounts = append(mounts, corev1.VolumeMount{Name: "home", MountPath: "/home"})
+			ownershipInit = &corev1.Container{
+				Name: "session-ownership",
+				// Runs as ROOT (the historical owner of the tree) so the chown is
+				// possible; the RUN container is the one that gets the uid. The init
+				// never executes the workload — it only migrates ownership and seeds
+				// the identity the run needs.
+				SecurityContext: &corev1.SecurityContext{
+					RunAsUser:                ptr.To(int64(0)),
+					AllowPrivilegeEscalation: ptr.To(false),
+				},
+				Image:   p.Image,
+				Command: []string{"sh", "-c", sessionOwnershipCommand},
+				Env: []corev1.EnvVar{
+					{Name: "HARMOSTES_RUN_UID", Value: strconv.FormatInt(p.RunUID, 10)},
+				},
+				VolumeMounts: []corev1.VolumeMount{
+					{Name: "sessions", MountPath: "/sessions"},
+					{Name: "home", MountPath: "/home"},
+				},
+			}
+		}
 	}
 	for _, at := range p.Attachments {
 		if at.PVC == "" || at.Name == "" {
@@ -565,6 +673,16 @@ func BuildJob(p AttemptJobParams) *batchv1.Job {
 		})
 	}
 
+	// The run container's env: the shared env plus HOME when a uid is set (the
+	// ownership init seeds that home; without it a non-root run has no home).
+	runEnv := env
+	if p.RunUID > 0 {
+		runEnv = append(append([]corev1.EnvVar{}, env...),
+			corev1.EnvVar{Name: "HOME", Value: "/home/" + strconv.FormatInt(p.RunUID, 10)},
+			corev1.EnvVar{Name: "XDG_CONFIG_HOME", Value: "/home/" + strconv.FormatInt(p.RunUID, 10) + "/.config"},
+		)
+	}
+
 	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			// GenerateName: a Job name is unique PER RUN (an Attempt
@@ -591,14 +709,16 @@ func BuildJob(p AttemptJobParams) *batchv1.Job {
 				ObjectMeta: metav1.ObjectMeta{Labels: labels, Annotations: annotations},
 				Spec: corev1.PodSpec{
 					ServiceAccountName: p.ServiceAccount,
+					SecurityContext:    podSecurityContext(p),
 					RestartPolicy:      corev1.RestartPolicyNever,
-					InitContainers:     append(materializeInit, skillsInit(&p)...),
+					InitContainers:     append(append(materializeInit, ownershipInitSlice(ownershipInit)...), skillsInit(&p)...),
 					Containers: []corev1.Container{{
-						Name:         "run",
-						Image:        p.Image,
-						Command:      []string{"/usr/local/bin/harmostes-worker", "run"},
-						Env:          env,
-						VolumeMounts: mounts,
+						Name:            "run",
+						Image:           p.Image,
+						Command:         []string{"/usr/local/bin/harmostes-worker", "run"},
+						Env:             runEnv,
+						VolumeMounts:    mounts,
+						SecurityContext: runSecurityContext(p),
 					}},
 					Volumes: append(volumes, skillsTokenVolumes()...),
 				},

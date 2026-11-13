@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.11.9](https://github.com/tibrezus/harmostes/compare/v1.11.8...v1.11.9) (2026-11-13)
+
+
+### Features
+
+* **capacity:** the fleet-wide agent-session cap — two concurrent sessions, namespace-wide ([#887](https://github.com/tibrezus/harmostes/issues/887)) ([88de528](https://github.com/tibrezus/harmostes/commit/88de52829b9f99042864b093567debdf8243bad4))
+
 ## [1.11.8](https://github.com/tibrezus/harmostes/compare/v1.11.7...v1.11.8) (2026-11-12)
 
 

@@ -78,6 +78,47 @@ func gatedDispatchWorkflow() *v1alpha1.Workflow {
 	return wf
 }
 
+// #707 gate half 2: uid separation is meaningless on ephemeral sessions — the
+// dispatcher refuses at dispatch time (before any pod is burned), naming the
+// workflow and the uid.
+func TestDispatchRunUIDRequiresSessionsClaim(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := greenPRServer(t)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	d, ctx := newTestDispatcher(t, gatedDispatchWorkflow())
+	d.cfg.RunUID = 10001
+	err := d.Dispatch(ctx, dispatchRequest())
+	if err == nil || !strings.Contains(err.Error(), "declares no sessions claim") {
+		t.Fatalf("uid dispatch without sessions claim must refuse loudly, got %v", err)
+	}
+}
+
+func TestDispatchRunUIDWithSessionsClaimProceeds(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := greenPRServer(t)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gatedDispatchWorkflow()
+	wf.Spec.Sessions = &v1alpha1.SessionsSpec{PVC: "harmostes-worker-sessions"}
+	d, ctx := newTestDispatcher(t, wf)
+	d.cfg.RunUID = 10001
+	if err := d.Dispatch(ctx, dispatchRequest()); err != nil {
+		t.Fatalf("uid dispatch with a sessions claim must proceed: %v", err)
+	}
+	jobs, err := k8s.ListActiveJobs(ctx, d.cl, "default", "pr-review-harmostes")
+	if err != nil {
+		t.Fatalf("list jobs: %v", err)
+	}
+	if len(jobs) != 1 {
+		t.Fatalf("expected one Job, got %d", len(jobs))
+	}
+	sc := jobs[0].Spec.Template.Spec.SecurityContext
+	if sc == nil || sc.RunAsNonRoot == nil || !*sc.RunAsNonRoot {
+		t.Fatal("dispatched Job must carry the uid securityContext")
+	}
+}
+
 func dispatchRequest() RunRequest {
 	return RunRequest{
 		Workflow: "pr-review-harmostes", Namespace: "default",

@@ -29,6 +29,18 @@ spec:
         {{- end }}
     spec:
       serviceAccountName: {{ .Values.controller.serviceAccountName | default "harmostes-controller" }}
+      {{- if gt (int .Values.worker.runAsUser) 0 }}
+      # #707 gate half 2: the run identity. Rendered only when the uid is set,
+      # so the default render stays byte-identical (golden pinned).
+      securityContext:
+        runAsUser: {{ .Values.worker.runAsUser }}
+        {{- if gt (int .Values.worker.runAsGroup) 0 }}
+        runAsGroup: {{ .Values.worker.runAsGroup }}
+        {{- end }}
+        {{- if gt (int .Values.worker.fsGroup) 0 }}
+        fsGroup: {{ .Values.worker.fsGroup }}
+        {{- end }}
+      {{- end }}
       {{- if .Values.image.pullSecret }}
       imagePullSecrets:
         - name: {{ .Values.image.pullSecret }}
@@ -73,6 +85,14 @@ spec:
         - name: worker
           image: {{ .Values.image.worker | quote }}
           imagePullPolicy: Always
+          {{- if gt (int .Values.worker.runAsUser) 0 }}
+          securityContext:
+            runAsUser: {{ .Values.worker.runAsUser }}
+            allowPrivilegeEscalation: false
+            {{- if gt (int .Values.worker.runAsGroup) 0 }}
+            runAsGroup: {{ .Values.worker.runAsGroup }}
+            {{- end }}
+          {{- end }}
           # Explicit subcommand (ADR-0007 phase 2): the pool pod is the
           # consumer + dispatcher; its children and the per-Attempt Job pods
           # run `harmostes-worker run`.
@@ -95,6 +115,21 @@ spec:
               value: {{ .Values.agentProfile | quote }}
             {{- end }}
             # ── Dispatcher knobs (ADR-0007 phase 3) ──
+            {{- if gt (int .Values.worker.runAsUser) 0 }}
+            # #707 gate half 2: the dispatcher forwards the run identity to
+            # every per-Attempt Job (the Job's ownership init + securityContext
+            # render from these same env values).
+            - name: HARMOSTES_RUN_UID
+              value: {{ .Values.worker.runAsUser | quote }}
+            {{- if gt (int .Values.worker.runAsGroup) 0 }}
+            - name: HARMOSTES_RUN_GID
+              value: {{ .Values.worker.runAsGroup | quote }}
+            {{- end }}
+            {{- if gt (int .Values.worker.fsGroup) 0 }}
+            - name: HARMOSTES_FSGROUP
+              value: {{ .Values.worker.fsGroup | quote }}
+            {{- end }}
+            {{- end }}
             - name: HARMOSTES_MAX_CONCURRENT
               value: {{ .Values.worker.job.maxConcurrent | default 3 | quote }}
             # Leg-2 fast path: sweep cadence for ARMED-not-dispatched

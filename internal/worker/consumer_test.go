@@ -292,3 +292,39 @@ func TestDispatchConfigCancelOnSupersedeKnob(t *testing.T) {
 		t.Fatal("a malformed knob value must fail construction, not silently keep the default")
 	}
 }
+
+// #707 gate half 2: the uid knobs resolve from env and reach the Job — and a
+// malformed value fails fast (the #311 doctrine), never silently defaulting.
+func TestDispatcherFromEnvWiresRunUID(t *testing.T) {
+	t.Setenv("HARMOSTES_WORKER_IMAGE", "harmostes:it")
+	t.Setenv("HARMOSTES_RUN_UID", "10001")
+	t.Setenv("HARMOSTES_FSGROUP", "10001")
+
+	cfg, err := DispatchConfigFromEnv(func(string, ...any) {})
+	if err != nil {
+		t.Fatalf("config from env: %v", err)
+	}
+	if cfg.RunUID != 10001 || cfg.FSGroup != 10001 {
+		t.Fatalf("uid knobs dropped: uid=%d fsGroup=%d", cfg.RunUID, cfg.FSGroup)
+	}
+	at := &v1alpha1.Attempt{ObjectMeta: metav1.ObjectMeta{Name: "attempt-uid", Namespace: "default"}}
+	p := cfg.JobParams(at, "pr-review-harmostes", "default", 0, nil,
+		&v1alpha1.SessionsSpec{PVC: "harmostes-worker-sessions"}, nil, "", nil, nil, nil, nil, false)
+	if p.RunUID != 10001 {
+		t.Fatal("uid must be forwarded to the Job params")
+	}
+	job := k8s.BuildJob(p)
+	if job.Spec.Template.Spec.SecurityContext == nil || job.Spec.Template.Spec.SecurityContext.RunAsNonRoot == nil {
+		t.Fatal("rendered Job must carry the uid securityContext")
+	}
+}
+
+func TestDispatcherRunUIDRejectsMalformed(t *testing.T) {
+	t.Setenv("HARMOSTES_WORKER_IMAGE", "harmostes:it")
+	for _, bad := range []string{"abc", "-1", "10001x"} {
+		t.Setenv("HARMOSTES_RUN_UID", bad)
+		if _, err := DispatchConfigFromEnv(func(string, ...any) {}); err == nil {
+			t.Fatalf("malformed HARMOSTES_RUN_UID=%q must fail fast", bad)
+		}
+	}
+}

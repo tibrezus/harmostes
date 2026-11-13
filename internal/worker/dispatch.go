@@ -98,6 +98,13 @@ type DispatchConfig struct {
 	// PluginLabelValue is the required value of harmostes.dev/plugin for
 	// the aggregation projection (default "true").
 	PluginLabelValue string
+	// RunUID/RunGID/FSGroup (#707 gate half 2): the per-Attempt Job's run
+	// identity, resolved from the chart environment (HARMOSTES_RUN_UID etc.).
+	// Zero = the image's uid (root, the historical posture) — byte-identical
+	// Job; non-zero arms uid separation and the session-ownership migration.
+	RunUID  int64
+	RunGID  int64
+	FSGroup int64
 }
 
 // DispatchConfigFromEnv resolves the fleet-level dispatch configuration
@@ -168,6 +175,27 @@ func DispatchConfigFromEnv(logf func(string, ...any)) (DispatchConfig, error) {
 	if cfg.PluginLabelValue = os.Getenv("HARMOSTES_PLUGIN_LABEL_VALUE"); cfg.PluginLabelValue == "" {
 		cfg.PluginLabelValue = "true"
 	}
+	if v := os.Getenv("HARMOSTES_RUN_UID"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 0 {
+			return cfg, fmt.Errorf("HARMOSTES_RUN_UID=%q: must be a non-negative integer", v)
+		}
+		cfg.RunUID = n
+	}
+	if v := os.Getenv("HARMOSTES_RUN_GID"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 0 {
+			return cfg, fmt.Errorf("HARMOSTES_RUN_GID=%q: must be a non-negative integer", v)
+		}
+		cfg.RunGID = n
+	}
+	if v := os.Getenv("HARMOSTES_FSGROUP"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 0 {
+			return cfg, fmt.Errorf("HARMOSTES_FSGROUP=%q: must be a non-negative integer", v)
+		}
+		cfg.FSGroup = n
+	}
 	if v := os.Getenv("HARMOSTES_MAX_CONCURRENT"); v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil || n <= 0 {
@@ -202,9 +230,10 @@ func DispatchConfigFromEnv(logf func(string, ...any)) (DispatchConfig, error) {
 	}
 	// Startup config visibility: mount wiring problems (pool-vs-Job drift,
 	// #311) previously surfaced only as silent 12ms prepare failures.
-	logf("dispatch config: image=%s serviceAccount=%s maxConcurrent=%d agentSessionCap=%d jobTTLSeconds=%d pluginConfigMaps=%v extraConfigMapMounts=%s",
+	logf("dispatch config: image=%s serviceAccount=%s maxConcurrent=%d agentSessionCap=%d jobTTLSeconds=%d pluginConfigMaps=%v extraConfigMapMounts=%s runUID=%d runGID=%d fsGroup=%d",
 		cfg.JobImage, cfg.ServiceAccount, cfg.FleetMaxConcurrent, cfg.FleetAgentSessionCap, *cfg.JobTTLSeconds,
-		cfg.PluginConfigMaps, formatConfigMapMounts(cfg.ExtraConfigMapMounts))
+		cfg.PluginConfigMaps, formatConfigMapMounts(cfg.ExtraConfigMapMounts),
+		cfg.RunUID, cfg.RunGID, cfg.FSGroup)
 	return cfg, nil
 }
 
@@ -258,6 +287,9 @@ func (c DispatchConfig) JobParams(at *v1alpha1.Attempt, workflow, namespace stri
 		PluginLabelValue:        c.PluginLabelValue,
 		PluginRefs:              pluginRefs,
 		AgentSession:            agentSession,
+		RunUID:                  c.RunUID,
+		RunGID:                  c.RunGID,
+		FSGroup:                 c.FSGroup,
 	}
 }
 
@@ -703,6 +735,13 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req RunRequest) error {
 		triggerRepo := ""
 		if g.Envelope != nil {
 			triggerRepo = g.Envelope.Repo
+		}
+		// #707: a uid flip needs the workflow's sessions claim — that is the
+		// persistent tree the ownership init migrates and the run's HOME lives
+		// on. Refuse loudly HERE (dispatch time, no pod burned): a uid Job on
+		// ephemeral /tmp sessions would fail at boot with a confusing chown.
+		if d.cfg.RunUID > 0 && (wf.Spec.Sessions == nil || wf.Spec.Sessions.PVC == "") {
+			return fmt.Errorf("dispatch: workflow %q runs under HARMOSTES_RUN_UID=%d but declares no sessions claim — the uid flip migrates/owns a persistent lineage tree; refusing (uid separation is meaningless on ephemeral sessions)", req.Workflow, d.cfg.RunUID)
 		}
 		// The fleet-wide session cap (owner directive 2026-11-04) is enforced
 		// AGAIN here, at the spawn point: the gate's bound is per-sweep and

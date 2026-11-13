@@ -12,6 +12,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -1033,5 +1034,57 @@ func TestJobPluginRefs(t *testing.T) {
 				t.Errorf("inert params rendered %s on %s", e.Name, c.Name)
 			}
 		}
+	}
+}
+
+// ── Fleet-wide AGENT SESSION cap markers (owner directive 2026-11-04) ─────
+// The marker is the truthful discriminator the namespace-wide cap counts:
+// stamped by the resolved spec's agent.enabled, never by the workflow class.
+func TestBuildJobAgentSessionLabel(t *testing.T) {
+	at := jobTestAttempt()
+	session := BuildJob(AttemptJobParams{
+		Attempt: at, WorkflowName: "pr-review-harmostes", Namespace: "harmostes", AgentSession: true,
+	})
+	if session.Labels[v1alpha1.AgentSessionLabel] != "true" {
+		t.Fatalf("agent session Job must carry the marker: %+v", session.Labels)
+	}
+	if session.Spec.Template.Labels[v1alpha1.AgentSessionLabel] != "true" {
+		t.Fatalf("the pod template must carry the marker too (the pods are what run): %+v", session.Spec.Template.Labels)
+	}
+	deterministic := BuildJob(AttemptJobParams{
+		Attempt: at, WorkflowName: "fork-maintenance", Namespace: "harmostes", AgentSession: false,
+	})
+	if _, marked := deterministic.Labels[v1alpha1.AgentSessionLabel]; marked {
+		t.Fatalf("deterministic-only Job must carry NO session marker (a plugin run holds no slot): %+v", deterministic.Labels)
+	}
+}
+
+func TestListLiveAgentSessionJobs(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := batchv1.AddToScheme(scheme); err != nil {
+		t.Fatalf("scheme: %v", err)
+	}
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("scheme: %v", err)
+	}
+	live := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: "live-sess", Namespace: "ns", Labels: map[string]string{
+		"app.kubernetes.io/name": "harmostes", v1alpha1.AgentSessionLabel: "true"}}}
+	done := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: "done-sess", Namespace: "ns", Labels: map[string]string{
+		"app.kubernetes.io/name": "harmostes", v1alpha1.AgentSessionLabel: "true"}}}
+	done.Status.CompletionTime = &metav1.Time{Time: time.Now()}
+	failedJob := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: "failed-sess", Namespace: "ns", Labels: map[string]string{
+		"app.kubernetes.io/name": "harmostes", v1alpha1.AgentSessionLabel: "true"}}}
+	failedJob.Status.Conditions = []batchv1.JobCondition{{Type: batchv1.JobFailed, Status: corev1.ConditionTrue}}
+	plugin := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: "plugin-job", Namespace: "ns", Labels: map[string]string{
+		"app.kubernetes.io/name": "harmostes"}}}
+	otherNs := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: "other-ns", Namespace: "elsewhere", Labels: map[string]string{
+		"app.kubernetes.io/name": "harmostes", v1alpha1.AgentSessionLabel: "true"}}}
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(live, done, failedJob, plugin, otherNs).Build()
+	got, err := ListLiveAgentSessionJobs(context.Background(), cl, "ns")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(got) != 1 || got[0].Name != "live-sess" {
+		t.Fatalf("only the live, labeled session Job in the namespace counts: got %v", got)
 	}
 }

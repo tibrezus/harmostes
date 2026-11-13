@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -1132,5 +1133,233 @@ func TestValidateRepoWikiConfig(t *testing.T) {
 	// validate — not this validator's error.
 	if err := ValidateRepoWikiConfig(json.RawMessage(`["a","b"]`)); err != nil {
 		t.Errorf("non-object config must pass (nothing to validate), got %v", err)
+	}
+}
+
+// ── Fleet-wide AGENT SESSION cap (owner directive 2026-11-04) ──────────────
+// The cap counts namespace-wide LIVE agent-session Jobs (labeled by the
+// resolved spec's agent.enabled), not workflow claims: a plugin-only run
+// holds no session slot, and a session elsewhere in the namespace blocks
+// this workflow's spawn. Live = not finished (a just-created Job reports no
+// status until the job controller syncs, so racing wakes must not breach).
+func TestDispatchFleetSessionCapRefusesAtSpawn(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := greenPRServer(t)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gatedDispatchWorkflow()
+	wf.Spec.Agent.Enabled = ptrBool(true)
+
+	scheme := dispatchScheme(t)
+	// Two live session Jobs already in the namespace (other workflows).
+	live1 := sessionJobFixture("attempt-a", wf.Namespace, "sess-worker-1")
+	live2 := sessionJobFixture("attempt-b", wf.Namespace, "sess-worker-2")
+	cl := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&v1alpha1.Attempt{}, &v1alpha1.Workflow{}).
+		WithRuntimeObjects(wf, live1, live2).Build()
+	d := &Dispatcher{
+		cl: cl, scheme: scheme, namespace: "default", logf: t.Logf,
+		cfg: DispatchConfig{
+			FleetMaxConcurrent:   3,
+			FleetAgentSessionCap: 2,
+			JobImage:             "harmostes-worker:test",
+			NewReviewAPI: func() review.API {
+				if testReviewAPI != nil {
+					return testReviewAPI
+				}
+				return nil
+			},
+		},
+	}
+	ctx := context.Background()
+	if err := d.Dispatch(ctx, dispatchRequest()); err != nil {
+		t.Fatalf("over-cap dispatch must ACK (the attempt is the durable object), got %v", err)
+	}
+	var jobs batchv1.JobList
+	if err := cl.List(ctx, &jobs); err != nil {
+		t.Fatal(err)
+	}
+	// The two pre-existing session Jobs are the only Jobs: no new spawn.
+	if len(jobs.Items) != 2 {
+		t.Fatalf("session cap full must spawn NO Job (got %d)", len(jobs.Items))
+	}
+	// The gate refused at the session bound BEFORE arming: nothing was queued
+	// (no claim, no attempt) — the labeled PR waits for a session slot.
+	if at, ok := attemptNames(ctx, cl); ok && at != 0 {
+		t.Fatalf("session cap full must arm nothing (got %d attempts)", at)
+	}
+}
+
+func TestDispatchFleetSessionCapUnderCapSpawns(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := greenPRServer(t)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gatedDispatchWorkflow()
+	wf.Spec.Agent.Enabled = ptrBool(true)
+	scheme := dispatchScheme(t)
+	live := sessionJobFixture("attempt-pre", wf.Namespace, "sess-worker-1")
+	cl := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&v1alpha1.Attempt{}, &v1alpha1.Workflow{}).
+		WithRuntimeObjects(wf, live).Build()
+	d := &Dispatcher{
+		cl: cl, scheme: scheme, namespace: "default", logf: t.Logf,
+		cfg: DispatchConfig{
+			FleetMaxConcurrent:   3,
+			FleetAgentSessionCap: 2,
+			JobImage:             "harmostes-worker:test",
+			NewReviewAPI: func() review.API {
+				if testReviewAPI != nil {
+					return testReviewAPI
+				}
+				return nil
+			},
+		},
+	}
+	if err := d.Dispatch(context.Background(), dispatchRequest()); err != nil {
+		t.Fatalf("under-cap dispatch: %v", err)
+	}
+	var jobs batchv1.JobList
+	if err := cl.List(context.Background(), &jobs); err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs.Items) != 2 {
+		t.Fatalf("under cap: exactly one new session Job must spawn (got %d)", len(jobs.Items))
+	}
+	for _, j := range jobs.Items {
+		if j.Labels[v1alpha1.AgentSessionLabel] != "true" {
+			t.Fatalf("every session Job must carry the agent-session marker: %+v", j.Labels)
+		}
+	}
+}
+
+func TestPluginOnlyRunHoldsNoSessionSlot(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := greenPRServer(t)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gatedDispatchWorkflow()
+	wf.Spec.Agent.Enabled = ptrBool(false)
+	scheme := dispatchScheme(t)
+	live1 := sessionJobFixture("attempt-a", wf.Namespace, "s1")
+	live2 := sessionJobFixture("attempt-b", wf.Namespace, "s2")
+	cl := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&v1alpha1.Attempt{}, &v1alpha1.Workflow{}).
+		WithRuntimeObjects(wf, live1, live2).Build()
+	d := &Dispatcher{
+		cl: cl, scheme: scheme, namespace: "default", logf: t.Logf,
+		cfg: DispatchConfig{
+			FleetMaxConcurrent:   3,
+			FleetAgentSessionCap: 2,
+			JobImage:             "harmostes-worker:test",
+			NewReviewAPI: func() review.API {
+				if testReviewAPI != nil {
+					return testReviewAPI
+				}
+				return nil
+			},
+		},
+	}
+	if err := d.Dispatch(context.Background(), dispatchRequest()); err != nil {
+		t.Fatalf("plugin-only dispatch: %v", err)
+	}
+	var jobs batchv1.JobList
+	if err := cl.List(context.Background(), &jobs); err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs.Items) != 3 {
+		t.Fatalf("plugin-only under a full session cap must spawn (it holds no slot; got %d Jobs)", len(jobs.Items))
+	}
+	var spawned *batchv1.Job
+	for i := range jobs.Items {
+		if jobs.Items[i].Labels[v1alpha1.AgentSessionLabel] != "true" {
+			spawned = &jobs.Items[i]
+		}
+	}
+	if spawned == nil {
+		t.Fatal("the plugin-only Job must carry NO agent-session marker")
+	}
+}
+
+func TestFleetSessionCapParsing(t *testing.T) {
+	t.Setenv("HARMOSTES_WORKER_IMAGE", "harmostes-worker:test")
+	for _, c := range []struct {
+		v    string
+		want int
+		err  bool
+	}{
+		{"2", 2, false}, {"0", 0, true}, {"-1", 0, true}, {"x", 0, true}, {"", 0, false},
+	} {
+		t.Setenv("HARMOSTES_AGENT_SESSION_CAP", c.v)
+		cfg, err := DispatchConfigFromEnv(t.Logf)
+		if (err != nil) != c.err {
+			t.Fatalf("HARMOSTES_AGENT_SESSION_CAP=%q: err=%v, want err=%t", c.v, err, c.err)
+		}
+		if err == nil && cfg.FleetAgentSessionCap != c.want {
+			t.Fatalf("HARMOSTES_AGENT_SESSION_CAP=%q: got %d, want %d", c.v, cfg.FleetAgentSessionCap, c.want)
+		}
+	}
+	t.Cleanup(func() { _ = os.Unsetenv("HARMOSTES_AGENT_SESSION_CAP") })
+}
+
+func ptrBool(b bool) *bool { return &b }
+
+// sessionJobFixture: a LIVE (unfinished) agent-session Job for the fixture.
+func sessionJobFixture(attemptName, ns, name string) *batchv1.Job {
+	return &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: name, Namespace: ns,
+			Labels: map[string]string{
+				"app.kubernetes.io/name":      "harmostes",
+				"app.kubernetes.io/component": "attempt-runner",
+				v1alpha1.WorkflowLabel:        "other-workflow",
+				v1alpha1.AttemptLabel:         attemptName,
+				v1alpha1.AgentSessionLabel:    "true",
+			},
+		},
+	}
+}
+
+func attemptNames(ctx context.Context, cl client.Client) (int, bool) {
+	var list v1alpha1.AttemptList
+	if err := cl.List(ctx, &list); err != nil {
+		return 0, false
+	}
+	return len(list.Items), true
+}
+
+// Non-gated agent workflow: the session cap must still bind at the spawn
+// point (the gate only bounds gated claim sweeps; a schedule/webhook
+// workflow with no reviewReady dispatches straight through).
+func TestNonGatedAgentSessionCapRefusesAtSpawn(t *testing.T) {
+	clearTriggerEnv(t)
+	wf := newWorkflow()
+	wf.Name = "wiki-agent"
+	wf.Namespace = "default"
+	wf.Spec.Agent.Enabled = ptrBool(true)
+	scheme := dispatchScheme(t)
+	live1 := sessionJobFixture("attempt-a", wf.Namespace, "s1")
+	live2 := sessionJobFixture("attempt-b", wf.Namespace, "s2")
+	cl := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&v1alpha1.Attempt{}, &v1alpha1.Workflow{}).
+		WithRuntimeObjects(wf, live1, live2).Build()
+	d := &Dispatcher{
+		cl: cl, scheme: scheme, namespace: "default", logf: t.Logf,
+		cfg: DispatchConfig{
+			FleetMaxConcurrent:   3,
+			FleetAgentSessionCap: 2,
+			JobImage:             "harmostes-worker:test",
+		},
+	}
+	req := RunRequest{Workflow: "wiki-agent", Namespace: "default", Revision: "rev1"}
+	if err := d.Dispatch(context.Background(), req); err != nil {
+		t.Fatalf("over-cap non-gated dispatch must ACK: %v", err)
+	}
+	var jobs batchv1.JobList
+	if err := cl.List(context.Background(), &jobs); err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs.Items) != 2 {
+		t.Fatalf("non-gated over-cap must spawn nothing (got %d Jobs)", len(jobs.Items))
 	}
 }

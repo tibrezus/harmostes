@@ -101,6 +101,15 @@ type GateDeps struct {
 	// FleetMaxConcurrent is the chart default; spec.reviewReady.maxConcurrent
 	// overrides per workflow.
 	FleetMaxConcurrent int
+	// FleetAgentSessionCap (owner directive 2026-11-04) is the NAMESPACE-WIDE
+	// bound on concurrent AGENT sessions across every workflow — a session
+	// bound, not a per-workflow claim bound. Zero = no bound (inert default).
+	// The sweep applies it as a second free-slot bound: live agent-session
+	// Jobs namespace-wide (counted by the label, not by this workflow's
+	// claims) reduce the free slots this sweep may arm. Without it the gate
+	// would arm claims the dispatcher then cannot spawn, and each such arm
+	// would burn the churn budget on a dispatch that never happened.
+	FleetAgentSessionCap int
 	// DisableCancelOnSupersede turns the #402 cancellation pass OFF
 	// (the pass deletes the review Job of a claim the gate released as
 	// superseded/closed): the dead-head review otherwise burns the
@@ -349,6 +358,15 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 	}
 	now := time.Now()
 	capacity := rr.EffectiveMaxConcurrent(deps.FleetMaxConcurrent)
+	// Fleet-wide session bound (owner directive 2026-11-04): a workflow that
+	// runs an agent session competes for namespace-wide session slots; a
+	// plugin-only workflow (agent.enabled false) consumes none and is never
+	// capped by it. The bound is the SECOND capacity dimension — ADR-0007's
+	// per-workflow claim capacity stays, this adds the fleet session ceiling.
+	sessionCap := 0
+	if wf.Spec.Agent.EnabledOrDefault() && deps.FleetAgentSessionCap > 0 {
+		sessionCap = deps.FleetAgentSessionCap
+	}
 	api := newReviewAPI()
 	if deps.NewReviewAPI != nil {
 		if overridden := deps.NewReviewAPI(); overridden != nil {
@@ -852,6 +870,26 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 	}
 	free := capacity - liveDispatched
 	capacityFull := false
+	// The fleet session bound reads the LABELED Jobs namespace-wide — the
+	// truthful signal for sessions. This workflow's claim count is not it: a
+	// claim can be dispatched with no live Job (a death), and a plugin-only
+	// workflow holds claims that are not sessions. Fail CLOSED on a failed
+	// list: an unknown session count must never be read as free slots.
+	liveSessions := 0
+	if sessionCap > 0 {
+		jobs, err := k8s.ListLiveAgentSessionJobs(ctx, deps.Client, wf.Namespace)
+		if err != nil {
+			log("review-ready: agent-session list failed (%v) — session bound unknown; refusing to arm (fail closed)", err)
+			return nil, fmt.Errorf("agent-session bound: namespace session count unavailable — the sweep cannot decide capacity honestly")
+		}
+		liveSessions = len(jobs)
+		if budget := sessionCap - liveSessions; free > budget {
+			free = budget
+		}
+		if free < 0 {
+			free = 0
+		}
+	}
 
 	// ── B. Candidates: the wake (priority) + the labeled set (oldest first). ──
 	var cands []candidate

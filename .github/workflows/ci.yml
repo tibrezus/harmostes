@@ -410,6 +410,21 @@ jobs:
           check("litellm-provider-extension" not in cms,
                 "litellm-provider-extension still chart-rendered — the resolver component lives in its template repo")
 
+          # Fleet-wide AGENT SESSION cap (owner directive 2026-11-04): the
+          # rendered env must reach the pool pod — an unrendered knob is a
+          # silently inert decision (the class this assertion exists for).
+          env_vals = {}
+          for d in docs:
+              if d.get("kind") != "Deployment":
+                  continue
+              for c in d["spec"]["template"]["spec"].get("containers", []):
+                  for e in c.get("env", []):
+                      env_vals[e["name"]] = e.get("value")
+          check(env_vals.get("HARMOSTES_AGENT_SESSION_CAP") == "2",
+                f"agent-session cap must render into the pool env (got {env_vals.get('HARMOSTES_AGENT_SESSION_CAP')!r})")
+          check(env_vals.get("HARMOSTES_MAX_CONCURRENT") == "5",
+                f"per-workflow claim capacity must render unchanged (got {env_vals.get('HARMOSTES_MAX_CONCURRENT')!r})")
+
           check(by_kind("ExternalSecret"), "ExternalSecret not rendered from values.credentials")
 
           # Pillar/skill parity moved to the template repo's CI (phase 4:

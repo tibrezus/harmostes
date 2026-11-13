@@ -66,6 +66,14 @@ type Dispatcher struct {
 // copied it into this struct) were all the same failure mode at this seam.
 type DispatchConfig struct {
 	FleetMaxConcurrent int
+	// FleetAgentSessionCap (owner directive 2026-11-04): the NAMESPACE-WIDE
+	// bound on concurrent AGENT sessions — across every workflow, not per
+	// workflow. Unlike FleetMaxConcurrent (live claims per workflow class),
+	// this is a session bound: deterministic-only runs are not sessions and
+	// do not consume it. Zero = no bound (the inert default — a deployment
+	// that has not decided renders the pre-cap behavior, and the render
+	// asserts the decision where the fleet depends on it).
+	FleetAgentSessionCap int
 	// DisableCancelOnSupersede turns the #402 cancellation pass off
 	// superseded/closed (#402) — the dead-head review otherwise burns the
 	// full run bound before the moved-head guard discards its verdict.
@@ -145,6 +153,9 @@ func DispatchConfigFromEnv(logf func(string, ...any)) (DispatchConfig, error) {
 		ServiceAccount:     os.Getenv("HARMOSTES_SERVICE_ACCOUNT"),
 		DaprdImage:         os.Getenv("HARMOSTES_DAPRD_IMAGE"),
 		FleetMaxConcurrent: 3,
+		// FleetAgentSessionCap: no bound by default — the deployment decides
+		// (HARMOSTES_AGENT_SESSION_CAP, owner directive 2026-11-04).
+		FleetAgentSessionCap: 0,
 	}
 	var err error
 	if cfg.PluginConfigMaps, err = pluginConfigMapsFromEnv(); err != nil {
@@ -192,6 +203,13 @@ func DispatchConfigFromEnv(logf func(string, ...any)) (DispatchConfig, error) {
 		}
 		cfg.FleetMaxConcurrent = n
 	}
+	if v := os.Getenv("HARMOSTES_AGENT_SESSION_CAP"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 {
+			return cfg, fmt.Errorf("HARMOSTES_AGENT_SESSION_CAP=%q: must be a positive integer", v)
+		}
+		cfg.FleetAgentSessionCap = n
+	}
 	// Cancel-on-supersede (#402): default ON — the waste is pure loss. A
 	// malformed value is an error, not a silent default (#311 convention).
 	// Shared with the one-shot gate path via CancelOnSupersedeFromEnv.
@@ -212,8 +230,8 @@ func DispatchConfigFromEnv(logf func(string, ...any)) (DispatchConfig, error) {
 	}
 	// Startup config visibility: mount wiring problems (pool-vs-Job drift,
 	// #311) previously surfaced only as silent 12ms prepare failures.
-	logf("dispatch config: image=%s serviceAccount=%s maxConcurrent=%d jobTTLSeconds=%d pluginConfigMaps=%v extraConfigMapMounts=%s runUID=%d runGID=%d fsGroup=%d",
-		cfg.JobImage, cfg.ServiceAccount, cfg.FleetMaxConcurrent, *cfg.JobTTLSeconds,
+	logf("dispatch config: image=%s serviceAccount=%s maxConcurrent=%d agentSessionCap=%d jobTTLSeconds=%d pluginConfigMaps=%v extraConfigMapMounts=%s runUID=%d runGID=%d fsGroup=%d",
+		cfg.JobImage, cfg.ServiceAccount, cfg.FleetMaxConcurrent, cfg.FleetAgentSessionCap, *cfg.JobTTLSeconds,
 		cfg.PluginConfigMaps, formatConfigMapMounts(cfg.ExtraConfigMapMounts),
 		cfg.RunUID, cfg.RunGID, cfg.FSGroup)
 	return cfg, nil
@@ -245,7 +263,7 @@ func (c DispatchConfig) Validate() error {
 // composed extension manifest and the profile's harness pin — both already
 // validated (ComposeExtensions + ValidateExtensionPins/ValidateHarnessPin)
 // by the time they reach here.
-func (c DispatchConfig) JobParams(at *v1alpha1.Attempt, workflow, namespace string, runBound time.Duration, cache *v1alpha1.CacheSpec, sessions *v1alpha1.SessionsSpec, attachments []v1alpha1.SharedAttachment, triggerRepo string, extraEnv []string, extensions []v1alpha1.ExtensionPin, harness *v1alpha1.HarnessRef, pluginRefs []string) k8s.AttemptJobParams {
+func (c DispatchConfig) JobParams(at *v1alpha1.Attempt, workflow, namespace string, runBound time.Duration, cache *v1alpha1.CacheSpec, sessions *v1alpha1.SessionsSpec, attachments []v1alpha1.SharedAttachment, triggerRepo string, extraEnv []string, extensions []v1alpha1.ExtensionPin, harness *v1alpha1.HarnessRef, pluginRefs []string, agentSession bool) k8s.AttemptJobParams {
 	return k8s.AttemptJobParams{
 		Attempt:                 at,
 		WorkflowName:            workflow,
@@ -268,6 +286,7 @@ func (c DispatchConfig) JobParams(at *v1alpha1.Attempt, workflow, namespace stri
 		AggregatePlugins:        c.AggregatePlugins,
 		PluginLabelValue:        c.PluginLabelValue,
 		PluginRefs:              pluginRefs,
+		AgentSession:            agentSession,
 		RunUID:                  c.RunUID,
 		RunGID:                  c.RunGID,
 		FSGroup:                 c.FSGroup,
@@ -634,6 +653,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req RunRequest) error {
 		Client:                   d.cl,
 		Scheme:                   d.scheme,
 		FleetMaxConcurrent:       d.cfg.FleetMaxConcurrent,
+		FleetAgentSessionCap:     d.cfg.FleetAgentSessionCap,
 		DisableCancelOnSupersede: d.cfg.DisableCancelOnSupersede,
 		NewReviewAPI:             d.cfg.NewReviewAPI,
 		Log:                      d.logf,
@@ -723,10 +743,28 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req RunRequest) error {
 		if d.cfg.RunUID > 0 && (wf.Spec.Sessions == nil || wf.Spec.Sessions.PVC == "") {
 			return fmt.Errorf("dispatch: workflow %q runs under HARMOSTES_RUN_UID=%d but declares no sessions claim — the uid flip migrates/owns a persistent lineage tree; refusing (uid separation is meaningless on ephemeral sessions)", req.Workflow, d.cfg.RunUID)
 		}
+		// The fleet-wide session cap (owner directive 2026-11-04) is enforced
+		// AGAIN here, at the spawn point: the gate's bound is per-sweep and
+		// this path also serves non-gated/plugin workflows and racing wakes.
+		// The count is the namespace's live agent-session Jobs; a plugin-only
+		// run holds no session slot (AgentSession false). Over the cap we ACK
+		// without spawning — the attempt stays the durable object and the next
+		// wake/sweep re-evaluates.
+		agentSession := wf.Spec.Agent.EnabledOrDefault()
+		if agentSession && d.cfg.FleetAgentSessionCap > 0 {
+			sessions, serr := k8s.ListLiveAgentSessionJobs(ctx, d.cl, req.Namespace)
+			if serr != nil {
+				return fmt.Errorf("agent-session bound: namespace session count unavailable: %w", serr)
+			}
+			if len(sessions) >= d.cfg.FleetAgentSessionCap {
+				d.logf("dispatch: fleet session cap full (%d/%d live agent sessions namespace-wide) — attempt %s queued, no Job spawned", len(sessions), d.cfg.FleetAgentSessionCap, at.Name)
+				continue
+			}
+		}
 		job := k8s.BuildJob(d.cfg.JobParams(&at, req.Workflow, req.Namespace, runBound, cache, wf.Spec.Sessions,
 			wf.Spec.Attachments, triggerRepo,
 			append(jobCredentialEnv(&budgetPolicy{workflow: wf, attempt: &at}), dispatchEnv(req, &at, g.Envelope)...),
-			extensions, harness, pluginRefsFrom(wf)))
+			extensions, harness, pluginRefsFrom(wf), agentSession))
 		logEffectiveAttachments(d.logf, at.Name, job, wf.Spec.Attachments)
 		// #666 intent-before-side-effect: the INTENT is committed BEFORE
 		// the Job exists (record-then-act; a failed record aborts dispatch

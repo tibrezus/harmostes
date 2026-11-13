@@ -147,6 +147,14 @@ spec:
               {{- end }}
             - name: HARMOSTES_JOB_TTL_SECONDS
               value: {{ .Values.worker.job.ttlSecondsAfterFinished | default 3600 | quote }}
+            {{- if .Values.worker.job.agentSessionCap }}
+            # Fleet-wide AGENT SESSION cap (owner directive 2026-11-04):
+            # namespace-wide bound on concurrent agent sessions across every
+            # workflow (a session bound, not a per-workflow claim bound).
+            # Empty renders no env = no bound (the inert default).
+            - name: HARMOSTES_AGENT_SESSION_CAP
+              value: {{ .Values.worker.job.agentSessionCap | quote }}
+            {{- end }}
             {{- if .Values.worker.agentModel }}
             # The generic agent model (owner directive 2026-10-25): one
             # knob for every workflow; per-workflow spec.model overrides.

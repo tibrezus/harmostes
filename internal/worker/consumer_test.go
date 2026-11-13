@@ -224,7 +224,7 @@ func TestDispatcherFromEnvWiresExtraMounts(t *testing.T) {
 
 	// The seam's final hop: config → params → rendered Job.
 	at := &v1alpha1.Attempt{ObjectMeta: metav1.ObjectMeta{Name: "attempt-seam", Namespace: "default"}}
-	job := k8s.BuildJob(cfg.JobParams(at, "pr-review-harmostes", "default", 0, nil, nil, nil, "", nil, nil, nil, nil))
+	job := k8s.BuildJob(cfg.JobParams(at, "pr-review-harmostes", "default", 0, nil, nil, nil, "", nil, nil, nil, nil, false))
 
 	var volNames []string
 	for _, v := range job.Spec.Template.Spec.Volumes {
@@ -309,7 +309,7 @@ func TestDispatcherFromEnvWiresRunUID(t *testing.T) {
 	}
 	at := &v1alpha1.Attempt{ObjectMeta: metav1.ObjectMeta{Name: "attempt-uid", Namespace: "default"}}
 	p := cfg.JobParams(at, "pr-review-harmostes", "default", 0, nil,
-		&v1alpha1.SessionsSpec{PVC: "harmostes-worker-sessions"}, nil, "", nil, nil, nil, nil)
+		&v1alpha1.SessionsSpec{PVC: "harmostes-worker-sessions"}, nil, "", nil, nil, nil, nil, false)
 	if p.RunUID != 10001 {
 		t.Fatal("uid must be forwarded to the Job params")
 	}

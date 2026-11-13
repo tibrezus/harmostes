@@ -113,6 +113,15 @@ const (
 	// consumed by the UI's run-log discovery and the dispatcher's liveness
 	// checks.
 	AttemptLabel = "harmostes.dev/attempt"
+
+	// AgentSessionLabel marks an attempt-runner Job that executes an AGENT
+	// session (workflow agent.enabled true). The fleet-wide session cap
+	// (HARMOSTES_AGENT_SESSION_CAP, owner directive 2026-11-04) is a
+	// namespace-wide bound: the gate and the dispatcher count these Jobs,
+	// NOT workflow claims, so a workflow whose graph is plugin-only can
+	// never be pushed out of the cap by a review claim it does not run.
+	// Absence means deterministic-only: a plugin-only run is not a session.
+	AgentSessionLabel = "harmostes.dev/agent-session"
 )
 
 // ownerLabelValueRe validates the label VALUE form (RFC 1123 label, ≤63

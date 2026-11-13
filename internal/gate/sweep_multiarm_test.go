@@ -3845,3 +3845,133 @@ func TestSweepConvergeConsumesStandingVerdict(t *testing.T) {
 	}
 	t.Fatal("expected a merge-status post for the REQUEST_CHANGES verdict")
 }
+
+// ── Fleet-wide AGENT SESSION cap (owner directive 2026-11-04) ──────────────
+// The gate bound counts namespace-wide LIVE agent-session Jobs, NOT claims:
+// two sessions elsewhere saturate the bound, and this sweep must arm nothing
+// rather than mint claims the dispatcher cannot spawn (each arm would burn
+// the churn budget on a dispatch that never happened). A plugin-only
+// workflow consumes no slot and is not capped.
+func sessionJobFixture(namespace, workflow, attempt, name string) *batchv1.Job {
+	return &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: name, Namespace: namespace,
+			Labels: map[string]string{
+				"app.kubernetes.io/name":      "harmostes",
+				"app.kubernetes.io/component": "attempt-runner",
+				v1alpha1.WorkflowLabel:        workflow,
+				v1alpha1.AttemptLabel:         attempt,
+				v1alpha1.AgentSessionLabel:    "true",
+			},
+		},
+	}
+}
+
+func TestGateFleetSessionCapStrandsAtBound(t *testing.T) {
+	srv := labeledListServer(t, 99)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	st := &fakeStatus{}
+	j1 := sessionJobFixture(wf.Namespace, "other-wf", "attempt-a", "sess-1")
+	j2 := sessionJobFixture(wf.Namespace, "other-wf2", "attempt-b", "sess-2")
+	deps, ctx := gateEnv(t, wf, st, j1, j2)
+	deps.FleetAgentSessionCap = 2
+	deps.Wake = GateWake{PR: "git.rezus.cloud/tibrez/rhesadox#99", Action: "labeled", Revision: "deadbeef123"}
+	out, err := RunReviewGateSweep(ctx, deps, wf)
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if len(out) != 0 {
+		t.Fatalf("session cap full must arm nothing, got %d dispatch(es)", len(out))
+	}
+	if st.last.ReviewReady == nil || st.last.ReviewReady.LastDecision != "waiting" {
+		t.Fatalf("status must record the session-bound wait: %+v", st.last.ReviewReady)
+	}
+	if st.last.ReviewReady.LastReason == "" ||
+		!strings.Contains(st.last.ReviewReady.LastReason, "capacity full") {
+		t.Fatalf("status reason must name the saturation: %q", st.last.ReviewReady.LastReason)
+	}
+}
+
+func TestGateFleetSessionCapUnderBoundArms(t *testing.T) {
+	srv := labeledListServer(t, 99)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	st := &fakeStatus{}
+	j1 := sessionJobFixture(wf.Namespace, "other-wf", "attempt-a", "sess-1")
+	deps, ctx := gateEnv(t, wf, st, j1)
+	deps.FleetAgentSessionCap = 2
+	deps.Wake = GateWake{PR: "git.rezus.cloud/tibrez/rhesadox#99", Action: "labeled", Revision: "deadbeef123"}
+	out, err := RunReviewGateSweep(ctx, deps, wf)
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("one free session slot must arm one claim, got %d", len(out))
+	}
+}
+
+func TestGatePluginOnlyWorkflowNotSessionCapped(t *testing.T) {
+	srv := labeledListServer(t, 99)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	disabled := false
+	wf.Spec.Agent.Enabled = &disabled
+	st := &fakeStatus{}
+	j1 := sessionJobFixture(wf.Namespace, "other-wf", "attempt-a", "sess-1")
+	j2 := sessionJobFixture(wf.Namespace, "other-wf2", "attempt-b", "sess-2")
+	deps, ctx := gateEnv(t, wf, st, j1, j2)
+	deps.FleetAgentSessionCap = 2
+	deps.Wake = GateWake{PR: "git.rezus.cloud/tibrez/rhesadox#99", Action: "labeled", Revision: "deadbeef123"}
+	out, err := RunReviewGateSweep(ctx, deps, wf)
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("plugin-only workflow holds no session slot and must arm, got %d", len(out))
+	}
+}
+
+func TestGateFleetSessionListFailureFailsClosed(t *testing.T) {
+	srv := labeledListServer(t, 99)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gateWorkflow()
+	st := &fakeStatus{}
+	deps, ctx := gateEnv(t, wf, st)
+	deps.FleetAgentSessionCap = 2
+	deps.Wake = GateWake{PR: "git.rezus.cloud/tibrez/rhesadox#99", Action: "labeled", Revision: "deadbeef123"}
+	// Force the session list to fail: a failed list must fail CLOSED (no
+	// arming on an unknown session count — reading it as free slots would
+	// over-dispatch past the fleet bound).
+	deps.Client = fake.NewClientBuilder().WithScheme(innerScheme(t)).
+		WithStatusSubresource(&v1alpha1.Attempt{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+				if _, isJob := list.(*batchv1.JobList); isJob {
+					return fmt.Errorf("forced session-list failure")
+				}
+				return c.List(ctx, list, opts...)
+			},
+		}).Build()
+	_, err := RunReviewGateSweep(ctx, deps, wf)
+	if err == nil {
+		t.Fatal("a failed session list must fail closed (no arming on unknown capacity)")
+	}
+}
+
+// innerScheme returns the test scheme (v1alpha1 + batchv1) for clients built
+// inside a test that already has a fake client.
+func innerScheme(t *testing.T) *runtime.Scheme {
+	s := runtime.NewScheme()
+	if err := v1alpha1.AddToScheme(s); err != nil {
+		t.Fatalf("AddToScheme: %v", err)
+	}
+	if err := batchv1.AddToScheme(s); err != nil {
+		t.Fatalf("batchv1 scheme: %v", err)
+	}
+	return s
+}

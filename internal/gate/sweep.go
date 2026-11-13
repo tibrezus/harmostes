@@ -914,8 +914,16 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 		capacityFull = true
 		// #386: saturation must speak in the LOG a human tails, not only in
 		// Workflow CR status — at least once per saturation window (each
-		// sweep re-states it while it holds).
-		log("review-ready: capacity full (%d/%d dispatched) — labeled scan skipped; labeled PRs wait for a free slot", liveDispatched, capacity)
+		// sweep re-states it while it holds). Name the dimension that
+		// actually binds: the fleet session cap is a DIFFERENT bound from
+		// per-workflow claim capacity, and one message for both is the
+		// triage lie (an operator reads "0/5 dispatched" and assumes the
+		// workflow is fine while two sessions elsewhere hold the fleet).
+		if sessionCap > 0 && liveSessions >= sessionCap {
+			log("review-ready: fleet session cap full (%d/%d live agent sessions namespace-wide) — labeled scan skipped; labeled PRs wait for a session slot", liveSessions, sessionCap)
+		} else {
+			log("review-ready: capacity full (%d/%d dispatched) — labeled scan skipped; labeled PRs wait for a free slot", liveDispatched, capacity)
+		}
 	}
 	if !wakeOnly && free > 0 {
 		for _, repo := range scopeRepos(wf) {
@@ -1073,7 +1081,11 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 			for _, rest := range cands[i:] {
 				stranded = append(stranded, rest.pointer)
 			}
-			log("review-ready: capacity full — %d candidate(s) stranded this sweep: %s", len(stranded), strings.Join(stranded, ", "))
+			if sessionCap > 0 && liveSessions >= sessionCap {
+				log("review-ready: fleet session cap full (%d/%d live agent sessions namespace-wide) — %d candidate(s) stranded: %s", liveSessions, sessionCap, len(stranded), strings.Join(stranded, ", "))
+			} else {
+				log("review-ready: capacity full — %d candidate(s) stranded this sweep: %s", len(stranded), strings.Join(stranded, ", "))
+			}
 			break // durable queue: the labeled set re-fills on the next sweep
 		}
 
@@ -1298,7 +1310,16 @@ func runGate(ctx context.Context, deps GateDeps, wf *v1alpha1.Workflow, wakeOnly
 		if ctx.Err() != nil {
 			lastDecision, lastReason = "waiting", fmt.Sprintf("sweep aborted before completion: %v", ctx.Err())
 		} else if capacityFull {
-			lastDecision, lastReason = "waiting", fmt.Sprintf("capacity full (live=%d/cap=%d) — labeled PRs queue for the next sweep", liveDispatched, capacity)
+			// #386 (r11 pillar 7): name the dimension that binds — the fleet
+			// session cap and per-workflow claim capacity are different
+			// bounds, and the status a human reads first must not conflate
+			// them (an operator sees "0/5 dispatched" and assumes the
+			// workflow is fine while two sessions elsewhere hold the fleet).
+			if sessionCap > 0 && liveSessions >= sessionCap {
+				lastDecision, lastReason = "waiting", fmt.Sprintf("fleet session cap full (live=%d/cap=%d namespace-wide) — labeled PRs queue for a session slot", liveSessions, sessionCap)
+			} else {
+				lastDecision, lastReason = "waiting", fmt.Sprintf("capacity full (live=%d/cap=%d) — labeled PRs queue for the next sweep", liveDispatched, capacity)
+			}
 		}
 	}
 	if err := deps.Status.PatchStatus(recordCtx, wf.Name, func(s *v1alpha1.WorkflowStatus) {

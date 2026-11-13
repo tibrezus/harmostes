@@ -236,6 +236,14 @@ type AttemptJobParams struct {
 	// alongside the label-aggregated set, independent of the aggregation
 	// switch. Empty = none (the inert default).
 	PluginRefs []string
+
+	// AgentSession (owner directive 2026-11-04): the resolved spec runs an
+	// AGENT session (agent.enabled true). The Job is stamped with
+	// harmostes.dev/agent-session=true; the fleet-wide session cap counts
+	// these Jobs namespace-wide (it is a session bound, not a workflow
+	// claim bound — a plugin-only run must never occupy a session slot it
+	// does not use). False renders no label at all (deterministic-only).
+	AgentSession bool
 }
 
 // AttachmentSubPath derives the SubPath for a scoped shared attachment:
@@ -316,6 +324,12 @@ func BuildJob(p AttemptJobParams) *batchv1.Job {
 		"app.kubernetes.io/component": "attempt-runner",
 		"harmostes.dev/workflow":      p.WorkflowName,
 		"harmostes.dev/attempt":       attemptName,
+	}
+	// The fleet-wide session cap (owner directive 2026-11-04) counts agent
+	// sessions, not workflow claims: the marker is the truthful discriminator,
+	// stamped only by the resolved spec's agent.enabled.
+	if p.AgentSession {
+		labels[v1alpha1.AgentSessionLabel] = "true"
 	}
 	annotations := map[string]string{
 		"dapr.io/enabled": "true",
@@ -620,6 +634,30 @@ func ListActiveJobs(ctx context.Context, cl client.Client, namespace, workflow s
 		// Live = not finished: a just-created Job reports Active==0 until
 		// the job controller syncs, so counting only active would let
 		// racing wakes double-dispatch inside that window.
+		if j.DeletionTimestamp == nil && j.Status.CompletionTime == nil && !IsJobFailed(&j) {
+			live = append(live, j)
+		}
+	}
+	return live, nil
+}
+
+// ListLiveAgentSessionJobs counts the namespace's UNFINISHED agent-session
+// Jobs — the fleet-wide session cap's signal (owner directive 2026-11-04).
+// Namespace-wide deliberately: the bound is across WORKFLOWS, so a review
+// workflow's four claims must not be counted against its own capacity and
+// then silently overlap two fork/wiki agents elsewhere. Live means not
+// finished (a just-created Job reports no status until the job controller
+// syncs — counting only active would let racing wakes breach the cap).
+func ListLiveAgentSessionJobs(ctx context.Context, cl client.Client, namespace string) ([]batchv1.Job, error) {
+	var list batchv1.JobList
+	if err := cl.List(ctx, &list, client.InNamespace(namespace), client.MatchingLabels{
+		"app.kubernetes.io/name":   "harmostes",
+		v1alpha1.AgentSessionLabel: "true",
+	}); err != nil {
+		return nil, err
+	}
+	live := make([]batchv1.Job, 0, len(list.Items))
+	for _, j := range list.Items {
 		if j.DeletionTimestamp == nil && j.Status.CompletionTime == nil && !IsJobFailed(&j) {
 			live = append(live, j)
 		}

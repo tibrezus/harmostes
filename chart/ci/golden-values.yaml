@@ -62,3 +62,9 @@ worker:
   cache:
     enabled: true
     size: 5Gi
+  # Fleet-wide AGENT SESSION cap (owner directive 2026-11-04): the fixture
+  # exercises the rendered env so the golden locks the knob's shape. A
+  # fictional number, obviously-test (a shape pin, not a fleet decision —
+  # the deployment decides the real cap).
+  job:
+    agentSessionCap: "2"

@@ -141,6 +141,13 @@ worker:
     maxConcurrent: 5
     cancelOnSupersede: true # delete the review Job of a claim released superseded/closed (#402); false = let dead-head reviews burn the run bound (pre-#402 behavior)
     ttlSecondsAfterFinished: 3600
+    # Fleet-wide AGENT SESSION cap (owner directive 2026-11-04): the
+    # namespace-wide bound on concurrent agent sessions ACROSS every
+    # workflow — a session bound, not a per-workflow claim bound (a plugin-only
+    # run holds no session slot). Empty = no bound (the inert default); the
+    # deployment decides the number (HARMOSTES_AGENT_SESSION_CAP). Rendered on
+    # the pool pod and carried into attempt Jobs via the dispatcher.
+    agentSessionCap: ""
 
   # cache (#336): renders a shared RWX PVC the per-Attempt Jobs mount at
   # /cache/<workflow-name> when a Workflow (or its template) declares

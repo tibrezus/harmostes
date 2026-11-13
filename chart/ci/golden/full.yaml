@@ -568,6 +568,12 @@ spec:
               value: "true"
             - name: HARMOSTES_JOB_TTL_SECONDS
               value: "3600"
+            # Fleet-wide AGENT SESSION cap (owner directive 2026-11-04):
+            # namespace-wide bound on concurrent agent sessions across every
+            # workflow (a session bound, not a per-workflow claim bound).
+            # Empty renders no env = no bound (the inert default).
+            - name: HARMOSTES_AGENT_SESSION_CAP
+              value: "2"
             - name: HARMOSTES_WORKER_IMAGE
               value: "ghcr.io/tibrezus/harmostes-worker:0.4.2"
             - name: HARMOSTES_SERVICE_ACCOUNT

@@ -40,14 +40,18 @@ import (
 // the X-Harmostes-Dev-User header.
 const DevUser = "fixture-user"
 
-// base is the fixture clock origin: process start, truncated to the hour.
-// Every world timestamp is an offset from it, so the world stays inside the
-// runs list' default 24h activity window forever — a fixed date would age
-// the fixture out of /runs one day after the commit (the #304 review proved
-// it with a 31-day clock shift; the first attempt at this fix was itself
-// clobbered by a stale in-memory copy — pinned by TestComponent_RunsList_
-// DefaultWindow so it cannot silently regress again).
-var base = time.Now().UTC().Truncate(time.Hour)
+// base is the fixture clock origin: process start, NOT truncated to the
+// hour. Truncation was the live race that reddened CI on 2026-11-13: the
+// server boots at 21:58, base truncates to 21:00, the suite renders at
+// 22:00 — its terminal verdicts (CreationTimestamp = base) are then 60m+
+// old, cross wallVerdictGrace (1h), and the wall drops them
+// ("verdict 2" → "verdict 1"). The truncation bought nothing: the fixture's
+// 24h window holds either way, and the grace comparison reads the attempt's
+// own stamp. Anchoring to process start keeps every fixture age inside the
+// grace deterministically. (A fixed date would age the fixture out of /runs
+// one day after the commit — the #304 review proved it with a 31-day clock
+// shift; pinned by TestComponent_RunsList_DefaultWindow.)
+var base = time.Now().UTC()
 
 // t offsets base by minutes+seconds and returns a fresh metav1.Time.
 func t(min, sec int) metav1.Time {

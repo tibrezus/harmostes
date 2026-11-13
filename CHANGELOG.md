@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.11.10](https://github.com/tibrezus/harmostes/compare/v1.11.9...v1.11.10) (2026-11-13)
+
+
+### Bug Fixes
+
+* **gate:** name the binding capacity dimension — the fleet session cap, not per-workflow claims ([#889](https://github.com/tibrezus/harmostes/issues/889)) ([075ffe8](https://github.com/tibrezus/harmostes/commit/075ffe88b5d69b640ca1ee11a94f7dbcb82e159c))
+* **ui:** the fixture clock anchors to process start, not the hour ([#891](https://github.com/tibrezus/harmostes/issues/891)) ([49ebbb0](https://github.com/tibrezus/harmostes/commit/49ebbb09c78981905b4bcdbb8496063e93db3483))
+
 ## [1.11.9](https://github.com/tibrezus/harmostes/compare/v1.11.8...v1.11.9) (2026-11-13)
 
 

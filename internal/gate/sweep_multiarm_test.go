@@ -3889,8 +3889,8 @@ func TestGateFleetSessionCapStrandsAtBound(t *testing.T) {
 		t.Fatalf("status must record the session-bound wait: %+v", st.last.ReviewReady)
 	}
 	if st.last.ReviewReady.LastReason == "" ||
-		!strings.Contains(st.last.ReviewReady.LastReason, "capacity full") {
-		t.Fatalf("status reason must name the saturation: %q", st.last.ReviewReady.LastReason)
+		!strings.Contains(st.last.ReviewReady.LastReason, "session cap full") {
+		t.Fatalf("status reason must name the BINDING dimension (the session cap, not per-workflow capacity): %q", st.last.ReviewReady.LastReason)
 	}
 }
 

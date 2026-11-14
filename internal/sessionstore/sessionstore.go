@@ -313,16 +313,19 @@ func IsReservedStoreName(name string) bool {
 //
 // READ SCOPE (r5, r10 — the actual position, stated plainly): the
 // store leaf <mount>/<workflow> is a CONVENTION, not an enforcement
-// boundary. Every Job runs as the image's uid (root — Dockerfile.worker
-// has no USER, no securityContext anywhere), so cross-workflow READS of
-// one repo's raw tool output are POSSIBLE TODAY, and the payloads are
+// boundary. The fleet now runs every attempt pod under ONE uid
+// (chart worker.runAsUser, dev-proven at 10001), so the pods are no
+// longer root — but they are the SAME uid, so one workflow can still
+// read another's leaf: uid separation removes root, it does not create
+// a per-workflow trust domain. Cross-workflow READS of one repo's raw
+// tool output therefore remain POSSIBLE, and the payloads are
 // unredacted (the durable-session publisher redacts #115-style; the
 // byte-pristine extension cannot) and permanent (no GC — by design).
-// ACCEPTED for the two pr-review workflows because they share a trust
-// domain (one reviewer identity per repo). Adding a THIRD workflow to a
-// repo mount requires the redaction hook first (#707 — upstream
-// material; per-workflow dedup and TTL immunity are live now and do not
-// depend on it).
+// ACCEPTED because every workflow on one repo mount shares a trust
+// domain (one reviewer identity per repo). The OWNER RULING (2026-11-14,
+// #707): the per-workflow leaf is PERMANENT — the widening track to
+// <mount> is closed, not deferred. Redaction upstream (#124) is a
+// separate improvement, not a precondition for this shape.
 //
 // RETENTION OWNER (r1, explicit decision): the store is deliberately
 // NOT garbage-collected by this repo — its durability is the feature,

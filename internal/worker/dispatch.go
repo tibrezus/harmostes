@@ -101,7 +101,8 @@ type DispatchConfig struct {
 	// RunUID/RunGID/FSGroup (#707 gate half 2): the per-Attempt Job's run
 	// identity, resolved from the chart environment (HARMOSTES_RUN_UID etc.).
 	// Zero = the image's uid (root, the historical posture) — byte-identical
-	// Job; non-zero arms uid separation and the session-ownership migration.
+	// Job; non-zero removes root and arms the session-ownership migration.
+	// FLEET-WIDE (one env for every workflow), not a per-workflow uid.
 	RunUID  int64
 	RunGID  int64
 	FSGroup int64

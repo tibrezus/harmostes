@@ -232,9 +232,11 @@ type AttemptJobParams struct {
 	AggregatePlugins bool
 	PluginLabelValue string
 	// RunUID (#707 gate half 2): the per-pod run identity. Zero = the image's
-	// uid (root, the historical posture) — byte-identical Job. Non-zero arms
-	// uid separation, which makes the lineage leaf's 0700 modes an
-	// ENFORCEMENT boundary; the session-ownership init migrates the claim.
+	// uid (root, the historical posture) — byte-identical Job. Non-zero removes
+	// root, so the lineage leaf's 0700 modes are honoured by the runner (they
+	// become an enforcement boundary against ROOT, not against other workflows:
+	// the uid is fleet-wide). The session-ownership init migrates the workflow
+	// leaf — it mounts that leaf via SubPath, never the claim root.
 	RunUID int64
 	// RunGID/FSGroup: group identity + RWX claim group. Zero = unset.
 	RunGID  int64
@@ -370,6 +372,7 @@ func runSecurityContext(p AttemptJobParams) *corev1.SecurityContext {
 	}
 	sc := &corev1.SecurityContext{
 		RunAsUser:                ptr.To(p.RunUID),
+		RunAsNonRoot:             ptr.To(true),
 		AllowPrivilegeEscalation: ptr.To(false),
 	}
 	if p.RunGID > 0 {
@@ -384,9 +387,12 @@ func podSecurityContext(p AttemptJobParams) *corev1.PodSecurityContext {
 	if p.RunUID <= 0 {
 		return nil
 	}
-	sc := &corev1.PodSecurityContext{
-		RunAsNonRoot: ptr.To(true),
-	}
+	// POD-level fields only: fsGroup. RunAsNonRoot must NOT be pod-level — it
+	// applies to EVERY container, and the session-ownership init legitimately
+	// runs as root (the tree's owner) to chown the claim. Live-proven: a
+	// pod-level runAsNonRoot refused the init with "container's runAsUser
+	// breaks non-root policy". The run container carries runAsNonRoot itself.
+	sc := &corev1.PodSecurityContext{}
 	if p.FSGroup > 0 {
 		sc.FSGroup = ptr.To(p.FSGroup)
 	}
@@ -537,7 +543,11 @@ func BuildJob(p AttemptJobParams) *batchv1.Job {
 					{Name: "HARMOSTES_RUN_UID", Value: strconv.FormatInt(p.RunUID, 10)},
 				},
 				VolumeMounts: []corev1.VolumeMount{
-					{Name: "sessions", MountPath: "/sessions"},
+					// SCOPE: the workflow leaf, exactly as the run container sees it.
+					// A claim-root mount would make the chown -R below migrate every
+					// workflow's tree on the shared claim — a cross-workflow write on
+					// the boundary this migration exists to enforce.
+					{Name: "sessions", SubPath: p.WorkflowName, MountPath: "/sessions"},
 					{Name: "home", MountPath: "/home"},
 				},
 			}

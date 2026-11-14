@@ -107,9 +107,14 @@ agentProfile: ""
 worker:
   # Run identity for the pool pod AND every per-Attempt Job (#707 gate half 2):
   # 0/empty = the image's uid (root, the historical posture) — byte-identical
-  # render. A non-zero uid makes the lineage leaf's 0700/0600 modes an
-  # ENFORCEMENT boundary instead of an organizing one: uid separation is what
-  # turns "same mount, one trust domain" into per-workflow isolation.
+  # render. A non-zero uid removes ROOT from the pods, so the lineage leaf's
+  # 0700/0600 modes are honoured by the runner rather than overridden by a
+  # superuser. It is NOT per-workflow isolation: this uid is FLEET-WIDE (one
+  # env for every workflow), so pods of two workflows on the same repo mount
+  # still share a uid and can read each other's leaf. The per-workflow leaf
+  # stays a CONVENTION — the owner ruling (2026-11-14, #707) keeps it and
+  # closes the widening track; a true per-workflow uid would be a separate
+  # design (uid resolved per workflow + a root-capable janitor).
   #
   # Two hard dependencies ride the flip (verified live on harmostes-dev,
   # 2026-11-12): existing lineage dirs are uid-0 with 0700, so a non-root Job

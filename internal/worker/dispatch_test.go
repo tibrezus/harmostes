@@ -113,9 +113,15 @@ func TestDispatchRunUIDWithSessionsClaimProceeds(t *testing.T) {
 	if len(jobs) != 1 {
 		t.Fatalf("expected one Job, got %d", len(jobs))
 	}
-	sc := jobs[0].Spec.Template.Spec.SecurityContext
-	if sc == nil || sc.RunAsNonRoot == nil || !*sc.RunAsNonRoot {
-		t.Fatal("dispatched Job must carry the uid securityContext")
+	pod := jobs[0].Spec.Template.Spec
+	// The pod carries fsGroup; runAsNonRoot lives on the run container so the
+	// root-run ownership init is not refused (live-proven defect class).
+	if pod.SecurityContext == nil || pod.SecurityContext.RunAsNonRoot != nil {
+		t.Fatal("dispatched Job pod securityContext must carry fsGroup only")
+	}
+	run := pod.Containers[0]
+	if run.SecurityContext == nil || run.SecurityContext.RunAsNonRoot == nil || !*run.SecurityContext.RunAsNonRoot {
+		t.Fatal("dispatched Job must carry the uid securityContext on the run container")
 	}
 }
 

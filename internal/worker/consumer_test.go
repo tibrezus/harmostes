@@ -314,8 +314,16 @@ func TestDispatcherFromEnvWiresRunUID(t *testing.T) {
 		t.Fatal("uid must be forwarded to the Job params")
 	}
 	job := k8s.BuildJob(p)
-	if job.Spec.Template.Spec.SecurityContext == nil || job.Spec.Template.Spec.SecurityContext.RunAsNonRoot == nil {
-		t.Fatal("rendered Job must carry the uid securityContext")
+	pod := job.Spec.Template.Spec
+	// runAsNonRoot belongs to the RUN container, not the pod: a pod-level value
+	// applies to every container and refuses the root-run ownership init
+	// (live-proven: "container's runAsUser breaks non-root policy").
+	if pod.SecurityContext != nil && pod.SecurityContext.RunAsNonRoot != nil {
+		t.Fatal("pod-level runAsNonRoot must stay unset — it would refuse the root init")
+	}
+	run := pod.Containers[0]
+	if run.SecurityContext == nil || run.SecurityContext.RunAsUser == nil || run.SecurityContext.RunAsNonRoot == nil {
+		t.Fatal("rendered Job must carry the uid securityContext on the run container")
 	}
 }
 

@@ -59,8 +59,13 @@ func TestBuildJobRunUIDArmsSeparation(t *testing.T) {
 	})
 	pod := job.Spec.Template.Spec
 
-	if pod.SecurityContext == nil || pod.SecurityContext.RunAsNonRoot == nil || !*pod.SecurityContext.RunAsNonRoot {
-		t.Fatal("uid flip must set pod runAsNonRoot=true (uid 0 is not an acceptable run identity)")
+	// runAsNonRoot is NOT pod-level: it applies to every container and would
+	// refuse the root-run ownership init (live-proven defect).
+	if pod.SecurityContext != nil && pod.SecurityContext.RunAsNonRoot != nil {
+		t.Fatal("pod-level runAsNonRoot must stay unset — it would refuse the root ownership init")
+	}
+	if pod.SecurityContext == nil {
+		t.Fatal("uid flip must render the pod securityContext (fsGroup)")
 	}
 	if pod.SecurityContext.FSGroup == nil || *pod.SecurityContext.FSGroup != 10001 {
 		t.Fatal("fsGroup must carry the claim group")
@@ -69,6 +74,9 @@ func TestBuildJobRunUIDArmsSeparation(t *testing.T) {
 	run := pod.Containers[0]
 	if run.SecurityContext == nil || run.SecurityContext.RunAsUser == nil || *run.SecurityContext.RunAsUser != 10001 {
 		t.Fatal("run container must run as the target uid")
+	}
+	if run.SecurityContext.RunAsNonRoot == nil || !*run.SecurityContext.RunAsNonRoot {
+		t.Fatal("run container must declare runAsNonRoot (the uid is non-root)")
 	}
 	if run.SecurityContext.AllowPrivilegeEscalation == nil || *run.SecurityContext.AllowPrivilegeEscalation {
 		t.Fatal("privilege escalation must be disallowed")
@@ -119,6 +127,25 @@ func TestBuildJobRunUIDArmsSeparation(t *testing.T) {
 		if !strings.Contains(cmd, want) {
 			t.Fatalf("ownership command missing %q", want)
 		}
+	}
+	// SCOPE: the init must mount the WORKFLOW LEAF (SubPath), not the claim root.
+	// A root mount makes `chown -R /sessions` migrate every workflow's tree on
+	// the shared claim — the cross-workflow write this boundary exists to stop.
+	// Live-proven: a SubPath mount to a missing leaf is created empty by kubelet,
+	// so a first run's leaf is safe.
+	for _, m := range init.VolumeMounts {
+		if m.Name == "sessions" && m.SubPath != "pr-review-harmostes" {
+			t.Fatalf("ownership init must mount the workflow leaf, got SubPath %q", m.SubPath)
+		}
+	}
+	sessionsMount := false
+	for _, m := range init.VolumeMounts {
+		if m.Name == "sessions" {
+			sessionsMount = true
+		}
+	}
+	if !sessionsMount {
+		t.Fatal("ownership init must mount the sessions claim")
 	}
 	// The home must NOT live on the sessions claim (janitor newest-file clock).
 	if strings.Contains(cmd, "/sessions/.homes") {

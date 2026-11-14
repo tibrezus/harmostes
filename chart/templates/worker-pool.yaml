@@ -168,6 +168,16 @@ spec:
             - name: LITELLM_FALLBACKS
               value: {{ .Values.worker.litellmFallbacks | quote }}
             {{- end }}
+            {{- if .Values.worker.litellmPrimaryTimeoutS }}
+            # The litellm-provider failover deadline (seconds) — the
+            # reactiveness lever (owner directive 2026-11-14): chained
+            # models carry `timeout` + `num_retries: 0`, so a busy/silent
+            # local primary shifts to the cloud fallback at the deadline.
+            # Must stay strictly under pi's 2-minute HTTP wall
+            # (extensions/sol-pi/settings.json httpIdleTimeoutMs).
+            - name: LITELLM_PRIMARY_TIMEOUT_S
+              value: {{ .Values.worker.litellmPrimaryTimeoutS | quote }}
+            {{- end }}
             - name: HARMOSTES_WORKER_IMAGE
               value: {{ .Values.image.worker | quote }}
             - name: HARMOSTES_SERVICE_ACCOUNT

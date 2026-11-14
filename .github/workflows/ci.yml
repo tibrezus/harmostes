@@ -425,6 +425,21 @@ jobs:
           check(env_vals.get("HARMOSTES_MAX_CONCURRENT") == "5",
                 f"per-workflow claim capacity must render unchanged (got {env_vals.get('HARMOSTES_MAX_CONCURRENT')!r})")
 
+          # Failover deadline (owner directive 2026-11-14, reactiveness):
+          # the golden fixture sets litellmPrimaryTimeoutS=77 — the rendered
+          # env must reach the pool pod, and the value must stay strictly
+          # UNDER pi's 2-minute HTTP wall (120s) so a proxy-side failover's
+          # first chunk lands inside the wall. A deadline ≥ the wall means pi
+          # aborts before the shift — the stuck-on-local shape the directive
+          # exists to kill.
+          check(env_vals.get("LITELLM_PRIMARY_TIMEOUT_S") == "77",
+                f"failover deadline must render into the pool env (got {env_vals.get('LITELLM_PRIMARY_TIMEOUT_S')!r})")
+          try:
+              check(int(env_vals["LITELLM_PRIMARY_TIMEOUT_S"]) < 120,
+                    "failover deadline must be < 120s (pi's HTTP wall) — a shift that cannot land inside the wall is the stuck-on-local shape")
+          except (KeyError, TypeError, ValueError):
+              pass  # the missing-value leg already failed above
+
           check(by_kind("ExternalSecret"), "ExternalSecret not rendered from values.credentials")
 
           # Pillar/skill parity moved to the template repo's CI (phase 4:

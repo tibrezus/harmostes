@@ -146,6 +146,14 @@ export interface ChainedModel {
  * Apply fallback chains to the proxy's discovered model list. Pure: no
  * fetch, no env — the table tests own every branch.
  *
+ * failoverDeadlineS (owner directive 2026-11-14, >0): the swift-shift
+ * lever — a wired chain ALSO carries LiteLLM's request-level
+ * `timeout` + `num_retries: 0` so a silent (busy/queued) primary dies
+ * at the deadline and the proxy fails over immediately, instead of the
+ * proxy default re-queuing the same busy box once per retry. 0 attaches
+ * neither key (the pre-directive shape). See timeout.ts for the
+ * composite pi-wall/proxy-deadline contract.
+ *
  * Contract (r17-review P4/P7):
  * - an unchained model carries NO samplingParams key (an explicit empty
  *   `fallbacks: []` would OVERRIDE proxy-configured fallbacks — the
@@ -164,6 +172,7 @@ export function applyChains(
   models: Array<{ id: string; max_input_tokens?: number; max_output_tokens?: number }>,
   chains: Record<string, string[]>,
   byId: Map<string, { max_input_tokens?: number; max_output_tokens?: number }>,
+  failoverDeadlineS = 0,
 ): { wired: string[]; annotated: ChainedModel[]; unwiredChains: string[] } {
   const wired: string[] = [];
   // Chains keyed by a primary this proxy does not serve are INERT — the
@@ -212,6 +221,14 @@ export function applyChains(
       out.maxTokens = mt;
     }
     out.samplingParams = { fallbacks: chain };
+    if (failoverDeadlineS > 0) {
+      // The reactiveness lever: bound the silent-primary wait and skip
+      // the proxy's default primary retries — first deadline = first
+      // shift. Never on unchained models (a timeout with nowhere to
+      // fail over is just a dead request).
+      out.samplingParams.timeout = failoverDeadlineS;
+      out.samplingParams.num_retries = 0;
+    }
     wired.push(`${model.id} → ${chain.join(", ")}`);
     return out;
   });

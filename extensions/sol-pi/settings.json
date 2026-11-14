@@ -1,4 +1,10 @@
 {
   "packages": ["npm:pi-searxng"],
-  "defaultProjectTrust": "never"
+  "defaultProjectTrust": "never",
+  "httpIdleTimeoutMs": 120000,
+  "retry": {
+    "provider": {
+      "maxRetries": 1
+    }
+  }
 }

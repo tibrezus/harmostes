@@ -154,6 +154,16 @@ worker:
   # a fallback net without a release (the baked table ships in the
   # image).
   litellmFallbacks: ""
+  # LITELLM_PRIMARY_TIMEOUT_S (owner directive 2026-11-14, reactiveness):
+  # the failover deadline in SECONDS the litellm-provider attaches to
+  # chained models (LiteLLM request-level `timeout` + `num_retries: 0`)
+  # — a busy/silent local primary shifts to the fallback at the deadline
+  # instead of stalling the round. Must stay strictly UNDER pi's 2-minute
+  # HTTP wall (Dockerfile.worker / extensions/sol-pi/settings.json) so the
+  # failover's first chunk lands inside the wall. Empty = the extension's
+  # baked default (100s); "0" = off. Rendered on the pool pod; the worker
+  # forwards it to attempt Jobs via jobEnvAllowlist.
+  litellmPrimaryTimeoutS: ""
   job:                     # per-Attempt Job pods (ADR-0007)
     # 5 (#687, 2026-10-13): two review workflows share these slots and the
     # wall-era rounds run 25-120m — at 3, a pair of long fork rounds

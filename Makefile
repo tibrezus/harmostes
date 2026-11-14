@@ -79,6 +79,7 @@ test-extensions:
 		extensions/rig-query/index.parse.test.ts \
 		extensions/rig-query/index.runtime.test.ts \
 		extensions/litellm-provider/fallbacks.test.ts \
+		extensions/litellm-provider/timeout.test.ts \
 		extensions/litellm-provider/thinking.test.ts \
 		extensions/litellm-provider/factory.test.ts \
 		extensions/turn-budget/policy.test.ts \

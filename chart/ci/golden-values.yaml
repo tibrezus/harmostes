@@ -68,3 +68,9 @@ worker:
   # the deployment decides the real cap).
   job:
     agentSessionCap: "2"
+  # Failover deadline (owner directive 2026-11-14, reactiveness): rendered
+  # as LITELLM_PRIMARY_TIMEOUT_S — the proxy-side shift bound the
+  # litellm-provider attaches to chained models (timeout + num_retries 0).
+  # A fictional number for the shape pin; the deployment decides the real
+  # deadline (100 in prod/dev — strictly under pi's 2-minute HTTP wall).
+  litellmPrimaryTimeoutS: "77"

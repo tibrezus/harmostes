@@ -314,7 +314,14 @@ uid="$HARMOSTES_RUN_UID"
 home="/home/$uid"
 # Migrate the workflow leaf (the mount is the SubPath leaf) to the target uid.
 # The tree is uid-0 with 0700 today, so a non-root runner cannot resume it.
-chown -R "$uid:$uid" /sessions
+# The mount is CONDITIONAL: a plugin-only workflow owns no lineage tree, so
+# /sessions is absent there and a blind chown would fail the Job.
+if [ -d /sessions ]; then
+  chown -R "$uid:$uid" /sessions
+  migrated=yes
+else
+  migrated=no
+fi
 # Seed the run identity: the image bakes git config into root's HOME, so a uid
 # flip without a seeded config authorises no commits. HOME is an emptyDir (per
 # pod) — deliberately NOT on the sessions claim: a fresh .gitconfig inside the
@@ -325,7 +332,7 @@ git config --file "$home/.gitconfig" user.name 'harmostes-bot'
 git config --file "$home/.gitconfig" user.email 'harmostes-bot@harmostes.dev'
 git config --file "$home/.gitconfig" --add safe.directory '*'
 chown "$uid:$uid" "$home/.gitconfig"
-echo "[session-ownership] migrated /sessions to uid $uid; home seeded at $home"`
+echo "[session-ownership] uid $uid: lineage migrated=$migrated, home seeded at $home"`
 
 const pluginsMountPrefix = "/plugins"
 
@@ -517,40 +524,39 @@ func BuildJob(p AttemptJobParams) *batchv1.Job {
 			ttl = "336h"
 		}
 		env = append(env, corev1.EnvVar{Name: "HARMOSTES_SESSIONS_TTL", Value: ttl})
-		// #707: the uid flip's boot migration. Existing lineage dirs are the
-		// image's uid (root) with 0700 — a non-root runner cannot resume them.
-		// The init chowns the workflow leaf's tree to the target uid and seeds
-		// a HOME + git identity for it (the image's git config lives in root's
-		// HOME). Rendered ONLY when the uid is set: uid 0 Jobs stay
-		// byte-identical. It runs as the target uid, so it cannot chown what it
-		// does not own — the failure is loud, never silent.
-		if p.RunUID > 0 {
-			volumes = append(volumes, corev1.Volume{Name: "home", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}})
-			mounts = append(mounts, corev1.VolumeMount{Name: "home", MountPath: "/home"})
-			ownershipInit = &corev1.Container{
-				Name: "session-ownership",
-				// Runs as ROOT (the historical owner of the tree) so the chown is
-				// possible; the RUN container is the one that gets the uid. The init
-				// never executes the workload — it only migrates ownership and seeds
-				// the identity the run needs.
-				SecurityContext: &corev1.SecurityContext{
-					RunAsUser:                ptr.To(int64(0)),
-					AllowPrivilegeEscalation: ptr.To(false),
-				},
-				Image:   p.Image,
-				Command: []string{"sh", "-c", sessionOwnershipCommand},
-				Env: []corev1.EnvVar{
-					{Name: "HARMOSTES_RUN_UID", Value: strconv.FormatInt(p.RunUID, 10)},
-				},
-				VolumeMounts: []corev1.VolumeMount{
-					// SCOPE: the workflow leaf, exactly as the run container sees it.
-					// A claim-root mount would make the chown -R below migrate every
-					// workflow's tree on the shared claim — a cross-workflow write on
-					// the boundary this migration exists to enforce.
-					{Name: "sessions", SubPath: p.WorkflowName, MountPath: "/sessions"},
-					{Name: "home", MountPath: "/home"},
-				},
-			}
+	}
+	// #707: the run identity is FLEET-WIDE, so HOME seeding must not depend on
+	// a sessions claim. A plugin-only workflow (fork-maintenance, wiki-lint,
+	// noop) declares no claim but still runs under the uid, and the image's git
+	// identity lives in root's HOME — without a seeded home it authorises no
+	// commits. The home is an emptyDir (per pod) and deliberately OFF the
+	// sessions claim: a fresh .gitconfig inside the lineage tree would make the
+	// janitor's newest-file clock read activity on an idle PR.
+	if p.RunUID > 0 {
+		volumes = append(volumes, corev1.Volume{Name: "home", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}})
+		mounts = append(mounts, corev1.VolumeMount{Name: "home", MountPath: "/home"})
+		initMounts := []corev1.VolumeMount{{Name: "home", MountPath: "/home"}}
+		// Only a workflow that owns a persistent lineage tree needs the chown;
+		// the init mounts the workflow LEAF (not the claim root) so it never
+		// migrates another workflow's tree on the shared claim.
+		if p.Sessions != nil && p.Sessions.PVC != "" {
+			initMounts = append(initMounts, corev1.VolumeMount{Name: "sessions", SubPath: p.WorkflowName, MountPath: "/sessions"})
+		}
+		ownershipInit = &corev1.Container{
+			Name: "session-ownership",
+			// Runs as ROOT (the tree's historical owner) so the chown is possible;
+			// the RUN container is the one that gets the uid. The init never runs
+			// the workload — it only migrates ownership and seeds the identity.
+			SecurityContext: &corev1.SecurityContext{
+				RunAsUser:                ptr.To(int64(0)),
+				AllowPrivilegeEscalation: ptr.To(false),
+			},
+			Image:   p.Image,
+			Command: []string{"sh", "-c", sessionOwnershipCommand},
+			Env: []corev1.EnvVar{
+				{Name: "HARMOSTES_RUN_UID", Value: strconv.FormatInt(p.RunUID, 10)},
+			},
+			VolumeMounts: initMounts,
 		}
 	}
 	for _, at := range p.Attachments {

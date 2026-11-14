@@ -737,13 +737,11 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req RunRequest) error {
 		if g.Envelope != nil {
 			triggerRepo = g.Envelope.Repo
 		}
-		// #707: a uid flip needs the workflow's sessions claim — that is the
-		// persistent tree the ownership init migrates and the run's HOME lives
-		// on. Refuse loudly HERE (dispatch time, no pod burned): a uid Job on
-		// ephemeral /tmp sessions would fail at boot with a confusing chown.
-		if d.cfg.RunUID > 0 && (wf.Spec.Sessions == nil || wf.Spec.Sessions.PVC == "") {
-			return fmt.Errorf("dispatch: workflow %q runs under HARMOSTES_RUN_UID=%d but declares no sessions claim — the uid flip migrates/owns a persistent lineage tree; refusing (uid separation is meaningless on ephemeral sessions)", req.Workflow, d.cfg.RunUID)
-		}
+		// #707: the uid is fleet-wide, so a plugin-only workflow (no sessions
+		// claim) is a NORMAL participant — the Job seeds a per-pod home and skips
+		// the chown when the claim is absent. No refusal here: refusing would make
+		// fork-maintenance/wiki-lint/noop un-dispatchable under a fleet uid.
+		// (The claim-less run keeps ephemeral /tmp pi sessions by design.)
 		// The fleet-wide session cap (owner directive 2026-11-04) is enforced
 		// AGAIN here, at the spawn point: the gate's bound is per-sweep and
 		// this path also serves non-gated/plugin workflows and racing wakes.

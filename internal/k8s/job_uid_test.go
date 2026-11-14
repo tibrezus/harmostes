@@ -163,3 +163,63 @@ func TestPodSecurityContextNilWhenZero(t *testing.T) {
 	}
 	_ = ptr.To(int64(1))
 }
+
+// #707 regression class: the uid is FLEET-WIDE, so a plugin-only workflow with
+// NO sessions claim must still render a usable uid Job — a per-pod home, the
+// git identity seed, and NO sessions mount (a blind chown would fail). Live
+// consequence before this fix: dev's fork-maintenance canary could never
+// dispatch under uid 10001.
+func TestBuildJobRunUIDClaimlessPluginWorkflow(t *testing.T) {
+	job := BuildJob(AttemptJobParams{
+		Attempt:      jobTestAttempt(),
+		WorkflowName: "fork-maintenance-canary",
+		Namespace:    "harmostes-dev",
+		RunUID:       10001,
+		FSGroup:      10001,
+	})
+	pod := job.Spec.Template.Spec
+	hasHome := false
+	for _, v := range pod.Volumes {
+		if v.Name == "home" {
+			hasHome = true
+		}
+	}
+	if !hasHome {
+		t.Fatal("a uid Job must always seed a per-pod home, claim or not")
+	}
+	run := pod.Containers[0]
+	env := map[string]string{}
+	for _, e := range run.Env {
+		env[e.Name] = e.Value
+	}
+	if env["HOME"] != "/home/10001" {
+		t.Fatalf("HOME must be seeded, got %q", env["HOME"])
+	}
+	homeMounted := false
+	for _, m := range run.VolumeMounts {
+		if m.Name == "home" {
+			homeMounted = true
+		}
+	}
+	if !homeMounted {
+		t.Fatal("HOME points at a path with no /home mount — the run has no seeded home")
+	}
+	var init *corev1.Container
+	for i := range pod.InitContainers {
+		if pod.InitContainers[i].Name == "session-ownership" {
+			init = &pod.InitContainers[i]
+		}
+	}
+	if init == nil {
+		t.Fatal("a uid Job must render the ownership init (it seeds the identity)")
+	}
+	for _, m := range init.VolumeMounts {
+		if m.Name == "sessions" {
+			t.Fatalf("claim-less Job must not mount the sessions claim for the chown: %+v", m)
+		}
+	}
+	cmd := strings.Join(init.Command, " ")
+	if !strings.Contains(cmd, "[ -d /sessions ]") {
+		t.Fatal("the chown must be guarded: a claim-less run has no /sessions")
+	}
+}

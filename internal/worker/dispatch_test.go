@@ -78,19 +78,55 @@ func gatedDispatchWorkflow() *v1alpha1.Workflow {
 	return wf
 }
 
-// #707 gate half 2: uid separation is meaningless on ephemeral sessions — the
-// dispatcher refuses at dispatch time (before any pod is burned), naming the
-// workflow and the uid.
-func TestDispatchRunUIDRequiresSessionsClaim(t *testing.T) {
+// #707 gate half 2: the uid is FLEET-WIDE, so a plugin-only workflow with no
+// sessions claim MUST dispatch (fork-maintenance/wiki-lint/noop rely on this).
+// The Job then seeds a per-pod home and skips the lineage chown. Refusing here
+// would make those workflows un-dispatchable under a fleet uid — the live
+// regression this test pins.
+func TestDispatchRunUIDWithoutSessionsClaimProceeds(t *testing.T) {
 	clearTriggerEnv(t)
 	srv := greenPRServer(t)
 	t.Cleanup(srv.Close)
 	pinReviewAPI(t, srv, true)
-	d, ctx := newTestDispatcher(t, gatedDispatchWorkflow())
+	wf := gatedDispatchWorkflow()
+	wf.Spec.Sessions = nil
+	d, ctx := newTestDispatcher(t, wf)
 	d.cfg.RunUID = 10001
-	err := d.Dispatch(ctx, dispatchRequest())
-	if err == nil || !strings.Contains(err.Error(), "declares no sessions claim") {
-		t.Fatalf("uid dispatch without sessions claim must refuse loudly, got %v", err)
+	if err := d.Dispatch(ctx, dispatchRequest()); err != nil {
+		t.Fatalf("plugin-only workflow under a fleet uid must dispatch: %v", err)
+	}
+	jobs, err := k8s.ListActiveJobs(ctx, d.cl, "default", "pr-review-harmostes")
+	if err != nil {
+		t.Fatalf("list jobs: %v", err)
+	}
+	if len(jobs) != 1 {
+		t.Fatalf("expected one Job, got %d", len(jobs))
+	}
+	pod := jobs[0].Spec.Template.Spec
+	homeMount, ownershipInit, sessionsMount := false, false, false
+	for _, v := range pod.Volumes {
+		if v.Name == "home" {
+			homeMount = true
+		}
+	}
+	for _, c := range pod.InitContainers {
+		if c.Name == "session-ownership" {
+			ownershipInit = true
+			for _, m := range c.VolumeMounts {
+				if m.Name == "sessions" {
+					sessionsMount = true
+				}
+			}
+		}
+	}
+	if !homeMount {
+		t.Fatal("a uid Job must always seed a per-pod home, claim or not")
+	}
+	if !ownershipInit {
+		t.Fatal("a uid Job must render the ownership init (it seeds the home/git identity)")
+	}
+	if sessionsMount {
+		t.Fatal("a claim-less Job must not mount the sessions claim for the chown")
 	}
 }
 

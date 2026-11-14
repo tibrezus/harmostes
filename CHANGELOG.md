@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.11.12](https://github.com/tibrezus/harmostes/compare/v1.11.11...v1.11.12) (2026-11-14)
+
+
+### Bug Fixes
+
+* **#707:** the fleet uid must not require a sessions claim ([#894](https://github.com/tibrezus/harmostes/issues/894)) ([c3f592b](https://github.com/tibrezus/harmostes/commit/c3f592b0558e7e19d19fc68f5144c46049e02884)), closes [#707](https://github.com/tibrezus/harmostes/issues/707)
+
 ## [1.11.11](https://github.com/tibrezus/harmostes/compare/v1.11.10...v1.11.11) (2026-11-14)
 
 

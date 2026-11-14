@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.11.13](https://github.com/tibrezus/harmostes/compare/v1.11.12...v1.11.13) (2026-11-14)
+
+
+### Features
+
+* **extensions:** the failover deadline — a busy local primary shifts to the cloud fallback via timeout ([#896](https://github.com/tibrezus/harmostes/issues/896)) ([d653cfb](https://github.com/tibrezus/harmostes/commit/d653cfb7267963d875809a9e81b6891a7cd1a427))
+
 ## [1.11.12](https://github.com/tibrezus/harmostes/compare/v1.11.11...v1.11.12) (2026-11-14)
 
 

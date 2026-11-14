@@ -425,6 +425,7 @@ func TestJobEnvAllowlistCarriesCLIAliases(t *testing.T) {
 		{"FORGEJO_TOKEN", "the fj CLI's env fallback — without it the inline-thread protocol's Forgejo leg dies to prose"},
 		{"GH_TOKEN", "gh's native env — without it the protocol's GitHub leg dies to prose"},
 		{"LITELLM_FALLBACKS", "the extension's override knob is a pool-pod-only no-op without it (#359 r4 P4.1)"},
+		{"LITELLM_PRIMARY_TIMEOUT_S", "the failover-deadline override is a pool-pod-only no-op without it (2026-11-14 reactiveness — same #359 failure shape, one knob later)"},
 		// HARMOSTES_FORGEJO_BOT_TOKEN/_HOST: RETIRED (#749 Phase 3, owner
 		// ruling 2026-10-24 — one credential serves every workflow). The
 		// names must NOT return to the allowlist; the sweep consumes and

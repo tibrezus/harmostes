@@ -340,3 +340,60 @@ test("DEFAULT_FALLBACKS: the fleet's pinned review primary (the anthropic-route 
 		assert.notEqual(net, "ali/anthropic/qwen3.8-flash", "the ali flash net is quota-dead until 2026-10-31 — it must not be a production net");
 	}
 });
+
+test("applyChains failover deadline: a wired chain carries timeout + num_retries 0 — the swift-shift lever", () => {
+	// Owner directive 2026-11-14 (reactiveness): the local primary is
+	// attempted first, but a busy local box must not stall the round —
+	// the shift to the cloud fallback happens VIA a timeout. The lever
+	// rides the SAME request-level params as the chain: LiteLLM's
+	// `timeout` bounds the silent-primary wait (next-chunk wait on a
+	// live stream), and `num_retries: 0` skips the proxy's default
+	// primary re-attempts so the FIRST deadline is the shift.
+	const proxy = new Map([
+		["strata/anthropic/q2_0", { max_input_tokens: 262144, max_output_tokens: 131072 }],
+		["ali/anthropic/qwen3.8-flash", { max_input_tokens: 1048576, max_output_tokens: 32768 }],
+	]);
+	const models = [...proxy.entries()].map(([id, m]) => ({ id, ...m }));
+	const chains = { "strata/anthropic/q2_0": ["ali/anthropic/qwen3.8-flash"] };
+
+	const { annotated } = applyChains(models, chains, proxy, 100);
+	const q2 = annotated.find((m) => m.id === "strata/anthropic/q2_0")!;
+	assert.deepEqual(q2.samplingParams, {
+		fallbacks: ["ali/anthropic/qwen3.8-flash"],
+		timeout: 100,
+		num_retries: 0,
+	});
+
+	// deadline 0 (the off-switch, and the default arg): the pre-directive
+	// shape — fallbacks ONLY, no timeout keys. The entire existing table
+	// above pins this shape via 3-arg calls.
+	const off = applyChains(models, chains, proxy, 0);
+	assert.deepEqual(off.annotated.find((m) => m.id === "strata/anthropic/q2_0")!.samplingParams, {
+		fallbacks: ["ali/anthropic/qwen3.8-flash"],
+	});
+	const implicit = applyChains(models, chains, proxy);
+	assert.deepEqual(implicit.annotated.find((m) => m.id === "strata/anthropic/q2_0")!.samplingParams, {
+		fallbacks: ["ali/anthropic/qwen3.8-flash"],
+	});
+
+	// UNCHAINED models never carry the deadline — a timeout with nowhere
+	// to fail over is just a dead request.
+	const flash = annotated.find((m) => m.id === "ali/anthropic/qwen3.8-flash")!;
+	assert.equal(flash.samplingParams, undefined);
+});
+
+test("applyChains failover deadline: an empty-filtering chain attaches nothing even with a deadline", () => {
+	// A chain whose every fallback id is undiscovered filters to empty —
+	// no samplingParams AT ALL, deadline or not (the wiring-summary log
+	// distinguishes "none configured" from "configured but none wired").
+	const proxy = new Map([["strata/anthropic/q2_0", {}]]);
+	const { annotated, wired } = applyChains(
+		[{ id: "strata/anthropic/q2_0" }],
+		{ "strata/anthropic/q2_0": ["ghost/group"] },
+		proxy,
+		100,
+	);
+	assert.equal(annotated[0].samplingParams, undefined);
+	assert.deepEqual(wired, []);
+	assert.deepEqual(annotated[0].droppedIds, ["ghost/group"]);
+});

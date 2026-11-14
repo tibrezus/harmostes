@@ -859,6 +859,12 @@ var jobEnvAllowlist = []string{
 	// the reviewer's grep caught the first attempt landing on the wrong
 	// branch; this entry IS the fix).
 	"LITELLM_FALLBACKS",
+	// LITELLM_PRIMARY_TIMEOUT_S (owner directive 2026-11-14, reactiveness):
+	// the failover deadline the litellm-provider attaches to chained models
+	// (request-level `timeout` + `num_retries: 0`). Same channel as
+	// LITELLM_FALLBACKS — set on the worker pool, consumed by the extension
+	// in every attempt Job. A number, not a credential; safe-set below.
+	"LITELLM_PRIMARY_TIMEOUT_S",
 	// HARMOSTES_REVIEW_POST_TOKEN (#680): the reviewer's scope-limited
 	// posting credential — comment rights only (post/reply/resolve PR
 	// threads), CANNOT satisfy branch-protection approvals. Unlike the
@@ -903,6 +909,7 @@ var spawnSafeEnv = map[string]bool{
 	"LITELLM_URL":                 true, // the model endpoint — no session without it
 	"LITELLM_API_KEY":             true, // the model credential itself (model access ≠ forge access)
 	"LITELLM_FALLBACKS":           true, // routing chain, no secret material
+	"LITELLM_PRIMARY_TIMEOUT_S":   true, // failover deadline in seconds — a number, not a credential
 	"PI_TOOL_BUDGET":              true, // turn cap — a number, not a credential
 	"PI_TOOL_BUDGET_ALLOW":        true,
 	"PI_TOOL_BUDGET_NUDGE":        true,

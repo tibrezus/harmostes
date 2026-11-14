@@ -235,6 +235,21 @@ RUN PI_SKIP_VERSION_CHECK=1 timeout 60 pi -e /extensions/sol-pi --mode rpc </dev
 # pi documents it as the run-level OVERRIDE of project trust, the twin of
 # --approve — which buildPiArgs emits on every invocation, enforced by
 # TestPiArgsAlwaysCarryNoApprove and the trust gate above.)
+#
+# Reactiveness contract (owner directive 2026-11-14), with the proxy-side
+# deadline in extensions/litellm-provider/timeout.ts:
+#   httpIdleTimeoutMs=120000 — pi's 2-minute HTTP wall. IDLE semantics:
+# undici headersTimeout/bodyTimeout — a silent (busy) local primary or a
+# dead proxy dies at 2 min; a healthy STREAM with tokens flowing never
+# trips it (pi's SDK timeout is TTFB-only, cleared once headers arrive).
+# This is the BACKSTOP, not the shift: pi aborting its own request cannot
+# move the proxy to the fallback — the shift is the litellm-provider's
+# request-level `timeout` (default 100s) + `num_retries: 0` on chained
+# models, strictly BELOW this wall so the failover's first chunk lands
+# inside the 2 minutes.
+#   retry.provider.maxRetries=1 — "we only do a retry": pi defaults to 0
+# provider-request retries; exactly one backstop retry (it restarts at
+# the primary) when the whole chain or the proxy itself dies.
 COPY extensions/sol-pi.trust-probe.mjs /extensions/sol-pi.trust-probe.mjs
 RUN set -e; \
     mkdir -p /tmp/hostile-ws/.pi \

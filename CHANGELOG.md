@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.11.11](https://github.com/tibrezus/harmostes/compare/v1.11.10...v1.11.11) (2026-11-14)
+
+
+### Bug Fixes
+
+* **#707:** runAsNonRoot belongs to the run container; the ownership init mounts the workflow leaf ([#892](https://github.com/tibrezus/harmostes/issues/892)) ([49b679a](https://github.com/tibrezus/harmostes/commit/49b679aafc7af57ddd88a1f43b11da96b9c38f2d)), closes [#707](https://github.com/tibrezus/harmostes/issues/707)
+
 ## [1.11.10](https://github.com/tibrezus/harmostes/compare/v1.11.9...v1.11.10) (2026-11-13)
 
 

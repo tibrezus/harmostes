@@ -46,6 +46,16 @@ type RPC struct {
 	// sessionDir is the per-RPC pi session directory (empty when SessionRoot
 	// was not configured). Exactly one *.jsonl lands in it per spawn.
 	sessionDir string
+
+	// deathMu guards the death diagnosis (#882): when pi exits mid-turn the
+	// stream closes and the stdin write breaks — the bare "write |1: broken
+	// pipe" named neither the process nor the provider. exitErr captures the
+	// process's wait status; stderrTail keeps the last few pi log lines (the
+	// provider's own error text lands there before the exit).
+	deathMu    sync.Mutex
+	exitErr    error
+	exitSet    bool
+	stderrTail *ringLines
 }
 
 // The credential-boundary keys. EVERY Go site that scrubs, grants, forwards
@@ -196,8 +206,11 @@ func NewRPC(ctx context.Context, opts RPCOptions) (*RPC, error) {
 		return nil, err
 	}
 	// pi emits the JSONL protocol on stdout; keep its log lines on stderr SEPARATE
-	// (drained to the logger) so they never pollute the protocol stream.
-	cmd.Stderr = &lineLogWriter{log: opts.Log}
+	// (drained to the logger) so they never pollute the protocol stream. The
+	// tail is kept for the death diagnosis (#882): the provider's error text
+	// is the last thing pi logs before it exits.
+	tail := &ringLines{n: 8}
+	cmd.Stderr = &lineLogWriter{log: opts.Log, tail: tail}
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
@@ -209,8 +222,19 @@ func NewRPC(ctx context.Context, opts RPCOptions) (*RPC, error) {
 		events:     make(chan Event, 128),
 		done:       make(chan struct{}),
 		sessionDir: sessionDir,
+		stderrTail: tail,
 	}
 	go r.readLoop()
+	// Reap the process in the background so a mid-turn death has a wait
+	// status ready when Prompt diagnoses it (#882). Abort's own Wait races
+	// this one harmlessly: the second Wait returns "already waited" and
+	// Abort's contract (best-effort stop) is unchanged.
+	go func() {
+		err := cmd.Wait()
+		r.deathMu.Lock()
+		r.exitErr, r.exitSet = err, true
+		r.deathMu.Unlock()
+	}()
 	return r, nil
 }
 
@@ -266,9 +290,15 @@ func (r *RPC) Prompt(ctx context.Context, message, label string) (Event, int, Us
 			return last, tools, usage, capture, ctx.Err()
 		case ev, ok := <-r.events:
 			if !ok {
-				// stream closed before agent_end
+				// Stream closed before agent_end. A deliberate Abort closes
+				// the stream too — that is not a death. Otherwise pi exited
+				// mid-turn (#882): name the process and its last log lines
+				// instead of returning a silent partial turn.
 				endTool()
-				return last, tools, usage, capture, nil
+				if r.isClosed() {
+					return last, tools, usage, capture, nil
+				}
+				return last, tools, usage, capture, r.deathError()
 			}
 			last = ev
 			logf(r.log, ev)
@@ -396,14 +426,30 @@ func (r *RPC) Abort(ctx context.Context) error {
 		for range r.events {
 		}
 	}()
-	waitErr := make(chan error, 1)
-	go func() { waitErr <- r.cmd.Wait() }()
-	select {
-	case <-ctx.Done():
-		_ = r.cmd.Process.Kill()
-		return ctx.Err()
-	case err := <-waitErr:
-		return err
+	// The background reaper (#882) owns cmd.Wait — a second Wait here would
+	// block forever on the process's internal mutex. Poll the recorded exit
+	// instead; the reaper sets it within milliseconds of the process dying.
+	deadline := time.Now().Add(50 * time.Millisecond)
+	for {
+		r.deathMu.Lock()
+		set, exitErr := r.exitSet, r.exitErr
+		r.deathMu.Unlock()
+		if set {
+			return exitErr
+		}
+		select {
+		case <-ctx.Done():
+			_ = r.cmd.Process.Kill()
+			return ctx.Err()
+		default:
+		}
+		if time.Now().After(deadline) {
+			// Still running after the grace: kill so Abort never strands a
+			// process (the historical contract — Abort releases the process).
+			_ = r.cmd.Process.Kill()
+			return nil
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 
@@ -413,7 +459,61 @@ func (r *RPC) send(v any) error {
 	if r.closed {
 		return errors.New("session closed")
 	}
-	return r.sendNoLock(v)
+	err := r.sendNoLock(v)
+	if err != nil && !r.isClosedLocked() {
+		// The write broke because pi DIED, not because the session was
+		// closed (#882): "write |1: broken pipe" alone named neither the
+		// process nor the provider. Diagnose with the wait status + the
+		// stderr tail (the provider's error text is the last thing pi logs).
+		return r.deathError()
+	}
+	return err
+}
+
+// isClosed reports whether Abort has closed the session.
+func (r *RPC) isClosed() bool {
+	r.closeMu.Lock()
+	defer r.closeMu.Unlock()
+	return r.closed
+}
+
+// isClosedLocked is isClosed for callers already holding closeMu.
+func (r *RPC) isClosedLocked() bool { return r.closed }
+
+// deathError builds the named failure for a pi process that exited mid-turn
+// (#882). It waits briefly for the background reaper so the exit status is
+// included; a process that has not exited yet (stream closed for another
+// reason) still gets a named error, never a bare broken pipe.
+func (r *RPC) deathError() error {
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		r.deathMu.Lock()
+		set := r.exitSet
+		r.deathMu.Unlock()
+		if set || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	var b strings.Builder
+	b.WriteString("pi exited mid-turn")
+	r.deathMu.Lock()
+	if r.exitSet {
+		if r.exitErr != nil {
+			fmt.Fprintf(&b, " (%v)", r.exitErr)
+		} else {
+			b.WriteString(" (exit 0)")
+		}
+	}
+	r.deathMu.Unlock()
+	if r.stderrTail != nil {
+		if lines := r.stderrTail.lines(); len(lines) > 0 {
+			b.WriteString(" — last pi log: ")
+			b.WriteString(strings.Join(lines, " | "))
+		}
+	}
+	b.WriteString(" — if the log names the model provider, check the endpoint and the key's model access (#882)")
+	return errors.New(b.String())
 }
 
 // sendNoLock writes one JSON line to pi's stdin. Caller holds closeMu (or is
@@ -453,10 +553,12 @@ var (
 
 // lineLogWriter writes pi's stderr line-by-line to the logger as _pi_log events
 // (observability), keeping those lines out of the stdout JSONL protocol stream.
+// tail, when set, keeps the last few lines for the death diagnosis (#882).
 type lineLogWriter struct {
-	log Logger
-	mu  sync.Mutex
-	buf []byte
+	log  Logger
+	tail *ringLines
+	mu   sync.Mutex
+	buf  []byte
 }
 
 func (w *lineLogWriter) Write(p []byte) (int, error) {
@@ -472,9 +574,37 @@ func (w *lineLogWriter) Write(p []byte) (int, error) {
 		w.buf = w.buf[i+1:]
 		if line != "" {
 			logf(w.log, Event{Type: "_pi_log", Message: line})
+			if w.tail != nil {
+				w.tail.add(line)
+			}
 		}
 	}
 	return len(p), nil
+}
+
+// ringLines keeps the last n lines added (a bounded tail, safe for concurrent
+// add/lines). The death diagnosis reads it after the process exits.
+type ringLines struct {
+	n    int
+	mu   sync.Mutex
+	buf  []string
+}
+
+func (r *ringLines) add(line string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.buf = append(r.buf, line)
+	if len(r.buf) > r.n {
+		r.buf = r.buf[len(r.buf)-r.n:]
+	}
+}
+
+func (r *ringLines) lines() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]string, len(r.buf))
+	copy(out, r.buf)
+	return out
 }
 
 // agentEndMessage is one conversation message inside pi's agent_end snapshot.

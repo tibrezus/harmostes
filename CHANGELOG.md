@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.11.14](https://github.com/tibrezus/harmostes/compare/v1.11.13...v1.11.14) (2026-11-15)
+
+
+### Bug Fixes
+
+* **agent:** name a mid-turn pi death — exit status + stderr tail, never a bare broken pipe ([#882](https://github.com/tibrezus/harmostes/issues/882)) ([#898](https://github.com/tibrezus/harmostes/issues/898)) ([8dd37bc](https://github.com/tibrezus/harmostes/commit/8dd37bcac7e573055d9343cee60ba275dd58609b))
+
 ## [1.11.13](https://github.com/tibrezus/harmostes/compare/v1.11.12...v1.11.13) (2026-11-14)
 
 

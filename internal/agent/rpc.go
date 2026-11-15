@@ -585,9 +585,9 @@ func (w *lineLogWriter) Write(p []byte) (int, error) {
 // ringLines keeps the last n lines added (a bounded tail, safe for concurrent
 // add/lines). The death diagnosis reads it after the process exits.
 type ringLines struct {
-	n    int
-	mu   sync.Mutex
-	buf  []string
+	n   int
+	mu  sync.Mutex
+	buf []string
 }
 
 func (r *ringLines) add(line string) {

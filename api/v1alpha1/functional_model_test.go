@@ -321,6 +321,36 @@ func TestAttemptResource(t *testing.T) {
 	}
 }
 
+// HasLiveClaimEra (#907) is the single definition separating a GATE-ARMED
+// review era (PR pointer written by ArmClaim) from the dispatch OWNERSHIP EDGE
+// (#667) every dispatch stamps. The two shapes must classify oppositely:
+// the era protects a live gate slot, the edge does not — otherwise plugin-only
+// attempts (fork-maintenance, wiki-lint, noop) can never terminalize and the
+// age-reap stamps them failed/"suspected worker loss" despite succeeded runs.
+func TestHasLiveClaimEra(t *testing.T) {
+	armed := metav1.Now()
+	cases := []struct {
+		name string
+		r    *ReviewClaimStatus
+		want bool
+	}{
+		{"nil review", nil, false},
+		{"gate era, unreleased, pointer present", &ReviewClaimStatus{PR: "github.com/tibrez/rhesadox#1", HeadSHA: "abc", ArmedSince: &armed}, true},
+		{"dispatch edge only (no pointer)", &ReviewClaimStatus{DispatchedAt: &armed, DispatchedJob: "job-1"}, false},
+		{"released era — no longer live", &ReviewClaimStatus{PR: "github.com/tibrez/rhesadox#1", Released: true, ReleaseReason: ReleaseReasonSuperseded}, false},
+		{"pointer present but released", &ReviewClaimStatus{PR: "github.com/tibrez/rhesadox#2", Released: true, ReleaseReason: ReleaseReasonHorizon}, false},
+		// A pointer that cannot be parsed is still an era the gate armed — its
+		// slot must not be GC'd (pointer-invalid is a bookkeeping release, the
+		// review may be alive, #402 r3).
+		{"era with only a pointer", &ReviewClaimStatus{PR: "weird-pointer"}, true},
+	}
+	for _, tc := range cases {
+		if got := HasLiveClaimEra(tc.r); got != tc.want {
+			t.Errorf("HasLiveClaimEra(%s) = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
 // TestConnectionProfileResource ensures the GroupResource helper resolves.
 func TestConnectionProfileResource(t *testing.T) {
 	gr := ConnectionProfileResource()

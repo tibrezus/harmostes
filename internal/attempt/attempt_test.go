@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -351,6 +352,146 @@ func TestRecordRunStarted_UpsertsRun(t *testing.T) {
 	}
 }
 
+// #907: a deterministic attempt that already reached validated (its previous
+// episode completed) must be RE-OPENED when a new episode of the same objective
+// identity starts — the standing schedule attempt (fork weeklies) is the live
+// shape. Without the re-open, a validated attempt could be GC'd out from under a
+// run in flight, and the wall would render a running sync as done.
+func TestRecordRunStarted_ReopensTerminalDeterministicAttempt(t *testing.T) {
+	ctx := context.Background()
+	c := newFakeClient(t)
+	wf := wikiWorkflow()
+	obj := DeriveObjective(wf, TriggerContext{Revision: "head"})
+	opts := ResolveOptions{Namespace: "harmostes", Owner: wf, Scheme: wfScheme(t)}
+	a, _, _ := ResolveOrCreate(ctx, c, obj, opts)
+
+	_ = RecordRunStarted(ctx, c, "harmostes", a.Name, "run-1")
+	if err := RecordRunOutcome(ctx, c, "harmostes", a.Name, RunOutcome{RunName: "run-1", Phase: "succeeded"}); err != nil {
+		t.Fatalf("outcome: %v", err)
+	}
+	got := getAttempt(t, ctx, c, a)
+	if got.Status.Phase != v1alpha1.AttemptPhaseValidated {
+		t.Fatalf("episode 1 should land validated, got %q", got.Status.Phase)
+	}
+
+	_ = RecordRunStarted(ctx, c, "harmostes", a.Name, "run-2")
+	got = getAttempt(t, ctx, c, a)
+	if got.Status.Phase != v1alpha1.AttemptPhaseReconciling {
+		t.Errorf("a new episode must re-open the phase: got %q, want reconciling", got.Status.Phase)
+	}
+	if got.Status.Runs[1].Phase != "running" {
+		t.Errorf("episode 2 must record a running run: %+v", got.Status.Runs)
+	}
+	// And its outcome closes it again.
+	_ = RecordRunOutcome(ctx, c, "harmostes", a.Name, RunOutcome{RunName: "run-2", Phase: "succeeded"})
+	got = getAttempt(t, ctx, c, a)
+	if got.Status.Phase != v1alpha1.AttemptPhaseValidated {
+		t.Errorf("episode 2 should land validated again, got %q", got.Status.Phase)
+	}
+}
+
+// A run that ended WITHOUT a terminal outcome (worker loss mid-run) stays
+// "running" in the ledger. The reap's run-evidence clock (#874) is what bounds
+// such a wedge — a never-ended run whose evidence ages past the window still
+// reaps on its own clock.
+func TestRecordRunStarted_RunningRunKeepsAttemptOpen(t *testing.T) {
+	ctx := context.Background()
+	c := newFakeClient(t)
+	wf := wikiWorkflow()
+	obj := DeriveObjective(wf, TriggerContext{Revision: "head"})
+	opts := ResolveOptions{Namespace: "harmostes", Owner: wf, Scheme: wfScheme(t)}
+	a, _, _ := ResolveOrCreate(ctx, c, obj, opts)
+
+	_ = RecordRunStarted(ctx, c, "harmostes", a.Name, "run-1")
+	_ = RecordRunOutcome(ctx, c, "harmostes", a.Name, RunOutcome{RunName: "run-1", Phase: "succeeded"})
+	_ = RecordRunStarted(ctx, c, "harmostes", a.Name, "run-2") // episode 2 dies before its outcome lands
+	got := getAttempt(t, ctx, c, a)
+	if got.Status.Phase != v1alpha1.AttemptPhaseReconciling {
+		t.Fatalf("a run in flight must keep the attempt open, got %q", got.Status.Phase)
+	}
+	if runPhase(got.Status.Runs, "run-2") != "running" {
+		t.Fatalf("the wedged run must stay 'running' in the ledger: %+v", got.Status.Runs)
+	}
+	// Bounded: the reap still collects it once its evidence ages.
+	if err := c.Get(ctx, client.ObjectKey{Namespace: "harmostes", Name: a.Name}, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.LastRunAt.IsZero() {
+		t.Fatal("LastRunAt must carry the evidence clock the reap reads")
+	}
+}
+
+// The reap's release leg is era-scoped: a gate era is released before the
+// phase lands failed (the slot must not strand), a dispatch edge is not an era
+// and gets no release stamp. #907: the fork class's Review is the edge.
+func TestReapStuckAttemptsEraScopedRelease(t *testing.T) {
+	ctx := context.Background()
+	c := newFakeClient(t)
+	const ns = "default"
+	old := metav1.NewTime(time.Now().Add(-8 * 24 * time.Hour))
+	mk := func(name string, claim *v1alpha1.ReviewClaimStatus) *v1alpha1.Attempt {
+		at := &v1alpha1.Attempt{ObjectMeta: metav1.ObjectMeta{
+			Name: name, Namespace: ns, CreationTimestamp: old,
+			Labels: map[string]string{"harmostes.dev/workflow": "wf"},
+		}, Status: v1alpha1.AttemptStatus{Phase: v1alpha1.AttemptPhaseReconciling}}
+		if claim != nil {
+			at.Status.Review = claim
+		}
+		return at
+	}
+	now := metav1.Now()
+	for _, at := range []*v1alpha1.Attempt{
+		mk("gate-era", &v1alpha1.ReviewClaimStatus{PR: "github.com/tibrez/rhesadox#1", HeadSHA: "abc", ArmedSince: &now}),
+		mk("edge-only", &v1alpha1.ReviewClaimStatus{DispatchedAt: &now, DispatchedJob: "job-1"}),
+	} {
+		if err := c.Create(ctx, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := ReapStuckAttempts(ctx, c, ns, 7*24*time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	var era, edge v1alpha1.Attempt
+	if err := c.Get(ctx, client.ObjectKey{Namespace: ns, Name: "gate-era"}, &era); err != nil {
+		t.Fatal(err)
+	}
+	if era.Status.Review == nil || !era.Status.Review.Released {
+		t.Fatalf("a reaped GATE era must release its claim (slot hygiene), got %+v", era.Status.Review)
+	}
+	if err := c.Get(ctx, client.ObjectKey{Namespace: ns, Name: "edge-only"}, &edge); err != nil {
+		t.Fatal(err)
+	}
+	if edge.Status.Phase != v1alpha1.AttemptPhaseFailed {
+		t.Fatalf("edge-only attempt must still land failed, got %q", edge.Status.Phase)
+	}
+	if edge.Status.Review != nil && edge.Status.Review.Released {
+		t.Fatalf("the dispatch EDGE is not a claim — the reap must not stamp it released: %+v", edge.Status.Review)
+	}
+}
+
+// A wake that decided not to run records phase "skipped" — the objective stays
+// open. Terminalizing on a skip would close an objective nothing ever executed
+// (the gate-waiting class, main.go's standdown path).
+func TestRecordRunOutcome_SkippedKeepsAttemptOpen(t *testing.T) {
+	ctx := context.Background()
+	c := newFakeClient(t)
+	wf := wikiWorkflow()
+	obj := DeriveObjective(wf, TriggerContext{Revision: "abc"})
+	opts := ResolveOptions{Namespace: "harmostes", Owner: wf, Scheme: wfScheme(t)}
+	a, _, _ := ResolveOrCreate(ctx, c, obj, opts)
+	_ = RecordRunStarted(ctx, c, "harmostes", a.Name, "run-1")
+	if err := RecordRunOutcome(ctx, c, "harmostes", a.Name, RunOutcome{RunName: "run-1", Phase: "skipped", Message: "review-ready: waiting or stood down"}); err != nil {
+		t.Fatalf("skipped outcome: %v", err)
+	}
+	got := getAttempt(t, ctx, c, a)
+	if got.Status.Phase != v1alpha1.AttemptPhaseReconciling {
+		t.Errorf("skipped run: phase = %q, want reconciling (nothing ran — nothing validated)", got.Status.Phase)
+	}
+	if runPhase(got.Status.Runs, "run-1") != "skipped" {
+		t.Errorf("run record must carry the skip: %+v", got.Status.Runs)
+	}
+}
+
 func TestRecordRunOutcome_PhaseMapping(t *testing.T) {
 	ctx := context.Background()
 	c := newFakeClient(t)
@@ -370,11 +511,45 @@ func TestRecordRunOutcome_PhaseMapping(t *testing.T) {
 		t.Errorf("failed run record phase wrong: %+v", got.Status.Runs)
 	}
 
-	// A later succeeded run → attempt recovers to reconciling (validation is slice 4).
+	// #907: this objective is era-less (no gate armed a PR pointer) — a
+	// deterministic-class attempt. A succeeded run IS the completion of its
+	// targeted state: phase lands validated, not stuck reconciling. (The old
+	// assertion — recovers to reconciling — is precisely the wedge that let the
+	// age-reap later stamp these attempts failed/"suspected worker loss" while
+	// their runs succeeded.)
 	_ = RecordRunOutcome(ctx, c, "harmostes", a.Name, RunOutcome{RunName: "run-2", Phase: "succeeded"})
 	got = getAttempt(t, ctx, c, a)
+	if got.Status.Phase != v1alpha1.AttemptPhaseValidated {
+		t.Errorf("succeeded run on a deterministic attempt: phase = %q, want validated", got.Status.Phase)
+	}
+	if runPhase(got.Status.Runs, "run-2") != "succeeded" {
+		t.Errorf("succeeded run record phase wrong: %+v", got.Status.Runs)
+	}
+}
+
+// #907 the other half: a GATE-ARMED review era does NOT terminalize on a
+// succeeded-but-unvalidated run — the verdict is what the claim machinery will
+// confirm (consumed/horizon/dead releases own that phase). Deleting the era
+// guard in RecordRunOutcome makes this test red.
+func TestRecordRunOutcome_GateEraStaysReconciling(t *testing.T) {
+	ctx := context.Background()
+	c := newFakeClient(t)
+	wf := wikiWorkflow()
+	obj := DeriveObjective(wf, TriggerContext{Revision: "abc"})
+	opts := ResolveOptions{Namespace: "harmostes", Owner: wf, Scheme: wfScheme(t)}
+	a, _, _ := ResolveOrCreate(ctx, c, obj, opts)
+	// Arm the era exactly like the gate does: PR pointer + head SHA.
+	if err := patchAttemptStatus(ctx, c, "harmostes", a.Name, func(s *v1alpha1.AttemptStatus) {
+		t := metav1.Now()
+		s.Review = &v1alpha1.ReviewClaimStatus{PR: "github.com/tibrez/rhesadox#907", HeadSHA: "abc", ArmedSince: &t}
+	}); err != nil {
+		t.Fatalf("arm era: %v", err)
+	}
+	_ = RecordRunStarted(ctx, c, "harmostes", a.Name, "run-1")
+	_ = RecordRunOutcome(ctx, c, "harmostes", a.Name, RunOutcome{RunName: "run-1", Phase: "succeeded"})
+	got := getAttempt(t, ctx, c, a)
 	if got.Status.Phase != v1alpha1.AttemptPhaseReconciling {
-		t.Errorf("succeeded run: phase = %q, want reconciling", got.Status.Phase)
+		t.Errorf("succeeded run on a gate era: phase = %q, want reconciling (the claim owns terminality)", got.Status.Phase)
 	}
 }
 

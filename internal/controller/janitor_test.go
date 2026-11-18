@@ -61,12 +61,16 @@ func TestJanitorPass(t *testing.T) {
 	}
 
 	fixtures := []client.Object{
-		// ── the #651 fleet shape: fork-maintenance wedge, unreleased claim ──
+		// ── the #651 fleet shape: fork-maintenance wedge. #907: its Review is the
+		// dispatch OWNERSHIP EDGE (DispatchedJob, no PR pointer) — a real gate
+		// era is a different object, and the reap releases only eras.
 		mkAttempt("fork-wedge", "fork-maintenance-signoz", old,
-			v1alpha1.AttemptPhaseReconciling, &v1alpha1.ReviewClaimStatus{Released: false}),
-		// review-gate wedge: same bound, different template
+			v1alpha1.AttemptPhaseReconciling,
+			&v1alpha1.ReviewClaimStatus{DispatchedAt: &metav1.Time{Time: time.Now()}, DispatchedJob: "attempt-fork-wedge-job"}),
+		// review-gate wedge: same bound, different template, a LIVE gate era
 		mkAttempt("review-wedge", "pr-review-rhesadox", old,
-			v1alpha1.AttemptPhaseReconciling, &v1alpha1.ReviewClaimStatus{Released: false}),
+			v1alpha1.AttemptPhaseReconciling,
+			&v1alpha1.ReviewClaimStatus{PR: "github.com/tibrez/rhesadox#88", HeadSHA: "abc123", Released: false}),
 		// released era past retention — GC'd
 		mkAttempt("old-released", "pr-review-rhesadox", ancient,
 			v1alpha1.AttemptPhaseValidated, &v1alpha1.ReviewClaimStatus{Released: true}),
@@ -110,8 +114,11 @@ func TestJanitorPass(t *testing.T) {
 		if at.Status.Phase != v1alpha1.AttemptPhaseFailed || !strings.Contains(at.Status.Message, "reaped") {
 			t.Fatalf("wedge %s must be reaped to failed, got phase=%s msg=%q", name, at.Status.Phase, at.Status.Message)
 		}
-		if at.Status.Review == nil || !at.Status.Review.Released {
-			t.Fatalf("wedge %s claim must be released, got %+v", name, at.Status.Review)
+		if name == "review-wedge" && (at.Status.Review == nil || !at.Status.Review.Released) {
+			t.Fatalf("a reaped gate era must release its claim, got %+v", at.Status.Review)
+		}
+		if name == "fork-wedge" && at.Status.Review != nil && at.Status.Review.Released {
+			t.Fatalf("#907: the fork dispatch EDGE is not a gate claim — must not be stamped released: %+v", at.Status.Review)
 		}
 	}
 	// ── retention GC ──

@@ -310,9 +310,14 @@ func TestGCAttempts(t *testing.T) {
 		mk("mid-statusless", "", mid),
 		mk("mid-failed", v1alpha1.AttemptPhaseFailed, mid),           // terminal inside retention — kept
 		mk("old-reconciling", v1alpha1.AttemptPhaseReconciling, old), // claim-bearing — untouchable
-		func() *v1alpha1.Attempt { // r32 finding 4b: failed but claim UNRELEASED — keep
-			at := mk("failed-unreleased-claim", v1alpha1.AttemptPhaseFailed, old)
-			at.Status.Review = &v1alpha1.ReviewClaimStatus{Released: false}
+		func() *v1alpha1.Attempt { // #907: terminal phase + only the dispatch EDGE (no PR, no era) → GC-able
+			at := mk("edge-only-claim", v1alpha1.AttemptPhaseFailed, old)
+			at.Status.Review = &v1alpha1.ReviewClaimStatus{Released: false, DispatchedAt: &metav1.Time{Time: time.Now()}}
+			return at
+		}(),
+		func() *v1alpha1.Attempt { // r32 finding 4b: GATE-era claim UNRELEASED — keep
+			at := mk("era-claim-unreleased", v1alpha1.AttemptPhaseFailed, old)
+			at.Status.Review = &v1alpha1.ReviewClaimStatus{Released: false, PR: "github.com/tibrez/rhesadox#456"}
 			return at
 		}(),
 
@@ -328,13 +333,22 @@ func TestGCAttempts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("gc: %v", err)
 	}
-	if n != 5 {
-		t.Fatalf("GC'd %d attempts, want 5 (3 terminal old + old-statusless + mid-statusless at the 24h debris bound)", n)
+	// 4 terminal old (3 plain + the #907 edge-only) + old-statusless +
+	// mid-statusless at the 24h debris bound = 6. The gate-era-claim survivor
+	// is NOT GC'd: its Review is a live slot (PR pointer present), and a
+	// terminal attempt whose gate era is still unreleased is the visible
+	// stranding shape (#349/#351).
+	if n != 6 {
+		t.Fatalf("GC'd %d attempts, want 6 (4 terminal old incl. edge-only + old-statusless + mid-statusless)", n)
 	}
-	{ // the unreleased-claim survivor is still present
+	{ // the gate-era-claim survivor is still present
 		var after v1alpha1.Attempt
-		if err := c.Get(ctx, client.ObjectKey{Namespace: ns, Name: "failed-unreleased-claim"}, &after); err != nil {
-			t.Fatalf("failed attempt with an unreleased claim must survive GC: %v", err)
+		if err := c.Get(ctx, client.ObjectKey{Namespace: ns, Name: "era-claim-unreleased"}, &after); err != nil {
+			t.Fatalf("gate-era attempt must survive GC: %v", err)
+		}
+		// #907: the edge-only terminal attempt is deleted (no era, terminal phase).
+		if err := c.Get(ctx, client.ObjectKey{Namespace: ns, Name: "edge-only-claim"}, &after); err == nil {
+			t.Fatalf("edge-only terminal attempt should GC, it survived (Review is the dispatch edge, not a gate claim)")
 		}
 	}
 
@@ -382,9 +396,16 @@ func TestReapStuckAttempts(t *testing.T) {
 	}
 	for _, at := range []*v1alpha1.Attempt{
 		mk("stuck", "wf", old, nil),
-		// the #651 fleet shape: different template, unreleased claim, wedged
+		// the #651 fleet shape: a different template wedged in reconciling.
+		// #907: its Review is the dispatch OWNERSHIP EDGE (DispatchedJob, no PR
+		// pointer), not a gate claim — it still reaps (a stuck attempt is a stuck
+		// attempt regardless of template), but the reap must not stamp a review
+		// era that never existed.
 		mk("fork-maintenance-wedge", "fork-maintenance-signoz", old,
-			&v1alpha1.ReviewClaimStatus{Released: false}),
+			&v1alpha1.ReviewClaimStatus{DispatchedAt: &metav1.Time{Time: time.Now()}, DispatchedJob: "job-wedge"}),
+		// a real gate era wedged with a live claim: released first, then failed
+		mk("gate-era-wedge", "pr-review-rhesadox", old,
+			&v1alpha1.ReviewClaimStatus{PR: "github.com/tibrez/rhesadox#77", HeadSHA: "abc123", Released: false}),
 		mk("young", "wf", metav1.NewTime(time.Now()), nil),
 		mk("zero-ts", "wf", metav1.Time{}, nil),
 	} {
@@ -393,10 +414,10 @@ func TestReapStuckAttempts(t *testing.T) {
 		}
 	}
 	n, err := ReapStuckAttempts(ctx, c, ns, 7*24*time.Hour)
-	if err != nil || n != 2 {
-		t.Fatalf("reaped %d (err %v), want 2 (review-gate wedge + fork-maintenance wedge)", n, err)
+	if err != nil || n != 3 {
+		t.Fatalf("reaped %d (err %v), want 3 (stuck + fork-maintenance wedge + gate-era wedge)", n, err)
 	}
-	for _, name := range []string{"stuck", "fork-maintenance-wedge"} {
+	for _, name := range []string{"stuck", "fork-maintenance-wedge", "gate-era-wedge"} {
 		var after v1alpha1.Attempt
 		if err := c.Get(ctx, client.ObjectKey{Namespace: ns, Name: name}, &after); err != nil {
 			t.Fatal(err)
@@ -404,8 +425,11 @@ func TestReapStuckAttempts(t *testing.T) {
 		if after.Status.Phase != v1alpha1.AttemptPhaseFailed || !strings.Contains(after.Status.Message, "reaped") {
 			t.Fatalf("stuck attempt %s must land failed with a reap message, got phase=%s msg=%q", name, after.Status.Phase, after.Status.Message)
 		}
-		if name == "fork-maintenance-wedge" && (after.Status.Review == nil || !after.Status.Review.Released) {
-			t.Fatalf("fork-maintenance wedge must have its claim released, got %+v", after.Status.Review)
+		if name == "gate-era-wedge" && (after.Status.Review == nil || !after.Status.Review.Released) {
+			t.Fatalf("a reaped GATE era must release its claim (slot hygiene), got %+v", after.Status.Review)
+		}
+		if name == "fork-maintenance-wedge" && after.Status.Review != nil && after.Status.Review.Released {
+			t.Fatalf("#907: the dispatch EDGE is not a claim — the reap must not stamp it released: %+v", after.Status.Review)
 		}
 	}
 }
@@ -517,9 +541,17 @@ func TestSupersedePriorAttempts(t *testing.T) {
 		mk("old-terminal", v1alpha1.ObjectiveKindPRReview, "tibrez/rhesadox", "d1f69e5e", v1alpha1.AttemptPhaseFailed, nil),
 		// statusless — never reconciled
 		mk("old-statusless", v1alpha1.ObjectiveKindPRReview, "tibrez/rhesadox", "acda5918", "", nil),
-		// claim-bearing unreleased — the gate machinery owns it
-		mk("claim-bearing", v1alpha1.ObjectiveKindPRReview, "tibrez/rhesadox", "d9e46ed4", v1alpha1.AttemptPhaseReconciling,
-			&v1alpha1.ReviewClaimStatus{Released: false}),
+		// GATE-ERA claim-bearing (ArmClaim stamped the PR pointer) unreleased —
+		// the gate machinery owns it
+		mk("era-claim", v1alpha1.ObjectiveKindPRReview, "tibrez/rhesadox", "d9e46ed4", v1alpha1.AttemptPhaseReconciling,
+			&v1alpha1.ReviewClaimStatus{Released: false, PR: "github.com/tibrez/rhesadox#123"}),
+		// #907 shape: Review carries ONLY the dispatch OWNERSHIP EDGE (#667) —
+		// no pointer, no era. This is the fork-maintenance/plugin-only class:
+		// under the old `r != nil && !r.Released` guard it was mistaken for a
+		// gate claim and never superseded, which is how per-SHA fork attempts
+		// piled up until the age-reap lied about them.
+		mk("edge-only", v1alpha1.ObjectiveKindPRReview, "tibrez/rhesadox", "e4a1b2c3", v1alpha1.AttemptPhaseReconciling,
+			&v1alpha1.ReviewClaimStatus{Released: false, DispatchedAt: &metav1.Time{Time: time.Now()}}),
 		// different subject (another repo)
 		mk("other-repo", v1alpha1.ObjectiveKindPRReview, "tibrez/other", "abcdef1", v1alpha1.AttemptPhaseReconciling, nil),
 		// different kind
@@ -541,8 +573,10 @@ func TestSupersedePriorAttempts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("supersede: %v", err)
 	}
-	if n != 1 {
-		t.Fatalf("superseded %d attempts, want exactly 1 (prior-head)", n)
+	// prior-head (concrete prior revision) and edge-only (era-less fork-class,
+	// #907) supersede; the gate era-claim does not.
+	if n != 2 {
+		t.Fatalf("superseded %d attempts, want exactly 2 (prior-head + edge-only)", n)
 	}
 
 	var prior v1alpha1.Attempt
@@ -561,7 +595,8 @@ func TestSupersedePriorAttempts(t *testing.T) {
 		"rolling-head":   v1alpha1.AttemptPhaseReconciling,
 		"old-terminal":   v1alpha1.AttemptPhaseFailed,
 		"old-statusless": "",
-		"claim-bearing":  v1alpha1.AttemptPhaseReconciling,
+		"era-claim":      v1alpha1.AttemptPhaseReconciling,
+		"edge-only":      v1alpha1.AttemptPhaseSuperseded,
 		"other-repo":     v1alpha1.AttemptPhaseReconciling,
 		"other-kind":     v1alpha1.AttemptPhaseReconciling,
 		"other-wf":       v1alpha1.AttemptPhaseReconciling,

@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.11.15](https://github.com/tibrezus/harmostes/compare/v1.11.14...v1.11.15) (2026-11-18)
+
+
+### Bug Fixes
+
+* **attempt:** claimless success finalizes the non-review attempt; the reaper skips finished ledgers ([#907](https://github.com/tibrezus/harmostes/issues/907)) ([#912](https://github.com/tibrezus/harmostes/issues/912)) ([9b7f9f7](https://github.com/tibrezus/harmostes/commit/9b7f9f7c6c32286e5ad474795e475d3410a84f31))
+
 ## [1.11.14](https://github.com/tibrezus/harmostes/compare/v1.11.13...v1.11.14) (2026-11-15)
 
 

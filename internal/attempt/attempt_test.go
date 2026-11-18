@@ -511,45 +511,36 @@ func TestRecordRunOutcome_PhaseMapping(t *testing.T) {
 		t.Errorf("failed run record phase wrong: %+v", got.Status.Runs)
 	}
 
-	// #907: this objective is era-less (no gate armed a PR pointer) — a
-	// deterministic-class attempt. A succeeded run IS the completion of its
-	// targeted state: phase lands validated, not stuck reconciling. (The old
-	// assertion — recovers to reconciling — is precisely the wedge that let the
-	// age-reap later stamp these attempts failed/"suspected worker loss" while
-	// their runs succeeded.)
+	// A later succeeded NON-review run → the attempt finalizes validated
+	// (#907): the deterministic graph finished green; the singleton schedule
+	// attempt must not read "reconciling" forever.
 	_ = RecordRunOutcome(ctx, c, "harmostes", a.Name, RunOutcome{RunName: "run-2", Phase: "succeeded"})
 	got = getAttempt(t, ctx, c, a)
 	if got.Status.Phase != v1alpha1.AttemptPhaseValidated {
-		t.Errorf("succeeded run on a deterministic attempt: phase = %q, want validated", got.Status.Phase)
+		t.Errorf("succeeded non-review run: phase = %q, want validated (#907)", got.Status.Phase)
 	}
 	if runPhase(got.Status.Runs, "run-2") != "succeeded" {
 		t.Errorf("succeeded run record phase wrong: %+v", got.Status.Runs)
 	}
 }
 
-// #907 the other half: a GATE-ARMED review era does NOT terminalize on a
-// succeeded-but-unvalidated run — the verdict is what the claim machinery will
-// confirm (consumed/horizon/dead releases own that phase). Deleting the era
-// guard in RecordRunOutcome makes this test red.
-func TestRecordRunOutcome_GateEraStaysReconciling(t *testing.T) {
+// #907 the other half: the REVIEW class keeps its claimless successes at
+// reconciling — the gate's claim release owns the terminal phase (a consumed
+// verdict stamps validated, #569). Only the non-review class finalizes on its
+// own runs.
+func TestRecordRunOutcome_ReviewClassKeepsReconciling(t *testing.T) {
 	ctx := context.Background()
 	c := newFakeClient(t)
-	wf := wikiWorkflow()
+	wf := prReviewWorkflow()
 	obj := DeriveObjective(wf, TriggerContext{Revision: "abc"})
 	opts := ResolveOptions{Namespace: "harmostes", Owner: wf, Scheme: wfScheme(t)}
 	a, _, _ := ResolveOrCreate(ctx, c, obj, opts)
-	// Arm the era exactly like the gate does: PR pointer + head SHA.
-	if err := patchAttemptStatus(ctx, c, "harmostes", a.Name, func(s *v1alpha1.AttemptStatus) {
-		t := metav1.Now()
-		s.Review = &v1alpha1.ReviewClaimStatus{PR: "github.com/tibrez/rhesadox#907", HeadSHA: "abc", ArmedSince: &t}
-	}); err != nil {
-		t.Fatalf("arm era: %v", err)
-	}
 	_ = RecordRunStarted(ctx, c, "harmostes", a.Name, "run-1")
-	_ = RecordRunOutcome(ctx, c, "harmostes", a.Name, RunOutcome{RunName: "run-1", Phase: "succeeded"})
+
+	_ = RecordRunOutcome(ctx, c, "harmostes", a.Name, RunOutcome{RunName: "run-1", Phase: "succeeded", ReviewClass: true})
 	got := getAttempt(t, ctx, c, a)
 	if got.Status.Phase != v1alpha1.AttemptPhaseReconciling {
-		t.Errorf("succeeded run on a gate era: phase = %q, want reconciling (the claim owns terminality)", got.Status.Phase)
+		t.Errorf("succeeded review-class run without a validated claim: phase = %q, want reconciling (the gate owns the terminal phase)", got.Status.Phase)
 	}
 }
 

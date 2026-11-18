@@ -349,7 +349,7 @@ func runOneShot() {
 		if len(dispatches) == 0 {
 			logf("review-ready: not proceeding this cycle — exiting (waiting/standdown recorded in status)")
 			flushTelemetry()
-			recordAttemptOutcome(ctx, cl, "skipped", nil, "review-ready: waiting or stood down")
+			recordAttemptOutcome(ctx, cl, wf, "skipped", nil, "review-ready: waiting or stood down")
 			os.Exit(0)
 		}
 		env := dispatches[0].Envelope
@@ -850,15 +850,15 @@ func runOneShot() {
 
 	flushTelemetry()
 	if gErr != nil {
-		recordAttemptOutcome(ctx, cl, "failed", envelopesFor(result.NodeEnvelopes), fmt.Sprintf("graph pipeline error: %v", gErr))
+		recordAttemptOutcome(ctx, cl, wf, "failed", envelopesFor(result.NodeEnvelopes), fmt.Sprintf("graph pipeline error: %v", gErr))
 		fatal("graph pipeline error: %v", gErr)
 	}
 	if result.Status == graph.StatusGreen {
-		recordAttemptOutcome(ctx, cl, "succeeded", envelopesFor(result.NodeEnvelopes), result.Message)
+		recordAttemptOutcome(ctx, cl, wf, "succeeded", envelopesFor(result.NodeEnvelopes), result.Message)
 		logf("graph complete: %s (%d node envelopes recorded)", result.Message, len(result.NodeEnvelopes))
 		finish(0)
 	}
-	recordAttemptOutcome(ctx, cl, "failed", envelopesFor(result.NodeEnvelopes), result.Message)
+	recordAttemptOutcome(ctx, cl, wf, "failed", envelopesFor(result.NodeEnvelopes), result.Message)
 	logf("graph complete: %s (%s) — %d node envelopes recorded", result.Status, result.Message, len(result.NodeEnvelopes))
 	finish(1)
 }
@@ -926,7 +926,7 @@ func recordAttemptStarted(ctx context.Context, c client.Client) {
 // orchestration history (ADR-0005). Best-effort: an empty HARMOSTES_ATTEMPT
 // (CRD absent / controller resolution failed) is a no-op; a status-patch error
 // is logged but never aborts the run.
-func recordAttemptOutcome(ctx context.Context, c client.Client, phase string, envelopes []v1alpha1.NodeResultEnvelope, message string) {
+func recordAttemptOutcome(ctx context.Context, c client.Client, wf *v1alpha1.Workflow, phase string, envelopes []v1alpha1.NodeResultEnvelope, message string) {
 	attemptName := os.Getenv("HARMOSTES_ATTEMPT")
 	if attemptName == "" {
 		return
@@ -937,6 +937,10 @@ func recordAttemptOutcome(ctx context.Context, c client.Client, phase string, en
 		Phase:     phase,
 		Envelopes: envelopes,
 		Message:   message,
+		// #907: the review class keeps its claimless successes at
+		// reconciling (the gate's claim release owns the terminal phase);
+		// every other class finalizes on its own green run.
+		ReviewClass: wf.Spec.ReviewReady != nil,
 	})
 	if err != nil {
 		logf("warn: record attempt outcome %s: %v", attemptName, err)

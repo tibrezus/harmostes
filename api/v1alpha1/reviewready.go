@@ -71,6 +71,26 @@ func IsCancellationRelease(reason string) bool {
 	return reason == ReleaseReasonSuperseded || reason == ReleaseReasonPRClosed
 }
 
+// HasLiveClaimEra reports whether a ReviewClaimStatus carries a GATE-ARMED
+// REVIEW ERA — the arm/dispatch/verdict lifecycle the gate owns (#349/#351).
+// The distinguishing fact is the PR pointer: only ArmClaim writes it. A
+// Review status with an empty PR is the dispatch OWNERSHIP EDGE (#667) stamped
+// by every dispatch, gated or not — fork-maintenance, wiki-lint, and plugin-
+// only workflows carry it for Job reconciliation without ever having been
+// armed on a pointer. Confusing the two is #907: the supersede guard's
+// `r != nil && !r.Released` and GC's claim-keep guard read the edge as an era
+// and refuse to terminalize or collect deterministic-class attempts, so the
+// janitor's age-reap becomes the only "terminalizer" — stamping
+// failed/"suspected worker loss" on attempts whose runs SUCCEEDED (16 live
+// prod attempts, 2026-11-16).
+//
+// Single-sourced here so every guard (supersede, GC, phase mapping) branches on
+// the same definition and a pointer-field rename cannot silently re-open the
+// class.
+func HasLiveClaimEra(r *ReviewClaimStatus) bool {
+	return r != nil && !r.Released && r.PR != ""
+}
+
 // MaxDeadDispatchesPerHead is the dead-dispatch circuit breaker (#328): a
 // head whose dispatched reviews died without a verdict this many times is
 // not re-armed automatically. Every recovery mechanism involved (job-death

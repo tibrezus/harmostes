@@ -229,11 +229,24 @@ func boundEnvelope(env *v1alpha1.NodeResultEnvelope) {
 // Attempt's status. Called by the controller right after it schedules a worker
 // Job. Idempotent on run name: re-scheduling the same run updates rather than
 // duplicates.
+//
+// Re-open honesty (#907): a deterministic-class attempt that reached a terminal
+// phase (validated) is re-opened to reconciling when a NEW run of the same
+// objective identity starts — the same rule ArmClaim applies to a revived gate
+// era (#569): the era restarts and the phase follows. Without it, a validated
+// standing schedule attempt (fork weeklies, targetedState "head") could be
+// GC-collected while its fresh run is mid-flight, and the wall would render a
+// running sync as already validated.
 func RecordRunStarted(ctx context.Context, c client.Client, namespace, attemptName, runName string) error {
 	now := metav1.Now()
 	return patchAttemptStatus(ctx, c, namespace, attemptName, func(s *v1alpha1.AttemptStatus) {
 		upsertRun(&s.Runs, v1alpha1.RunRecord{Name: runName, StartedAt: now, Phase: "running"})
 		s.LastRunAt = now
+		if s.Phase == v1alpha1.AttemptPhaseValidated ||
+			s.Phase == v1alpha1.AttemptPhaseSuperseded ||
+			s.Phase == v1alpha1.AttemptPhaseFailed {
+			s.Phase = v1alpha1.AttemptPhaseReconciling
+		}
 	})
 }
 
@@ -260,8 +273,10 @@ type RunOutcome struct {
 // and the singleton schedule attempt must not read "reconciling" forever,
 // #907); a succeeded REVIEW-class run without a validated claim keeps
 // reconciling (the gate's claim machinery owns the terminal phase — a
-// verdict release stamps validated/superseded, #569). Best-effort caller:
-// errors are returned but must not abort the run.
+// verdict release stamps validated/superseded, #569). A run that never
+// executed ("skipped") never terminalizes: nothing ran, nothing was
+// confirmed. Best-effort caller: errors are returned but must not abort the
+// run.
 func RecordRunOutcome(ctx context.Context, c client.Client, namespace, attemptName string, outcome RunOutcome) error {
 	now := metav1.Now()
 	return patchAttemptStatus(ctx, c, namespace, attemptName, func(s *v1alpha1.AttemptStatus) {
@@ -282,6 +297,10 @@ func RecordRunOutcome(ctx context.Context, c client.Client, namespace, attemptNa
 		switch outcome.Phase {
 		case "failed":
 			s.Phase = v1alpha1.AttemptPhaseFailed
+		case "skipped":
+			// A wake that decided not to run (gate waiting/standdown) confirms
+			// nothing: the objective stays open. Never terminalize on a skip.
+			s.Phase = v1alpha1.AttemptPhaseReconciling
 		default:
 			// ADR-0004 promotion: a successful run that produced a
 			// deterministically-validated claim completes the objective's
@@ -542,8 +561,12 @@ func GCAttempts(ctx context.Context, c client.Client, namespace string, olderTha
 		if at.CreationTimestamp.After(cut) {
 			continue
 		}
-		if r := at.Status.Review; r != nil && !r.Released {
-			continue // claim-bearing: never delete the object a live slot points at (#349/#351)
+		if v1alpha1.HasLiveClaimEra(at.Status.Review) {
+			continue // gate-era claim: never delete the object a live slot points at (#349/#351).
+			// #907: the plain `r != nil && !r.Released` read also matched the dispatch
+			// OWNERSHIP EDGE (#667) stamped by every dispatch — fork-maintenance and
+			// other plugin-only attempts are not gate claims, and keeping them forever
+			// made terminal deterministic attempts uncollectable.
 		}
 		if err := c.Delete(ctx, at); err != nil && !apierrors.IsNotFound(err) {
 			if firstErr == nil {
@@ -601,17 +624,21 @@ func ReapStuckAttempts(ctx context.Context, c client.Client, namespace string, o
 		if !at.Status.LastRunAt.IsZero() && at.Status.LastRunAt.After(cutoff) {
 			continue
 		}
-		// #907: a non-review attempt whose runs ALL reached a terminal phase
-		// is not stuck — it finished. The pre-#907 worker left claimless
+		// #907: a deterministic-class attempt whose runs ALL reached a terminal
+		// phase is not stuck — it finished. The pre-#907 worker left claimless
 		// successes at reconciling; reaping them stamped "failed / suspected
 		// worker loss" over a healthy ledger (the live forgejo relic: one
 		// succeeded run, phase failed, message "reaped"). A genuine mid-run
 		// loss leaves a 'running' (or empty) record — that still reaps.
-		if at.Status.Review == nil && len(at.Status.Runs) > 0 && allRunsTerminal(at.Status.Runs) {
+		//
+		// The class test is the ERA predicate, not `Review == nil`: every
+		// dispatch stamps the ownership EDGE (#667) on the attempt, so the live
+		// fork fleet's Review is never nil — a nil test silently skips the
+		// very attempts this leg exists to protect.
+		if !v1alpha1.HasLiveClaimEra(at.Status.Review) && len(at.Status.Runs) > 0 && allRunsTerminal(at.Status.Runs) {
 			continue
 		}
-		r := at.Status.Review
-		if r != nil && !r.Released {
+		if v1alpha1.HasLiveClaimEra(at.Status.Review) {
 			// Release first ("reaped" — terminal, no churn strike). A FAILED
 			// release must not block the phase leg: the workflow-side marker
 			// can fail permanently (workflow gone → marker unresolvable), and
@@ -621,11 +648,28 @@ func ReapStuckAttempts(ctx context.Context, c client.Client, namespace string, o
 			// the code skipped it. The phase leg lands unconditionally; a claim
 			// still unreleased under a FAILED attempt is the GC-visible
 			// stranding shape (kept, auditable), never a reconciling wedge.
+			// #907: era-scoped. A Review carrying only the dispatch OWNERSHIP EDGE
+			// (no PR pointer) is not a gate claim — stamping it "released" would
+			// fabricate a review era the fork class never had.
 			_ = ReleaseClaim(ctx, c, namespace, at.Name, v1alpha1.ReleaseReasonReaped)
 		}
 		if err := patchAttemptStatus(ctx, c, namespace, at.Name, func(s *v1alpha1.AttemptStatus) {
 			s.Phase = v1alpha1.AttemptPhaseFailed
-			s.Message = fmt.Sprintf("reaped: stuck reconciling since %s (no terminal state; suspected worker loss)", at.CreationTimestamp.Time.UTC().Format(time.RFC3339))
+			s.Message = func(runs []v1alpha1.RunRecord) string {
+				// #907: the message names the stuck thing the ledger ACTUALLY
+				// shows. The old wording read the CREATION clock as the stuck
+				// instant — for a recurring schedule attempt (one object, weekly
+				// episodes) that named a date weeks before the episode that
+				// actually died. A terminal phase is never a reap candidate, so
+				// the wedge is either a never-executed objective or a run record
+				// still marked running.
+				for i := range runs {
+					if !v1alpha1.RunTerminalPhase(runs[i].Phase) {
+						return fmt.Sprintf("reaped: run %s never reached a terminal outcome (suspected worker loss)", runs[i].Name)
+					}
+				}
+				return "reaped: objective never executed (no run recorded)"
+			}(s.Runs)
 		}); err != nil {
 			continue
 		}
@@ -675,8 +719,10 @@ func SupersedePriorAttempts(ctx context.Context, c client.Client, namespace, wor
 		if prior.Status.Phase != v1alpha1.AttemptPhaseReconciling {
 			continue // terminal or statusless — nothing to supersede
 		}
-		if r := prior.Status.Review; r != nil && !r.Released {
-			continue // claim-bearing: the gate machinery owns it
+		if v1alpha1.HasLiveClaimEra(prior.Status.Review) {
+			continue // gate-era claim: the arm/dispatch/timeout machinery owns it (r27/r30,
+			// #349/#351) — supersede is the historian's verdict on FINISHED rounds, not a
+			// claim release path. #907: the dispatch OWNERSHIP EDGE is not an era.
 		}
 		if err := patchAttemptStatus(ctx, c, namespace, prior.Name, func(s *v1alpha1.AttemptStatus) {
 			s.Phase = v1alpha1.AttemptPhaseSuperseded

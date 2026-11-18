@@ -520,9 +520,23 @@ func TestReapStuckAttemptsSkipsFinishedNonReview(t *testing.T) {
 	for _, at := range []*v1alpha1.Attempt{
 		// the live relic: one succeeded run, stale evidence, no claim — finished, not stuck
 		mk("finished-singleton", []v1alpha1.RunRecord{{Name: "r1", Phase: "succeeded", StartedAt: stale, EndedAt: stale}}, nil),
-		// genuine mid-run loss: a 'running' record never ended — still reaps
+		// #907 the live prod shape: an episode whose worker died left a 'running'
+		// record in the history, but the LATEST episode finished green. The
+		// objective is not stuck — a later episode answered it. Reaping it stamped
+		// "suspected worker loss" over a succeeded weekly.
+		mk("stale-unclosed-history", []v1alpha1.RunRecord{
+			{Name: "r-old", Phase: "running", StartedAt: stale},
+			{Name: "r-mid", Phase: "succeeded", StartedAt: stale, EndedAt: stale},
+			{Name: "r-latest", Phase: "succeeded", StartedAt: stale, EndedAt: stale},
+		}, nil),
+		// genuine mid-run loss: the LATEST record never ended — still reaps
 		mk("lost-mid-run", []v1alpha1.RunRecord{{Name: "r1", Phase: "running", StartedAt: stale}}, nil),
-		// review-class: the gate owns the lifecycle — the all-terminal skip does not apply
+		// the dispatch EDGE is not an era: a fork attempt with the ownership edge
+		// (#667) and a green latest episode survives too — the era predicate, not
+		// `Review == nil`, is what makes the skip reach the live fork fleet.
+		mk("edge-only-finished", []v1alpha1.RunRecord{{Name: "r1", Phase: "succeeded", StartedAt: stale, EndedAt: stale}},
+			&v1alpha1.ReviewClaimStatus{DispatchedAt: &metav1.Time{Time: time.Now()}, DispatchedJob: "job-edge"}),
+		// review-class: the gate owns the lifecycle — the terminal-run skip does not apply
 		mk("review-stuck", []v1alpha1.RunRecord{{Name: "r1", Phase: "succeeded", StartedAt: stale, EndedAt: stale}},
 			&v1alpha1.ReviewClaimStatus{PR: "demo/x#1", HeadSHA: "abc"}),
 	} {
@@ -532,14 +546,25 @@ func TestReapStuckAttemptsSkipsFinishedNonReview(t *testing.T) {
 	}
 	n, err := ReapStuckAttempts(ctx, c, ns, 7*24*time.Hour)
 	if err != nil || n != 2 {
-		t.Fatalf("reaped %d (err %v), want 2 (the mid-run loss + the review-class attempt; the finished singleton survives)", n, err)
+		t.Fatalf("reaped %d (err %v), want 2 (the mid-run loss + the review-class attempt; the finished singleton, the stale-history weekly and the edge-only fork attempt survive)", n, err)
 	}
-	var finished v1alpha1.Attempt
-	if err := c.Get(ctx, client.ObjectKey{Namespace: ns, Name: "finished-singleton"}, &finished); err != nil {
+	for _, name := range []string{"finished-singleton", "stale-unclosed-history", "edge-only-finished"} {
+		var at v1alpha1.Attempt
+		if err := c.Get(ctx, client.ObjectKey{Namespace: ns, Name: name}, &at); err != nil {
+			t.Fatal(err)
+		}
+		if at.Status.Phase != v1alpha1.AttemptPhaseReconciling || at.Status.Message != "" {
+			t.Fatalf("%s must survive untouched, got phase=%s msg=%q", name, at.Status.Phase, at.Status.Message)
+		}
+	}
+	// The reap that DOES fire names the run that actually wedged, never the
+	// creation clock.
+	var lost v1alpha1.Attempt
+	if err := c.Get(ctx, client.ObjectKey{Namespace: ns, Name: "lost-mid-run"}, &lost); err != nil {
 		t.Fatal(err)
 	}
-	if finished.Status.Phase != v1alpha1.AttemptPhaseReconciling || finished.Status.Message != "" {
-		t.Fatalf("finished non-review singleton must survive untouched, got phase=%s msg=%q", finished.Status.Phase, finished.Status.Message)
+	if !strings.Contains(lost.Status.Message, "run r1 never reached a terminal outcome") {
+		t.Fatalf("reap message must name the wedged run, got %q", lost.Status.Message)
 	}
 }
 

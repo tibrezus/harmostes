@@ -421,16 +421,32 @@ func upsertRun(runs *[]v1alpha1.RunRecord, r v1alpha1.RunRecord) {
 	*runs = append(*runs, r)
 }
 
-// allRunsTerminal reports whether every run record reached a terminal phase
-// (succeeded/failed). A 'running' or empty record means a run was in flight
-// when the worker died — the genuine stuck shape the reaper exists for.
-func allRunsTerminal(runs []v1alpha1.RunRecord) bool {
-	for _, r := range runs {
-		if !v1alpha1.RunTerminalPhase(r.Phase) {
-			return false
+// latestRunTerminal reports whether the MOST RECENT run record reached a
+// terminal phase. "Every record terminal" is the wrong question: the ledger
+// tail can carry a stale 'running' record from an episode whose worker died
+// before its outcome landed (#907's live forgejo weekly: running from Nov 1,
+// succeeded runs on Nov 8 and Nov 15). The reaper exists for work that is
+// stuck NOW — and an objective whose latest episode finished green is not
+// stuck, however many unclosed records its history carries. Stamping such an
+// attempt failed/"suspected worker loss" is the same lie #907 was filed for.
+// A genuine mid-run loss leaves the LATEST record 'running' (or empty), which
+// still reaps on its own clock.
+func latestRunTerminal(runs []v1alpha1.RunRecord) bool {
+	if len(runs) == 0 {
+		return false
+	}
+	return v1alpha1.RunTerminalPhase(runs[len(runs)-1].Phase)
+}
+
+// wedgedRun returns the most recent run record that never reached a terminal
+// phase — the episode the reap message should name. Empty string when none.
+func wedgedRun(runs []v1alpha1.RunRecord) string {
+	for i := len(runs) - 1; i >= 0; i-- {
+		if !v1alpha1.RunTerminalPhase(runs[i].Phase) {
+			return runs[i].Name
 		}
 	}
-	return true
+	return ""
 }
 
 // appendUniqueEvidence appends Evidence References not already present (keyed by
@@ -635,7 +651,7 @@ func ReapStuckAttempts(ctx context.Context, c client.Client, namespace string, o
 		// dispatch stamps the ownership EDGE (#667) on the attempt, so the live
 		// fork fleet's Review is never nil — a nil test silently skips the
 		// very attempts this leg exists to protect.
-		if !v1alpha1.HasLiveClaimEra(at.Status.Review) && len(at.Status.Runs) > 0 && allRunsTerminal(at.Status.Runs) {
+		if !v1alpha1.HasLiveClaimEra(at.Status.Review) && latestRunTerminal(at.Status.Runs) {
 			continue
 		}
 		if v1alpha1.HasLiveClaimEra(at.Status.Review) {
@@ -661,12 +677,10 @@ func ReapStuckAttempts(ctx context.Context, c client.Client, namespace string, o
 				// instant — for a recurring schedule attempt (one object, weekly
 				// episodes) that named a date weeks before the episode that
 				// actually died. A terminal phase is never a reap candidate, so
-				// the wedge is either a never-executed objective or a run record
-				// still marked running.
-				for i := range runs {
-					if !v1alpha1.RunTerminalPhase(runs[i].Phase) {
-						return fmt.Sprintf("reaped: run %s never reached a terminal outcome (suspected worker loss)", runs[i].Name)
-					}
+				// the wedge is either a never-executed objective or the latest
+				// run record still marked running.
+				if name := wedgedRun(runs); name != "" {
+					return fmt.Sprintf("reaped: run %s never reached a terminal outcome (suspected worker loss)", name)
 				}
 				return "reaped: objective never executed (no run recorded)"
 			}(s.Runs)

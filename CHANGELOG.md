@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.11.16](https://github.com/tibrezus/harmostes/compare/v1.11.15...v1.11.16) (2026-11-18)
+
+
+### Bug Fixes
+
+* **attempt:** deterministic-class attempts terminalize on a green run ([#907](https://github.com/tibrezus/harmostes/issues/907)) ([#915](https://github.com/tibrezus/harmostes/issues/915)) ([c6ca92c](https://github.com/tibrezus/harmostes/commit/c6ca92ca3002134d499b6ef26021f24093fef57c))
+
 ## [1.11.15](https://github.com/tibrezus/harmostes/compare/v1.11.14...v1.11.15) (2026-11-18)
 
 

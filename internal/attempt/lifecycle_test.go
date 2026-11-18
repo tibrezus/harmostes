@@ -471,6 +471,54 @@ func TestReapStuckAttemptsRespectsRunEvidence(t *testing.T) {
 	}
 }
 
+// #907: a non-review attempt whose runs ALL reached a terminal phase is not
+// stuck — it finished. The pre-#907 worker left claimless successes at
+// reconciling; the reaper then stamped "failed / suspected worker loss" over
+// a healthy ledger (the live forgejo relic: one succeeded run, phase failed,
+// message "reaped"). Even with stale evidence (last run 8d ago, past the
+// window), an all-terminal non-review ledger must NOT reap. The mirror
+// shapes still reap: a 'running' record (genuine mid-run loss) and a
+// review-class attempt (the gate's machinery owns its lifecycle).
+func TestReapStuckAttemptsSkipsFinishedNonReview(t *testing.T) {
+	ctx := context.Background()
+	c := newFakeClient(t)
+	const ns = "default"
+	old := metav1.NewTime(time.Now().Add(-14 * 24 * time.Hour))
+	stale := metav1.NewTime(time.Now().Add(-8 * 24 * time.Hour))
+	mk := func(name string, runs []v1alpha1.RunRecord, review *v1alpha1.ReviewClaimStatus) *v1alpha1.Attempt {
+		return &v1alpha1.Attempt{ObjectMeta: metav1.ObjectMeta{
+			Name: name, Namespace: ns, CreationTimestamp: old,
+			Labels: map[string]string{"harmostes.dev/workflow": "fork-maintenance-forgejo"},
+		}, Status: v1alpha1.AttemptStatus{
+			Phase: v1alpha1.AttemptPhaseReconciling, LastRunAt: stale, Runs: runs, Review: review,
+		}}
+	}
+	for _, at := range []*v1alpha1.Attempt{
+		// the live relic: one succeeded run, stale evidence, no claim — finished, not stuck
+		mk("finished-singleton", []v1alpha1.RunRecord{{Name: "r1", Phase: "succeeded", StartedAt: stale, EndedAt: stale}}, nil),
+		// genuine mid-run loss: a 'running' record never ended — still reaps
+		mk("lost-mid-run", []v1alpha1.RunRecord{{Name: "r1", Phase: "running", StartedAt: stale}}, nil),
+		// review-class: the gate owns the lifecycle — the all-terminal skip does not apply
+		mk("review-stuck", []v1alpha1.RunRecord{{Name: "r1", Phase: "succeeded", StartedAt: stale, EndedAt: stale}},
+			&v1alpha1.ReviewClaimStatus{PR: "demo/x#1", HeadSHA: "abc"}),
+	} {
+		if err := c.Create(ctx, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	n, err := ReapStuckAttempts(ctx, c, ns, 7*24*time.Hour)
+	if err != nil || n != 2 {
+		t.Fatalf("reaped %d (err %v), want 2 (the mid-run loss + the review-class attempt; the finished singleton survives)", n, err)
+	}
+	var finished v1alpha1.Attempt
+	if err := c.Get(ctx, client.ObjectKey{Namespace: ns, Name: "finished-singleton"}, &finished); err != nil {
+		t.Fatal(err)
+	}
+	if finished.Status.Phase != v1alpha1.AttemptPhaseReconciling || finished.Status.Message != "" {
+		t.Fatalf("finished non-review singleton must survive untouched, got phase=%s msg=%q", finished.Status.Phase, finished.Status.Message)
+	}
+}
+
 // ===========================================================================
 // SupersedePriorAttempts (#583): the ADR-0005 superseded leg
 // ===========================================================================

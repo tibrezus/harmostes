@@ -243,15 +243,25 @@ type RunOutcome struct {
 	Phase     string // succeeded | failed
 	Envelopes []v1alpha1.NodeResultEnvelope
 	Message   string
+	// ReviewClass marks the run as belonging to a Review-Ready Gate
+	// workflow (wf.Spec.ReviewReady != nil — the same predicate the worker
+	// branches on). Only the review class keeps a claimless success at
+	// reconciling (the gate's claim machinery owns its terminal phase);
+	// every other class finalizes on its own runs (#907).
+	ReviewClass bool
 }
 
 // RecordRunOutcome upserts the run's terminal phase, appends its Node Result
 // Envelopes + Evidence, sets LastRunAt, and maps the run outcome to the Attempt
 // phase (ADR-0005 + ADR-0004 promotion): a failed run → AttemptPhaseFailed; a
 // succeeded run that produced at least one deterministically-validated claim →
-// AttemptPhaseValidated; otherwise a succeeded run → AttemptPhaseReconciling
-// (nothing was deterministically confirmed). Best-effort caller: errors are
-// returned but must not abort the run.
+// AttemptPhaseValidated; a succeeded NON-review run → AttemptPhaseValidated
+// (its graph finished green — the deterministic nodes ARE the confirmation,
+// and the singleton schedule attempt must not read "reconciling" forever,
+// #907); a succeeded REVIEW-class run without a validated claim keeps
+// reconciling (the gate's claim machinery owns the terminal phase — a
+// verdict release stamps validated/superseded, #569). Best-effort caller:
+// errors are returned but must not abort the run.
 func RecordRunOutcome(ctx context.Context, c client.Client, namespace, attemptName string, outcome RunOutcome) error {
 	now := metav1.Now()
 	return patchAttemptStatus(ctx, c, namespace, attemptName, func(s *v1alpha1.AttemptStatus) {
@@ -276,10 +286,18 @@ func RecordRunOutcome(ctx context.Context, c client.Client, namespace, attemptNa
 			// ADR-0004 promotion: a successful run that produced a
 			// deterministically-validated claim completes the objective's
 			// reconciliation — the targeted state was confirmed by a validator.
-			// Without a validated claim, success alone does not validate
-			// (nothing was deterministically confirmed); the attempt keeps
-			// reconciling, allowing a failed attempt to recover on a later run.
 			if claim.HasValidated(outcome.Envelopes) {
+				s.Phase = v1alpha1.AttemptPhaseValidated
+			} else if !outcome.ReviewClass {
+				// #907: a non-review run that finished green IS the
+				// confirmation — the deterministic graph executed to its
+				// end. The singleton schedule attempt (fork-maintenance,
+				// wiki-lint, noop) accumulates episodes on ONE object; a
+				// claimless success left it "reconciling" forever, and the
+				// reaper then stamped "failed / suspected worker loss" over
+				// a healthy weekly (#874). The review class keeps the old
+				// behavior: its terminal phase belongs to the gate's claim
+				// release, not to the run outcome.
 				s.Phase = v1alpha1.AttemptPhaseValidated
 			} else {
 				s.Phase = v1alpha1.AttemptPhaseReconciling
@@ -382,6 +400,18 @@ func upsertRun(runs *[]v1alpha1.RunRecord, r v1alpha1.RunRecord) {
 		}
 	}
 	*runs = append(*runs, r)
+}
+
+// allRunsTerminal reports whether every run record reached a terminal phase
+// (succeeded/failed). A 'running' or empty record means a run was in flight
+// when the worker died — the genuine stuck shape the reaper exists for.
+func allRunsTerminal(runs []v1alpha1.RunRecord) bool {
+	for _, r := range runs {
+		if !v1alpha1.RunTerminalPhase(r.Phase) {
+			return false
+		}
+	}
+	return true
 }
 
 // appendUniqueEvidence appends Evidence References not already present (keyed by
@@ -569,6 +599,15 @@ func ReapStuckAttempts(ctx context.Context, c client.Client, namespace string, o
 		// after their runs). Genuine worker loss stops writing evidence: its
 		// LastRunAt ages past the window and the reap fires on its own clock.
 		if !at.Status.LastRunAt.IsZero() && at.Status.LastRunAt.After(cutoff) {
+			continue
+		}
+		// #907: a non-review attempt whose runs ALL reached a terminal phase
+		// is not stuck — it finished. The pre-#907 worker left claimless
+		// successes at reconciling; reaping them stamped "failed / suspected
+		// worker loss" over a healthy ledger (the live forgejo relic: one
+		// succeeded run, phase failed, message "reaped"). A genuine mid-run
+		// loss leaves a 'running' (or empty) record — that still reaps.
+		if at.Status.Review == nil && len(at.Status.Runs) > 0 && allRunsTerminal(at.Status.Runs) {
 			continue
 		}
 		r := at.Status.Review

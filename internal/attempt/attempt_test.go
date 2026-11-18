@@ -370,11 +370,32 @@ func TestRecordRunOutcome_PhaseMapping(t *testing.T) {
 		t.Errorf("failed run record phase wrong: %+v", got.Status.Runs)
 	}
 
-	// A later succeeded run → attempt recovers to reconciling (validation is slice 4).
+	// A later succeeded NON-review run → the attempt finalizes validated
+	// (#907): the deterministic graph finished green; the singleton schedule
+	// attempt must not read "reconciling" forever.
 	_ = RecordRunOutcome(ctx, c, "harmostes", a.Name, RunOutcome{RunName: "run-2", Phase: "succeeded"})
 	got = getAttempt(t, ctx, c, a)
+	if got.Status.Phase != v1alpha1.AttemptPhaseValidated {
+		t.Errorf("succeeded non-review run: phase = %q, want validated (#907)", got.Status.Phase)
+	}
+}
+
+// #907: the REVIEW class keeps its claimless successes at reconciling — the
+// gate's claim release owns the terminal phase (a consumed verdict stamps
+// validated, #569). Only the non-review class finalizes on its own runs.
+func TestRecordRunOutcome_ReviewClassKeepsReconciling(t *testing.T) {
+	ctx := context.Background()
+	c := newFakeClient(t)
+	wf := prReviewWorkflow()
+	obj := DeriveObjective(wf, TriggerContext{Revision: "abc"})
+	opts := ResolveOptions{Namespace: "harmostes", Owner: wf, Scheme: wfScheme(t)}
+	a, _, _ := ResolveOrCreate(ctx, c, obj, opts)
+	_ = RecordRunStarted(ctx, c, "harmostes", a.Name, "run-1")
+
+	_ = RecordRunOutcome(ctx, c, "harmostes", a.Name, RunOutcome{RunName: "run-1", Phase: "succeeded", ReviewClass: true})
+	got := getAttempt(t, ctx, c, a)
 	if got.Status.Phase != v1alpha1.AttemptPhaseReconciling {
-		t.Errorf("succeeded run: phase = %q, want reconciling", got.Status.Phase)
+		t.Errorf("succeeded review-class run without a validated claim: phase = %q, want reconciling (the gate owns the terminal phase)", got.Status.Phase)
 	}
 }
 

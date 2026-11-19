@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.11.17](https://github.com/tibrezus/harmostes/compare/v1.11.16...v1.11.17) (2026-11-18)
+
+
+### Bug Fixes
+
+* **attempt:** the reap asks the LATEST run, not the whole ledger ([#907](https://github.com/tibrezus/harmostes/issues/907)) ([#917](https://github.com/tibrezus/harmostes/issues/917)) ([e974bed](https://github.com/tibrezus/harmostes/commit/e974bed2b365c622d2a7a128d8d03235fb713c88))
+
 ## [1.11.16](https://github.com/tibrezus/harmostes/compare/v1.11.15...v1.11.16) (2026-11-18)
 
 

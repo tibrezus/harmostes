@@ -21,7 +21,7 @@
 # Idempotent: run on every push to main and on the `minor-approved` label
 # event; holds post at most one comment (marker-deduped).
 #
-# PR DISCOVERY (#919): the gate must find the PR release-please created in
+# PR DISCOVERY (#923): the gate must find the PR release-please created in
 # THIS very run. `gh pr list --label` is GitHub's SEARCH index, which lags a
 # brand-new PR by seconds to minutes — the creation run saw nothing, armed
 # nothing, and the patch sat un-automerged until the NEXT merge into main

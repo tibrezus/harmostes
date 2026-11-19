@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# release-gate contract tests (#919).
+# release-gate contract tests (#923).
 #
 # The gate is the ONLY path from merged conventional commits to a shipped
 # version, and it runs in an environment no Go test can reach. Its whole

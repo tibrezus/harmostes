@@ -44,7 +44,7 @@ test-go:
 boundary-guard:
 	@./scripts/boundary-guard.sh
 
-## test-release-gate: the release gate's contract (#919) — the ONLY path from
+## test-release-gate: the release gate's contract (#923) — the ONLY path from
 ## merged conventional commits to a shipped version. Runs against a stub gh
 ## with canned GitHub responses, so it needs no network and no secrets.
 ## Needs jq (same dependency as the gate itself).

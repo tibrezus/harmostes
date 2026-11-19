@@ -10,7 +10,13 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
 	cloudevents "github.com/cloudevents/sdk-go/v2"
+
+	"github.com/tibrezus/harmostes/internal/observability"
 )
 
 // ---------------------------------------------------------------------------
@@ -188,17 +194,28 @@ func (c *Consumer) armedBackoffLoop(ctx context.Context) {
 			continue
 		}
 		list := c.cfg.ArmedWaitingWorkflows(ctx)
+		// The reconciliation floor is a pass, not a delivery: without a root
+		// span its sweeps are invisible in the trace (#928). Every sweep's
+		// dispatch nests under it, so a stalled armed fleet reads as one
+		// trace per pass instead of orphaned runs.
+		sweepCtx, sweepSpan := observability.Tracer().Start(ctx, "worker.fast-poll.sweep",
+			trace.WithAttributes(attribute.Int("harmostes.armed_workflows", len(list))))
 		for _, wf := range list {
-			runCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+			runCtx, cancel := context.WithTimeout(sweepCtx, 2*time.Minute)
+			runCtx, span := dispatchSpan(runCtx, wf, "fast-poll", "fast-poll")
 			if err := c.cfg.RunFunc(runCtx, RunRequest{
-				Workflow:  wf,
-				Namespace: c.cfg.Namespace,
-				Source:    "fast-poll",
+				Workflow:    wf,
+				Namespace:   c.cfg.Namespace,
+				Source:      "fast-poll",
+				Traceparent: dispatchTraceparent(runCtx, ""),
 			}); err != nil {
+				span.SetStatus(codes.Error, err.Error())
 				c.cfg.Logger.Info("backoff sweep failed (retried next pass)", "workflow", wf, "error", err)
 			}
+			span.End()
 			cancel()
 		}
+		sweepSpan.End()
 		busy.Store(false)
 		// Cadence: any movement in the armed set resets to base — a shrink
 		// means a dispatch just landed (the next one should not wait out a
@@ -237,6 +254,14 @@ func (c *Consumer) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 //
 // NACK causes daprd to re-deliver the message (at-least-once semantics via
 // Redis Streams). The consumer must be idempotent to handle re-delivery.
+//
+// The trace hop (#928): daprd delivers the message carrying the W3C
+// traceparent it propagated from the publisher, so the dispatch decision —
+// the gate sweep, capacity check, Attempt mint, Job create — gets a span of
+// its own instead of vanishing into the delivery. The span's traceparent is
+// handed to the dispatched run, making the chain
+// controller.reconcile → daprd.publish → daprd.delivery → worker.trigger.dispatch
+// → graph.pipeline.run one trace.
 func (c *Consumer) handleTrigger(w http.ResponseWriter, r *http.Request) {
 	body := make([]byte, 0)
 	// Read the body
@@ -278,20 +303,43 @@ func (c *Consumer) handleTrigger(w http.ResponseWriter, r *http.Request) {
 	// activeDeadlineSeconds carries the wall-clock bound (reviewReady.runBound,
 	// #348/#333, default OneShotRunBound)
 	// that used to live here.
-	runCtx := r.Context()
+	//
+	// Parent selection, in authority order:
+	//   1. the DELIVERY header — daprd's own propagated context for this
+	//      message (the publisher's span as daprd saw it, plus daprd's own
+	//      delivery span in the chain);
+	//   2. the payload stamp — the controller's reconcile span, published in
+	//      the event body for exactly this handoff. Used when the delivery
+	//      carries no header (published outside Dapr, or an older sidecar),
+	//      so the link the controller established is not lost;
+	//   3. neither — the dispatch is its own root. Nothing is fabricated.
+	parent := observability.ContextWithTraceparent(r.Context(), r.Header.Get("traceparent"))
+	// The propagator ignores malformed values, so validity is checked by the
+	// SDK rather than re-parsed here: a garbage header must not outrank a
+	// valid payload stamp.
+	if !trace.SpanContextFromContext(parent).IsValid() {
+		parent = observability.ContextWithTraceparent(r.Context(), trigger.Traceparent)
+	}
+	runCtx, span := dispatchSpan(parent, trigger.Workflow, trigger.TriggerType, trigger.Source)
+	defer span.End()
 
 	if err := c.cfg.RunFunc(runCtx, RunRequest{
-		Workflow:    trigger.Workflow,
-		Namespace:   trigger.Namespace,
-		Source:      trigger.Source,
-		Attempt:     trigger.AttemptName,
-		Traceparent: trigger.Traceparent,
+		Workflow:  trigger.Workflow,
+		Namespace: trigger.Namespace,
+		Source:    trigger.Source,
+		Attempt:   trigger.AttemptName,
+		// The DISPATCH span's traceparent, not the payload's: the run nests
+		// under the hop that decided it. TraceparentFromContext is "" when
+		// telemetry is disabled, in which case the delivery/payload context is
+		// passed through unchanged rather than dropped (#928).
+		Traceparent: dispatchTraceparent(runCtx, trigger.Traceparent),
 		Pr:          trigger.Pr,
 		Action:      trigger.Action,
 		Revision:    trigger.Revision,
 		PrTitle:     trigger.PrTitle,
 		Repo:        trigger.Repo,
 	}); err != nil {
+		span.SetStatus(codes.Error, err.Error())
 		c.cfg.Logger.Error("workflow run failed", "workflow", trigger.Workflow, "error", err)
 		http.Error(w, fmt.Sprintf("run failed: %v", err), http.StatusInternalServerError)
 		return
@@ -299,6 +347,32 @@ func (c *Consumer) handleTrigger(w http.ResponseWriter, r *http.Request) {
 
 	c.cfg.Logger.Info("trigger processed", "workflow", trigger.Workflow, "trigger_type", trigger.TriggerType)
 	w.WriteHeader(http.StatusOK)
+}
+
+// dispatchSpan opens the hop's span: one construction for both wake paths
+// (delivered event and fast-poll sweep), so the span name and its identity
+// attributes cannot drift between them.
+func dispatchSpan(ctx context.Context, workflow, triggerType, source string) (context.Context, trace.Span) {
+	return observability.Tracer().Start(ctx, "worker.trigger.dispatch",
+		trace.WithAttributes(
+			attribute.String("harmostes.workflow", workflow),
+			attribute.String("harmostes.trigger.type", triggerType),
+			attribute.String("harmostes.trigger.source", source),
+		))
+}
+
+// dispatchTraceparent is the traceparent handed to a dispatched run. The
+// dispatch span's own context wins — that nesting is the point of #928. When
+// this pod's telemetry is disabled the span records nothing, so the context the
+// delivery carried is passed through unchanged rather than dropped: a run must
+// not lose a link the controller already established just because the middle
+// pod is un-instrumented. An empty result means there was no context to inherit
+// — nothing is invented.
+func dispatchTraceparent(ctx context.Context, inherited string) string {
+	if tp := observability.TraceparentFromContext(ctx); tp != "" {
+		return tp
+	}
+	return inherited
 }
 
 // TriggerEvent is the payload published by the controller when a workflow is

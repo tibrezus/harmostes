@@ -14,6 +14,7 @@ import (
 
 	"github.com/tibrezus/harmostes/internal/attempt"
 	"github.com/tibrezus/harmostes/internal/k8s"
+	"github.com/tibrezus/harmostes/internal/observability"
 	"github.com/tibrezus/harmostes/internal/review"
 	"github.com/tibrezus/harmostes/internal/sessionstore"
 	batchv1 "k8s.io/api/batch/v1"
@@ -166,6 +167,42 @@ func dispatchRequest() RunRequest {
 		Workflow: "pr-review-harmostes", Namespace: "default",
 		Pr: "git.rezus.cloud/tibrez/rhesadox#99", Action: "labeled",
 		Revision: "deadbeef123", PrTitle: "t",
+	}
+}
+
+// The trace handoff (#928) is only real if the traceparent reaches the Job.
+// The consumer computes it, dispatchEnv delivers it, and the worker extracts
+// it — nothing in the unit tier pinned the middle leg, so deleting the
+// dispatchEnv line left every other test green while the run started a
+// disconnected trace.
+func TestDispatchedJobCarriesTraceparent(t *testing.T) {
+	clearTriggerEnv(t)
+	srv := greenPRServer(t)
+	t.Cleanup(srv.Close)
+	pinReviewAPI(t, srv, true)
+	wf := gatedDispatchWorkflow()
+
+	d, ctx := newTestDispatcher(t, wf)
+	req := dispatchRequest()
+	req.Traceparent = "00-494842a177fb3b502116542189731478-6f3b1f1c2d3e4f50-01"
+	if err := d.Dispatch(ctx, req); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	var jobs batchv1.JobList
+	if err := d.cl.List(ctx, &jobs); err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs.Items) != 1 {
+		t.Fatalf("exactly one Job must be dispatched, got %d", len(jobs.Items))
+	}
+	found := false
+	for _, kv := range jobs.Items[0].Spec.Template.Spec.Containers[0].Env {
+		if kv.Name == observability.TraceparentCarrierKey && kv.Value == req.Traceparent {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("dispatched Job lost the traceparent — the run starts a disconnected trace")
 	}
 }
 

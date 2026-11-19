@@ -20,9 +20,20 @@
 #
 # Idempotent: run on every push to main and on the `minor-approved` label
 # event; holds post at most one comment (marker-deduped).
+#
+# PR DISCOVERY (#919): the gate must find the PR release-please created in
+# THIS very run. `gh pr list --label` is GitHub's SEARCH index, which lags a
+# brand-new PR by seconds to minutes — the creation run saw nothing, armed
+# nothing, and the patch sat un-automerged until the NEXT merge into main
+# re-ran this gate. Discovery is by release-please's deterministic head
+# branch through the index-free REST list; the label search remains the
+# fallback.
 set -euo pipefail
 
 LABEL="${GATE_LABEL:-minor-approved}"
+# release-please names its release PR branch from the target branch. Override
+# for a non-default target branch.
+RELEASE_BRANCH="${RELEASE_BRANCH:-release-please--branches--main}"
 # release-please's footer is "This PR was generated with [Release Please](...)":
 # the words "was generated with" are the stable, plain-text part (the name
 # itself is a markdown link). Chosen over the bare name — a changelog entry
@@ -35,7 +46,15 @@ die() { echo "::error::$*" >&2; exit 1; }
 
 command -v gh >/dev/null || die "gh is required"
 
-PR="$(gh pr list -R "$GITHUB_REPOSITORY" --label "autorelease: pending" --state open --json number --jq '.[0].number')"
+# --- Find the pending release PR -------------------------------------------
+# Index-free first: the head branch is deterministic and exact, so a PR
+# created moments ago is already visible. The label search is the fallback
+# only (see the header note).
+PR="$(gh api "repos/${GITHUB_REPOSITORY}/pulls?state=open&per_page=100" \
+      --jq ".[] | select(.head.ref == \"${RELEASE_BRANCH}\") | .number" 2>/dev/null | head -1)"
+if [ -z "$PR" ]; then
+  PR="$(gh pr list -R "$GITHUB_REPOSITORY" --label "autorelease: pending" --state open --json number --jq '.[0].number' || true)"
+fi
 if [ -z "$PR" ]; then
   echo "no pending release PR — nothing to gate"
   exit 0

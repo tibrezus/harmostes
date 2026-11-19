@@ -12,7 +12,7 @@ TAG           ?= dev
 BIN_DIR       := bin
 GO            := go
 
-.PHONY: all build test test-go test-ui vet tidy generate manifests controller-worker docker docker-push docker-ui test-extensions test-sol-pi test-integration clean test-rig-emit golden-update
+.PHONY: all build test test-go test-ui vet tidy generate manifests controller-worker docker docker-push docker-ui test-extensions test-sol-pi test-integration clean test-rig-emit test-release-gate golden-update
 
 
 all: test build
@@ -27,7 +27,7 @@ build:
 ## Node still gets a meaningful `make test-go`.
 # test-sol-pi is deliberately NOT here: it is the slow compat tier (installs
 # a second pi package set), run explicitly by CI next to the extensions tier.
-test: test-go test-extensions test-rig-emit boundary-guard
+test: test-go test-extensions test-rig-emit test-release-gate boundary-guard
 
 
 ## test-go: the Go tier alone.
@@ -43,6 +43,14 @@ test-go:
 ## step and locally via make.
 boundary-guard:
 	@./scripts/boundary-guard.sh
+
+## test-release-gate: the release gate's contract (#919) — the ONLY path from
+## merged conventional commits to a shipped version. Runs against a stub gh
+## with canned GitHub responses, so it needs no network and no secrets.
+## Needs jq (same dependency as the gate itself).
+test-release-gate:
+	@command -v jq >/dev/null || { echo "test-release-gate: jq is required"; exit 1; }
+	bash scripts/tests/release-gate.test.sh
 
 ## golden-update: regenerate the committed golden render (ADR-0011 #368-8).
 ## Renders chart/ with the fictional production-shaped fixture

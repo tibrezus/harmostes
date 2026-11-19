@@ -538,3 +538,7 @@ jobs:
             exit 1
           fi
           ./scripts/boundary-guard.sh
+          # The release gate is the only path from merged commits to a shipped
+          # version (#919); its discovery + classification contract is pinned
+          # against a stub gh here so a change to the gate cannot ship silently.
+          bash scripts/tests/release-gate.test.sh

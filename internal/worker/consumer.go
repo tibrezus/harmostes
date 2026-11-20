@@ -196,26 +196,38 @@ func (c *Consumer) armedBackoffLoop(ctx context.Context) {
 		list := c.cfg.ArmedWaitingWorkflows(ctx)
 		// The reconciliation floor is a pass, not a delivery: without a root
 		// span its sweeps are invisible in the trace (#928). Every sweep's
-		// dispatch nests under it, so a stalled armed fleet reads as one
-		// trace per pass instead of orphaned runs.
-		sweepCtx, sweepSpan := observability.Tracer().Start(ctx, "worker.fast-poll.sweep",
-			trace.WithAttributes(attribute.Int("harmostes.armed_workflows", len(list))))
-		for _, wf := range list {
-			runCtx, cancel := context.WithTimeout(sweepCtx, 2*time.Minute)
-			runCtx, span := dispatchSpan(runCtx, wf, "fast-poll", "fast-poll")
-			if err := c.cfg.RunFunc(runCtx, RunRequest{
-				Workflow:    wf,
-				Namespace:   c.cfg.Namespace,
-				Source:      "fast-poll",
-				Traceparent: dispatchTraceparent(runCtx, ""),
-			}); err != nil {
-				span.SetStatus(codes.Error, err.Error())
-				c.cfg.Logger.Info("backoff sweep failed (retried next pass)", "workflow", wf, "error", err)
+		// dispatch nests under it, so a stalled armed fleet reads as one trace
+		// per pass instead of orphaned runs.
+		//
+		// The root opens ONLY when the pass has work. The loop's own invariant
+		// is that an idle fleet runs zero passes; an unconditional span would
+		// emit an empty root every cadence (~2,880/day per pod at the chart
+		// default) — telemetry for nothing, drowning the traces that matter.
+		// The cadence bookkeeping below still runs: an empty armed set is the
+		// stalled case and earns the backoff exactly as before.
+		// Spans are closed explicitly, not with defer: armedBackoffLoop runs
+		// for the pod's whole lifetime, so a defer here would leave every
+		// pass's span open until process exit.
+		if len(list) > 0 {
+			sweepCtx, sweepSpan := observability.Tracer().Start(ctx, "worker.fast-poll.sweep",
+				trace.WithAttributes(attribute.Int("harmostes.armed_workflows", len(list))))
+			for _, wf := range list {
+				runCtx, cancel := context.WithTimeout(sweepCtx, 2*time.Minute)
+				runCtx, span := dispatchSpan(runCtx, wf, "fast-poll", "fast-poll")
+				if err := c.cfg.RunFunc(runCtx, RunRequest{
+					Workflow:    wf,
+					Namespace:   c.cfg.Namespace,
+					Source:      "fast-poll",
+					Traceparent: dispatchTraceparent(runCtx, ""),
+				}); err != nil {
+					span.SetStatus(codes.Error, err.Error())
+					c.cfg.Logger.Info("backoff sweep failed (retried next pass)", "workflow", wf, "error", err)
+				}
+				span.End()
+				cancel()
 			}
-			span.End()
-			cancel()
+			sweepSpan.End()
 		}
-		sweepSpan.End()
 		busy.Store(false)
 		// Cadence: any movement in the armed set resets to base — a shrink
 		// means a dispatch just landed (the next one should not wait out a
@@ -340,12 +352,14 @@ func (c *Consumer) handleTrigger(w http.ResponseWriter, r *http.Request) {
 		Repo:        trigger.Repo,
 	}); err != nil {
 		span.SetStatus(codes.Error, err.Error())
-		c.cfg.Logger.Error("workflow run failed", "workflow", trigger.Workflow, "error", err)
+		c.cfg.Logger.ErrorContext(runCtx, "workflow run failed", "workflow", trigger.Workflow, "error", err)
 		http.Error(w, fmt.Sprintf("run failed: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	c.cfg.Logger.Info("trigger processed", "workflow", trigger.Workflow, "trigger_type", trigger.TriggerType)
+	// Context-attached: these are the records that explain the hop, so they
+	// must carry the dispatch span's trace_id to join it in the timeline.
+	c.cfg.Logger.InfoContext(runCtx, "trigger processed", "workflow", trigger.Workflow, "trigger_type", trigger.TriggerType)
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -392,13 +406,28 @@ type TriggerEvent struct {
 	Repo        string `json:"repo,omitempty"`
 }
 
+// consumerLogger is the pool pod's ONE logger construction. It must be the
+// trace-aware handler, not slog.Default(): the pod installs the OTLP providers
+// (main.go), so a plain default handler silently discards the trace_id/span_id
+// stamping — the records that explain a dispatch would never join the dispatch
+// span in the trace timeline (#928).
+func consumerLogger() *slog.Logger {
+	return observability.NewLogger("harmostes-consumer", os.Stdout)
+}
+
 // RunConsumer is the entry point for consumer mode. Called from main's
 // "consumer" subcommand. The pool pod is the DISPATCHER (ADR-0007 phase 3):
 // each trigger is validated by the Review-Ready Gate in-process and accepted
 // runs dispatch as an Attempt + Job (milliseconds); the graphs run in the
 // Job pods, never here.
 func RunConsumer(ctx context.Context, muxOpts ...func(*http.ServeMux)) error {
-	logger := slog.Default().With("component", "harmostes-consumer")
+	// Trace-aware JSON logger, not slog.Default(): main already installed the
+	// OTLP providers for this pod, and observability.NewLogger's traceHandler
+	// stamps each record with the active span's trace_id/span_id. A plain
+	// slog.Default() here silently discarded that wrapper — so the records
+	// that explain a dispatch (job created, session cap full, deduped) could
+	// not be joined to the dispatch span that #928 exists to make visible.
+	logger := consumerLogger()
 
 	dispatcher, err := DispatcherFromEnv(func(format string, args ...any) {
 		logger.Info(fmt.Sprintf(format, args...))

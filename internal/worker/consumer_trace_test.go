@@ -9,6 +9,7 @@ package worker
 // pod is un-instrumented.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -249,6 +250,80 @@ func TestArmedBackoffLoop_SweepRootNestsDispatches(t *testing.T) {
 	}
 	if nested == 0 {
 		t.Error("fast-poll dispatches did not nest under the sweep root")
+	}
+}
+
+// The reconciliation floor's invariant is that an idle fleet runs ZERO passes
+// (#556). The sweep root must honour it: an unconditional span would emit an
+// empty `worker.fast-poll.sweep` every cadence — ~2,880/day per pod at the
+// chart default — pure noise drowning the traces that matter.
+func TestArmedBackoffLoop_IdleFleetEmitsNoSpans(t *testing.T) {
+	c := NewConsumer(ConsumerConfig{
+		FastPoll:              time.Millisecond,
+		ArmedWaitingWorkflows: func(_ context.Context) []string { return nil },
+		RunFunc: func(_ context.Context, _ RunRequest) error {
+			t.Error("an idle fleet must dispatch nothing")
+			return nil
+		},
+	})
+	exp := withTestTracer(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	c.armedBackoffLoop(ctx)
+	if spans := exp.GetSpans(); len(spans) != 0 {
+		t.Fatalf("idle fleet emitted %d spans (%v) — the sweep root opens on empty passes",
+			len(spans), spanNames(spans))
+	}
+}
+
+// A mutation probe in test form: the guard must not swallow the cadence.
+// An empty armed set is the stalled case and still earns the backoff, so the
+// loop keeps ticking without emitting anything.
+func TestArmedBackoffLoop_IdlePassStillBacksOff(t *testing.T) {
+	passes := 0
+	c := NewConsumer(ConsumerConfig{
+		FastPoll:              10 * time.Millisecond,
+		ArmedWaitingWorkflows: func(_ context.Context) []string { passes++; return nil },
+		RunFunc:               func(_ context.Context, _ RunRequest) error { return nil },
+	})
+	exp := withTestTracer(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	c.armedBackoffLoop(ctx)
+	if passes == 0 {
+		t.Fatal("the idle pass stopped ticking — the guard swallowed the cadence loop")
+	}
+	if len(exp.GetSpans()) != 0 {
+		t.Fatalf("idle passes emitted spans: %v", spanNames(exp.GetSpans()))
+	}
+}
+
+// The pool pod's logger must be the trace-aware one. slog.Default() drops the
+// traceHandler wrapper, so dispatch records (job created, session cap full,
+// deduped) never carry trace_id/span_id and never join the dispatch span —
+// the logs explaining the hop would be unlinked text (#928). This pins the
+// construction, not just the import.
+func TestConsumerLoggerIsTraceAware(t *testing.T) {
+	var buf bytes.Buffer
+	lg := observability.NewLogger("harmostes-consumer", &buf)
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSampler(sdktrace.AlwaysSample()))
+	prev := otel.GetTracerProvider()
+	otel.SetTracerProvider(tp)
+	defer func() { otel.SetTracerProvider(prev); _ = tp.Shutdown(context.Background()) }()
+
+	ctx, span := observability.Tracer().Start(context.Background(), "worker.trigger.dispatch")
+	defer span.End()
+	lg.InfoContext(ctx, "dispatch")
+
+	rec := map[string]any{}
+	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &rec); err != nil {
+		t.Fatalf("log is not JSON: %v", err)
+	}
+	if rec["trace_id"] != span.SpanContext().TraceID().String() {
+		t.Errorf("dispatch log carries no trace_id (%v) — it cannot be joined to the dispatch span", rec["trace_id"])
+	}
+	if rec["span_id"] != span.SpanContext().SpanID().String() {
+		t.Errorf("dispatch log span_id = %v, want the dispatch span's", rec["span_id"])
 	}
 }
 

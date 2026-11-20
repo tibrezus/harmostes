@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -277,6 +278,37 @@ func TestDispatcherFromEnvWiresOTLPToJobs(t *testing.T) {
 	}
 	if endpoint != "collector.signoz.svc.cluster.local:4317" || insecure != "true" {
 		t.Fatalf("rendered Job lost the collector: endpoint=%q insecure=%q", endpoint, insecure)
+	}
+}
+
+// The insecure half of the OTLP pair is parsed with ParseBool's grammar, not a
+// string compare: the OTel SDK accepts "True"/"1" (otlptracegrpc WithBool), so
+// a strict compare would forward `false` to a Job whose pool is insecure —
+// one fleet split across two protocols, invisible until the exporter fails.
+// A malformed value fails fast (#311 doctrine), never silently defaulting.
+func TestDispatcherFromEnvParsesOTLPInsecure(t *testing.T) {
+	t.Setenv("HARMOSTES_WORKER_IMAGE", "harmostes:it")
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "collector:4317")
+	for _, c := range []struct{ in, want string }{
+		{in: "true", want: "true"},
+		{in: "True", want: "true"},
+		{in: "1", want: "true"},
+		{in: "false", want: "false"},
+		{in: "False", want: "false"},
+	} {
+		t.Setenv("OTEL_EXPORTER_OTLP_INSECURE", c.in)
+		cfg, err := DispatchConfigFromEnv(func(string, ...any) {})
+		if err != nil {
+			t.Fatalf("insecure %q: %v", c.in, err)
+		}
+		if got := strconv.FormatBool(cfg.OTLPInsecure); got != c.want {
+			t.Fatalf("OTEL_EXPORTER_OTLP_INSECURE=%q must resolve to %s, got %s", c.in, c.want, got)
+		}
+	}
+
+	t.Setenv("OTEL_EXPORTER_OTLP_INSECURE", "plain-grpc")
+	if _, err := DispatchConfigFromEnv(func(string, ...any) {}); err == nil {
+		t.Fatal("a malformed insecure value must fail construction, not default to secure")
 	}
 }
 

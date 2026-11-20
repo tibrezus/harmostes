@@ -511,6 +511,10 @@ spec:
         dapr.io/config: harmostes-config
         dapr.io/enable-actors: "true"
         dapr.io/sidecar-image: "ghcr.io/rezuscloud/daprd:otel-metrics-latest-amd64"
+        # Same knob as controller.yaml/ui.yaml: the sidecar's plain-gRPC flag
+        # must follow observability.otlpInsecure, not a literal. A fleet that
+        # sets the collector to TLS would otherwise get a secure daprd next to
+        # an insecure app container (and, via #943, insecure Attempt Jobs).
         dapr.io/env: "OTEL_EXPORTER_OTLP_INSECURE=true"
     spec:
       serviceAccountName: harmostes-controller

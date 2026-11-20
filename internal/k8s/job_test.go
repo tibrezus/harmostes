@@ -405,8 +405,33 @@ func TestBuildJobOmitsOTLPWhenUnset(t *testing.T) {
 			}
 			continue
 		}
-		if len(got) != 2 || got[1] != "OTEL_EXPORTER_OTLP_INSECURE=false" {
+		if len(got) != 2 ||
+			!strings.Contains(strings.Join(got, "\n"), "OTEL_EXPORTER_OTLP_ENDPOINT=collector:4317") ||
+			!strings.Contains(strings.Join(got, "\n"), "OTEL_EXPORTER_OTLP_INSECURE=false") {
 			t.Fatalf("endpoint set must render the pair, got %v", got)
+		}
+	}
+}
+
+// The sidecar and the app container of one Job pod export to one collector: the
+// daprd sidecar must not be told "insecure" while the app container is told
+// "secure" (#943 review). The annotation is emitted only when the knob says so.
+func TestBuildJobSidecarAgreesWithAppContainer(t *testing.T) {
+	for _, insecure := range []bool{true, false} {
+		job := BuildJob(AttemptJobParams{
+			Attempt:      jobTestAttempt(),
+			WorkflowName: "noop",
+			Namespace:    "harmostes",
+			DaprdImage:   "daprd:pin",
+			OTLPEndpoint: "collector:4317",
+			OTLPInsecure: insecure,
+		})
+		want := ""
+		if insecure {
+			want = "OTEL_EXPORTER_OTLP_INSECURE=true"
+		}
+		if got := job.Spec.Template.Annotations["dapr.io/env"]; got != want {
+			t.Fatalf("sidecar insecure must follow the app container (%v), got %q", insecure, got)
 		}
 	}
 }

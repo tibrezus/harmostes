@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.11.18](https://github.com/tibrezus/harmostes/compare/v1.11.17...v1.11.18) (2026-11-20)
+
+
+### Features
+
+* **observability:** the consumer emits a dispatch span, so a wake's trace has its middle ([#928](https://github.com/tibrezus/harmostes/issues/928)) ([#931](https://github.com/tibrezus/harmostes/issues/931)) ([1df286c](https://github.com/tibrezus/harmostes/commit/1df286c630632530a09d11c2abb22e1ba71c9bc1))
+
 ## [1.11.17](https://github.com/tibrezus/harmostes/compare/v1.11.16...v1.11.17) (2026-11-18)
 
 

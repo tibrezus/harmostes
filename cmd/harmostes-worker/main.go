@@ -217,11 +217,34 @@ func main() {
 			fatal("materialize: %v", err)
 		}
 	case "consumer":
-		// Minimal logger so fatal() (which uses the global logger) doesn't
-		// panic with a nil pointer if RunConsumer returns an error.
-		logger = slog.Default().With("component", "harmostes-worker")
+		// Observability first (#928): the consumer is the trace hop between the
+		// controller's publish and the run's root span. Without Init the global
+		// provider is no-op AND the W3C propagator is never installed, so every
+		// dispatch span and every extracted traceparent would silently vanish.
+		// An unset OTEL_EXPORTER_OTLP_ENDPOINT disables telemetry — the safe
+		// default, and behaviour-preserving.
+		logger = observability.NewLogger("harmostes-worker", os.Stdout)
 		ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 		defer cancel()
+		if sh, err := observability.Init(ctx, observability.Config{
+			Component:    "harmostes-worker",
+			Version:      version.Version,
+			OTLPEndpoint: os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
+			Insecure:     os.Getenv("OTEL_EXPORTER_OTLP_INSECURE") == "true",
+			PodName:      os.Getenv("POD_NAME"),
+			PodNamespace: envOr("HARMOSTES_NAMESPACE", ""),
+		}); err != nil {
+			logger.Error("observability init failed — telemetry disabled", "error", err)
+		} else {
+			obsShutdown = sh
+			// Long-lived pod: spans flush on the batcher, but the shutdown paths
+			// (fatal → finish) need the flush too, and SIGTERM ends the process
+			// without them.
+			go func() {
+				<-ctx.Done()
+				flushTelemetry()
+			}()
+		}
 		// #613: the consumer IS the event system's front door — serving without
 		// the sidecar silently drops every webhook trigger. Fail fast; the
 		// self-delete lets the ReplicaSet re-admit against a healthy injector.

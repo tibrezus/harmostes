@@ -37,7 +37,7 @@ func validTraceparent(s string) bool {
 			propagation.MapCarrier{"traceparent": s})).IsValid()
 }
 
-// triggerBody builds// triggerBody builds the CloudEvent daprd hands the consumer, mirroring the
+// triggerBody builds the CloudEvent daprd hands the consumer, mirroring the
 // controller's publishTrigger payload.
 func triggerBody(payloadTraceparent string) string {
 	data := map[string]any{

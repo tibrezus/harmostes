@@ -193,6 +193,15 @@ type AttemptJobParams struct {
 	// observability pinning, same knob as the worker-pool deployment).
 	DaprdImage string
 
+	// OTLPEndpoint/OTLPInsecure (#943): the collector the pool and controller
+	// already report to. Without it observability.Init is a no-op in the Job
+	// pod, so every span the graph opens (graph.pipeline.run, graph.node.*, the
+	// plugin spans) is created against otel's no-op provider and the trace ends
+	// one hop short of the work — the dispatch span is emitted, the run is dark.
+	// Empty endpoint = telemetry off, byte-identical Job (the inert default).
+	OTLPEndpoint string
+	OTLPInsecure bool
+
 	// ExtraEnv carries KEY=VALUE entries appended to the runner env — the
 	// trigger envelope (HARMOSTES_TRIGGER_*), as buildChildEnv passes to
 	// consumer children.
@@ -457,6 +466,21 @@ func BuildJob(p AttemptJobParams) *batchv1.Job {
 		// prepare prelude and quotes the reviewer a minutes-left number
 		// that is not the truth.
 
+	}
+	// #943: the run half of the trace. The dispatch span's traceparent already
+	// rides in as HARMOSTES_TRACEPARENT, but a span only exports if the pod has
+	// a collector to export to — without it observability.Init is a no-op and
+	// every graph/plugin span is created against otel's no-op provider. The
+	// endpoint is a chart decision rendered on the worker-pool Deployment; the
+	// dispatcher forwards it verbatim so a Job can never disagree with the pool
+	// that spawned it. Child processes inherit it (extraEnv = os.Environ()), so
+	// a plugin that opts into self-telemetry (Phase 6b) needs no extra plumbing.
+	// Empty endpoint = telemetry off: no env, byte-identical Job.
+	if p.OTLPEndpoint != "" {
+		env = append(env,
+			corev1.EnvVar{Name: "OTEL_EXPORTER_OTLP_ENDPOINT", Value: p.OTLPEndpoint},
+			corev1.EnvVar{Name: "OTEL_EXPORTER_OTLP_INSECURE", Value: strconv.FormatBool(p.OTLPInsecure)},
+		)
 	}
 	for _, kv := range p.ExtraEnv {
 		if k, v, ok := strings.Cut(kv, "="); ok {

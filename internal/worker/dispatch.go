@@ -23,6 +23,7 @@ import (
 	"github.com/tibrezus/harmostes/internal/dapr"
 	"github.com/tibrezus/harmostes/internal/gate"
 	"github.com/tibrezus/harmostes/internal/k8s"
+	"github.com/tibrezus/harmostes/internal/observability"
 	"github.com/tibrezus/harmostes/internal/review"
 	"github.com/tibrezus/harmostes/internal/sessionstore"
 	"github.com/tibrezus/harmostes/internal/timeline"
@@ -131,24 +132,11 @@ type DispatchConfig struct {
 // encoding one default is the exact shape DispatchConfigFromEnv exists to
 // kill (#311/#314), and a divergent default here would make the Job path
 // and the pool path disagree on whether dead-head reviews get cancelled.
-// otlpInsecureFromEnv resolves the plain-gRPC flag the collector expects.
-// ParseBool's grammar (not `== "true"`) is the house convention for booleans:
-// the OTel SDK itself accepts "True"/"1"/"TRUE" (otlptracegrpc
-// envconfig.WithBool), so a strict string compare would forward `false` to a
-// Job whose pool is insecure — a fleet-level disagreement rendered as a
-// silently TLS-failing exporter. Empty is the SDK's default (secure).
-func otlpInsecureFromEnv() (bool, error) {
-	v := os.Getenv("OTEL_EXPORTER_OTLP_INSECURE")
-	if v == "" {
-		return false, nil
-	}
-	b, err := strconv.ParseBool(v)
-	if err != nil {
-		return false, fmt.Errorf("OTEL_EXPORTER_OTLP_INSECURE=%q: must be a boolean", v)
-	}
-	return b, nil
-}
-
+// otlpInsecureFromEnv resolves the plain-gRPC flag the collector expects through
+// the fleet's single grammar (observability.InsecureFromEnv). The dispatcher
+// forwards this value verbatim to every Attempt Job, so a parse that disagrees
+// with the OTel SDK's own (`EqualFold(v,"true")`) would make the pool and the Job
+// disagree about the same env var — one fleet, two protocols.
 func CancelOnSupersedeFromEnv() (bool, error) {
 	v := os.Getenv("HARMOSTES_CANCEL_ON_SUPERSEDE")
 	if v == "" {
@@ -191,7 +179,11 @@ func DispatchConfigFromEnv(logf func(string, ...any)) (DispatchConfig, error) {
 		FleetAgentSessionCap: 0,
 	}
 	var err error
-	if cfg.OTLPInsecure, err = otlpInsecureFromEnv(); err != nil {
+	// One grammar for the collector transport (observability.InsecureFromEnv):
+	// the dispatcher forwards this value verbatim to every Attempt Job, so a parse
+	// that disagrees with the OTel SDK's own would make the pool and its Jobs read
+	// the same env var two ways — one fleet, two protocols.
+	if cfg.OTLPInsecure, err = observability.InsecureFromEnv(); err != nil {
 		return cfg, err
 	}
 	if cfg.PluginConfigMaps, err = pluginConfigMapsFromEnv(); err != nil {

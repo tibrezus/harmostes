@@ -11,6 +11,44 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
+// InsecureFromEnv is the fleet's single grammar for the collector transport. It
+// must match the OTel SDK's parse byte-for-byte: otlptracegrpc@v1.46.0
+// internal/envconfig WithBool is `strings.EqualFold(v, "true")`, so "1" is NOT
+// insecure. If this helper drifted, the dispatcher would stamp Jobs with a value
+// their own exporter reads differently — one fleet, two protocols.
+func TestInsecureFromEnv(t *testing.T) {
+	for _, c := range []struct {
+		in      string
+		want    bool
+		wantErr bool
+	}{
+		{in: "", want: false},
+		{in: "true", want: true},
+		{in: "True", want: true},
+		{in: "TRUE", want: true},
+		{in: " true ", want: true},
+		{in: "false", want: false},
+		{in: "False", want: false},
+		{in: "1", want: false, wantErr: true}, // the SDK reads "1" as secure
+		{in: "yes", want: false, wantErr: true},
+	} {
+		t.Setenv("OTEL_EXPORTER_OTLP_INSECURE", c.in)
+		got, err := InsecureFromEnv()
+		if c.wantErr {
+			if err == nil {
+				t.Fatalf("OTEL_EXPORTER_OTLP_INSECURE=%q must fail fast, got %v", c.in, got)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("OTEL_EXPORTER_OTLP_INSECURE=%q: %v", c.in, err)
+		}
+		if got != c.want {
+			t.Fatalf("OTEL_EXPORTER_OTLP_INSECURE=%q must resolve to %v, got %v", c.in, c.want, got)
+		}
+	}
+}
+
 func TestBuildResource(t *testing.T) {
 	res, err := buildResource(Config{
 		Component: "harmostes-worker", Version: "0.7.1",

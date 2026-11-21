@@ -230,7 +230,7 @@ func main() {
 			Component:    "harmostes-worker",
 			Version:      version.Version,
 			OTLPEndpoint: os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
-			Insecure:     os.Getenv("OTEL_EXPORTER_OTLP_INSECURE") == "true",
+			Insecure:     otlpInsecureOrDie(),
 			PodName:      os.Getenv("POD_NAME"),
 			PodNamespace: envOr("HARMOSTES_NAMESPACE", ""),
 		}); err != nil {
@@ -297,7 +297,7 @@ func runOneShot() {
 		Component:    "harmostes-worker",
 		Version:      version.Version,
 		OTLPEndpoint: os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
-		Insecure:     os.Getenv("OTEL_EXPORTER_OTLP_INSECURE") == "true",
+		Insecure:     otlpInsecureOrDie(),
 		PodName:      os.Getenv("POD_NAME"),
 		PodNamespace: namespace,
 	}); err != nil {
@@ -1147,6 +1147,18 @@ func flushTelemetry() {
 func fatal(format string, a ...any) {
 	logger.Error(redact(fmt.Sprintf(format, a...)))
 	finish(2)
+}
+
+// otlpInsecureOrDie reads the collector transport through the fleet's single
+// grammar. A malformed value is a deployment bug: a silent TLS default against a
+// plain-gRPC collector hides as a trace that never arrives, so the pod fails at
+// boot instead of running dark.
+func otlpInsecureOrDie() bool {
+	v, err := observability.InsecureFromEnv()
+	if err != nil {
+		fatal("invalid collector transport: %v", err)
+	}
+	return v
 }
 
 // shutdownDapr asks the Dapr sidecar to terminate so the pod reaches Completed

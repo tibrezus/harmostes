@@ -436,13 +436,18 @@ func BuildJob(p AttemptJobParams) *batchv1.Job {
 	}
 	if p.DaprdImage != "" {
 		annotations["dapr.io/sidecar-image"] = p.DaprdImage
-		// The sidecar and the app container are one pod exporting to one
-		// collector: a literal `true` here would make the sidecar speak plain
-		// gRPC while the app container speaks TLS (or the reverse) — two halves
-		// of the same trace disagreeing. One knob, one value.
-		if p.OTLPInsecure {
-			annotations["dapr.io/env"] = "OTEL_EXPORTER_OTLP_INSECURE=true"
-		}
+	}
+	// The sidecar and the app container are one pod exporting to one
+	// collector: a literal `true` here would make the sidecar speak plain
+	// gRPC while the app container speaks TLS (or the reverse) — two halves
+	// of the same trace disagreeing. One knob, one value.
+	//
+	// #949: the flag belongs to the sidecar's TRANSPORT, not to the image
+	// pin — a fleet that clears daprdImage (stock daprd) while keeping
+	// otlpInsecure must still tell the sidecar plain gRPC, exactly as the
+	// pool and controller templates render it (sibling of the image gate).
+	if p.OTLPInsecure {
+		annotations["dapr.io/env"] = "OTEL_EXPORTER_OTLP_INSECURE=true"
 	}
 
 	env := []corev1.EnvVar{

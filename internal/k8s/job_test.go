@@ -416,22 +416,31 @@ func TestBuildJobOmitsOTLPWhenUnset(t *testing.T) {
 // The sidecar and the app container of one Job pod export to one collector: the
 // daprd sidecar must not be told "insecure" while the app container is told
 // "secure" (#943 review). The annotation is emitted only when the knob says so.
+// #949: the flag is gated on the OBSERVABILITY DECISION, not the image pin —
+// the matrix crosses both gates, and the stock-daprd row (DaprdImage empty,
+// insecure true) is the regression the nesting hid.
 func TestBuildJobSidecarAgreesWithAppContainer(t *testing.T) {
 	for _, insecure := range []bool{true, false} {
-		job := BuildJob(AttemptJobParams{
-			Attempt:      jobTestAttempt(),
-			WorkflowName: "noop",
-			Namespace:    "harmostes",
-			DaprdImage:   "daprd:pin",
-			OTLPEndpoint: "collector:4317",
-			OTLPInsecure: insecure,
-		})
-		want := ""
-		if insecure {
-			want = "OTEL_EXPORTER_OTLP_INSECURE=true"
-		}
-		if got := job.Spec.Template.Annotations["dapr.io/env"]; got != want {
-			t.Fatalf("sidecar insecure must follow the app container (%v), got %q", insecure, got)
+		for _, image := range []string{"daprd:pin", ""} {
+			job := BuildJob(AttemptJobParams{
+				Attempt:      jobTestAttempt(),
+				WorkflowName: "noop",
+				Namespace:    "harmostes",
+				DaprdImage:   image,
+				OTLPEndpoint: "collector:4317",
+				OTLPInsecure: insecure,
+			})
+			want := ""
+			if insecure {
+				want = "OTEL_EXPORTER_OTLP_INSECURE=true"
+			}
+			if got := job.Spec.Template.Annotations["dapr.io/env"]; got != want {
+				t.Fatalf("sidecar insecure must follow the knob (insecure=%v image=%q), got %q", insecure, image, got)
+			}
+			// the image pin keeps its own gate, untouched by the move
+			if got := job.Spec.Template.Annotations["dapr.io/sidecar-image"]; got != image {
+				t.Fatalf("sidecar image pin must render iff set (image=%q), got %q", image, got)
+			}
 		}
 	}
 }

@@ -366,6 +366,26 @@ jobs:
           done
           echo "cancel-on-supersede knob: all three render paths correct"
 
+      # OTLP transport security follows the knob (#943 review): EVERY rendered
+      # expression of it — the app container env AND the daprd sidecar annotation —
+      # must carry the decided value. Probing only the env lines would leave the
+      # annotation unpinned: reverting worker-pool.yaml's sidecar line to the
+      # unconditional literal renders byte-identical at the default (true) and
+      # passes, then silently breaks a TLS fleet. Both shapes are asserted.
+      - name: helm template (otlp transport-security knob paths)
+        run: |
+          set -e
+          for case in "false:false" "true:true"; do
+            set_val="${case%%:*}"; want="${case##*:}"
+            render=$(helm template harmostes chart/ -f chart/ci/golden-values.yaml --set namespace=harmostes --set "observability.otlpInsecure=$set_val")
+            envvals=$(echo "$render" | grep -A1 'name: OTEL_EXPORTER_OTLP_INSECURE' | grep -o 'value: "[a-z]*"' | sort -u || true)
+            [ "$envvals" = "value: \"$want\"" ] || { echo "otlpInsecure $set_val: every container env must render value: \"$want\", got $envvals"; exit 1; }
+            wantann=0; [ "$want" = true ] && wantann=2
+            ann=$(echo "$render" | grep -c 'dapr.io/env: "OTEL_EXPORTER_OTLP_INSECURE=true"' || true)
+            [ "$ann" = "$wantann" ] || { echo "otlpInsecure $set_val: sidecar annotations must be $wantann, got $ann"; exit 1; }
+          done
+          echo "otlpInsecure knob: container env and sidecar annotation both follow the decision"
+
       # Declarative-layer render assertions (ADR-0011; r1 review P8 — the
       # default render exercises NONE of the new templates, which is how four
       # defects survived a green CI). Renders with the fork engine, resolver,

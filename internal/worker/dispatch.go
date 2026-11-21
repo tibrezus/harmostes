@@ -23,6 +23,7 @@ import (
 	"github.com/tibrezus/harmostes/internal/dapr"
 	"github.com/tibrezus/harmostes/internal/gate"
 	"github.com/tibrezus/harmostes/internal/k8s"
+	"github.com/tibrezus/harmostes/internal/observability"
 	"github.com/tibrezus/harmostes/internal/review"
 	"github.com/tibrezus/harmostes/internal/sessionstore"
 	"github.com/tibrezus/harmostes/internal/timeline"
@@ -81,11 +82,20 @@ type DispatchConfig struct {
 	DisableCancelOnSupersede bool
 	// NewReviewAPI overrides the review API construction for the gate
 	// sweep — the worker tests pin the API through it (C3 seam).
-	NewReviewAPI         func() review.API
-	JobImage             string
-	ServiceAccount       string
-	JobTTLSeconds        *int32
-	DaprdImage           string
+	NewReviewAPI   func() review.API
+	JobImage       string
+	ServiceAccount string
+	JobTTLSeconds  *int32
+	DaprdImage     string
+	// OTLPEndpoint/OTLPInsecure (#943): the collector the pool pod itself talks
+	// to, forwarded verbatim to every Attempt Job so the RUN half of the trace
+	// — graph.pipeline.run and its node spans — exports to the same collector
+	// instead of being created against otel's no-op provider. Parsed once here
+	// (the #311/#314 doctrine): the alternative is the Job reading the endpoint
+	// from os.Environ() at dispatch while main.go reads it for Init, two sites
+	// for one decision.
+	OTLPEndpoint         string
+	OTLPInsecure         bool
 	PluginConfigMaps     []string
 	ExtraConfigMapMounts []k8s.ConfigMapMount
 	// AggregatePlugins (#786, three-tier 1b): when on, the per-attempt
@@ -122,6 +132,11 @@ type DispatchConfig struct {
 // encoding one default is the exact shape DispatchConfigFromEnv exists to
 // kill (#311/#314), and a divergent default here would make the Job path
 // and the pool path disagree on whether dead-head reviews get cancelled.
+// otlpInsecureFromEnv resolves the plain-gRPC flag the collector expects through
+// the fleet's single grammar (observability.InsecureFromEnv). The dispatcher
+// forwards this value verbatim to every Attempt Job, so a parse that disagrees
+// with the OTel SDK's own (`EqualFold(v,"true")`) would make the pool and the Job
+// disagree about the same env var — one fleet, two protocols.
 func CancelOnSupersedeFromEnv() (bool, error) {
 	v := os.Getenv("HARMOSTES_CANCEL_ON_SUPERSEDE")
 	if v == "" {
@@ -150,15 +165,27 @@ func cancelOnSupersedeDisabledFromEnv() (bool, error) {
 // hermetic and always emitted, even where no kubeconfig exists (CI).
 func DispatchConfigFromEnv(logf func(string, ...any)) (DispatchConfig, error) {
 	cfg := DispatchConfig{
-		JobImage:           os.Getenv("HARMOSTES_WORKER_IMAGE"),
-		ServiceAccount:     os.Getenv("HARMOSTES_SERVICE_ACCOUNT"),
-		DaprdImage:         os.Getenv("HARMOSTES_DAPRD_IMAGE"),
+		JobImage:       os.Getenv("HARMOSTES_WORKER_IMAGE"),
+		ServiceAccount: os.Getenv("HARMOSTES_SERVICE_ACCOUNT"),
+		DaprdImage:     os.Getenv("HARMOSTES_DAPRD_IMAGE"),
+		// The collector the pool already reports to — the chart's
+		// observability.otlpEndpoint, rendered on the worker-pool Deployment.
+		// Empty endpoint = telemetry off: nothing is forwarded, the Job renders
+		// byte-identical (the inert default).
+		OTLPEndpoint:       os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
 		FleetMaxConcurrent: 3,
 		// FleetAgentSessionCap: no bound by default — the deployment decides
 		// (HARMOSTES_AGENT_SESSION_CAP, owner directive 2026-11-04).
 		FleetAgentSessionCap: 0,
 	}
 	var err error
+	// One grammar for the collector transport (observability.InsecureFromEnv):
+	// the dispatcher forwards this value verbatim to every Attempt Job, so a parse
+	// that disagrees with the OTel SDK's own would make the pool and its Jobs read
+	// the same env var two ways — one fleet, two protocols.
+	if cfg.OTLPInsecure, err = observability.InsecureFromEnv(); err != nil {
+		return cfg, err
+	}
 	if cfg.PluginConfigMaps, err = pluginConfigMapsFromEnv(); err != nil {
 		return cfg, err
 	}
@@ -231,10 +258,10 @@ func DispatchConfigFromEnv(logf func(string, ...any)) (DispatchConfig, error) {
 	}
 	// Startup config visibility: mount wiring problems (pool-vs-Job drift,
 	// #311) previously surfaced only as silent 12ms prepare failures.
-	logf("dispatch config: image=%s serviceAccount=%s maxConcurrent=%d agentSessionCap=%d jobTTLSeconds=%d pluginConfigMaps=%v extraConfigMapMounts=%s runUID=%d runGID=%d fsGroup=%d",
+	logf("dispatch config: image=%s serviceAccount=%s maxConcurrent=%d agentSessionCap=%d jobTTLSeconds=%d pluginConfigMaps=%v extraConfigMapMounts=%s runUID=%d runGID=%d fsGroup=%d otlpEndpoint=%s otlpInsecure=%v",
 		cfg.JobImage, cfg.ServiceAccount, cfg.FleetMaxConcurrent, cfg.FleetAgentSessionCap, *cfg.JobTTLSeconds,
 		cfg.PluginConfigMaps, formatConfigMapMounts(cfg.ExtraConfigMapMounts),
-		cfg.RunUID, cfg.RunGID, cfg.FSGroup)
+		cfg.RunUID, cfg.RunGID, cfg.FSGroup, cfg.OTLPEndpoint, cfg.OTLPInsecure)
 	return cfg, nil
 }
 
@@ -274,6 +301,8 @@ func (c DispatchConfig) JobParams(at *v1alpha1.Attempt, workflow, namespace stri
 		ServiceAccount:          c.ServiceAccount,
 		TTLSecondsAfterFinished: c.JobTTLSeconds,
 		DaprdImage:              c.DaprdImage,
+		OTLPEndpoint:            c.OTLPEndpoint,
+		OTLPInsecure:            c.OTLPInsecure,
 		PluginConfigMaps:        c.PluginConfigMaps,
 		ExtraConfigMapMounts:    c.ExtraConfigMapMounts,
 		ExtraEnv:                extraEnv,

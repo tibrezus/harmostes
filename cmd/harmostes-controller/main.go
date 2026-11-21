@@ -81,11 +81,16 @@ func main() {
 	// OTEL_EXPORTER_OTLP_ENDPOINT is unset). Flushed on graceful shutdown (the
 	// controller is long-running; boot-error exits skip it, which is fine — no
 	// telemetry is emitted before the manager starts).
+	controllerInsecure, err := observability.InsecureFromEnv()
+	if err != nil {
+		setupLog("collector transport", err)
+		os.Exit(2)
+	}
 	obsShutdown, obsErr := observability.Init(context.Background(), observability.Config{
 		Component:    "harmostes-controller",
 		Version:      version.Version,
 		OTLPEndpoint: os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
-		Insecure:     os.Getenv("OTEL_EXPORTER_OTLP_INSECURE") == "true",
+		Insecure:     controllerInsecure,
 		PodName:      os.Getenv("POD_NAME"),
 		PodNamespace: namespace,
 	})

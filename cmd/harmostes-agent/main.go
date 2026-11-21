@@ -96,11 +96,16 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(*timeout)*time.Second)
 	defer cancel()
 
+	insecure, err := observability.InsecureFromEnv()
+	if err != nil {
+		hlog("invalid collector transport: %v", err)
+		os.Exit(2)
+	}
 	if sh, err := observability.Init(ctx, observability.Config{
 		Component:    "harmostes-agent",
 		Version:      version.Version,
 		OTLPEndpoint: os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
-		Insecure:     os.Getenv("OTEL_EXPORTER_OTLP_INSECURE") == "true",
+		Insecure:     insecure,
 	}); err != nil {
 		hlog("observability init failed — telemetry disabled: %v", err)
 	} else {

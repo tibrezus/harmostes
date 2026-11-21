@@ -351,6 +351,91 @@ func TestBuildJobSkillsTokenAuth(t *testing.T) {
 	}
 }
 
+// #943: the run half of the trace. A span only exports if the pod has a
+// collector, so the Attempt Job must carry the same OTLP endpoint the pool and
+// controller do — otherwise observability.Init is a no-op in the runner and the
+// trace ends at the dispatch span, one hop short of the work.
+//
+// The pair is rendered as ONE contract: the endpoint gates the insecure flag.
+// A bare endpoint with no insecure flag would make the SDK try TLS against a
+// plain-gRPC cluster collector, which is the failure mode the worker-pool
+// Deployment already avoids.
+func TestBuildJobCarriesOTLP(t *testing.T) {
+	job := BuildJob(AttemptJobParams{
+		Attempt:      jobTestAttempt(),
+		WorkflowName: "pr-review-harmostes",
+		Namespace:    "harmostes",
+		OTLPEndpoint: "signoz-otel-collector.signoz.svc.cluster.local:4317",
+		OTLPInsecure: true,
+	})
+	c := job.Spec.Template.Spec.Containers[0]
+	env := map[string]string{}
+	for _, e := range c.Env {
+		env[e.Name] = e.Value
+	}
+	if env["OTEL_EXPORTER_OTLP_ENDPOINT"] != "signoz-otel-collector.signoz.svc.cluster.local:4317" {
+		t.Fatalf("the Job must carry the collector endpoint, got %v", env)
+	}
+	if env["OTEL_EXPORTER_OTLP_INSECURE"] != "true" {
+		t.Fatalf("insecure must ride with the endpoint (plain gRPC), got %v", env)
+	}
+}
+
+// The inert default: a deployment that has not decided on telemetry renders a
+// byte-identical Job. Nothing may be emitted for an unset endpoint — an empty
+// OTEL_EXPORTER_OTLP_ENDPOINT is indistinguishable from unset for the SDK, but
+// an explicit "false" insecure flag would be noise that hides the decision.
+func TestBuildJobOmitsOTLPWhenUnset(t *testing.T) {
+	for _, p := range []AttemptJobParams{
+		{Attempt: jobTestAttempt(), WorkflowName: "noop", Namespace: "harmostes"},
+		// endpoint set but insecure false — the flag still renders, as false,
+		// so the SDK's TLS default is decided explicitly, not by omission.
+		{Attempt: jobTestAttempt(), WorkflowName: "noop", Namespace: "harmostes", OTLPEndpoint: "collector:4317"},
+	} {
+		job := BuildJob(p)
+		var got []string
+		for _, e := range job.Spec.Template.Spec.Containers[0].Env {
+			if strings.HasPrefix(e.Name, "OTEL_") {
+				got = append(got, e.Name+"="+e.Value)
+			}
+		}
+		if p.OTLPEndpoint == "" {
+			if len(got) != 0 {
+				t.Fatalf("unset endpoint must render no OTEL env, got %v", got)
+			}
+			continue
+		}
+		if len(got) != 2 ||
+			!strings.Contains(strings.Join(got, "\n"), "OTEL_EXPORTER_OTLP_ENDPOINT=collector:4317") ||
+			!strings.Contains(strings.Join(got, "\n"), "OTEL_EXPORTER_OTLP_INSECURE=false") {
+			t.Fatalf("endpoint set must render the pair, got %v", got)
+		}
+	}
+}
+
+// The sidecar and the app container of one Job pod export to one collector: the
+// daprd sidecar must not be told "insecure" while the app container is told
+// "secure" (#943 review). The annotation is emitted only when the knob says so.
+func TestBuildJobSidecarAgreesWithAppContainer(t *testing.T) {
+	for _, insecure := range []bool{true, false} {
+		job := BuildJob(AttemptJobParams{
+			Attempt:      jobTestAttempt(),
+			WorkflowName: "noop",
+			Namespace:    "harmostes",
+			DaprdImage:   "daprd:pin",
+			OTLPEndpoint: "collector:4317",
+			OTLPInsecure: insecure,
+		})
+		want := ""
+		if insecure {
+			want = "OTEL_EXPORTER_OTLP_INSECURE=true"
+		}
+		if got := job.Spec.Template.Annotations["dapr.io/env"]; got != want {
+			t.Fatalf("sidecar insecure must follow the app container (%v), got %q", insecure, got)
+		}
+	}
+}
+
 func TestBuildJobServesFreshSkills(t *testing.T) {
 	job := BuildJob(AttemptJobParams{
 		Attempt:        jobTestAttempt(),

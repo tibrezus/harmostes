@@ -132,11 +132,6 @@ type DispatchConfig struct {
 // encoding one default is the exact shape DispatchConfigFromEnv exists to
 // kill (#311/#314), and a divergent default here would make the Job path
 // and the pool path disagree on whether dead-head reviews get cancelled.
-// otlpInsecureFromEnv resolves the plain-gRPC flag the collector expects through
-// the fleet's single grammar (observability.InsecureFromEnv). The dispatcher
-// forwards this value verbatim to every Attempt Job, so a parse that disagrees
-// with the OTel SDK's own (`EqualFold(v,"true")`) would make the pool and the Job
-// disagree about the same env var — one fleet, two protocols.
 func CancelOnSupersedeFromEnv() (bool, error) {
 	v := os.Getenv("HARMOSTES_CANCEL_ON_SUPERSEDE")
 	if v == "" {

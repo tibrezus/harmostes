@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -234,6 +235,107 @@ func TestDispatcherFromEnvWiresExtraMounts(t *testing.T) {
 	for _, w := range want {
 		if !slices.Contains(volNames, w) {
 			t.Fatalf("rendered Job lost volume %q; volumes = %v", w, volNames)
+		}
+	}
+}
+
+// #943: the seam that hid the run half of the trace. The collector decision is
+// made by the chart (observability.otlpEndpoint, rendered on the worker-pool
+// Deployment); the dispatcher must carry it into every Attempt Job or the
+// runner's observability.Init is a no-op and graph.pipeline.run is created
+// against otel's no-op provider. env → DispatchConfigFromEnv → JobParams →
+// BuildJob, pinned end to end — a config fact dropped at any hop is invisible
+// in SigNoz, exactly the #311/#314 failure shape this seam exists to kill.
+func TestDispatcherFromEnvWiresOTLPToJobs(t *testing.T) {
+	t.Setenv("HARMOSTES_WORKER_IMAGE", "harmostes:it")
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "collector.signoz.svc.cluster.local:4317")
+	t.Setenv("OTEL_EXPORTER_OTLP_INSECURE", "true")
+
+	var logged string
+	cfg, err := DispatchConfigFromEnv(func(format string, args ...any) { logged = fmt.Sprintf(format, args...) })
+	if err != nil {
+		t.Fatalf("config from env: %v", err)
+	}
+	if cfg.OTLPEndpoint != "collector.signoz.svc.cluster.local:4317" || !cfg.OTLPInsecure {
+		t.Fatalf("config dropped the collector: %+v", cfg)
+	}
+	// Boot visibility: the endpoint must be readable in the startup line, so a
+	// pool-vs-Job disagreement is diagnosable without a collector.
+	if !strings.Contains(logged, "otlpEndpoint=collector.signoz.svc.cluster.local:4317 otlpInsecure=true") {
+		t.Errorf("startup log must carry the collector decision: %q", logged)
+	}
+
+	at := &v1alpha1.Attempt{ObjectMeta: metav1.ObjectMeta{Name: "attempt-trace", Namespace: "default"}}
+	job := k8s.BuildJob(cfg.JobParams(at, "pr-review-harmostes", "default", 0, nil, nil, nil, "", nil, nil, nil, nil, false))
+	var endpoint, insecure string
+	for _, e := range job.Spec.Template.Spec.Containers[0].Env {
+		if e.Name == "OTEL_EXPORTER_OTLP_ENDPOINT" {
+			endpoint = e.Value
+		}
+		if e.Name == "OTEL_EXPORTER_OTLP_INSECURE" {
+			insecure = e.Value
+		}
+	}
+	if endpoint != "collector.signoz.svc.cluster.local:4317" || insecure != "true" {
+		t.Fatalf("rendered Job lost the collector: endpoint=%q insecure=%q", endpoint, insecure)
+	}
+}
+
+// The insecure half of the OTLP pair is parsed with the fleet's single grammar,
+// which mirrors the OTel SDK's own (`EqualFold(v,"true")`) exactly: the SDK does
+// NOT accept "1", so a ParseBool-flavoured parse would stamp a Job insecure while
+// its own exporter reads the same value as secure - the pool-vs-Job split this PR
+// exists to remove. Anything outside true/false fails fast rather than silently
+// defaulting (#311 doctrine).
+func TestDispatcherFromEnvParsesOTLPInsecure(t *testing.T) {
+	t.Setenv("HARMOSTES_WORKER_IMAGE", "harmostes:it")
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "collector:4317")
+	for _, c := range []struct{ in, want string }{
+		{in: "true", want: "true"},
+		{in: "True", want: "true"},
+		{in: "TRUE", want: "true"},
+		{in: "false", want: "false"},
+		{in: "False", want: "false"},
+	} {
+		t.Setenv("OTEL_EXPORTER_OTLP_INSECURE", c.in)
+		cfg, err := DispatchConfigFromEnv(func(string, ...any) {})
+		if err != nil {
+			t.Fatalf("insecure %q: %v", c.in, err)
+		}
+		if got := strconv.FormatBool(cfg.OTLPInsecure); got != c.want {
+			t.Fatalf("OTEL_EXPORTER_OTLP_INSECURE=%q must resolve to %s, got %s", c.in, c.want, got)
+		}
+	}
+
+	// The SDK reads "1" as NOT insecure; the fleet must not forward "true" for it.
+	t.Setenv("OTEL_EXPORTER_OTLP_INSECURE", "1")
+	if _, err := DispatchConfigFromEnv(func(string, ...any) {}); err == nil {
+		t.Fatal("OTEL_EXPORTER_OTLP_INSECURE=1 must fail fast, not be read as insecure")
+	}
+
+	t.Setenv("OTEL_EXPORTER_OTLP_INSECURE", "plain-grpc")
+	if _, err := DispatchConfigFromEnv(func(string, ...any) {}); err == nil {
+		t.Fatal("a malformed insecure value must fail construction, not default to secure")
+	}
+}
+
+// A deployment without observability must spawn Jobs with no OTEL env at all:
+// telemetry off is the safe default, not an empty-string coincidence.
+func TestDispatcherFromEnvOmitsOTLPWhenUnset(t *testing.T) {
+	t.Setenv("HARMOSTES_WORKER_IMAGE", "harmostes:it")
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+	t.Setenv("OTEL_EXPORTER_OTLP_INSECURE", "")
+	cfg, err := DispatchConfigFromEnv(func(string, ...any) {})
+	if err != nil {
+		t.Fatalf("config from env: %v", err)
+	}
+	if cfg.OTLPEndpoint != "" || cfg.OTLPInsecure {
+		t.Fatalf("unset collector must resolve to the inert default, got %+v", cfg)
+	}
+	at := &v1alpha1.Attempt{ObjectMeta: metav1.ObjectMeta{Name: "attempt-noobs", Namespace: "default"}}
+	for _, e := range k8s.BuildJob(cfg.JobParams(at, "noop", "default", 0, nil, nil, nil, "", nil, nil, nil, nil, false)).Spec.Template.Spec.Containers[0].Env {
+		if strings.HasPrefix(e.Name, "OTEL_") {
+			t.Fatalf("no telemetry means no OTEL env, got %s=%s", e.Name, e.Value)
 		}
 	}
 }

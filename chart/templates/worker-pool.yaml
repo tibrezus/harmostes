@@ -25,7 +25,13 @@ spec:
         dapr.io/enable-actors: "true"
         {{- if .Values.observability.daprdImage }}
         dapr.io/sidecar-image: {{ .Values.observability.daprdImage | quote }}
+        # Same knob as controller.yaml/ui.yaml: the sidecar's plain-gRPC flag
+        # must follow observability.otlpInsecure, not a literal. A fleet that
+        # sets the collector to TLS would otherwise get a secure daprd next to
+        # an insecure app container (and, via #943, insecure Attempt Jobs).
+        {{- if .Values.observability.otlpInsecure }}
         dapr.io/env: "OTEL_EXPORTER_OTLP_INSECURE=true"
+        {{- end }}
         {{- end }}
     spec:
       serviceAccountName: {{ .Values.controller.serviceAccountName | default "harmostes-controller" }}
@@ -229,7 +235,7 @@ spec:
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: {{ .Values.observability.otlpEndpoint | quote }}
             - name: OTEL_EXPORTER_OTLP_INSECURE
-              value: "true"
+              value: {{ .Values.observability.otlpInsecure | quote }}
             {{- end }}
             # Credentials — the consumer-exec'd one-shot worker inherits
             # these env vars. They mirror the secrets the controller injects

@@ -12,6 +12,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -40,6 +42,28 @@ type Config struct {
 	Insecure     bool   // plain gRPC for cluster-internal collectors
 	PodName      string // k8s.pod.name (downward API)
 	PodNamespace string // k8s.namespace.name
+}
+
+// InsecureFromEnv is the ONE grammar for OTEL_EXPORTER_OTLP_INSECURE across the
+// fleet. It mirrors the OTel SDK's own parse exactly — otlptracegrpc@v1.46.0
+// internal/envconfig/envconfig.go WithBool uses `strings.EqualFold(v, "true")`,
+// so "1" is NOT insecure for the SDK. Any other non-empty value is a decision the
+// deployment made incorrectly: fail fast rather than silently defaulting to secure
+// (#311 doctrine). Every binary and the dispatcher read the collector's transport
+// through this helper; two parsers of one env var is how one fleet ends up
+// speaking two protocols.
+func InsecureFromEnv() (bool, error) {
+	v := strings.TrimSpace(os.Getenv("OTEL_EXPORTER_OTLP_INSECURE"))
+	if v == "" {
+		return false, nil
+	}
+	if strings.EqualFold(v, "true") {
+		return true, nil
+	}
+	if strings.EqualFold(v, "false") {
+		return false, nil
+	}
+	return false, fmt.Errorf("OTEL_EXPORTER_OTLP_INSECURE=%q: must be true or false", v)
 }
 
 // ShutdownFunc flushes and tears down the providers. It is idempotent.

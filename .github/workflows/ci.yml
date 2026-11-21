@@ -378,10 +378,10 @@ jobs:
           for case in "false:false" "true:true"; do
             set_val="${case%%:*}"; want="${case##*:}"
             render=$(helm template harmostes chart/ -f chart/ci/golden-values.yaml --set namespace=harmostes --set "observability.otlpInsecure=$set_val")
-            envvals=$(echo "$render" | grep -A1 'name: OTEL_EXPORTER_OTLP_INSECURE' | grep -o 'value: "[a-z]*"' | sort -u)
+            envvals=$(echo "$render" | grep -A1 'name: OTEL_EXPORTER_OTLP_INSECURE' | grep -o 'value: "[a-z]*"' | sort -u || true)
             [ "$envvals" = "value: \"$want\"" ] || { echo "otlpInsecure $set_val: every container env must render value: \"$want\", got $envvals"; exit 1; }
             wantann=0; [ "$want" = true ] && wantann=2
-            ann=$(echo "$render" | grep -c 'dapr.io/env: "OTEL_EXPORTER_OTLP_INSECURE=true"')
+            ann=$(echo "$render" | grep -c 'dapr.io/env: "OTEL_EXPORTER_OTLP_INSECURE=true"' || true)
             [ "$ann" = "$wantann" ] || { echo "otlpInsecure $set_val: sidecar annotations must be $wantann, got $ann"; exit 1; }
           done
           echo "otlpInsecure knob: container env and sidecar annotation both follow the decision"

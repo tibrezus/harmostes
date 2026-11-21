@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.11.19](https://github.com/tibrezus/harmostes/compare/v1.11.18...v1.11.19) (2026-11-21)
+
+
+### Bug Fixes
+
+* **observability:** Attempt Jobs carry the OTLP endpoint, so the run half of the trace exports ([#943](https://github.com/tibrezus/harmostes/issues/943)) ([#944](https://github.com/tibrezus/harmostes/issues/944)) ([ba4eeb2](https://github.com/tibrezus/harmostes/commit/ba4eeb2873e079363027eaa9c57c94e2b63ec6d5))
+
 ## [1.11.18](https://github.com/tibrezus/harmostes/compare/v1.11.17...v1.11.18) (2026-11-20)
 
 

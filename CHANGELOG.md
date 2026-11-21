@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.11.20](https://github.com/tibrezus/harmostes/compare/v1.11.19...v1.11.20) (2026-11-21)
+
+
+### Bug Fixes
+
+* **observability:** the sidecar's plain-gRPC flag follows the observability decision, not the image pin ([#949](https://github.com/tibrezus/harmostes/issues/949)) ([#951](https://github.com/tibrezus/harmostes/issues/951)) ([f5f9f9c](https://github.com/tibrezus/harmostes/commit/f5f9f9c387729cdb0af2e2ec3c906c3ab722b627))
+
 ## [1.11.19](https://github.com/tibrezus/harmostes/compare/v1.11.18...v1.11.19) (2026-11-21)
 
 
